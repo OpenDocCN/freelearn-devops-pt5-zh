@@ -1,0 +1,1025 @@
+<html><head></head><body>
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Scaling Your Infrastructure</h1>
+                </header>
+            
+            <article>
+                
+<p>In this chapter, we are going to analyze all the technologies used to deploy a complete web application in <strong>Amazon Web Services</strong> (<strong>AWS</strong>). In particular, we will look at how to create a monolithic application in one single machine and decompose the application into multiple pieces in order to achieve scalability and reliability. </p>
+<p>Every section of this chapter <span>first</span> has a theoretical part that focuses on the overarching idea as well as the AWS technologies necessary to implement it. It also has a practical example, which makes it possible to put <span>what</span><span> is explained </span><em>into action</em><span>. </span></p>
+<p>Starting with the monolith approach to all the software on a single machine, we are going to see when and why it is convenient to break it into multiple pieces to achieve better scalability and reliability. To do this, moving the data (also called the state of the application) outside of the EC2 machine is the first step that can be performed using RDS, the database service in the Amazon cloud universe. Adding a load balancer can add many advantages, from using the <strong>AWS Certification Manager</strong> (<strong>ACM</strong>), to preparing the infrastructure and scaling in and out. Configuring Auto Scaling group / launch configuration is the last step to enabling scalability in and out for our application.  </p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Technical requirements</h1>
+                </header>
+            
+            <article>
+                
+<p>In this chapter, basic knowledge of the AWS console is assumed. This was covered in the previous chapters as well as in the Terraform configuration already completed in <a href="1528f579-c596-4cda-8f8c-09f2c7772c5e.xhtml">Chapter 4</a>, <em>Infrastructure as Code with Terraform</em>. </p>
+<p>A public domain is available in the AWS account. This can be useful for testing all aspects of a web application, but this is only an optional step. </p>
+<p>Basic knowledge of Linux command-line tool is also required because the example is built with an Amazon Linux 2 operating system. <span>The code files included within the chapter can be found on GitHub at link: </span><a href="https://github.com/giuseppeborgese/effective_devops_with_aws__second_edition">https://github.com/giuseppeborgese/effective_devops_with_aws__second_edition</a><span>.</span> </p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">A monolithic application</h1>
+                </header>
+            
+            <article>
+                
+<p><span class="author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">The purpose of this chapter is to introduce and lead the reader to transform what is commonly called</span> <em>m<span class="author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z h-ldquo">onolithic</span></em> <span class="author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z"><em>application</em> into a dynamic and scalable application.</span></p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">What is a monolithic application?</h1>
+                </header>
+            
+            <article>
+                
+<p><span class="author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">When people talk about scaling, they often use the term <strong>monolithic application</strong>. But what is this, exactly? Usually, this refers to a software or an infrastructure where everything</span> <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z h-lparen">(including the presentation</span> <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">part, backend, and data part) is combined in a single block, <span>called a monolith</span>. In our case, we are focusing on the infrastructure. To explain the concept of a monolithic application, we are going to build an example application with the following components as shown in the figure below:</span></p>
+<ul class="listtype-bullet listindent1 list-bullet1">
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">A MySQL database where there is only one table with a single numeric field</span></li>
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">A backend frontend Java/Tomcat listening on the default <kbd>8080</kbd> port component that reads the database, shows the value, and increments the numeric value</span></li>
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">An Apache 2.2 web server listening on default port <kbd>80</kbd> that communicates with the Tomcat and shows the web page</span></li>
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">Everything contained in a single EC2 virtual machine with a public IP assigned to it to communicate on the internet</span></li>
+</ul>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/d9be6f94-10f5-4274-9aa7-bce565976e0e.png" style="width:19.83em;height:22.75em;"/></p>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p>Let's create an example application that allows us to break and scale <span>it:</span><span> </span></p>
+<p>We learned how to use Terraform in the previous chapters. To build the EC2 machine and the security group showed in the following screenshot, we can use this module called <strong>monolith application</strong>. To use it in your account you need to change the initialization parameters and provide your personal: <kbd>* vpc-id * subnet * pem</kbd> key. For the AMI instead you can find the right one following the indication in the following screenshot. This example was tested with North Virginia Amazon region and operative system <span class="packt_screen">Amazon Linux 2</span>. <span>Find the AMI ID for your region as it is shown in the following screenshot:</span></p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/7c9d8f88-a3f3-4bd8-a84c-a39842a9b079.png"/></p>
+<pre>module "monolith_application" {<br/>  source = "github.com/giuseppeborgese/effective_devops_with_aws__second_edition//terraform-modules//monolith-playground"<br/>  my_vpc_id = "${var.my_default_vpcid}"<br/>  my_subnet = "subnet-54840730"<br/>  my_ami_id = "ami-04681a1dbd79675a5"<br/>  my_pem_keyname = "effectivedevops"<br/>}</pre>
+<p class="mce-root"> The commands that create the modules are always as follows:</p>
+<pre><strong>terraform init -upgrade</strong><br/><strong>terraform plan -out /tmp/tf11.out -target module.monolith_application</strong><br/><strong>terraform apply apply /tmp/tf11.out</strong></pre>
+<p>You should have in the output the following result:</p>
+<pre><strong>Apply complete! Resources: 3 added, 0 changed, 0 destroyed.</strong><br/><strong>Outputs:</strong><br/><strong>monolith_u</strong><strong>rl = http://54.209.174.12/visits</strong></pre>
+<p>If you wait a few minutes to let the application run and install all the software and configurations, you can put the URL in your browser and see the one shown in the following screenshot:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/9afd02a3-939c-4360-b423-74c255e885e0.png" style="width:30.42em;height:7.25em;"/></p>
+<p>If you receive this result, you should wait a few minutes. If this doesn't resolve the error, something <span>probably</span><span> </span><span>went wrong in the installation. The error message is as follows:</span></p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/14985c87-fc7f-4bb5-b341-5a41f2370a67.png"/></p>
+<p>Of course, your public IP will be different from this one. Every time you refresh the page or the URL is opened from any source, the Java application reads the value from the MySQL database, increments the value of 1 unit, and writes in the same database field. </p>
+<p>It is worth spending some lines of code to see how everything was installed. This code is found inside the <kbd><span>monolith_application</span></kbd> module shown above<span>:</span></p>
+<p>These lines are the installation script for the <kbd>monolith_application</kbd>:</p>
+<pre><strong>yum -y install httpd mariadb.x86_64 mariadb-server java</strong><br/><br/><strong>systemctl start mariadb</strong><br/><strong>chkconfig httpd on</strong><br/><strong>chkconfig mariadb on</strong><br/><strong>systemctl restart httpd</strong></pre>
+<p>Now install  MySQL (MariaDB)—this is the MySQL type that is available in the Amazon Linux 2 <span><strong>Long Term Support</strong> (<strong>LTS</strong>)</span> default repository as well as Apache 2 and Java software.</p>
+<p>The following is the installation script we started to explain before::</p>
+<pre><strong>echo "&lt;VirtualHost *&gt;" &gt; /etc/httpd/conf.d/tomcat-proxy.conf</strong><br/><strong>echo " ProxyPass /visits http://localhost:8080/visits" &gt;&gt; /etc/httpd/conf.d/tomcat-proxy.conf</strong><br/><strong>echo " ProxyPassReverse /visits http://localhost:8080/visits" &gt;&gt; /etc/httpd/conf.d/tomcat-proxy.conf</strong><br/><strong>echo "&lt;/VirtualHost&gt;" &gt;&gt; /etc/httpd/conf.d/tomcat-proxy.conf</strong></pre>
+<p>Apache is configured to pass the traffic to the Tomcat on port <kbd>8080</kbd>.</p>
+<p>To set up the MySQL in a non-interactive way, I used these lines <span>to create a database, table, and user for the Java application as follows</span>:</p>
+<pre><strong>mysql -u root -e "create database demodb;"</strong><br/><strong>mysql -u root -e "CREATE TABLE visits (id bigint(20) NOT NULL AUTO_INCREMENT, count bigint(20) NOT NULL, version bigint(20) NOT NULL, PRIMARY KEY (id)) ENGINE=InnoDB DEFAULT CHARSET=latin1;" demodb</strong><br/><strong>mysql -u root -e "INSERT INTO demodb.visits (count) values (0) ;"</strong><br/><strong>mysql -u root -e "CREATE USER 'monty'@'localhost' IDENTIFIED BY 'some_pass';"</strong><br/><strong>mysql -u root -e "GRANT ALL PRIVILEGES ON *.* TO 'monty'@'localhost' WITH GRANT OPTION;"</strong></pre>
+<p>The <kbd>user_data</kbd> script is inside the <kbd>module_application</kbd> and it is provided as a parameter to the <kbd>user_data</kbd> field. It downloads an example Java application that saves the result in the database. To simplify the installation, the <kbd>.jar</kbd> file <span>also </span>contains the Tomcat. This is acceptable for a playground but not for a real usage:</p>
+<pre><strong>runuser -l ec2-user -c 'cd /home/ec2-user ; curl -O https://raw.githubusercontent.com/giuseppeborgese/effective_devops_with_aws__second_edition/master/terraform-modules/monolith-playground/demo-0.0.1-SNAPSHOT.jar'</strong><br/><strong>runuser -l ec2-user -c 'cd /home/ec2-user ; curl -O https://raw.githubusercontent.com/giuseppeborgese/effective_devops_with_aws__second_edition/master/terraform-modules/monolith-playground/tomcat.sh'</strong><br/><strong>cd /etc/systemd/system/ ; curl -O https://raw.githubusercontent.com/giuseppeborgese/effective_devops_with_aws__second_edition/master/terraform-modules/monolith-playground/tomcat.service</strong><br/><strong>chmod +x /home/ec2-user/tomcat.sh</strong><br/><strong>systemctl enable tomcat.service</strong><br/><strong>systemctl start tomcat.service</strong></pre>
+<p><span>To run this Tomcat at startup as a service, t</span>he <kbd>.jar</kbd> and the configuration file are downloaded and the configuration is made automatically.</p>
+<p>Anyway, the purpose of the <kbd>playground</kbd> application is to have something that saves the result of its computation (called the <strong>state</strong>) inside a database. Every time the url is referred to, the state is read from the database, incremented, and saved again.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Associating a DNS name</h1>
+                </header>
+            
+            <article>
+                
+<p>It is not indispensable for the exercise, but if you have a public domain register, you can create an <strong>A DNS record</strong>. </p>
+<p>You need to have a Route 53 public domain registered like mine: <kbd>devopstools.link</kbd>. If you don't know how to register, go to <a href="https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/domain-register-update.html">https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/domain-register-update.html</a> and follow the instructions there. Based on my experience, you will need to wait from 30 minutes to two hours and the new domain will then be available. <span>To create a record follow these steps:</span></p>
+<ol>
+<li>Go to <span class="packt_screen">Route53</span> | <span class="packt_screen">Hosted zones</span> and select your zone</li>
+<li>Click on the <span class="packt_screen">Create Record Set</span> button</li>
+<li>Insert a name and choose the <kbd>bookapp</kbd> name</li>
+<li>Insert the public IP of your EC2 machine </li>
+<li>Click on the <span class="packt_screen">Create</span> button as shown in the following screenshot:</li>
+</ol>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/c553d97d-f219-40b6-97e3-2f5b0690e8b0.png"/></p>
+<ol start="6">
+<li class="CDPAlignLeft CDPAlign">Now you can use this record to query the application:</li>
+</ol>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/07b726ab-1c21-4620-85fc-26cc0e4abe9f.png" style="width:33.75em;height:6.08em;"/></p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Scaling a monolithic application</h1>
+                </header>
+            
+            <article>
+                
+<p><span class="author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">We have now created the infrastructure and deployed our application, which is working well. If the application is useful for a large number of people, there is a chance that the number of users, requests, and data will grow  quickly. This is exactly what every application owner wants.</span></p>
+<p><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">It is possible that the EC2 that we chose is not<span> adequate</span> to manage a large amount of data </span><span>anymore</span><span>. The following are also possible:</span></p>
+<ul>
+<li class="mce-root"><span>CPU or RAM are not enough for our three programs: Apache, Tomcat, and MySQL </span></li>
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">The bandwidth of the EC2 virtual machine is not enough for the number of simultaneous requests</span></li>
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">Tomcat or MySQL need to store data for each user and the disk space is not enough anymore</span></li>
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">MySQL and Tomcat need to read a lot of data from a single disk at the same time. Furthermore, there is a context switch for the single disk.</span></li>
+</ul>
+<p><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">There are two ways to scale an application. These are as follows:</span></p>
+<ul class="listtype-bullet listindent1 list-bullet1">
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">Scaling it vertically, which means using bigger EC2 instances so that you get an instance with more CPU, more memory, and better network performance</span></li>
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">Scaling it horizontally, which means adding more and more EC2 instances while running the same code and load balancing the traffic across them </span></li>
+</ul>
+<p class="mce-root"><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">Right now we have monolith so we can only scale vertically. In the next section, we are going to break the monolith into different pieces, removing the</span> <em><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z h-ldquo">state</span></em> <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">from the EC2 virtual disk. In this way we can add more machines and also split the load between the balancer and the database using the CDN. </span></p>
+<p class="mce-root"/>
+<p class="mce-root"><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">To<span> vertically </span>scale our monolith, you need to follow these steps:</span></p>
+<ol class="listtype-number listindent1 list-number1" start="1">
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">Choose a new instance type from the list at</span> <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z url"><a href="https://aws.amazon.com/ec2/instance-types/" target="_blank">https://aws.amazon.com/ec2/instance-types/</a></span></li>
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">Switch off the instance</span></li>
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">Change the instance type: </span> <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z s-lparen"> </span><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z"> </span></li>
+</ol>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/d51690c0-e8c6-4697-ae3a-7fd27d18390f.png"/></p>
+<ol start="4">
+<li>Switch on the instance<span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z"> </span></li>
+</ol>
+<p><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">For the disk space instead, this is a little bit more complex. Here, you must expand the size. This procedure is as follows:</span></p>
+<ol class="listtype-bullet listindent1 list-bullet1">
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">Switch off the machine to avoid date incoherency.</span></li>
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">Detach each volume attached to the instance. However, before doing this, make a note of the device used: <kbd>/dev/sda1</kbd> or</span> <kbd>/dev/xdc</kbd> <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">ecc.</span></li>
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">Make a snapshot for each volume attached to the instance.</span></li>
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">For each snapshot created in the previous step, create a new volume. You need to specify the desired size of the volume.</span></li>
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">Attach each new volume to the instance using the same device name as in step 2.</span></li>
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">Switch the machine </span>on.</li>
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">Log in to the machine and resize the filesystem using the</span> <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">guide</span> <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">for Linux and</span> <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">for Windows. For more details please refer to the <em>Further reading</em> section toward the end of the chapter.</span></li>
+</ol>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Advantages of a monolith</h1>
+                </header>
+            
+            <article>
+                
+<p><span class="author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">Before breaking and scaling our monolith, it is important to know whether or not it is worth making the effort for our application. Let's examine all the advantages of a single block architecture:</span></p>
+<ul class="listtype-bullet listindent1 list-bullet1">
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">The first advantage for sure is the infrastructure cost. Here, we are going to break into multiple and scalable pieces but this means that we need to pay for each piece of this architecture. The final cost of the infrastructure will be higher than the single monolith. </span></li>
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">The cost to build a multi-tier scalable architecture will definitely be much more complex than a monolithic one. This means more time to build and more competencies required to do that. The purpose of this book is also to reduce this competency gap.</span></li>
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">An articulated architecture requires many settings. For example, correctly configuring the security group, choosing the right balancer, choosing the right RDS,  and configuring S3 or EFS to move out the state from the virtual disk. An exception to this is the SSL configuration. Configuring SSL using the AWS Certificate Manager is much easier than buying and configuring an SSL certificate for Apache. </span></li>
+</ul>
+<p><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">So, if you do not expect much traffic, your budget is limited. You can consider building a <em>monolith</em></span> <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z h-ldquo">infrastructure</span> <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">to host your web application. Of course, keep in mind the scalable limitation and the downtime that you need to accept when you want to scale up or down vertically. </span></p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">The database</h1>
+                </header>
+            
+            <article>
+                
+<p><span class="author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">Now that we are aware of the benefits and disadvantages of a monolith application and we have decided to break our app into multiple pieces, it is time to move the first resource outside of the monolith. </span></p>
+<p><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">As we anticipated in the first section of this chapter, it is necessary to move the data (</span><span>also</span><span> </span><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">called <em>state</em>) outside  of the EC2 machine. In some web applications, the database is the only data source. However, in others, there are also files uploaded from the users saved directly on the disk or index files if you use an index engine such as <strong>Apache Solr</strong>. For more information on this, refer to</span><span> </span><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z url"><a href="http://lucene.apache.org/solr/" target="_blank">http://lucene.apache.org/solr/</a></span> <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">.</span></p>
+<p><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">When possible, it is always convenient to use a cloud service instead to install a program in a virtual machine. For a database, the RDS  service</span> (<span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z url"><a href="https://aws.amazon.com/rds/" target="_blank">https://aws.amazon.com/rds/</a>)</span> <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">provides a large set of open or closed source</span> <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z h-lparen">(Amazon</span> <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">Aurora, PostgreSQL, MySQL, MariaDB, Oracle, and Microsoft SQL Server), so if you need an <strong>IBM Db2</strong></span> <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z url"><a href="https://www.ibm.com/products/db2-database" target="_blank">https://www.ibm.com/products/db2-database</a></span> <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">you can use the RDS service for your database. </span></p>
+<p><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">To create our MySQL RDS instance, refer to the module is available in the official registry at</span> <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z url"><a href="https://registry.terraform.io/modules/terraform-aws-modules/rds/aws/1.21.0" target="_blank">https://registry.terraform.io/modules/terraform-aws-modules/rds/aws/1.21.0:</a></span></p>
+<div class="CDPAlignCenter CDPAlign"><img src="assets/6ccf67d1-bc18-4460-a2f0-c990e4755d8c.png" style="width:20.00em;height:39.58em;"/></div>
+<div>
+<p>It is important to consider that, when splitting the pieces, it is necessary to correctly configure security groups in order to allow access from the EC2 instance to the RDS instance on port <kbd>3306</kbd>. This also avoids <span>unnecessary access to the database. </span></p>
+<p><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">For the subnet, it is mandatory to keep a public subnet for the EC2 instance. Instead, it is convenient to choose a private one for the RDS instance. We will explore this topic further in <a href="0eb2bba9-5a84-4031-93d2-72dc4d6d4dd3.xhtml">Chapter 8, </a></span><em><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z h-ldquo">Hardening</span></em> <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z"><em>the Security of Your AWS Environment.</em></span></p>
+</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Moving the database to the RDS</h1>
+                </header>
+            
+            <article>
+                
+<p><span>To create the MySQL database, we can use a public module that is available in the official repository found here: <a href="https://registry.terraform.io/modules/terraform-aws-modules/rds/aws/1.21.0">https://registry.terraform.io/modules/terraform-aws-modules/rds/aws/1.21.0</a>.</span></p>
+<p>In the following code, I will simplify the original example slightly and add a security group as follows. Refer to the <kbd>main.tf</kbd> file:</p>
+<pre>resource "aws_security_group" "rds" {<br/>  name = "allow_from_my_vpc"<br/>  description = "Allow from my vpc"<br/>  vpc_id = "${var.my_default_vpcid}"<br/><br/>  ingress {<br/>    from_port = 3306<br/>    to_port = 3306<br/>    protocol = "tcp"<br/>    cidr_blocks = ["172.31.0.0/16"]<br/>  }<br/>}<br/><br/>module "db" {<br/>  source = "terraform-aws-modules/rds/aws"<br/>  identifier = "demodb"<br/>  engine = "mysql"<br/>  engine_version = "5.7.19"<br/>  instance_class = "db.t2.micro"<br/>  allocated_storage = 5<br/>  name = "demodb"<br/>  username = "monty"<br/>  password = "some_pass"<br/>  port = "3306"<br/><br/>  vpc_security_group_ids = ["${aws_security_group.rds.id}"]<br/>  # DB subnet group<br/>  subnet_ids = ["subnet-d056b4ff", "subnet-b541edfe"]<br/>  maintenance_window = "Mon:00:00-Mon:03:00"<br/>  backup_window = "03:00-06:00"<br/>  # DB parameter group<br/>  family = "mysql5.7"<br/>  # DB option group<br/>  major_engine_version = "5.7"<br/>}<br/><br/>the plan shows 5 these 5 resources to add <br/><br/>  + aws_security_group.rds<br/><br/>  + module.db.module.db_instance.aws_db_instance.this<br/><br/>  + module.db.module.db_option_group.aws_db_option_group.this<br/><br/>  + module.db.module.db_parameter_group.aws_db_parameter_group.this<br/><br/>  + module.db.module.db_subnet_group.aws_db_subnet_group.this<br/><br/>Plan: 5 to add, 0 to change, 0 to destroy.</pre>
+<p>Because an RDS needs to work on an option group, a parameter group and a subnet group.</p>
+<p>You can see the new instance in the RDS console and click on it to open the properties as follows:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/e974351a-6087-427f-be20-efd163125314.png"/></p>
+<p>Once the property of the selected instance is opened, note the value of the <span class="packt_screen">Endpoint</span> field as shown in the following screenshot:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/84e18afa-72ba-4c17-beb8-8090951c880c.png"/></p>
+<p>In my case, this is <kbd>demodb.cz4zwh6mj6on.us-east-1.rds.amazonaws.com</kbd><span><strong>.</strong></span></p>
+<p>Connect in SSH to the EC2 machine and try the connection to the RDS:</p>
+<pre><strong>[ec2-user@ip-172-31-7-140 ~]$ mysql -u monty -psome_pass -h demodb.cz4zwh6mj6on.us-east-1.rds.amazonaws.com</strong><br/><strong>Welcome to the MariaDB monitor. Commands end with ; or \g.</strong><br/><strong>Your MySQL connection id is 7</strong><br/><strong>Server version: 5.7.19-log MySQL Community Server (GPL)</strong><br/><br/><strong>Copyright (c) 2000, 2018, Oracle, MariaDB Corporation Ab and others.</strong><br/><br/><strong>Type 'help;' or '\h' for help. Type '\c' to clear the current input statement.</strong></pre>
+<p class="mce-root"/>
+<p class="mce-root">Run the <kbd>show databases</kbd> command to see if there is the <kbd>demodb</kbd> schema:</p>
+<pre class="mce-root"><br/> MySQL [(none)]&gt; show databases;<br/> +--------------------+<br/> | Database |<br/> +--------------------+<br/> | information_schema |<br/> | demodb |<br/> | innodb |<br/> | mysql |<br/> | performance_schema |<br/> | sys |<br/> +--------------------+<br/> 6 rows in set (0.00 sec)<br/><span>MySQL [(none)]&gt; exit</span><br/><span>Bye</span><br/><span>[ec2-user@ip-172-31-7-140 ~]$</span></pre>
+<p>To transfer the database, follow these steps:</p>
+<ol>
+<li>Close the Java process with the <kbd>pkill</kbd> java command</li>
+<li>Dump the local database with the following command:</li>
+</ol>
+<pre style="padding-left: 60px"><strong> mysqldump -u monty -psome_pass -h localhost demodb &gt; demodbdump.sql</strong></pre>
+<ol start="3">
+<li>We don't need the local database anymore, so stop it with the following command:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>sudo service mariadb stop</strong></pre>
+<ol start="4">
+<li>Now restore the dump in the RDS with the following command:</li>
+</ol>
+<pre style="padding-left: 60px"><strong> mysql -u monty -psome_pass -h demodb.cz4zwh6mj6on.us-east-1.rds.amazonaws.com demodb &lt; demodbdump.sql</strong></pre>
+<p class="mce-root"/>
+<ol start="5">
+<li>Check if the content was correctly copied as follows:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>mysql -u monty -psome_pass -h demodb.cz4zwh6mj6on.us-east-1.rds.amazonaws.com</strong><br/><strong>Welcome to the MariaDB monitor. Commands end with ; or \g.</strong><br/><strong>Your MySQL connection id is 12</strong><br/><strong>Server version: 5.7.19-log MySQL Community Server (GPL)</strong><br/><br/><strong>Copyright (c) 2000, 2018, Oracle, MariaDB Corporation Ab and others.</strong><br/><br/><strong>Type 'help;' or '\h' for help. Type '\c' to clear the current input statement.</strong><br/><br/><strong>MySQL [(none)]&gt; use demodb;</strong><br/><strong>Reading table information for completion of table and column names</strong><br/><strong>You can turn off this feature to get a quicker startup with -A</strong><br/><br/><strong>Database changed</strong><br/><strong>MySQL [demodb]&gt; select * from visits;</strong><br/><strong>+----+-------+---------+</strong><br/><strong>| id | count | version |</strong><br/><strong>+----+-------+---------+</strong><br/><strong>| 1 | 5 | 5 |</strong><br/><strong>+----+-------+---------+</strong><br/><strong>1 row in set (0.00 sec)</strong></pre>
+<p>Now that the dump is correct, you need to replace the connection inside <kbd>/home/ec2-user/tomcat.sh</kbd>:</p>
+<pre><strong>sudo nano /home/ec2-user/tomcat.sh</strong></pre>
+<p>Now find the string in the file:</p>
+<pre> db_url=jdbc:mysql://localhost:3306/</pre>
+<p>Replace this with the following line of code:</p>
+<pre>db_url=jdbc:mysql://demodb.cz4zwh6mj6on.us-east-1.rds.amazonaws.com:3306/</pre>
+<p class="mce-root"/>
+<p>Leave everything else untouched:</p>
+<pre>pkill java <br/><strong>systemctl start tomcat</strong></pre>
+<p>You should now see that the output and the application are working again. </p>
+<p>It is now convenient to remove the local database with the following command:</p>
+<pre><strong>sudo yum remove mariadb-server</strong> </pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Choose the RDS type</h1>
+                </header>
+            
+            <article>
+                
+<p><span class="author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">If you have a MySQL engine like we saw in the previous example, you can choose between the following instance types:</span></p>
+<ul>
+<li class="mce-root"><span>MySQL Classic </span></li>
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">Aurora MySQL </span></li>
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">A new type of Serverless Aurora MySQL, found</span> here: <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z url"><a href="https://aws.amazon.com/rds/aurora/serverless/" target="_blank">https://aws.amazon.com/rds/aurora/serverless/</a></span></li>
+</ul>
+<p><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">In most cases, MySQL Classic would be ideal. However, if you know that you will have a big amount of data to manage, Aurora MySQL is ideal. This serverless option is for <strong>infrequently-used</strong>, <strong>variable</strong>, and <strong>unpredictable</strong> workloads </span><span>instead</span><span>. </span></p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Backup</h1>
+                </header>
+            
+            <article>
+                
+<p><span class="author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">It is important to enable the backup for your RDS instance and choose the backup </span><span>as</span><span> W</span><span>indows. This is important when</span><span class="author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z"> you expect a low write load on your database because it is true that the backup will be done without downtime but it can also influence the performance. For more information on best practices for Amazon RDS, refer to </span><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z url"><a href="https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/CHAP_BestPractices.html" target="_blank">https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/CHAP_BestPractices.html</a>.</span></p>
+<p><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">You can set up a daily backup and keep a maximum of 35 snapshots. </span><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">Upon restore you can choose one of these 35 snapshots or any moment inside these 35 days using the new point-in-time recovery feature. For more information on this, refer to</span> <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z url"><a href="https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_PIT.html" target="_blank">https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_PIT.html</a>.<a href="https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_PIT.html" target="_blank"/></span></p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Multi-AZ</h1>
+                </header>
+            
+            <article>
+                
+<p><span class="author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">The multi-AZ feature</span> available at <span class="author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z url"><a href="https://aws.amazon.com/rds/details/multi-az/" target="_blank">https://aws.amazon.com/rds/details/multi-az/</a></span> <span class="author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">maintains a second copy of your RDS instance, using the <strong>master-slave</strong> technique in another <strong>availability zone</strong> (<strong>AZ</strong>). If there is an issue with the master instance (or in the whole AZ where the master instance is located), the DNS name is automatically switched to the slave instance. Using this feature, two RDS instances will always be up. In addition, the cost will be doubled. For this reason, it is convenient to only use it in production.</span></p>
+<p class="mce-root">In the following diagram, shown is an multi-AZ architecture:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/91c3514d-b688-4f9f-bf46-939bcaa96781.png" style="width:42.83em;height:21.75em;"/></p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">ElastiCache</h1>
+                </header>
+            
+            <article>
+                
+<p><span class="author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">You can</span> consider<span class="author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z"> inserting a cache for your database in order to reduce the load on your RDS instance. This introduces another piece to your infrastructure and is also necessary for changing the software code in order to make it possible to use the cache instead of the RDS only. Depending on the type of data that you need to save in it, the AWS ElastiCache service available at</span> <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z url"><a href="https://aws.amazon.com/elasticache/" target="_blank">https://aws.amazon.com/elasticache/</a></span> <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">provides two types: <strong>Redis</strong> and <strong>Memcached</strong>. </span></p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Elastic Load Balancer (ELB)</h1>
+                </header>
+            
+            <article>
+                
+<p><span class="author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">In this section, we are going to replace the Apache with the ELB and also add an SSL certificate as shown in the following diagram:</span></p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/011c6db9-4325-46f4-b631-902ea94d7002.png" style="width:17.67em;height:45.58em;"/></p>
+<p><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">As we did in the previous section for the RDS, it is convenient </span><span>here</span><span> </span><span>to replace a software installed in an EC2 machine with a managed service. </span></p>
+<p><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">We will benefit from the following features:</span></p>
+<ul>
+<li class="mce-root"><span>Deploy and reliability on multiple AZs</span></li>
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">A web interface to manage the proxy instead of the Apache configuration files</span></li>
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">A fully manageable service that doesn't need to perform software upgrades </span></li>
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z"> Scalability to handle requests </span><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z h-lparen">(pre-warming</span> <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">is requested in some scenarios)</span></li>
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">Ease of storing logs on an S3 bucket </span></li>
+</ul>
+<p><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">Alternatively, when you use an ELB you need to follow the AWS method and you are not free to customize this as you want. Apache is the Swiss knife of the web server; it has modules that make it possible to do so many different kinds of operations and actions. Using an ELB, it is possible to lose something that may be useful, such as a redirect from HTTP to HTTPS. </span></p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Choosing the right ELB</h1>
+                </header>
+            
+            <article>
+                
+<p><span class="author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">As is well d</span><span class="author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">ocumented on AWS at <a href="https://aws.amazon.com/elasticloadbalancing">https://aws.amazon.com/elasticloadbalancing</a>, </span><span class="author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">there are 2 versions and 3 types of ELB available:</span></p>
+<ul class="listtype-number listindent1 list-number1">
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">Version 1 with </span><strong><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z h-ldquo">C</span><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z h-ldquo">lassic</span> <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">Lo</span></strong><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z"><strong>ad Balancer</strong> (<strong>CLB</strong>)</span></li>
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">Version 2 with</span> <strong><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z h-ldquo">Application</span></strong> <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z"><strong>Load Balancer</strong> (<strong>ALB</strong>) and</span> <strong><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z h-ldquo">Network</span></strong> <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z"><strong>Load Balancer</strong></span> <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">(<strong>NLB</strong>)</span></li>
+</ul>
+<p>Each product can be described as follows:</p>
+<ul class="listtype-bullet listindent1 list-bullet1">
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">CLB is the first version of the Elastic Load Balancer and was made available in Spring 2009. For more information on this, refer to</span> <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z url"><a href="https://aws.amazon.com/blogs/aws/new-aws-load-balancing-automatic-scaling-and-cloud-monitoring-services/" target="_blank">https://aws.amazon.com/blogs/aws/new-aws-load-balancing-automatic-scaling-and-cloud-monitoring-services/</a>.<a href="https://aws.amazon.com/blogs/aws/new-aws-load-balancing-automatic-scaling-and-cloud-monitoring-services/" target="_blank"/></span><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z"> This is one of the most popular Load Balancer, but it is also the one with the fewest features.</span></li>
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">ALB was made available during summer 2016. For more information, refer to</span> <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z url"><a href="https://aws.amazon.com/blogs/aws/new-aws-application-load-balancer/" target="_blank">https://aws.amazon.com/blogs/aws/new-aws-application-load-balancer/</a>.<a href="https://aws.amazon.com/blogs/aws/new-aws-application-load-balancer/" target="_blank"/></span><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z"> This extends the CLB version 1 with a lot of features. </span></li>
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">NLB was released in September, 2017. For more information on this, refer to</span> <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z url"><a href="https://aws.amazon.com/blogs/aws/new-network-load-balancer-effortless-scaling-to-millions-of-requests-per-second/" target="_blank">https://aws.amazon.com/blogs/aws/new-network-load-balancer-effortless-scaling-to-millions-of-requests-per-second/</a>. This </span><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">is complementary to the ALB and is more focused on the network level.</span></li>
+</ul>
+<p class="mce-root"/>
+<p><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">If you want a comparison of all the features of each of these three products, you can take a look at the comparison table</span> available at <a href="https://aws.amazon.com/elasticloadbalancing/details/#compare">https://aws.amazon.com/elasticloadbalancing/details/#compare</a>. However, <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">let's try to summarize these differences as follows: </span></p>
+<ul>
+<li class="mce-root"><span>You shouldn't create CLB anymore unless you have an EC2 classic network. In this case, you should really consider migrating to</span> the <span>VPC network type as soon as possible. You also need to be familiar with the CLB because it is the most popular product in the AWS Cloud environment. </span></li>
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">If you need to manage HTTP/HTTPS connections - and this applies to most of the web applications - you should use the ALB. </span></li>
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">If you need to manage TCP connections or you need to control the public IP of your balancer instead, the NLB is the right choice. Keep in mind that you cannot use the SSL feature with this type of balancer. </span></li>
+</ul>
+<p><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">In our example, the right balancer to deploy is the ALB one. This is because we want to use a web application with the HTTP/S protocol and have an SSL certificate in it. </span></p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Deploying the balancer</h1>
+                </header>
+            
+            <article>
+                
+<p><span class="author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">Now that we know what to do, it is time to adapt our application to the balancer according to these steps:</span></p>
+<ol>
+<li class="mce-root"><span>Configure the security groups to allow access from the balancer to port <kbd>8080</kbd> in the EC2 machine. ALB ==&gt; <kbd>8080</kbd> EC2 (we are referring to the connection from the Application Load Balancer to the EC2 machine). To simplify, we will give access to the whole VPC <strong>Classless Inter-Domain Routing</strong> (<strong>CIDR</strong>).</span></li>
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">Create the ALB, connect to the EC2 machine, and verify that the machine is in Service. </span></li>
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">Now you can change the DNS record from the public IP of the EC2 machine to the alias of the DNS balancer.</span></li>
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">Remove the Apache software from the machine; you don't need it anymore.</span></li>
+</ol>
+<p><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">In every environment, it is convenient to deploy the balancer in more subnets that belong to different AZs. Keep in mind that each zone is like a datacenter and issues can always arise with datacenters</span><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">. Deployment in multiple zones doesn't increase the cost  as it is for RDS instead where the cost is double if you use Multi AZ.</span></p>
+<p>In <a href="93bb1465-ceda-4cb9-823e-5a4355720a79.xhtml">Chapter 5</a><em>,  Adding Continuous Integration and Continuous Deployment</em> we will use Terraform to create ALB. Here, we will perform these changes from the web console in order to understand the details of each step.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Step 1 – open the access for the port 8080 from the whole VPC CIDR </h1>
+                </header>
+            
+            <article>
+                
+<p>Open the access for the port 8080 from the whole VPC CIDR as follows:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="assets/0451ade3-e082-45c1-aae8-9fc130502f82.png"/></div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Step 2 – Creating the ALB and associate to the EC2 machine</h1>
+                </header>
+            
+            <article>
+                
+<p>Create the ALB and associate to the EC2 machine as follows:</p>
+<p>Go to <span class="packt_screen">Load Balancers</span> | <span class="packt_screen">Create Load Balancer</span> and choose the ALB by clicking the <span class="packt_screen">Create</span> button on the <span class="packt_screen">Application Load Balancer</span> section, as shown in the following screenshot:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/38be90d0-01d9-4c95-8b35-aa86ab76b2ec.png" style="width:28.42em;height:33.25em;"/></p>
+<p>Select the <span class="packt_screen">internet-facing</span> option from the <span class="packt_screen">Scheme</span> section. This is important because we want it to be reachable from the world and we also want at least two subnets in two different AZs:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="assets/e456cdb1-d696-41a6-baf9-37a0273a335b.png"/></div>
+<div>
+<p>Ignore the following message:</p>
+<div>
+<pre><strong>Improve your load balancer's security. Your load balancer is not using any secure listener.</strong></pre>
+<p>Next, we will add a secure listener.</p>
+</div>
+</div>
+<p>To do this, click on the <span class="packt_screen">Create a new security group</span> radio button for this load balancer and open the port <kbd>80</kbd> for HTTP:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/48a501d6-b4c4-4b92-a1f0-5f17bc97c7db.png"/></p>
+<p>Now create a new target group. In this group, the requests will be rotated and reach the EC2 instance.  The port <kbd>8080</kbd> is the port of the Tomcat software in the EC2 machines. </p>
+<p>Our <kbd>playground</kbd> application has only one URL called <kbd>/visits</kbd> so we need to insert that one, and this will cause an increment of the counter in the DB every time the health check is performed. In a real environment, you need a health check that performs the control with a read of the DB as opposed to a write as seen in the following example. In this example, it is acceptable to use this method: </p>
+<div class="CDPAlignCenter CDPAlign"><img src="assets/ccdd96f2-8afd-4696-9bdf-8e06cce7227a.png" style="width:37.67em;height:26.50em;"/></div>
+<p>Select the EC2 instance and click on the <span class="packt_screen">Add to registered</span> button, as shown in the following screenshot:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="assets/767b084f-af61-494c-ad05-bc40aca1f251.png"/></div>
+<p>This instance will be added to the <span class="packt_screen">Registered targets</span> list:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="assets/5e29eef0-640b-4e33-975d-8b58ff992fd4.png"/></div>
+<p>If you check now the target group just created in the <span class="packt_screen">Targets</span> tab, you can see your instance and the <span class="packt_screen">Status</span> column. If the status doesn't become <span class="packt_screen">healthy</span> in half a minute, there is <span>probably</span><span> </span><span>an error in the configuration:</span></p>
+<div class="CDPAlignCenter CDPAlign"><img src="assets/bd58869c-1f39-4a95-979e-f92f8cfd7d2e.png"/></div>
+<p><span>You can </span><span>now</span><span> </span><span>check the load balancer URL as follows: </span><kbd>http://break-the-monolith-939654549.us-east-1.elb.amazonaws.com/visits</kbd><span>.</span></p>
+<div class="packt_infobox">Again, your URL will be different from this one, but at this point, you should understand how it works.</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Step 3 – creating an alias for the ELB</h1>
+                </header>
+            
+            <article>
+                
+<p><span class="author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">Go to the new Route 53 zone and modify the A record created before with a CNAME alias, as shown in the following screenshot:</span></p>
+<div class="CDPAlignCenter CDPAlign"><img src="assets/329ccd2d-c410-4ca3-998b-bed03ce72984.png" style="width:27.33em;height:34.33em;"/></div>
+<p><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">In less than 300 seconds, you should see the change and have the DNS pointing to the new domain.</span></p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Step 4 – removing the Apache software from the machine </h1>
+                </header>
+            
+            <article>
+                
+<p>At this point, we don't need the Apache software in the EC2 machine <span>anymore. To remove it run the following command</span>:</p>
+<pre><strong>sudo yum remove httpd</strong></pre>
+<p>It is also convenient to clean the security group of the EC2 machine by removing the access to port <kbd>80</kbd>:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/948c19f0-974e-4f81-93d9-4d43620f35a6.png"/></p>
+<p>Leave the SSH open to your own IP with the <span class="packt_screen">My IP</span> source option.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Configuring the SSL certificate</h1>
+                </header>
+            
+            <article>
+                
+<p><span class="author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">You can configure a single certificate that is valid for one DNS record such as <kbd>example.devopstools.link</kbd> or a generic one such as <kbd>*.devopstools.link</kbd> which is valid for each subdomain. My advice is to use the <kbd>*</kbd> so that you don't need to repeat this certificate procedure every time you have a new resource. </span></p>
+<p class="mce-root"/>
+<p><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">Certificate Manager makes it possible to acquire an SSL certificate for free unless you don't use the private authority. Follow these steps  to generate an SSL certificate</span><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">:</span></p>
+<p>Go to the <span class="packt_screen">AWS Certificate Manager</span> service and click on the <span class="packt_screen">Provision certificates</span> section as shown in the following screenshot:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="assets/9d338173-824f-44bd-8990-7b9dd869f6da.png"/></div>
+<p class="mce-root">Select the <span class="packt_screen">Request a public certificate</span> option as shown in the following screenshot:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="assets/af7dce6b-f37a-48b9-8675-0acecd67ec96.png"/></div>
+<p class="mce-root"/>
+<p class="mce-root">Now insert the domain name. In my case, this includes the domain name and the domain name with a <kbd>*</kbd>:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="assets/22237e1b-9bfa-4e0b-8acc-8aa19e768e91.png"/></div>
+<p>I decided to use the <span class="packt_screen">DNS validation</span> option, but the <span class="packt_screen">Email validation</span> option is also good. In this case, you need to have access to the email address that was used to register the domain:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="assets/244e401e-2136-4c2a-81f0-a6f92719ccdd.png"/></div>
+<p>The wizard prompts you to create one DNS record for each domain we inserted at the beginning. In our case, this refers to two domains (<span> <kbd>*.devopstools.link</kbd>  and <kbd>devopstools.link</kbd> ). You can follow the wizard and create it by clicking on the <span class="packt_screen">Create record in Route 53</span> button, as shown in the following screenshot: </span></p>
+<div class="CDPAlignCenter CDPAlign"><img src="assets/36d3fc90-7491-421f-8eb3-dd8075edd699.png"/></div>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p>Click on the <span class="packt_screen">Create</span> button for both DNS records. At this point, the record created will be shown:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="assets/ebf24f55-fd4a-4380-aab3-66a28bc5a8ef.png"/></div>
+<p>In less than a minute, the status of the new SSL certificate will be <span class="packt_screen">Issued</span> and will become available for use:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="assets/2956b4a8-63b8-4515-b878-93f37c1d207e.png"/></div>
+<p>If you have ever created an SSL certificate before, you will know how simple and straightforward this procedure <span>is</span><span> </span><span>compared to the classic one. You can now a</span><span>dd the new certificate to your balancer and use an SSL listener. </span></p>
+<p>First of all, you need to open the security group of your ALB for the new port <kbd>443</kbd> as shown in the following screenshot:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/78c9a547-9dc7-42d0-9b5d-ea07bfe2a406.png"/></p>
+<p>Go to your load balancer, followed by the <span class="packt_screen">Listeners</span> Tab, and then click on the <span class="packt_screen">Add listener</span> button as follows:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="assets/4acbe4a1-32be-4c3e-9420-b0627635ab59.png"/></div>
+<ul>
+<li>Select the <span class="packt_screen">HTTPS</span> protocol and its default port <kbd>443</kbd></li>
+<li>The rule is to forward to the target already defined at creation time </li>
+</ul>
+<ul>
+<li>Finally, select the certificate created before from the <span class="packt_screen">From ACM (recommended)</span> drop-down as shown in the following screenshot:</li>
+</ul>
+<div class="CDPAlignCenter CDPAlign"><img src="assets/b482e966-7073-4246-bd1a-5d00367d73fa.png" style="width:50.75em;height:46.08em;"/></div>
+<p>Now you have a secure certificate for your application as shown in the following screenshot:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/0e83f2ad-d793-41f2-bc54-1e9392498812.png" style="width:35.25em;height:7.58em;"/></p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">ALB and integration with Auth0</h1>
+                </header>
+            
+            <article>
+                
+<p>If you want your users are authenticated before gaining access to the content served by your load balancer, then you can integrate the ALB with the Auth0 service available at <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z url"><a href="https://auth0.com/" target="_blank">https://auth0.com/</a></span><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">. This is a cloud service that is designed to manage users through a different kind of authentication in order to use the words on their home page and provide a universal authentication and authorization platform for web, mobile, and legacy applications.</span></p>
+<p><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">If you want to try this interesting configuration feature, follow the guidelines at </span><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z url"><a href="https://medium.com/@sandrinodm/securing-your-applications-with-aws-alb-built-in-authentication-and-auth0-310ad84c8595" target="_blank">https://medium.com/@sandrinodm/securing-your-applications-with-aws-alb-built-in-authentication-and-auth0-310ad84c8595</a>.<a href="https://medium.com/@sandrinodm/securing-your-applications-with-aws-alb-built-in-authentication-and-auth0-310ad84c8595" target="_blank"/></span></p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Pre-warming a load balancer</h1>
+                </header>
+            
+            <article>
+                
+<p><span class="author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">A well-known problem in the CLB is that it is necessary to pre-warm in order to manage traffic peak because the system is made to scale up, as you can read in the documentation. We recommend that you increase the load at a rate of no more than 50 percent every five minutes.</span></p>
+<p class="mce-root"/>
+<p><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">The official declaration about this topic</span> is available at <a href="https://aws.amazon.com/articles/best-practices-in-evaluating-elastic-load-balancing/#pre-warming">https://aws.amazon.com/articles/best-practices-in-evaluating-elastic-load-balancing/#pre-warming</a>. This states the following:<a href="https://aws.amazon.com/articles/best-practices-in-evaluating-elastic-load-balancing/#pre-warming"/></p>
+<div class="packt_quote"><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z"> "Amazon ELB is able to handle the vast majority of use cases for our customers without requiring</span> <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z h-quot">"pre-warming"</span> <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z h-lparen">(configuring</span> <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">the load balancer to have the appropriate level of capacity based on expected traffic). In certain scenarios, such as when flash traffic is expected, or in the case where a load test cannot be configured to gradually increase traffic, we recommend that you contact us  </span><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z url"><a href="https://aws.amazon.com/contact-us/" target="_blank">https://aws.amazon.com/contact-us/</a></span> <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">to have your load balancer</span> <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z h-quot">"pre-warmed".</span> <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">We will then configure the load balancer to have the appropriate level of capacity based on the traffic that you expect. We will need to know the start and end dates of your tests or expected flash traffic, the expected request rate per second and the total size of the typical request/response that you will be testing."</span></div>
+<p><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">Differences between the ALB and NLB:</span></p>
+<ul>
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">NLB is designed to handle tens of millions of requests per second while maintaining high throughput at ultra-low latency, with no effort on the customer's part. As a result, no pre-warm is needed.</span></li>
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">ALB instead follows the same rules as CLB.</span></li>
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">In short, NLB doesn't require pre-warming. However, CLB and ALB still need it.</span></li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Access/error logs</h1>
+                </header>
+            
+            <article>
+                
+<p><span class="author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">It is a good practice to configure the ELB to store the access/error logs to an S3 bucket:</span></p>
+<ul class="listtype-bullet listindent1 list-bullet1">
+<li><span class="author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z"><strong>For CLB</strong>:</span> <span class="author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z url"><a href="https://docs.aws.amazon.com/elasticloadbalancing/latest/classic/enable-access-logs.html" target="_blank">https://docs.aws.amazon.com/elasticloadbalancing/latest/classic/enable-access-logs.html</a></span><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z"> </span></li>
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z"><strong>For ALB</strong>:</span> <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z url"><a href="https://docs.aws.amazon.com/elasticloadbalancing/latest/application/load-balancer-access-logs.html" target="_blank">https://docs.aws.amazon.com/elasticloadbalancing/latest/application/load-balancer-access-logs.html</a></span></li>
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z"><strong>For NLB</strong>: ELBs do not have these kind of logs because it works at network level TPC/IP </span></li>
+</ul>
+<p class="mce-root"/>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">The next step</h1>
+                </header>
+            
+            <article>
+                
+<p><span>Now that we have the balancer in</span> multi-AZ<span> with an SSL configured as well as a scalable system, the RDS is</span><span> deployed in multi-AZ. However,</span> <span>the EC2 machine is still in a single AZ so this is consequently a single point of failure which doesn't scale automatically. We need to configure the Auto Scaling feature for the EC2 part, but first of</span> all <span>we need to move the state outside of the machine</span> if it <span>is still there. </span></p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Moving the state outside the EC2 machine</h1>
+                </header>
+            
+            <article>
+                
+<div>
+<p><span class="author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">If your application has something regarding its state saved on a disk, you need to remove it before applying Auto Scaling. What was previously saved as files in the EC2 machine must be removed and managed by a service. There are two options which are as follows:</span></p>
+<ul class="listtype-number listindent1 list-number1">
+<li>
+<p><strong><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">AWS Elastic File System</span></strong> (<span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z url"><a href="https://aws.amazon.com/efs/" target="_blank">https://aws.amazon.com/efs/</a>):<a href="https://aws.amazon.com/efs/" target="_blank"/></span><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z"> In a few words, this is a network file system that is mounted in your EC2 machine with virtually infinite space where you </span><span>only</span><span> </span><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">pay for the space used by your file.</span></p>
+</li>
+<li>
+<p><strong><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">AWS S3</span></strong> (<span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z url"><a href="https://aws.amazon.com/s3/" target="_blank">https://aws.amazon.com/s3/</a>):<a href="https://aws.amazon.com/s3/" target="_blank"/></span><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z"> This was the first AWS service on the market and is an object storage designed to deliver 99.999999999% durability.</span></p>
+</li>
+</ul>
+<p><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">In general, the S3 should be your favorite solution, but it is not always applicable because it requires application software change to use it. Consequently, in some cases, you may need an alternative that you can leverage on EFS. </span></p>
+<p><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">The world is full of software and plugins designed around S3. For example, WordPress saves the files loaded by the users into the disk</span><span> </span><span>by default</span><span>, but with an additional plugin you can save it in AWS S3 and remove  the state from the EC2 machine </span><span>in this way</span><span>. </span></p>
+</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Pushing the logs out</h1>
+                </header>
+            
+            <article>
+                
+<div>
+<p><span>Your instance is disposable and can be replaced or destroyed at any time. If you need application-specific logs, you need to use a program to push the logs out to S3 or CloudWatch. </span></p>
+</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Configure Auto Scaling</h1>
+                </header>
+            
+            <article>
+                
+<div>
+<p><span class="author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">The purpose of the couple, <span class="packt_screen">Launch Configurations</span> and <span><span class="packt_screen">Auto Scaling Groups</span></span> shown below is to ensure scalability and reliability:</span></p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/ed028653-0555-4017-a3eb-02367e88065c.png" style="width:11.92em;height:18.25em;"/></p>
+</div>
+<p>Scalability and reliability are described as follows:</p>
+<ul class="listtype-bullet listindent1 list-bullet1">
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z"><strong>Scalability</strong>: if there is an increase of requests/CPU, the system needs to scale up and add instances. In the same way, if the traffic goes down, it is necessary to remove unnecessary resources.</span></li>
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z"><strong>Reliability</strong>: if one instance  goes down for any reason, the Auto Scaling system automatically replaces it with a new one.</span></li>
+</ul>
+<p><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">You need to start the instance quickly in order to create an image, so by using the <kbd>user_data</kbd> option you can </span><span>also</span><span> </span><span>install a software program as we did during the monolith configuration at the beginning of this chapter. However, this results in an additional amount of time in which it is necessary to start a new instance. </span></p>
+<p><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">When you need to scale up, this is because you need to satisfy an increase in demand and therefore need to do this as soon as possible. For this reason, it is a good idea to create an image with all software and configuration</span> <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">files </span><span>installed a</span><span>nd then</span><span> insert </span><span>the parameter or the configuration files that need to be passed at runtime </span><span>to the <kbd>user_data</kbd></span><span>, if there are any.</span></p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Moving our example inside Auto Scaling</h1>
+                </header>
+            
+            <article>
+                
+<p>Our application is now ready for Auto Scaling. Here, the state is removed from the EC2 and it is only in the RDS database. We tested how reachable it is from the balancer and checked that it can communicate with the database. This is what we are going to create:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/af1ffd58-d430-4a9d-8ac0-5495251ec52b.png" style="width:44.00em;height:44.58em;"/></p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Preparing the image</h1>
+                </header>
+            
+            <article>
+                
+<p>We need to have an AMI in order to pass as a parameter in the launch configuration. To ensure that you have a good AMI, it is convenient to stop the machine first. When it is stopped, make the AMI. To do this, right-click the <span class="packt_screen">Image</span> section and then click on the <span class="packt_screen">Create Image</span> option, as shown in the following screenshot:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/2baf9f72-9534-4e12-9772-1e2304d77d68.png" style="width:44.33em;height:13.67em;"/></p>
+<p class="CDPAlignLeft CDPAlign"> Choose a meaningful name and description before clicking on the <span class="packt_screen">Create Image</span> button:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/2b3c3f85-cb2b-4d3f-a77c-74a2201a5d93.png"/></p>
+<p>Depending on disk size, the image will be available in a few minutes. In our example with 8 GB of disk, the waiting time will be short.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Using the wizard launch configuration part</h1>
+                </header>
+            
+            <article>
+                
+<p class="mce-root">To have the Auto Scaling process in place, the following two objects are necessary:</p>
+<ul>
+<li>Launch configuration </li>
+<li>Auto Scaling group</li>
+</ul>
+<p>Click on the <span class="packt_screen">Auto Scaling Groups</span> option and an automatic wizard will then start to create the necessary resources:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/0cc70e03-c741-402c-8311-5966cc821cb0.png" style="width:30.67em;height:15.50em;"/></p>
+<p class="CDPAlignLeft CDPAlign">Launch configuration is the first step to be followed. Here, select the <span class="packt_screen">My AMIs</span> option and find the image created in the previous step, as follows:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/5d89d593-04c6-45d8-9d55-31e43c887923.png"/></p>
+<p class="mce-root">Now choose the name. Don't modify anything else at this step:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/e3dc245f-cc8f-4d7d-9eaa-1a5e30365910.png" style="width:46.92em;height:24.42em;"/></p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Auto Scaling group part</h1>
+                </header>
+            
+            <article>
+                
+<p>At this point, the wizard asks us to provide some details for the Auto Scaling part at the beginning of the configuration process. It is okay to start with <span class="packt_screen">1</span> instance to first check whether or not everything is working well.</p>
+<p>VPC and subnets that you specify in the Auto Scaling group can be the same used in the previous example. But keep in mind, for the ALB it is mandatory to choose a public subnet while for the EC2 you can use a private or a public subnet. In <a href="93bb1465-ceda-4cb9-823e-5a4355720a79.xhtml" target="_blank"/><a href="93bb1465-ceda-4cb9-823e-5a4355720a79.xhtml" target="_blank">Chapter 5</a>, <em>Adding Continuous Integration and Continuous Deployment</em> we focus on security, we will explain why it is beneficial to insert the EC2 in private ones.</p>
+<p>However, for now, it is okay to use any subnet. The important thing to do is to choose more than one subnets in different AZs:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/bbb95c86-fa5c-4340-b714-d40d28820d1a.png"/></p>
+<p>For the security group, choose the one assigned to the EC2 machine in precedence; don't create a new one:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/f73e01c8-56ca-43ca-aaf6-fb7e6728c260.png"/></p>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p>Use a key-pair that you own for a normal EC2. In theory, you don't need to log in to a machine managed by Auto Scaling. You only need a key to log in if there are errors and it is necessary to debug something:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/851a3039-ad72-4a93-9f28-9e8d4d9fed34.png" style="width:41.17em;height:25.50em;"/></p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Scaling policies</h1>
+                </header>
+            
+            <article>
+                
+<p>This is the important part of the wizard, but this is a slightly more difficult stage. Scaling policies decide the condition whether to scale up (adding instances to the Auto Scaling group) and scale down (remove instances from the group). There are many ways to do this; here I have chosen the easiest way, which is through the CPU % usage:</p>
+<ul>
+<li>If the CPU usage is below 70% for more than 5 minutes, add 1 instance</li>
+<li>If the CPU usage is lower than 40% for more than 5 minutes, remove 1 instance</li>
+</ul>
+<p>Of course, the chosen metric and values depend on your application, but with this example, you can have an idea:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/e7387212-821c-4a1f-a5d4-b3f99ae5eae7.png"/></p>
+<p>It is necessary to create two alarms (one for each rule) to associate to the Auto Scaling group:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/1b64fe75-6d24-4730-a7c9-ddac7a75b7d3.png" style="width:35.33em;height:10.33em;"/></p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/deaffdb8-9476-47aa-8160-2ab0ce240052.png" style="width:66.17em;height:29.92em;"/></p>
+<p>This is the final result: </p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/c8bf381a-1f27-44cc-b8e8-3cbbac0f2d1d.png"/></p>
+<p class="CDPAlignLeft CDPAlign">In the next step, add at least the tag name so it is easier to identify the instances created by the Auto Scaling group:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/332e26a4-0b22-4c94-860f-d74a9edf0ced.png" style="width:43.00em;height:10.25em;"/></p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Modifying the Auto Scaling group</h1>
+                </header>
+            
+            <article>
+                
+<p>If you need to modify the launch configuration, it is mandatory to create a copy and perform the changes at the time of creation because modifications are not allowed. In the Auto Scaling group it is possible to make changes without recreating it.</p>
+<p>We need to modify the Auto Scaling group because we want each instance to be registered to the target group associated with our ALB:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/40500247-d3ec-4509-8edd-0c88a939283d.png"/></p>
+<p>If you want to manually <span>increase</span><span> </span><span>the number of instances, it is enough to modify the</span> <span class="packt_screen">Min</span> <span>size. Keep in mind that the</span> <span class="packt_screen">Desired Capacit</span><span class="packt_screen">y</span> <span>value needs to have a value between</span> <span class="packt_screen">Min</span> <span>and</span> <span class="packt_screen">Max</span> <span>sizes:</span></p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/aeb7bb67-9445-483b-aba2-54875a77bfa9.png" style="width:35.92em;height:31.08em;"/></p>
+<p>In the instances, it is possible to see the new one created by the Auto Scaling group:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/2f122c39-e3e4-4f97-baf9-4aa560cd9a56.png"/></p>
+<p class="mce-root"/>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Removing the manually created instance from the balancer </h1>
+                </header>
+            
+            <article>
+                
+<p>Now that the Auto Scale is working, we can remove the EC2 instance used for configuration from the load balancer and leave the instances that are automatically generated. As you may notice, when you remove the instance it is not immediately removed but goes into a draining state for a short period of time. This occurs in order to avoid poor user experience and manage the possibility that there is still somebody to connect through it:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/d7f8b575-2e0c-41fd-86ce-41a829353ef8.png"/></p>
+<p>At this point, the configuration of the Auto Scale is complete and you now have an application that satisfies the requirements of scalability and reliability.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Using microservices and serverless</h1>
+                </header>
+            
+            <article>
+                
+<p><span class="author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">As we tested throughout this whole chapter, breaking the monolith into several pieces produces many advantages but also complicates the whole system. </span></p>
+<p><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">This concept is amplified when we use a microservices and serverless approach. This is because, if you use these two approaches in the correct way, it </span><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">is possible to increase scalability, increase reliability, and reduce infrastructure costs. However, you always need to consider that the system will be more complex to build and manage. This leads to increasing the build and operative cost, especially if it is the first time that your team builds and manages a system with this kind of approach. </span></p>
+<p>The following image represents the concept of load and cost with micro services and serverless:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/692d90fe-07d0-4d4e-a96e-5f9b7dc7f817.png" style="width:38.42em;height:24.08em;"/></p>
+<div class="packt_figref CDPAlignCenter CDPAlign">Image source: <a href="https://medium.freecodecamp.org/serverless-is-cheaper-not-simpler-a10c4fc30e49" target="_blank">https://medium.freecodecamp.org/serverless-is-cheaper-not-simpler-a10c4fc30e49</a></div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Summary</h1>
+                </header>
+            
+            <article>
+                
+<p>Scaling is a long process that has the potential to be improved. In this chapter, we completed the first step and learned how to break a monolith application into multiple pieces leveraging the AWS services. This approach brings many advantages but also complicates our initial infrastructure, meaning that more time is spent on configuration, bug fixing, and the necessity to study new services. We have explored how powerful and useful all the AWS tools <span>can be </span><span>for scalability, but it can also sometimes be difficult to use this, especially the first time. Using automation with Terraform modules makes it possible to immediately achieve the result with our knowledge on module creator. In addition, hiding the complexity of a solution cannot help us in understanding what is really happening behind the scenes. This can be necessary during a bug fix. For this reason, some parts of the book, such as the Autos Scale, ALB, and the SSL certification, were completed using the web console and its wizard. </span></p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Questions</h1>
+                </header>
+            
+            <article>
+                
+<ol>
+<li>Is it always convenient to break a monolith into a multi-level application?</li>
+<li>What are the differences between the multi-level approach and the microservices/serverless approach?</li>
+<li>Can it be difficult moving from software installed in a virtual machine to as a service components? </li>
+<li>Can a load balancer manage any spike of traffic without any intervention?</li>
+<li>Can I save money using Certificate Manager instead of a classic SSL certification authority?</li>
+<li>Why is it important to span the resources in multiple AZs?</li>
+</ol>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Further reading</h1>
+                </header>
+            
+            <article>
+                
+<p>For more information, read the following articles:</p>
+<ul class="listtype-bullet listindent1 list-bullet1">
+<li><span class="author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z"> <strong>Changing the Instance Type</strong>:</span> <span class="author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z url"><a href="https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-instance-resize.html" target="_blank">https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-instance-resize.html</a></span></li>
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z"> <strong>Extending a Linux File System after Resizing the Volume</strong>:  </span><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z url"><a href="https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/recognize-expanded-volume-linux.html" target="_blank">https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/recognize-expanded-volume-linux.html</a></span><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z"> </span></li>
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z"> <strong>Extending a Windows File System after Resizing the Volume</strong>:</span> <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z url"><a href="https://docs.aws.amazon.com/AWSEC2/latest/WindowsGuide/recognize-expanded-volume-windows.html" target="_blank">https://docs.aws.amazon.com/AWSEC2/latest/WindowsGuide/recognize-expanded-volume-windows.html</a></span></li>
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z"><strong>Elastic Load Balancing Documentation</strong>: </span><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z url"><a href="https://aws.amazon.com/documentation/elastic-load-balancing/" target="_blank">https://aws.amazon.com/documentation/elastic-load-balancing/</a></span><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z"> </span></li>
+<li><strong>Comparison of Elastic Load Balancing Products</strong>: <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z url"><a href="https://aws.amazon.com/elasticloadbalancing/details/#compare" target="_blank">https://aws.amazon.com/elasticloadbalancing/details/#compare</a></span></li>
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z"><strong>Best Practices in Evaluating Elastic Load Balancing</strong>:</span> <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z url"><a href="https://aws.amazon.com/articles/best-practices-in-evaluating-elastic-load-balancing/#pre-warming" target="_blank">https://aws.amazon.com/articles/best-practices-in-evaluating-elastic-load-balancing/#pre-warming</a></span> <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z">and</span> <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z url"><a href="https://aws.amazon.com/articles/best-practices-in-evaluating-elastic-load-balancing/" target="_blank">https://aws.amazon.com/articles/best-practices-in-evaluating-elastic-load-balancing/</a></span></li>
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z"><strong>Spring Boot, MySQL, JPA, Hibernate Restful CRUD API Tutorial</strong>: </span><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z url"><a href="https://www.callicoder.com/spring-boot-rest-api-tutorial-with-mysql-jpa-hibernate/" target="_blank">https://www.callicoder.com/spring-boot-rest-api-tutorial-with-mysql-jpa-hibernate/</a></span><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z"> the tutorial used to create our playground. </span></li>
+<li><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z"><strong>Serverless is cheaper, not simpler</strong>:</span> <span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z url"><a href="https://medium.freecodecamp.org/serverless-is-cheaper-not-simpler-a10c4fc30e49" target="_blank">https://medium.freecodecamp.org/serverless-is-cheaper-not-simpler-a10c4fc30e49</a></span><span class=" author-d-iz88z86z86za0dz67zz78zz78zz74zz68zjz80zz71z9iz90z95be5927z76zz66zz89z7z74zsfz81zfz71zz71zrz122z3wuz84zz89zcz84z1dz66z"> </span></li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    </body></html>

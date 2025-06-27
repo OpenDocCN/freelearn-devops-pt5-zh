@@ -1,0 +1,671 @@
+<html><head></head><body>
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Release Management – Continuous Delivery</h1>
+                </header>
+            
+            <article>
+                
+<p>Release management has been always the boring part of software development. It is the discussion where people from different teams (operations, management, development, and so on) put all the details together to plan how to deploy a new version of one of the apps from the company (or various others).</p>
+<p>This is usually a big event that happens at 4 a.m. in the morning, and it is a binary event: we either succeed in releasing the new version or we fail and have to roll back.</p>
+<p>Stress and tension are the common denominators in these type of deployments, and above everything else, we are playing against the statistics.</p>
+<p>In this chapter, you are going to learn how to create a continuous delivery pipeline and deploy a microservices-based system to update it, keeping all the lights on.</p>
+<p>We will specifically cover the following topics:</p>
+<ul>
+<li>Playing against the statistics</li>
+<li>The test system</li>
+<li>Setting up a continuous delivery pipeline for images</li>
+<li>Setting up Jenkins</li>
+<li>Continuous delivery for your application</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Playing against the statistics</h1>
+                </header>
+            
+            <article>
+                
+<p>We have spoken several times about the Big Bang event that a deployment is. This is something that <span>I always try to avoid</span> when I set up a new system: releases should be smooth events that can be done at any time without effort and you should be able to roll back within minutes with little to no effort.</p>
+<p>This might be a gigantic task, but once you provide a solid foundation to your engineers, marvelous things happen: they start being more efficient. If you provide a solid base that will give them confidence that within a few clicks (or commands) that they can return the system to a stable state, you will have removed a big part of the complexity of any software system.</p>
+<p>Let's talk about statistics. When we are creating a deployment plan, we are creating a system configured in series: it is a finite list of steps that will result in our system being updated:</p>
+<ul>
+<li>Copy a JAR file into a server</li>
+<li>Stop the old Spring Boot app</li>
+<li>Copy the properties files</li>
+<li>Start the new Spring Boot app</li>
+</ul>
+<p>If any of the steps fail, the whole system fails. This is what we call a series system: the failure of any of the components (steps) compromises the full system. Let's assume that every step has a 1% failure ratio. 1% seems quite an acceptable number...until we connect them in a series. From the preceding example, let's assume that we have a deployment with 10 steps. These steps have a 1% of failure rate <span>which is equals to</span> 99% of success rate or 0.99 reliability. Connecting them in a series means that the whole reliability of our system can be expressed as follows:</p>
+<pre><strong>(0.99)^10 = 0.9043</strong></pre>
+<p>This means that our system has a 90.43 percent success rate or, in other words, 9.57 percent failure rate. Things have changed dramatically: nearly 1 in every 10 deployments is going to fail, which, by any means, is quite far from the 1 percent of the individual steps that we quoted earlier.</p>
+<p>Nearly 10 percent is quite a lot for depending on the systems, and it might be a risk that we are not willing to take, so why don't we work to reduce this risk to an acceptable level? Why don't we shift this risk to a previous step that does not compromise production and we reduce our deployment to a simple switch (on/off) that we can disconnect at any time?</p>
+<p>These are two concepts called canary and blue green deployments, and we are going to study how to use them in Kubernetes so that we reduce the risk of our deployments failing, as well as the stress of the <strong>big bang event</strong> that a deployment means in traditional software development.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">The test system</h1>
+                </header>
+            
+            <article>
+                
+<p>In order to articulate a continuous delivery pipeline, we need a system to play with, and after some talks and demos, I have developed one that I tend to use, as it has pretty much no business logic and leaves a lot of space to think about the underlying infrastructure.</p>
+<p>I call the system <strong>Chronos</strong>, and as you can guess, its purpose is related to the management of time zones and formats of dates. The system is very simple:</p>
+<div class="CDPAlignCenter CDPAlign"><img height="217" width="260" src="assets/351f1bf2-923e-416b-8cba-ccdea3091760.png"/></div>
+<p>We have three services:</p>
+<ul>
+<li>
+<p>An API aggregator</p>
+</li>
+<li>
+<p>A service that translates a timestamp into a date in ISO format</p>
+</li>
+<li>
+<p>A service that translates a timestamp into a date in UTC format</p>
+</li>
+</ul>
+<p>These services work in coordination to translate a timestamp into a date in different formats, but it is also open to extensions as we can aggregate more services to add more capabilities and expose them through the API Aggregator.</p>
+<p>Every service will be packed into a different Docker image, deployed as a Deployment in Kubernetes and exposed via Services (externals and internals) to the cluster and to the outer world in the case of the API Aggregator.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">ISO date and UTC date services</h1>
+                </header>
+            
+            <article>
+                
+<p>The ISO date service simply takes a timestamp and returns the equivalent date using the ISO format. Let's take a look at its code:</p>
+<pre>const Hapi = require('hapi')<br/>const server = new Hapi.Server()<br/>const moment = require('moment')<br/><br/>server.connection({port: 3000})<br/><br/>server.route({<br/>  method: 'GET',<br/>  path: '/isodate/{timestamp}',<br/>  handler: (request, reply) =&gt; {<br/>    reply({date: moment.unix(request.params.timestamp).toISOString()})<br/>  }<br/>})<br/><br/>server.start((err) =&gt; {<br/>  if (err) {<br/>    throw err<br/>  }<br/>  console.log('isodate-service started on port 3000')<br/>})</pre>
+<p>This service itself is very simple: it uses a library called moment and a framework called <strong>hapi</strong> to provide the ISO Date equivalent to a timestamp passed as a URL parameter. The language used to write the service is Node.js, but you don't need to be an expert in the language; you should just be able to read JavaScript. As with every Node.js application, it comes with a <kbd>package.json</kbd> that is used to describe the project and its dependencies:</p>
+<pre>{<br/>  "name": "isodate-service",<br/>  "version": "1.0.0",<br/>  "description": "ISO Date Service",<br/>  "main": "index.js",<br/>  "scripts": {<br/>    "start": "node index.js"<br/>  },<br/>  "author": "David Gonzalez",<br/>  "license": "ISC",<br/>  "dependencies": {<br/>    "hapi": "^15.2.0",<br/>    "moment": "^2.15.1"<br/>  }<br/>}</pre>
+<p>Some fields of the <kbd>package.json</kbd> are customized, but the important parts are the dependencies and the scripts sections.</p>
+<p>Now, one important file is left; the Dockerfile:</p>
+<pre class="mce-root">FROM node:latest<br/><br/>RUN mkdir /app/<br/>WORKDIR /app/<br/><br/>COPY . /app/<br/>RUN npm install<br/>EXPOSE 3000<br/><br/>CMD ["npm", "start"]</pre>
+<p>In order to test our service, let's build the Docker image:</p>
+<pre><strong>docker build . -t iso-date-service</strong></pre>
+<p>After a few seconds (or a bit more), our image is ready to use. Just run it:</p>
+<pre><strong>docker run -it -p 3000:3000 iso-date-service</strong></pre>
+<p>And that's it. In order to test it, use curl to get some results:</p>
+<pre><strong>curl http://localhost:3000/isodate/1491231233</strong></pre>
+<p>This will return a JSON with the ISO Date representation of the timestamp passed as a URL parameter, as you can see in your terminal.</p>
+<p>The UTC date service is very much the same but with different code and a different interface:</p>
+<pre>const Hapi = require('hapi')
+const server = new Hapi.Server()
+const moment = require('moment')
+server.connection({port: 3001})
+
+server.route({
+  method: 'GET',
+  path: '/utcdate/{timestamp}',
+  handler:  (request, reply) =&gt; {
+    let date = moment.unix(request.params.timestamp).utc().toISOString().substring(0, 19)
+    reply({date: date})
+  }
+})
+
+server.start((err) =&gt; {
+  if (err) {
+    throw err
+  }
+  console.log('isodate-service started on port 3001')
+})</pre>
+<p>As you can see, there are some changes:</p>
+<ul>
+<li>The port is <kbd>3001</kbd></li>
+<li>The date returned is the UTC date (which is <span>basically</span> the ISO Date without timezone information)</li>
+</ul>
+<p>We also have a Dockerfile, which is the same as for the ISO Date service, and a <kbd>package.json</kbd>, which is as follows:</p>
+<pre>{<br/>  "name": "utcdate-service",<br/>  "version": "1.0.0",<br/>  "description": "UTC Date Service",<br/>  "main": "index.js",<br/>  "scripts": {<br/>    "start": "node index.js"<br/>  },<br/>  "author": "David Gonzalez",<br/>  "license": "ISC",<br/>  "dependencies": {<br/>    "hapi": "^15.2.0",<br/>    "moment": "^2.15.1"<br/>  }<br/>}</pre>
+<p>These are minor changes (just the description and name). In total, you should have these files in the UTC date service:</p>
+<ul>
+<li>Dockerfile (the same as ISO Date Service)</li>
+<li><kbd>index.js</kbd> with the code from earlier</li>
+<li><kbd>package.json</kbd></li>
+</ul>
+<div class="packt_tip">If you want to make your life easier, just clone the repository at <kbd>git@github.com:dgonzalez/chronos.git</kbd> so that you have all the code ready to be executed.</div>
+<p>Now in order to test that everything is correct, build the Docker image:</p>
+<pre><strong>docker build . -t utc-date-service</strong></pre>
+<p>And then run it:</p>
+<pre><strong>docker run -it -p 3001:3001 utc-date-service</strong></pre>
+<p>Once it is started, we should have our service listening on port <kbd>3001</kbd>. You can check this by executing curl, as follows:</p>
+<pre><strong>curl http://localhost:3001/utcdate/853123135</strong></pre>
+<p>This, in a manner similar to ISO Date Service, should return a JSON with the date but in a UTC format in this case.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Aggregator service</h1>
+                </header>
+            
+            <article>
+                
+<p>The <kbd>aggregator</kbd> service is the microservice that, as the name indicates, aggregates the other two (or more) services and provides a front API for consumers so that all the logic behind the scenes gets encapsulated. Even though it is not perfect, this is a common pattern because it allows us to play with the idea of circuit breaking as well as manage the errors on a dedicated layer.</p>
+<p>In our case, the service is quite simple. First, let's take a look at the code:</p>
+<pre>const Hapi = require('hapi')
+const server = new Hapi.Server()
+let request = require('request')
+
+server.connection({port: 8080})
+
+server.route({
+  method: 'GET',
+  path: '/dates/{timestamp}',
+  handler:  (req, reply) =&gt; {
+    const utcEndpoint = `http://utcdate-service:3001/utcdate/${req.params.timestamp}`
+    const isoEndpoint = `http://isodate-service:3000/isodate/${req.params.timestamp}`
+    request(utcEndpoint, (err, response, utcBody) =&gt; {
+      if (err) {
+        console.log(err)
+        return
+      }
+      request(isoEndpoint, (err, response, isoBody) =&gt; {
+        if (err) {
+          console.log(err)
+          return
+        }
+        reply({
+          utcDate: JSON.parse(utcBody).date,
+          isoDate: JSON.parse(isoBody).date
+        })
+      })
+    })
+  }
+})
+
+server.start((err) =&gt; {
+  if (err) {
+    throw err
+  }
+  console.log('aggregator started on port 8080')
+})</pre>
+<p>In order to simplify the understanding of the code, we did not use promises or async/await in it at the cost of having a nested <kbd>callback</kbd> (which is quite simple to read).</p>
+<p>Here are a few points to note from the preceding code:</p>
+<ul>
+<li>We are calling the services by name (<kbd>utcdate-service</kbd> and <kbd>isodate-service</kbd>), leveraging the communication to the Kubernetes DNS</li>
+<li>Before returning, <kbd>aggregator</kbd> service issues a call to the two services and returns a JSON object with the aggregated information</li>
+</ul>
+<p>In order to test this service, we would need to create DNS entries (or host entries) pointing to <kbd>isodate-service</kbd> and <kbd>utcdate-service</kbd>, which is harder than testing it in Kubernetes, so we will skip the testing for now.</p>
+<p>As with any node application, the <kbd>aggregator</kbd> service needs a <kbd>package.json</kbd> to install the dependencies and control a few aspects:</p>
+<pre>{<br/>   "name": "aggregator",<br/>   "version": "1.0.0",<br/>   "description": "Aggregator service",<br/>   "main": "index.js",<br/>   "scripts": {<br/>       "start": "node index.js"<br/>   },<br/>   "author": "David Gonzalez",<br/>   "license": "ISC",<br/>   "dependencies": {<br/>       "hapi": "^15.2.0",<br/>       "request": "^2.75.0"<br/>   }<br/>}</pre>
+<p>The <kbd>package.json</kbd> is very important. The scripts block particularly instruct us on what to do when the <kbd>npm start</kbd> <span>command</span> is executed by the Docker container based on the image defined in the Dockerfile:</p>
+<pre class="mce-root"><strong>FROM node:latest</strong><br/><br/><strong>RUN mkdir /app/</strong><br/><strong>WORKDIR /app/</strong><br/><br/><strong>COPY . /app/</strong><br/><strong>RUN npm install</strong><br/><strong>EXPOSE 3000</strong><br/><br/><strong>CMD ["npm", "start"]</strong></pre>
+<p>By now, you should have three files:</p>
+<ul>
+<li><kbd>index.js</kbd></li>
+<li><kbd>Dockerfile</kbd></li>
+<li><kbd>package.json</kbd></li>
+</ul>
+<p>Build the <kbd>docker</kbd> container with the following command:</p>
+<pre><strong>docker build . -t aggregator</strong></pre>
+<p>Check whether it works as expected:</p>
+<pre><strong>docker run -it -p 8080:8080 aggregator</strong></pre>
+<p>Even though the server won't be able to resolve requests because it does not know how to communicate with <kbd>isodate-service</kbd> and <kbd>utcdate-service</kbd>, it should start.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Pushing the images to Google Container Registry</h1>
+                </header>
+            
+            <article>
+                
+<p>So as of now, we have three images in our local repository:</p>
+<ul>
+<li><kbd>iso-date-service</kbd></li>
+<li><kbd>utc-date-service</kbd></li>
+<li><kbd>aggregator</kbd></li>
+</ul>
+<p>These three images live in your computer but unfortunately, our Kubernetes cluster in the GKE won't be able to reach them. The solution for this problem is to push these images into a Docker registry that will be reachable by our cluster. Google Cloud provides us with a Docker registry, which is extremely convenient for using with GKE due to several reasons:</p>
+<ul>
+<li><strong>Data containment</strong>: The data never leaves the Google network</li>
+<li><strong>Integration</strong>: Services in GCP can interact with implicit authentication</li>
+<li><strong>Automation</strong>: This integrates with GitHub and other services so that we can build our images, automatically creating a pipeline of continuous delivery of images.</li>
+</ul>
+<p>Before setting up a continuous delivery pipeline with Git, we are going to push the images manually in order to understand how it works. <strong>Google Container Registry</strong> (<strong>GCR</strong>) is replicated across the globe, so the first thing that you need to do is choose where you want to store your images:</p>
+<ul>
+<li><kbd>us.gcr.io</kbd> hosts your images in the United States</li>
+<li><kbd>eu.gcr.io</kbd> hosts your images in the European Union</li>
+<li><kbd>asia.gcr.io</kbd> hosts your images in Asia</li>
+</ul>
+<p>In my case, <kbd>eu.gcr.io</kbd> is the perfect match. Then, we need our project ID. This can be found by clicking on the project name in the top bar of the console:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="assets/eb52b1bc-ae8c-407b-a489-cd48f4d28360.png"/></div>
+<p>In my case, the project ID is <kbd>implementing-modern-devops</kbd><em>.</em> Now, the third component is the name of the image that we already have. With these three components, we can build the name for our Docker images URL:</p>
+<ul>
+<li><kbd>eu.gcr.io/isodate-service:1.0</kbd></li>
+<li><kbd>eu.gcr.io/utcdate-service:1.0</kbd></li>
+<li><kbd>eu.gcr.io/aggregator:1.0</kbd></li>
+</ul>
+<p>The 1.0 part is the version of our image. If not specified, the default is latest but we are going to version the images for traceability.</p>
+<p>Now it is time to tag our images as appropriate. First up is the ISO Date service:</p>
+<pre><strong>docker tag iso-date-service eu.gcr.io/implementing-modern-devops/isodate-service:1.0</strong></pre>
+<p>Then, there's the UTC date service:</p>
+<pre><strong>docker tag utc-date-service eu.gcr.io/implementing-modern-devops/utcdate-service:1.0</strong></pre>
+<p>And finally, we have the <kbd>aggregator</kbd> service:</p>
+<pre><strong>docker tag aggregator eu.gcr.io/implementing-modern-devops/aggregator-service:1.0</strong></pre>
+<p>This is the mechanism that Docker uses to identify where to push the images: Docker reads the name of our image and identifies the URL to which the image is to be pushed. In this case, as we are using a private registry (Google Container Registry is private), we need to use credentials, but using the <kbd>gcloud</kbd> command, it becomes quite easy:</p>
+<pre><strong>gcloud docker -- push eu.gcr.io/implementing-modern-devops/aggregator-service:1.0</strong></pre>
+<p>Now it's time for the <kbd>isodate-service</kbd>:</p>
+<pre><strong>gcloud docker -- push eu.gcr.io/implementing-modern-devops/isodate-service:1.0</strong></pre>
+<p>And finally, there's <kbd>utcdate-service</kbd>:</p>
+<pre><strong>gcloud docker -- push eu.gcr.io/implementing-modern-devops/utcdate-service:1.0</strong></pre>
+<div class="packt_tip">Be careful; the project ID will change, so customize the command to fit your configuration.</div>
+<p class="mce-root CDPAlignLeft CDPAlign">After a bit of time (it can take up to a few minutes to push the three images to GCR), the images should be up in our private instance of the Google Container Registry.</p>
+<div class="CDPAlignCenter CDPAlign"><img height="392" width="851" src="assets/c7094dba-e9d3-4cd4-aa95-f0a96b5bc299.png"/></div>
+<p>Let's recap what we have done:</p>
+<ul>
+<li>We've built the images locally</li>
+<li>We've tagged the images with the appropriated name so that we can push them to GCR</li>
+<li>We've pushed the images to GCR using <kbd>gcloud</kbd></li>
+</ul>
+<p>This is fairly straightforward, but it can be tricky if you have not done it before. All our images are sitting in our private container registry, ready to be used.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Setting up a continuous delivery pipeline for images</h1>
+                </header>
+            
+            <article>
+                
+<p>Now that we have deployed our images to GCR, we need to automate the process so that we minimize the manual intervention. In order to do that, we are going to use the Build Triggers section of our Google Container Registry. In this case, we are going to use GitHub as it is the industry standard for Git repositories management. Create an account at <a href="https://www.github.com">https://www.github.com</a> (if you don't have one already) and then create three repositories:</p>
+<ul>
+<li><kbd>aggregator</kbd></li>
+<li><kbd>isodate-service</kbd></li>
+<li><kbd>utcdate-service</kbd></li>
+</ul>
+<p>These can be public but, in the future, if you are working with private code, you should either create private repositories (which you need to pay for) or select a different provider, such as the source code repositories in Google Cloud Platform.</p>
+<p>The first thing that we need to do is push the code for the three services into the repositories. Github will give you the instructions to that, but basically, the process is as follows:</p>
+<ol>
+<li>Clone the repository</li>
+<li>Add the code from the preceding section as appropriate</li>
+<li>Push the code into the remote repository</li>
+</ol>
+<p>My GitHub username is <kbd>dgonzalez</kbd> and the commands to push the code for the <kbd>aggregator</kbd> are as follows:</p>
+<pre><strong>git clone git@github.com:dgonzalez/aggregator.git</strong></pre>
+<p>Now copy the code from the <kbd>aggregator</kbd> into the newly created folder with the <kbd>clone</kbd> command and execute (inside the <kbd>aggregator</kbd> folder):</p>
+<pre><kbd>git add .</kbd></pre>
+<p>Commit the changes:</p>
+<pre><strong>git commit -m 'Initial commit'</strong></pre>
+<p>And then <kbd>push</kbd> them to the remote repository:</p>
+<pre><strong>git push origin master</strong></pre>
+<p>After these commands, your repository should look like what is shown in the following screenshot:</p>
+<div class="CDPAlignCenter CDPAlign"><img height="498" width="940" src="assets/12ee0676-400d-493d-bb9c-43255664f4ba.png"/></div>
+<p>The commands that we used are quite basic Git commands. You probably know about Git, but if you don't, I would recommend that you follow some tutorials, such as <a href="https://try.github.io/levels/1/challenges/1">https://try.github.io/levels/1/challenges/1</a>.</p>
+<p class="mce-root CDPAlignLeft CDPAlign">Now that we have our repository ready, it is time to go back to GCP to set up the <span class="packt_screen">Build triggers</span> for our pipeline. The first thing that we need to do is go to the triggers section of the Container Registry in Google Cloud Platform:</p>
+<div class="CDPAlignCenter CDPAlign"><img height="351" width="816" src="assets/a20a64c6-ebc1-4b2d-95d6-06da69d2577e.png"/></div>
+<p>This functionality allows us to create triggers that fire off the build of our images based on events. There are several approaches to triggering strategies. In this case, we are going to build the image based on the creation of new tags. The most common way of doing this is by monitoring changes in the master branch, but I am a big fan of versioning. Think about this: containers are immutable artifacts: Once created, they should not be altered, but what if there is an issue with the code inside the container? The strategy is to branch off from the master and then create what is called a hot-fix build. With tagging, we can do this too but by branching from a tag instead of from the master, which has the following benefits:</p>
+<ul>
+<li>The master can change without firing events</li>
+<li>Tags cannot be accidentally created (so no accidental releases)</li>
+<li>Version is kept in the source code manager instead of in the code</li>
+<li>You can correlate a tag to a build the artifact</li>
+</ul>
+<p>That said, it is perfectly valid to use the master as a reference point and other combinations: the important lesson here is to stick to a procedure and make it clear to everyone.</p>
+<p class="mce-root CDPAlignLeft CDPAlign">Click on <strong><span class="packt_screen">Create Trigger</span></strong> and select GitHub. Once you click on <span class="packt_screen">Next</span>, it will let you select the project from a list; then, click on <span class="packt_screen">Next</span> again. Now we get presented with a form and a few options:</p>
+<div class="CDPAlignCenter CDPAlign"><img height="684" width="622" src="assets/fccfa568-afa3-4ed3-8eb7-297b79f719e7.png"/></div>
+<p>We are going to use the Dockerfile instead of <kbd>cloudbuild.yaml</kbd> (the latter is GCP-specific) and set the trigger on the tag; the image name has to match the repositories created in the preceding section (remember the <kbd>eu.*</kbd> name and check the name of the repository as well).</p>
+<p>Once created, nothing happens. Our repository has no tags, so nothing has been built. Let's create a tag:</p>
+<pre><strong>git tag -a 1.0 -m "my first tag"</strong></pre>
+<p>This will create a tag, and now we need to push it to the server:</p>
+<pre><strong>git push origin 1.0</strong></pre>
+<p>Now, we go back to GCP Container Registry and check what happened: a new build has been triggered, pushing version 1.0 to the registry for the <kbd>aggregator</kbd> image:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="assets/4a9568a4-5124-4dbf-aa40-0a16cbf4dd73.png"/></div>
+<p>From now on, if we create a new tag in our repository, GCP is going to build an image for us, which can be correlated to a commit in GitHub so that we can fully trace what is in every environment of our build. It does not get better than this.</p>
+<p>This whole build and push could have been done with Jenkins, as you learned in the chapter 4 (continous integration), but I am of the opinion that if someone can take care of your problems for a reasonable price, it's better than solving them yourself and add more moving parts to your already complex system. In this case, the registry, the build pipeline, and the automation are taken care of by Google Cloud Platform.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Setting up Jenkins</h1>
+                </header>
+            
+            <article>
+                
+<p>In the preceding section, we leveraged the image operations to Google Cloud Platform, but now, we need to manage Kubernetes in a CI/CD fashion from somewhere. In this case, we are going to use Jenkins for this purpose. We have several options here:</p>
+<ul>
+<li>Deploy Jenkins in Kubernetes</li>
+<li>Install Jenkins in baremetal</li>
+<li>Install Jenkins in a container outside of Kubernetes</li>
+</ul>
+<p>Lately, Jenkins has become Kubernetes-friendly with a plugin that allows Jenkins to spawn slaves when required in a containerized fashion so that it leverages the provisioning and destruction of hardware <span>to Kubernetes</span>. This is a more than interesting approach when your cluster is big enough (50+ machines), but when your cluster is small, it may be problematic as it can lead into a noisy neighborhood.</p>
+<p>I am a big fan of segregation: CI/CD should be able to talk to your production infrastructure but should not be running in the same hardware for two reasons:</p>
+<ul>
+<li>Resource consumption</li>
+<li>Vulnerabilities</li>
+</ul>
+<p>Think about it: a CI/CD software is, by default, vulnerable to attackers as it needs to execute commands through an interface; therefore, you are giving access to the underlying infrastructure to a potential attacker.</p>
+<p>My advice: start simple. If the company is small, I would go for Jenkins in a container with a volume mounted and evolve the infrastructure up to a point where your cluster is big enough to accommodate Jenkins without a significant impact; move it into your cluster in a dedicated namespace.</p>
+<p>In the <span>chapter 4 (Continuous Integration)</span>, we set up Jenkins in a container without making use of any volume, which can be problematic as the configuration might be lost across restarts. Now, we are going to set up Jenkins in bare metal so that we have another way of managing Jenkins.</p>
+<p>The first thing that we need to do is create a machine in GCP.</p>
+<div class="CDPAlignCenter CDPAlign"><img height="621" width="724" src="assets/1c198a4a-eeb8-400a-a43c-622afad3885c.png"/></div>
+<p>The preceding screenshot is the configuration of my Jenkins machine. A few important aspects are as follows:</p>
+<ul>
+<li>Ubuntu instead of Debian (I selected the latest LTS version of Ubuntu)</li>
+<li>Small instance (we can scale that later on)</li>
+<li>Changes might need to be done to the firewall in order to access Jenkins</li>
+</ul>
+<p>Everything else is standard. We are not attaching a static IP to Jenkins as this is just a demo, but you probably want to do that, as you learned earlier, as well as have an entry in the DNS that can have a static reference point for your CI server.</p>
+<p>It also would be a good exercise to do this in Terraform as well so that you can manage your infrastructure in an <strong>Infrastructure as code</strong> <span>(<strong>IaC</strong>)</span> fashion.</p>
+<p>Once the machine has spun up, it is time to install Jenkins. We are going to follow the official guide, which can be found at <span><a href="https://wiki.jenkins.io/display/JENKINS/Installing+Jenkins+on+Ubuntu">https://wiki.jenkins.io/display/JENKINS/Installing+Jenkins+on+Ubuntu</a>.<a href="https://wiki.jenkins.io/display/JENKINS/Installing+Jenkins+on+Ubuntu"/></span></p>
+<p>Using the web SSH Terminal from the Google Cloud platform, open a shell to your newly created machine and execute the following commands:</p>
+<pre><strong>wget -q -O - https://pkg.jenkins.io/debian/jenkins-ci.org.key | sudo apt-key add -</strong></pre>
+<p>Then, add the Jenkins repository:</p>
+<pre><strong>sudo sh -c 'echo deb http://pkg.jenkins.io/debian-stable binary/ &gt; /etc/apt/sources.list.d/jenkins.list'</strong></pre>
+<p>Then, update the list of packages:</p>
+<pre><strong>sudo apt-get update</strong></pre>
+<p>And finally, install Jenkins:</p>
+<div class="preformatted panel conf-macro output-block">
+<div class="preformattedContent panelContent">
+<pre><strong>sudo apt-get install jenkins</strong></pre></div>
+</div>
+<p>That's it. Once the preceding command is finished, Jenkins should be installed and can be started, stopped, and restarted as a service. To ensure that it is running, execute the following command:</p>
+<pre><strong>sudo service jenkins restart</strong></pre>
+<p>Now if we browse the public IP in our server on port <kbd>8080</kbd>, we get the initial screen for Jenkins.</p>
+<div class="packt_infobox">You might need to tweak the firewall to allow access to port <kbd>8080</kbd> on this machine.</div>
+<p>This initial screen is familiar, and we need to get the password to initialize Jenkins. This password is in the logs:</p>
+<pre><strong>cat /var/log/jenkins/jenkins.log</strong></pre>
+<p>Enter the password and initialize Jenkins (suggested plugins). This might take a while; meanwhile, we also need to set up the Gcloud SDK. First, switch to the user Jenkins:</p>
+<pre><strong>sudo su jenkins</strong></pre>
+<p>And then just execute the following:</p>
+<pre><strong><span class="pln">curl https</span><span class="pun">://</span><span class="pln">sdk</span><span class="pun">.</span><span class="pln">cloud</span><span class="pun">.</span><span class="pln">google</span><span class="pun">.</span><span class="pln">com </span><span class="pun">|</span><span class="pln"> bash</span></strong></pre>
+<p>Once the installation finishes. you need to open a new shell for the changes to take effect. Do that and install <kbd>kubectl</kbd>:</p>
+<pre><strong>gcloud components install kubectl</strong></pre>
+<p>Now that we have the <kbd>Kubectl</kbd> binary in our system, we need to connect it to a cluster, but first, it's time to create a cluster. As you learned in previous chapters, just create a cluster with three machines of a small size. Once it is created, connect to the cluster from the Jenkins machine, as shown in the previous chapter, but first, run <kbd>gcloud init</kbd> to configure a new <kbd>auth</kbd> session (option 2) with your account.</p>
+<p>Once you are done, make sure that <kbd>kubectl</kbd> can talk to your cluster by executing a test command, as follows:</p>
+<pre><strong>kubectl get nodes</strong></pre>
+<p>You should list the three nodes that compound your cluster. Now we need to make <kbd>kubectl</kbd> accessible to the user <kbd>jenkins</kbd>. Just run the following command:</p>
+<pre>l<strong>n -s /root/google-cloud-sdk/bin/kubectl /usr/bin/kubectl</strong></pre>
+<p>Change the owner to Jenkins:</p>
+<p>Now, going back to Jenkins, set up the admin user as shown in the following screenshot:</p>
+<div class="CDPAlignCenter CDPAlign"><img height="407" width="620" src="assets/bf32a1e9-cc5f-40d5-81c0-576c61610ef9.png"/></div>
+<div class="CDPAlignCenter CDPAlign"/>
+<p>Click on <span class="packt_screen">Save and Finish</span>, and it's done.</p>
+<p>Before we start creating jobs, we need to make the binary kubectl available to the user <kbd>jenkins</kbd>. <span>Login as root and execute</span>:</p>
+<pre><strong>ln -s /var/lib/jenkins/google-cloud-sdk/bin/kubectl /usr/bin/kubectl</strong></pre>
+<p>This will make sure that the <kbd>kubectl</kbd> command for <kbd>jenkins</kbd> points to the SDK installed by the <kbd>jenkins</kbd> user in the preceding steps.</p>
+<p>Now, we have everything:</p>
+<ul>
+<li>Jenkins</li>
+<li>The Google Cloud SDK</li>
+<li>A GKE cluster</li>
+<li>A connection between Jenkins and GKE</li>
+</ul>
+<p>Before proceeding, we are going to make sure that everything works as expected. Go to Jenkins and create a new free style project and add a build step with the following command:</p>
+<pre><strong>kubectl get nodes</strong></pre>
+<p>Save the project and run it. The output should be very similar to what is shown in the following screenshot:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="assets/e63279c7-568e-4da9-b303-3dcd3e054129.png"/></div>
+<p>This indicates that we are good to go.</p>
+<div class="packt_infobox">In general, Jenkins and other CI systems should never be exposed over the internet. Never. It only takes a weak password for someone to destroy your system if it is accessible to the public. In this case, as an illustrative example, we have not configured the firewall, but in your company, you should allow access <span>only</span> from the IP of your office.</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Continuous delivery for your application</h1>
+                </header>
+            
+            <article>
+                
+<p>Up until now, we have set up a few elements:</p>
+<ul>
+<li>A GitHub repository with our code (<kbd>aggregator</kbd>)</li>
+<li>A continuous delivery pipeline in GCP for our Docker image that gets fired once we tag the code</li>
+<li>A Kubernetes cluster</li>
+<li>Jenkins connected to the preceding cluster</li>
+</ul>
+<p>Now we are going to set up the continuous delivery pipeline for our code and the Kubernetes infrastructure. This pipeline is going to be actioned by a Jenkins job, which we will trigger manually.</p>
+<p>You might be thinking that all that you have read about <strong>Continuous Delivery</strong> (<span><strong>CD</strong>)</span> is about transparently shipping code to production without any human intervention, but here we are, with a few events that need manual steps in order to action the build. I have worked in some places where continuous delivery is triggered automatically by changes in the master branch of your repository, and after few incidents, I really believe that a manual trigger is a fair price to pay for having an enormous amount of control over the deployments.</p>
+<p>For example, when publishing the image, by creating a tag manually in order to build our image, we are adding a barrier so that no one accidentally commits code to master and publishes a version that might be unstable or, even worse, insecure. Now we are going to do something similar, but the job that releases our code is going to be actioned manually in Jenkins, so by controlling the access to Jenkins, we have an audit trail of who did what, plus we get role-based access control for free. We can assign roles to the people of our team, preventing the most inexperienced developers from creating a mess without supervision but still allowing enough agility to release code in an automated fashion.</p>
+<p>The first thing that we need to do is create a repository that we are going to call <kbd>aggregator-kubernetes</kbd> in GitHub to host all our YAML files with the Kubernetes resources. We will do this for <kbd>utcdate-service</kbd> and <kbd>isodate-service</kbd>, but let's do the <kbd>aggregator</kbd> first.</p>
+<p>Once we have created our repository, we need to create our Kubernetes objects to deploy and expose the service. In short, our system is going to look like what is shown in the following diagram:</p>
+<div class="CDPAlignCenter CDPAlign"><img height="369" width="387" src="assets/a07e42bb-57df-461d-9a7d-6507bfe87dfa.png"/></div>
+<p><span>On the above picture</span>, we can see the Kubernetes objects (<em>ReplicaSet</em> and <em>Service</em>) that we need to create for each application (deployments are omitted). In red, we can see the application itself. For now, we are focusing on the <kbd>aggregator</kbd>, so we need to create a <kbd>ReplicaSet</kbd> that is going to be managed by a Deployment and a Service of the <kbd>LoadBalancer</kbd> that is going to expose our API to the rest of the world through a <kbd>gcloud</kbd> load balancer.</p>
+<p>The first element that we need is our deployment:</p>
+<pre>apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: aggregator
+spec:
+  replicas: 2
+  template:
+    metadata:
+      labels:
+        app: aggregator-service
+    spec:
+      containers:
+      - name: aggregator-service
+        image: eu.gcr.io/implementing-modern-devops/aggregator-service:1.0
+        ports:
+        - containerPort: 8080</pre>
+<p>This is nothing that we wouldn't expect. It's a simple deployment object with the image that our automatic build process has created for us (remember, we created a tag with the version 1.0...also remember to customize it to your project). In our new repository, <kbd>aggregator-kubernetes</kbd>, save this file under a folder called objects with the name <kbd>deployment.yaml</kbd>. Now it is time to create the service that is going to expose our application:</p>
+<pre>kind: Service<br/>apiVersion: v1<br/>metadata:<br/>   name: aggregator-service<br/>spec:<br/>   ports:<br/>      - port: 80<br/>         targetPort: 8080<br/>   selector:<br/>      app: aggregator-service<br/>   type: LoadBalancer</pre>
+<p>Again, it's very straightforward: a service that exposes anything tagged with app: <kbd>aggregator-service</kbd> to the outside world via a load balancer in Google cloud. Save it inside the objects folder with the name <kbd>service.yaml</kbd>. Now it is time to commit the changes and push them to your GitHub repository:</p>
+<pre><strong>git add .</strong></pre>
+<p>And then, execute this:</p>
+<pre><strong>git commit -m 'Initial commit'</strong></pre>
+<p>And finally, look at this:</p>
+<pre><strong>git push origin master</strong></pre>
+<p>By now, you have all the code for the infrastructure of the <kbd>aggregator</kbd> sitting in your GitHub repository with a layout similar to the following:</p>
+<div class="CDPAlignCenter CDPAlign"><img height="328" width="770" src="assets/dadd3ced-77eb-4f4f-bd46-4c6b93ec62ad.png"/></div>
+<p>Inside the objects folder, you can find the two YAML files: <kbd>deployment.yaml</kbd> and <kbd>service.yaml</kbd>. We can run these files locally with <kbd>kubectl</kbd> (connecting them to the cluster <span>first</span>) in order to verify that they are working as expected (and I recommend that you do this).</p>
+<p>Now it is time to set up a Jenkins job to articulate our build. Create a new freestyle project in Jenkins with the following configuration:</p>
+<div class="CDPAlignCenter CDPAlign"><img height="303" width="650" src="assets/ddf3b25b-2d47-411c-bdb2-e5e22096a795.png"/></div>
+<p>First, look at the GitHub repository. As you can see, it is creating an error, and that's is only because GitHub needs an SSH key to identify the clients. GitHub explains how to generate and configure such keys at <a href="https://help.github.com/articles/connecting-to-github-with-ssh/">https://help.github.com/articles/connecting-to-github-with-ssh/</a>.</p>
+<p>Once you have added the credentials with the private key that was generated, the error should be removed (remember, the type of credentials is 'SSH key with username', and your username has to match the one in GitHub).</p>
+<p>Here, we can play a lot with Cit options, such as creating a tag on every build in order to trace what is going in your system or even building from tags. We are going to build the master branch: no tags this time.</p>
+<p>Now, we are going to add our only build step for this job:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="assets/ddd76fe0-bbc2-43bb-b970-37c0e93d9813.png"/></div>
+<p>As you learned in previous chapters, with <kbd>kubectl apply</kbd>, we can pretty much rule the world. In this case, we are adding our folder with the <kbd>yamls</kbd> as a parameter; therefore, <kbd>kubectl</kbd> is going to action on Kubernetes with the YAML definitions that we are going to create.</p>
+<p>Save the job and run it. Once it finishes, it should be successful with a log similar to the following one:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="assets/5c11d724-c5f9-4c03-8cf8-692944c61f8d.png"/></div>
+<div class="packt_infobox">This job might fail a few times as there are many moving parts. By now, you have enough knowledge to troubleshoot the integration of these parts.</div>
+<p>That's it. Our Continuous Delivery (CD) pipeline is working. From now on, if we want to make changes to our <kbd>aggregator</kbd>, we just need to add/modify files to our code repository, tag them with a new version, modify our <kbd>aggregator-kubernetes</kbd> definitions to point to the new image, and kick off our Jenkins job.</p>
+<p>There are two extra steps:</p>
+<ul>
+<li>Create a tag</li>
+<li>Kick off a job manually</li>
+</ul>
+<p>This is the price you pay for having a lot of control in our deployment but with a bit of a secret sauce: we are set for a great deployment flexibility, as we are going to see in the next section, but first, you should repeat the same exercise for <kbd>utcdate-service</kbd> and <kbd>isodate-service</kbd> so that we have our full system running. If you want to save a lot of time or check whether you are going in the right direction, check out my repository at <a href="https://github.com/dgonzalez/chronos">https://github.com/dgonzalez/chronos</a>.</p>
+<p>Inside every service, there is a folder called definitions that contains the Kubernetes objects to make everything work.</p>
+<div class="packt_tip">Be careful with the name of the services: the aggregator is expecting to be able to resolve <kbd>isodate-service</kbd> and <kbd>utcdate-service</kbd> from the DNS, so your Services (Kubernetes objects) should be named accordingly.</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Regular release</h1>
+                </header>
+            
+            <article>
+                
+<p>Now we are all set; if you've completed the deployment of <kbd>utcdate-service</kbd> and <kbd>isodate-service</kbd>, a fully working system should be installed on Kubernetes. The way it works is very simple: When you get the URL of the <kbd>aggregator</kbd> in the <kbd>/dates/{timestamp}</kbd> path<span>,</span> replacing timestamp with a valid UNIX timestamp, the service will contact <kbd>utcdate-service</kbd> and <kbd>isodate-service</kbd> and get the timestamp converted into the UTC and ISO formats. In my case, the load balancer provided by Google Cloud Platform will lead to the URL: <kbd>http://104.155.35.237/dates/1111111111</kbd>.</p>
+<p>It will have the following response:</p>
+<pre><span>{<br/></span>   utcDate<span>:</span><span> </span><span class="type-string">"2005-03-18T01:58:31"</span><span>,<br/></span>   isoDate<span>:</span><span> </span><span class="type-string">"2005-03-18T01:58:31.000Z"<br/></span><span>}</span></pre>
+<p>You can play around with it for a bit, but it is nothing fancy: just a simple demo system that makes microservices and their automation <span>easy to understand</span>. In this case, we are not running any test, but for a continuous delivery pipeline, testing is a must (we will talk about this later).</p>
+<p>Now as the title of the section suggests, we are going to create a new version of our application and release it using our continuous delivery pipeline.</p>
+<p>Our new version it is going to be very simple but quite illustrative. On the <kbd>aggregator</kbd>, replace <kbd>index.js</kbd> with the following code:</p>
+<pre>const Hapi = require('hapi')<br/>const server = new Hapi.Server()<br/>let request = require('request')</pre>
+<pre class="mce-root">server.connection({port: 8080})</pre>
+<pre class="mce-root">server.route({<br/>  method: 'GET',<br/>  path: '/dates/{timestamp}',<br/>  handler: (req, reply) =&gt; {<br/>    const utcEndpoint = `http://utcdate-service:3001/utcdate/${req.params.timestamp}`<br/>    const isoEndpoint = `http://isodate-service:3000/isodate/${req.params.timestamp}`<br/>    request(utcEndpoint, (err, response, utcBody) =&gt; {<br/>      if (err) {<br/>        console.log(err)<br/>        return<br/>      }<br/>      request(isoEndpoint, (err, response, isoBody) =&gt; {<br/>      if (err) {<br/>        console.log(err)<br/>        return<br/>      }<br/>      reply({<br/>        utcDate: JSON.parse(utcBody).date,<br/>        isoDate: JSON.parse(isoBody).date,<br/>        <strong>raw: req.params.timestamp</strong><br/>       })<br/>     })<br/>   })<br/>  }<br/>})<br/><br/>server.start((err) =&gt; {<br/>  if (err) {<br/>    throw err<br/>  }<br/>  console.log('aggregator started on port 8080')<br/>})</pre>
+<p>In the highlighted part, we have added a new section to the return object that basically returns the raw timestamp. Now it is time to commit the changes, but first, let's follow a good practice. Create a branch:</p>
+<pre><strong>git checkout -b raw-timestap</strong></pre>
+<p>This is going to create a local branch called <kbd>raw-timestamp</kbd>. Now commit the changes created in the preceding code:</p>
+<pre><strong>git add . &amp;&amp; git commit -m 'added raw timestamp'</strong></pre>
+<p>And push the branch to GitHub:</p>
+<pre><strong>git push origin raw-timestamp</strong></pre>
+<p>If we visit the GitHub interface <span>now</span>, we'll notice that something has changed:</p>
+<div class="CDPAlignCenter CDPAlign"><img height="280" width="516" src="assets/94a75462-4832-4a69-978c-77d086d82638.png"/></div>
+<p>It is suggesting that we create a <span class="packt_screen">Pull requests</span>. Basically, a pull request is a request to add code to a repository. Click on <span class="packt_screen">Compare &amp; pull request</span> and then add a description in the new form and click on <span class="packt_screen">Create pull request</span>. This is the outcome:</p>
+<div class="CDPAlignCenter CDPAlign"><img height="440" width="882" src="assets/ff9cab24-1687-43ea-937e-3c057d53bd90.png"/></div>
+<p>There are three tabs:</p>
+<ul>
+<li><span class="packt_screen">Conversation</span></li>
+<li><span class="packt_screen">Commits</span></li>
+<li><span class="packt_screen">Files changed</span></li>
+</ul>
+<p>The first one is a list of comments by the participants. The second tab is the list of commits that they pushed into the server, and the third one is the list of changes in diff style with additions and deletions, where you can drop comments asking for changes or suggesting better ways of doing things. In big projects, the master branch is usually blocked, and the only way to push code into it is via pull requests in order to enforce the review of the code.</p>
+<p>Once you are happy, click on <span class="packt_screen">Merge pull request</span> and merge the code. This pushes the changes into the master branch (needs confirmation).</p>
+<p>Now we are ready to create a tag. This can be done via the GitHub interface. If you click on the <span class="packt_screen">release</span> link (beside the number of contributors above the list of files), it brings you to the releases page:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="assets/a7b704c6-b5c7-49bc-8faa-dbe31290bc09.png"/></div>
+<p>There, you can see the tag that we created earlier from the terminal and a button called <span class="packt_screen">Draft a new release</span>. Click on it, and it will show a new form:</p>
+<div class="CDPAlignCenter CDPAlign"><img height="565" width="932" src="assets/51671f01-b9e8-4222-a646-f0174fe0537c.png"/></div>
+<p>Fill in the details, as shown here, and create the release. This creates a tag that is connected to our container registry in Google Cloud Platform, and by now (it is very quick), a new version of our image should be available:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="assets/20fb4c23-b1a4-472b-9243-5de53186b262.png"/></div>
+<p>As you can see, there is a good level of control over what is going into our production buckets (registry and cluster). Now the only step left is to release the new version into Kubernetes. Go back to the repository called <kbd>aggregator-kubernetes</kbd> (we created it in the preceding section) and change the tag of the image in the <kbd>deployment.yaml</kbd> file from <kbd>eu.gcr.io/implementing-modern-devops/aggregator-service:1.0</kbd> to <kbd>eu.gcr.io/implementing-modern-devops/aggregator-service:2.0</kbd>. Be aware that the project needs to be tailored to your configuration.</p>
+<p>Once this is done, commit and push the changes (from <kbd>aggregator-kubernetes</kbd> folder):</p>
+<pre><strong>git add . &amp;&amp; git commit -m 'version 2.0 of aggregator' &amp;&amp; git push origin master</strong></pre>
+<p>Now everything is ready. We are at the edge of the cliff. If we click on <span class="packt_screen">Run</span> in the job that we created in Jenkins, the new version of the software is going to be deployed in Kubernetes with zero downtime (depending on your configuration, as seen earlier); we have the control. We can decide when is the best time to release, and we have an easy way to roll back: revert the changes and click on <span class="packt_screen">Run</span> again in Jenkins.</p>
+<p>Once you are comfortable with the changes, run the job that we created in Jenkins (in my case, <kbd>aggregator-kubernetes</kbd>).</p>
+<p>If you hit the same URL as earlier (<kbd>http://104.155.35.237/dates/1111111111</kbd>), the result should have changed a bit:</p>
+<pre><span>{<br/></span><span class="property">   utcDate</span><span>:</span><span> </span><span class="type-string">"2005-03-18T01:58:31"</span><span>,<br/></span><span class="property">   isoDate</span><span>:</span><span> </span><span class="type-string">"2005-03-18T01:58:31.000Z"</span><span>,<br/></span><span class="property">   raw</span><span>:</span><span> </span><span class="type-string">"1111111111"<br/></span><span>}</span></pre>
+<p>The new version is up. As you can imagine, this is a fairly powerful argument to adopt DevOps: release software transparently to the users with minimal effort (create a tag and run a job in Jenkins).</p>
+<p>In the next section, we are going to execute the same deployment but using a technique called blue-green deployment, which consist on release the new version in a private mode running in the production environment in order for us to test the features before making them available to the general public.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Blue-green deployment</h1>
+                </header>
+            
+            <article>
+                
+<p>In order to execute a blue-green deployment, first, we need to roll back to version 1.0. Edit <kbd>deployment.yaml</kbd> in <kbd>aggregator-kubernetes</kbd>, adjust the image to the tag <kbd>1.0</kbd>, and push the changes to GitHub. Once that is done, run a job called <kbd>aggregator-kubernetes</kbd> in Jenk<span>ins,</span> and there you go; we have rolled back to version 1.0. Leave version 2.0 of the image in the registry as we are going to use it.</p>
+<p>A blue-green deployment is a technique used to release software to production that is not visible to the general public, so we can test it before making it available to everyone. Kubernetes makes this extremely simple: the only thing we need to do is duplicate the resources <span>in <kbd>aggregator-</kbd></span><kbd>kubernetes</kbd> and assign to them different names and tags. For example, this is our <kbd>deployment-bluegreen.yaml</kbd>:</p>
+<pre>apiVersion: extensions/v1beta1<br/>kind: Deployment<br/>metadata:<br/>  <strong>name: aggregator-bluegreen</strong><br/>spec:<br/>  replicas: 2<br/>  template:<br/>    metadata:<br/>      labels:<br/>        <strong>app: aggregator-service-2.0</strong><br/>    spec:<br/>      containers:<br/>      - name: aggregator-service<br/>         image: <strong>eu.gcr.io/implementing-modern-devops/aggregator-service:2.0</strong><br/>         ports:<br/>           - containerPort: 8080</pre>
+<p>And this is our <kbd>service-bluegreen.yaml</kbd>:</p>
+<pre>kind: Service<br/>apiVersion: v1<br/>metadata:<br/>  name: aggregator-service-bluegreen<br/>spec:<br/>  ports:<br/>  - port: 80<br/>     targetPort: 8080<br/>  selector:<br/>     app: aggregator-service-2.0<br/>  type: LoadBalancer</pre>
+<p>As you can see, we have created a vertical slice of our app with a different set of selectors/tags; therefore, our original version is working, but now, we have a new service called <kbd>aggregator-service-bluegreen</kbd> that serves the new version of our application via a load balancer, which we can check via the Kubernetes interface (using the <kbd>kubectl proxy</kbd> <span>command,</span> as explained earlier):</p>
+<div class="CDPAlignCenter CDPAlign"><img src="assets/3b9183a2-6b2c-4f68-be7b-27b4bb0da73a.png"/></div>
+<p>If you play around the two external endpoints, you can see the difference: the new one is returning the raw payload as well as the dates in the ISO format and in UTC timezone (version 2.0), whereas the old one only returns the dates (version 1.0).</p>
+<p>We are now in what we call the blue status: we are happy with our release and we are sure that our software works with our production configuration without affecting any of our customers. If there was any problem, no customers would have noticed it. Now it is time to go to the green phase. We have two options here:</p>
+<ul>
+<li>Remove the <kbd>aggregator-bluegreen</kbd> deployment and all its children (ReplicaSet and pods as well as the <kbd>aggregator-service-bluegreen</kbd> service) and upgrade our base deployment (<kbd>aggregator</kbd>)</li>
+<li>Change the labels for the selector in the aggregator service and make it point to the new Pods</li>
+</ul>
+<p>In general, I am a big fan of the first option as it keeps things simple, but it is your choice; also it's a good time for experimenting. Changing the selector in the service has an immediate effect, and it is probably the easy route if you are in a hurry.</p>
+<p>When working with complex systems, <span>I always try to</span> go over a blue-green deployment phase to remove stress from the team. Think about it: instead of thinking that everything is solid, you are actually verifying that everything works as expected with no surprises, so the psychological factor of the uncertainty is gone at the moment of release.</p>
+<p>In the next section, we are going to visit another type of release, which introduces a new pod into the running system so we get to expose it to the users but only to a subset of them, so if something goes wrong, it does not kill the system; it just produces some errors. Before proceeding, make sure that you return your cluster to the original status: just a deployment called <kbd>aggregator</kbd> with its pods (remove the blue-green deployment).</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Canary deployment</h1>
+                </header>
+            
+            <article>
+                
+<p>There is a story about the name of this type of deployment, which very interesting. Before all the gas detectors, miners used to bring a canary (the bird) into the mines, as they are extremely sensitive to dangerous gases. Everybody was working normally but keeping an eye on the bird. If, for some reason, the bird died, everybody would leave the mine in order to avoid getting poisoned or even killed.</p>
+<p>This is exactly what we are going to do: introduce a new version of our software, which will actually produce errors if there is any problem so we only impact a limited number of customers.</p>
+<p>Again, this is done via the YAMl files using the selectors that our service is targeting but with a new version of our app. Before continuing, make sure that you have only one deployment called <kbd>aggregator</kbd> with two pods running the version 1.0 of our app (as shown in the <span class="packt_screen">Regular Release</span> <span>section</span>).</p>
+<p>Now, in <kbd>aggregator-kubernetes</kbd>, create a file (inside objects folder) with the following content:</p>
+<pre>apiVersion: extensions/v1beta1<br/>kind: Deployment<br/>metadata:<br/>  name: aggregator-canary<br/>spec:<br/><strong>  replicas: 1</strong><br/>  template:<br/>    metadata:<br/>      labels:<br/><strong>        app: aggregator-service</strong><br/>    spec:<br/>      containers:<br/>      - name: aggregator-service<br/>         <strong>image: eu.gcr.io/implementing-modern-devops/aggregator-service:2.0</strong><br/>         ports:<br/>         - containerPort: 8080</pre>
+<p>Here's an easy explanation: we are creating a new deployment, with only one Pod, with the same tags that the original deployment pods (<kbd>aggregator</kbd>) has; therefore, the <kbd>aggregator-service</kbd> is going to target this pod as well: three in total.</p>
+<p>Push the changes to GitHub and run the job <kbd>aggregator-kubernetes</kbd>, which will apply this configuration to our cluster. Now open the endpoint that we used earlier for testing, in my case, <kbd>http://104.155.35.237/dates/1111111111</kbd>, and keep refreshing the URL a few times. Approximately, one-third of the requests should come back with the raw timestamp (new version of the app) and two-third should come back without it (version 1.0).</p>
+<p>You can verify that everything went well via the Kubernetes dashboard by checking the <kbd>aggregator-service</kbd>:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="assets/dbfa0659-b273-4808-80db-dccdf247f518.png"/></div>
+<p>Here, you can see the newly created pod being targeted by our service. I usually leave this status for a few hours/days (depending on the release), and once I am happy, I remove the <kbd>canary</kbd> deployment and apply the configuration to the <kbd>aggregator</kbd> deployment. You can play with the number of replicas as well in order to change the percentage of the users that get the new version or even gradually <span>increase</span> the number of <kbd>canaries</kbd> and decrease the number of regular pods until the application is completely rolled out.</p>
+<p>This strategy is followed by big companies such as Google to release new features with a lot of success. I am a big fan of using it as starting point when the system is big enough (10 <em>+</em> pods running), but I would be reluctant to do that in a small system as the percentage of affected requests would be too big (33.3% in the preceding example).</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Summary</h1>
+                </header>
+            
+            <article>
+                
+<p>This chapter was pretty intense: we set up a CD pipeline as well as visited the most common release strategies, which, using Kubernetes, were within the reach of our hand. Everything was automated except a couple of checkpoints that were left on purpose so that we could control what was going in our system (just for peace of mind). This was the climax of the book: even though the examples were basic, they provided you with enough tools to set up something similar in your company in order to get the benefit of working with microservices but padding the operational overhead that they involve as well as facilitating the release of new versions.</p>
+<p>In the next chapter, we will learn an important aspect of continuous delivery: monitoring. With the right monitoring in place we can remove a lot of stress from the releases so that our engineers are more confident on being able to catch errors early leading into smoother rollouts and a lower production bug count.</p>
+<p class="mce-root"/>
+
+
+            </article>
+
+            
+        </section>
+    </body></html>

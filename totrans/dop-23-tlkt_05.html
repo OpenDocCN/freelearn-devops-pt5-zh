@@ -1,0 +1,669 @@
+<html><head></head><body>
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Using Services to Enable Communication between Pods</h1>
+                </header>
+            
+            <article>
+                
+<div class="packt_tip">Applications that cannot communicate with each other or are not accessible to end-users are worthless. Only once the communication paths are established, can applications fulfill their role.</div>
+<p>Pods are the smallest unit in Kubernetes and have a relatively short life-span. They are born, and they are destroyed. They are never healed. The system heals itself by creating new Pods (cells) and by terminating those that are unhealthy or those that are surplus. The system is long-living, Pods are not.</p>
+<p>Controllers, together with other components like the scheduler, are making sure that the Pods are doing the right thing. They control the scheduler. We used only one of them so far. ReplicaSet is in charge of making sure that the desired number of Pods is always running. If there's too few of them, new ones will be created. If there's too many of them, some will be destroyed. Pods that become unhealthy are terminated as well. All that, and a bit more, is controlled by ReplicaSet.</p>
+<p>The problem with our current setup is that there are no communication paths. Our Pods cannot speak with each other. So far, only containers inside a Pod can talk with each other through <kbd>localhost</kbd>. That led us to the design where both the API and the database needed to be inside the same Pod. That was a lousy solution for quite a few reasons. The main problem is that we cannot scale one without the other. We could not design the setup in a way that there are, for example, three replicas of the API and one replica of the database. The primary obstacle was communication.</p>
+<p>Truth be told, each Pod does get its own address. We could have split the API and the database into different Pods and configure the API Pods to communicate with the database through the address of the Pod it lives in. However, since Pods are unreliable, short-lived, and volatile, we cannot assume that the database would always be accessible through the IP of a Pod. When that Pod gets destroyed (or fails), the ReplicaSet would create a new one and assign it a new address. We need a stable, never-to-be-changed address that will forward requests to whichever Pod is currently running.</p>
+<p>Kubernetes Services provide addresses through which associated Pods can be accessed.</p>
+<p>Let's see Services in action.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Creating a Cluster</h1>
+                </header>
+            
+            <article>
+                
+<p>You know the drill. Every chapter starts by pulling the latest code from the <kbd>vfarcic/k8s-specs</kbd> (<a href="https://github.com/vfarcic/k8s-specs" target="_blank"><span class="URLPACKT">https://github.com/vfarcic/k8s-specs</span></a>) repository, and with the creation of a new Minikube cluster.</p>
+<div class="packt_infobox">All the commands from this chapter are available in the <kbd>05-svc.sh</kbd> (<a href="https://github.com/vfarcic/k8s-specs" target="_blank"><span class="URLPACKT">https://github.com/vfarcic/k8s-specs</span></a>) Gist.</div>
+<pre><strong>cd k8s-specs</strong>
+    
+<strong>git pull</strong>
+    
+<strong>minikube start --vm-driver=virtualbox</strong>
+    
+<strong>kubectl config current-context</strong>  </pre>
+<p>Now we have the latest code pulled and Minikube cluster running (again).</p>
+<p>We can proceed with the first example of a Service.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Creating Services by exposing ports</h1>
+                </header>
+            
+            <article>
+                
+<p>Before we dive into services, we should create a ReplicaSet similar to the one we used in the previous chapter. It'll provide the Pods we can use to demonstrate how Services work.</p>
+<p>Let's take a quick look at the ReplicaSet definition:</p>
+<pre><strong>cat svc/go-demo-2-rs.yml</strong>  </pre>
+<p>The only significant difference is the <kbd>db</kbd> container definition. It is as follows.</p>
+<pre><strong>...</strong>
+<strong>- name: db</strong>
+<strong>  image: mongo:3.3</strong>
+<strong>  command: ["mongod"]</strong>
+<strong>  args: ["--rest", "--httpinterface"]</strong>
+<strong>  ports:</strong>
+<strong>  - containerPort: 28017</strong>
+<strong>    protocol: TCP</strong>
+<strong>...</strong>  </pre>
+<p>We customized the command and the arguments so that MongoDB exposes the REST interface. We also defined the <kbd>containerPort</kbd>. Those additions are needed so that we can test that the database is accessible through the Service.</p>
+<p>Let's create the ReplicaSet:</p>
+<pre><strong>kubectl create -f svc/go-demo-2-rs.yml</strong>
+    
+<strong>kubectl get -f svc/go-demo-2-rs.yml</strong>  </pre>
+<p>We created the ReplicaSet and retrieved its state from Kubernetes. The output is as follows:</p>
+<pre><strong>NAME      DESIRED CURRENT READY AGE</strong>
+<strong>go-demo-2 2       2       2     1m</strong>  </pre>
+<p>You might need to wait until both replicas are up-and-running. If, in your case, the <kbd>READY</kbd> column does not yet have the value <kbd>2</kbd>, please wait for a while and <kbd>get</kbd> the state again. We can proceed after both replicas are running.</p>
+<p>We can use the <kbd>kubectl expose</kbd> command to expose a resource as a new Kubernetes service. That resource can be a Deployment, another Service, a ReplicaSet, a ReplicationController, or a Pod. We'll expose the ReplicaSet since it is already running in the cluster.</p>
+<pre><strong>kubectl expose rs go-demo-2 \</strong>
+<strong>    --name=go-demo-2-svc \</strong>
+<strong>    --target-port=28017 \</strong>
+<strong>    --type=NodePort</strong>  </pre>
+<p>We specified that we want to expose a ReplicaSet (<kbd>rs</kbd>) and that the name of the new Service should be <kbd>go-demo-2-svc</kbd>. The port that should be exposed is <kbd>28017</kbd> (the port MongoDB interface is listening to). Finally, we specified that the type of the Service should be <kbd>NodePort</kbd>. As a result, the target port will be exposed on every node of the cluster to the outside world, and it will be routed to one of the Pods controlled by the ReplicaSet.</p>
+<p>There are other Service types we could have used.</p>
+<p><kbd>ClusterIP</kbd> (the default type) exposes the port only inside the cluster. Such a port would not be accessible from anywhere outside. <kbd>ClusterIP</kbd> is useful when we want to enable communication between Pods and still prevent any external access. If <kbd>NodePort</kbd> is used, <kbd>ClusterIP</kbd> will be created automatically. The <kbd>LoadBalancer</kbd> type is only useful when combined with cloud provider's load balancer. <kbd>ExternalName</kbd> maps a service to an external address (for example, <kbd>kubernetes.io</kbd>).</p>
+<p>In this chapter, we'll focus on <kbd>NodePort</kbd> and <kbd>ClusterIP</kbd> types. <kbd>LoadBalancer</kbd> will have to wait until we move our cluster to one of the cloud providers and <kbd>ExternalName</kbd> has a very limited usage.</p>
+<p>The processes that were initiated with the creation of the Service are as follows:</p>
+<ol>
+<li>Kubernetes client (<kbd>kubectl</kbd>) sent a request to the API server requesting the creation of the Service based on Pods created through the <kbd>go-demo-2</kbd> ReplicaSet.</li>
+<li>Endpoint controller is watching the API server for new service events. It detected that there is a new Service object.</li>
+<li>Endpoint controller created endpoint objects with the same name as the Service, and it used Service selector to identify endpoints (in this case the IP and the port of <kbd>go-demo-2</kbd> Pods).</li>
+<li>kube-proxy is watching for service and endpoint objects. It detected that there is a new Service and a new endpoint object.</li>
+<li>kube-proxy added iptables rules which capture traffic to the Service port and redirect it to endpoints. For each endpoint object, it adds iptables rule which selects a Pod.</li>
+<li>The kube-dns add-on is watching for Service. It detected that there is a new service.</li>
+<li>The kube-dns added <kbd>db</kbd> container's record to the dns server (skydns).</li>
+</ol>
+<div class="CDPAlignCenter packt_figref CDPAlign" style="padding-left: 30px"><img src="assets/9fb3fdee-8495-4fa1-b025-c3165544ee1b.png" style="width:53.08em;height:31.58em;"/></div>
+<div class="CDPAlignCenter packt_figref CDPAlign" style="padding-left: 30px"><span>Figure 5-1: The sequence of events followed by request to create a Service</span></div>
+<p>The sequence we described is useful when we want to understand everything that happened in the cluster from the moment we requested the creation of a new Service. However, it might be too confusing so we'll try to explain the same process through a diagram that more closely represents the cluster.</p>
+<div class="CDPAlignCenter CDPAlign"><img src="assets/6e2811d0-694d-461d-ac6e-ffa0b38d73b5.png" style="width:60.08em;height:34.83em;"/></div>
+<div class="packt_figure CDPAlignCenter CDPAlign packt_figref">Figure 5-2: The Kubernetes components view when requesting creation of a Service</div>
+<p>Let's take a look at our new Service.</p>
+<pre><strong>kubectl describe svc go-demo-2-svc</strong>  </pre>
+<p>The output is as follows:</p>
+<pre><strong>Name:                    go-demo-2-svc</strong>
+<strong>Namespace:               default</strong>
+<strong>Labels:                  db=mongo</strong>
+<strong>                         language=go</strong>
+<strong>                         service=go-demo-2</strong>
+<strong>                         type=backend</strong>
+<strong>Annotations:             &lt;none&gt;</strong>
+<strong>Selector:                service=go-demo-2,type=backend</strong>
+<strong>Type:                    NodePort</strong>
+<strong>IP:                      10.0.0.194</strong>
+<strong>Port:                    &lt;unset&gt;  28017/TCP</strong>
+<strong>TargetPort:              28017/TCP</strong>
+<strong>NodePort:                 &lt;unset&gt;  31879/TCP</strong>
+<strong>Endpoints:               172.17.0.4:28017,172.17.0.5:28017</strong>
+<strong>Session Affinity:        None</strong>
+<strong>External Traffic Policy: Cluster</strong>
+<strong>Events:                  &lt;none&gt;</strong>  </pre>
+<p>We can see the name and the namespace. We did not yet explore namespaces (coming up later) and, since we didn't specify any, it is set to <kbd>default</kbd>. Since the Service is associated with the Pods created through the ReplicaSet, it inherited all their labels. The selector matches the one from the ReplicaSet. The Service is not directly associated with the ReplicaSet (or any other controller) but with Pods through matching labels.</p>
+<p>Next is the <kbd>NodePort</kbd> type which exposes ports to all the nodes. Since <kbd>NodePort</kbd> automatically created <kbd>ClusterIP</kbd> type as well, all the Pods in the cluster can access the <kbd>TargetPort</kbd>. The <kbd>Port</kbd> is set to <kbd>28017</kbd>. That is the port that the Pods can use to access the Service. Since we did not specify it explicitly when we executed the command, its value is the same as the value of the <kbd>TargetPort</kbd>, which is the port of the associated Pod that will receive all the requests. <kbd>NodePort</kbd> was generated automatically since we did not set it explicitly. It is the port which we can use to access the Service and, therefore, the Pods from outside the cluster. In most cases, it should be randomly generated, that way we avoid any clashes.</p>
+<p>Let's see whether the Service indeed works:</p>
+<pre><strong>PORT=$(kubectl get svc go-demo-2-svc \</strong>
+<strong>    -o jsonpath="{.spec.ports[0].nodePort}")</strong>
+    
+<strong>IP=$(minikube ip)</strong>
+    
+<strong>open "http://$IP:$PORT"</strong>  </pre>
+<div class="packt_tip"><span class="packt_screen">A note to Windows users<br/></span>Git Bash might not be able to use the <kbd>open</kbd> command. If that's the case, replace the <kbd>open</kbd> command with <kbd>echo</kbd>. As a result, you'll get the full address that should be opened directly in your browser of choice.</div>
+<p>We used the filtered output of the <kbd>kubectl get</kbd> command to retrieve the <kbd>nodePort</kbd> and store it as the environment variable <kbd>PORT</kbd>. Next, we retrieved the IP of the minikube VM. Finally, we opened MongoDB UI in a browser through the service port.</p>
+<div class="CDPAlignCenter CDPAlign"><img src="assets/09249c2b-a21e-4adb-bc07-1ac48dcc05f5.png" style="width:42.17em;height:18.33em;"/></div>
+<div class="packt_figure packt_figref CDPAlignCenter CDPAlign">Figure 5-3: The Service created by exposing the ReplicaSet</div>
+<p>As I already mentioned in the previous chapters, creating Kubernetes objects using imperative commands is not a good idea unless we're trying some quick hack. The same applies to Services. Even though <kbd>kubectl expose</kbd> did the work, we should try to use a documented approach through YAML files. In that spirit, we'll destroy the service we created and start over.</p>
+<pre><strong>kubectl delete svc go-demo-2-svc</strong>  </pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Creating Services through declarative syntax</h1>
+                </header>
+            
+            <article>
+                
+<p>We can accomplish a similar result as the one using <kbd>kubectl expose</kbd> through the <kbd>svc/go-demo-2-svc.yml</kbd> specification.</p>
+<pre><strong>cat svc/go-demo-2-svc.yml</strong>  </pre>
+<p>The output is as follows:</p>
+<pre><strong>apiVersion: v1</strong>
+<strong>kind: Service</strong>
+<strong>metadata:</strong>
+<strong>  name: go-demo-2</strong>
+<strong>spec:</strong>
+<strong>  type: NodePort</strong>
+<strong>  ports:</strong>
+<strong>  - port: 28017</strong>
+<strong>    nodePort: 30001</strong>
+<strong>    protocol: TCP</strong>
+<strong>  selector:</strong>
+<strong>    type: backend</strong>
+<strong>    service: go-demo-2</strong>  </pre>
+<p>You should be familiar with the meaning of <kbd>apiVersion</kbd>, <kbd>kind</kbd>, and <kbd>metadata</kbd>, so we'll jump straight into the <kbd>spec</kbd> section. Since we already explored some of the options through the <kbd>kubectl expose</kbd> command, the <kbd>spec</kbd> should be relatively easy to grasp.</p>
+<p>The type of the Service is set to <kbd>NodePort</kbd> meaning that the ports will be available both within the cluster as well as from outside by sending requests to any of the nodes.</p>
+<p>The <kbd>ports</kbd> section specifies that the requests should be forwarded to the Pods on port <kbd>28017</kbd>. The <kbd>nodePort</kbd> is new. Instead of letting the service expose a random port, we set it to the explicit value of <kbd>30001</kbd>. Even though, in most cases, that is not a good practice, I thought it might be a good idea to demonstrate that option as well. The protocol is set to <kbd>TCP</kbd>. The only other alternative would be to use <kbd>UDP</kbd>. We could have skipped the protocol altogether since <kbd>TCP</kbd> is the default value but, sometimes, it is a good idea to leave things as a reminder of an option.</p>
+<p>The <kbd>selector</kbd> is used by the Service to know which Pods should receive requests. It works in the same way as ReplicaSet selectors. In this case, we defined that the service should forward requests to Pods with labels <kbd>type</kbd> set to <kbd>backend</kbd> and <kbd>service</kbd> set to <kbd>go-demo</kbd>. Those two labels are set in the Pods <kbd>spec</kbd> of the ReplicaSet.</p>
+<p>Now that there's no mystery in the definition, we can proceed and create the Service.</p>
+<pre><strong>kubectl create -f svc/go-demo-2-svc.yml</strong>
+    
+<strong>kubectl get -f svc/go-demo-2-svc.yml</strong>  </pre>
+<p>We created the Service and retrieved its information from the API server. The output of the latter command is as follows:</p>
+<pre><strong>NAME      TYPE     CLUSTER-IP EXTERNAL-IP PORT(S)         AGE</strong>
+<strong>go-demo-2 NodePort 10.0.0.129 &lt;none&gt;      28017:30001/TCP 10m</strong>  </pre>
+<p>Now that the Service is running (again), we can double-check that it is working as expected by trying to access MongoDB UI.</p>
+<pre><strong>open "http://$IP:30001"</strong>  </pre>
+<p>Since we fixed the <kbd>nodePort</kbd> to <kbd>30001</kbd>, we did not have to retrieve the Port from the API server. Instead, we used the IP of the Minikube node and the hard-coded port <kbd>30001</kbd> to open the UI.</p>
+<div class="CDPAlignCenter CDPAlign"><img src="assets/82fe0877-d23c-4f0a-b8af-9031ef7093fa.png" style="width:41.25em;height:19.08em;"/></div>
+<div class="packt_figure packt_figref CDPAlignCenter CDPAlign">Figure 5-4: The Service with the matching Pods and hard-coded port</div>
+<p>Let's take a look at the endpoint. It holds the list of Pods that should receive requests.</p>
+<pre><strong>kubectl get ep go-demo-2 -o yaml</strong>  </pre>
+<p>The output is as follows:</p>
+<pre><strong>apiVersion: v1</strong>
+<strong>kind: Endpoints</strong>
+<strong>metadata:</strong>
+<strong>  creationTimestamp: 2017-12-12T16:00:51Z</strong>
+<strong>  name: go-demo-2</strong>
+<strong>  namespace: default</strong>
+<strong>  resourceVersion: "5196"</strong>
+<strong>  selfLink: /api/v1/namespaces/default/endpoints/go-demo-2</strong>
+<strong>  uid: a028b9a7-df55-11e7-a8ef-080027d94e34</strong>
+<strong>subsets:</strong>
+<strong>- addresses:</strong>
+<strong>  - ip: 172.17.0.4</strong>
+<strong>    nodeName: minikube</strong>
+<strong>    targetRef:</strong>
+<strong>      kind: Pod</strong>
+<strong>      name: go-demo-2-j8kdw</strong>
+<strong>      namespace: default</strong>
+<strong>      resourceVersion: "5194"</strong>
+<strong>      uid: ac70f868-df4d-11e7-a8ef-080027d94e34</strong>
+<strong>  - ip: 172.17.0.5</strong>
+<strong>    nodeName: minikube</strong>
+<strong>    targetRef:</strong>
+<strong>      kind: Pod</strong>
+<strong>      name: go-demo-2-5vlcc</strong>
+<strong>      namespace: default</strong>
+<strong>      resourceVersion: "5184"</strong>
+<strong>      uid: ac7214d9-df4d-11e7-a8ef-080027d94e34</strong>
+<strong>  ports:</strong>
+<strong>  - port: 28017</strong>
+<strong>    protocol: TCP</strong>  </pre>
+<p>We can see that there are two subsets, corresponding to the two Pods that contain the same labels as the Service <kbd>selector</kbd>. Each has a unique IP that is included in the algorithm used when forwarding requests. Actually, it's not much of an algorithm. Requests will be sent to those Pods randomly. That randomness results in something similar to round-robin load balancing. If the number of Pods does not change, each will receive an approximately equal number of requests.</p>
+<p>Random requests forwarding should be enough for most use cases. If it's not, we'd need to resort to a third-party solution (for now). However soon, when Kubernetes 1.9 gets released, we'll have an alternative to the <em>iptables</em> solution. We'll be able to apply different types of load balancing algorithms like last connection, destination hashing, newer queue, and so on. Still, the current solution is based on <em>iptables</em>, and we'll stick with it, for now.</p>
+<p>Throughout the book, so far, I repeated a few times that our current Pod design is flawed. We have two containers (an API and a database) packaged together. Among other problems, that prevents us from scaling one without the other. Now that we learned how to use Services, we can redesign our Pod solution.</p>
+<p>Before we move on, we'll delete the Service and the ReplicaSet we created:</p>
+<pre><strong>kubectl delete -f svc/go-demo-2-svc.yml</strong>
+    
+<strong>kubectl delete -f svc/go-demo-2-rs.yml</strong>  </pre>
+<p>Both the ReplicaSet and the Service are gone, and we can start a new.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Splitting the Pod and establishing communication through Services</h1>
+                </header>
+            
+            <article>
+                
+<p>Let's take a look at a ReplicaSet definition for a Pod with only the database:</p>
+<pre><strong>cat svc/go-demo-2-db-rs.yml</strong>  </pre>
+<p>The output is as follows:</p>
+<pre><strong>apiVersion: apps/v1beta2</strong>
+<strong>kind: ReplicaSet</strong>
+<strong>metadata:</strong>
+<strong>  name: go-demo-2-db</strong>
+<strong>spec:</strong>
+<strong>  selector:</strong>
+<strong>    matchLabels:</strong>
+<strong>      type: db</strong>
+<strong>      service: go-demo-2</strong>
+<strong>  template:</strong>
+<strong>    metadata:</strong>
+<strong>      labels:</strong>
+<strong>        type: db</strong>
+<strong>        service: go-demo-2</strong>
+<strong>        vendor: MongoLabs</strong>
+<strong>    spec:</strong>
+<strong>      containers:</strong>
+<strong>      - name: db</strong>
+<strong>        image: mongo:3.3</strong>
+<strong>        ports:</strong>
+<strong>        - containerPort: 28017</strong>  </pre>
+<p>We'll comment only on the things that changed.</p>
+<p>Since this ReplicaSet defines only the database, we reduced the number of replicas to <kbd>1</kbd>. Truth be told, MongoDB should be scaled as well, but that's out of the scope of this chapter (and probably the book as well). For now, we'll pretend that one replica of a database is enough.</p>
+<p>Since <kbd>selector</kbd> labels need to be unique, we changed them slightly. The <kbd>service</kbd> is still <kbd>go-demo-2</kbd>, but the <kbd>type</kbd> was changed to <kbd>db</kbd>.</p>
+<p>The rest of the definition is the same except that the <kbd>containers</kbd> now contain only <kbd>mongo</kbd>. We'll define the API in a separate ReplicaSet.</p>
+<p>Let's create the ReplicaSet before we move to the Service that will reference its Pod.</p>
+<pre><strong>kubectl create \</strong>
+<strong>    -f svc/go-demo-2-db-rs.yml</strong>  </pre>
+<p>One object was created, three are left to go.</p>
+<p>The next one is the Service for the Pod we just created through the ReplicaSet.</p>
+<pre><strong>cat svc/go-demo-2-db-svc.yml</strong>  </pre>
+<p>The output is as follows:</p>
+<pre><strong>apiVersion: v1</strong>
+<strong>kind: Service</strong>
+<strong>metadata:</strong>
+<strong>  name: go-demo-2-db</strong>
+<strong>spec:</strong>
+<strong>  ports:</strong>
+<strong>  - port: 27017</strong>
+<strong>  selector:</strong>
+<strong>    type: db</strong>
+<strong>    service: go-demo-2</strong>  </pre>
+<p>This Service definition does not contain anything new. There is no <kbd>type</kbd>, so it'll default to <kbd>ClusterIP</kbd>. Since there is no reason for anyone outside the cluster to communicate with the database, there's no need to expose it using the <kbd>NodePort</kbd> type. We also skipped specifying the <kbd>nodePort</kbd>, since only internal communication within the cluster is allowed. The same is true for the <kbd>protocol</kbd>. <kbd>TCP</kbd> is all we need, and it happens to be the default one. Finally, the <kbd>selector</kbd> labels are the same as the labels that define the Pod.</p>
+<p>Let's create the Service:</p>
+<pre><strong>kubectl create \</strong>
+<strong>    -f svc/go-demo-2-db-svc.yml</strong>  </pre>
+<p>We are finished with the database. The ReplicaSet will make sure that the Pod is (almost) always up-and-running and the Service will allow other Pods to communicate with it through a fixed DNS.</p>
+<p>Moving to the backend API...</p>
+<pre><strong>cat svc/go-demo-2-api-rs.yml</strong>  </pre>
+<p>The output is as follows:</p>
+<pre><strong>apiVersion: apps/v1beta2</strong>
+<strong>kind: ReplicaSet</strong>
+<strong>metadata:</strong>
+<strong>  name: go-demo-2-api</strong>
+<strong>spec:</strong>
+<strong>  replicas: 3</strong>
+<strong>  selector:</strong>
+<strong>    matchLabels:</strong>
+<strong>      type: api</strong>
+<strong>      service: go-demo-2</strong>
+<strong>  template:</strong>
+<strong>    metadata:</strong>
+<strong>      labels:</strong>
+<strong>        type: api</strong>
+<strong>        service: go-demo-2</strong>
+<strong>        language: go</strong>
+<strong>    spec:</strong>
+<strong>      containers:</strong>
+<strong>      - name: api</strong>
+<strong>        image: vfarcic/go-demo-2</strong>
+<strong>        env:</strong>
+<strong>        - name: DB</strong>
+<strong>          value: go-demo-2-db</strong>
+<strong>        readinessProbe:</strong>
+<strong>          httpGet:</strong>
+<strong>            path: /demo/hello</strong>
+<strong>            port: 8080</strong>
+<strong>          periodSeconds: 1</strong>
+<strong>        livenessProbe:</strong>
+<strong>          httpGet:</strong>
+<strong>            path: /demo/hello</strong>
+<strong>            port: 8080</strong></pre>
+<p>Just as with the database, this ReplicaSet should be familiar since it's very similar to the one we used before. We'll comment only on the differences.</p>
+<p>The number of <kbd>replicas</kbd> is set to <kbd>3</kbd>. That solves one of the main problems we had with the previous ReplicaSets that defined Pods with both containers. Now the number of replicas can differ, and we have one Pod for the database, and three for the backend API.</p>
+<p>The <kbd>type</kbd> label is set to <kbd>api</kbd> so that both the ReplicaSet and the (soon to come) Service can distinguish the Pods from those created for the database.</p>
+<p>We have the environment variable <kbd>DB</kbd> set to <kbd>go-demo-2-db</kbd>. The code behind the <kbd>vfarcic/go-demo-2</kbd> image is written in a way that the connection to the database is established by reading that variable. In this case, we can say that it will try to connect to the database running on the DNS <kbd>go-demo-2-db</kbd>. If you go back to the database Service definition, you'll notice that its name is <kbd>go-demo-2-db</kbd> as well. If everything works correctly, we should expect that the DNS was created with the Service and that it'll forward requests to the database.</p>
+<p>In earlier Kubernetes versions it used <kbd>userspace</kbd> proxy mode. Its advantage is that the proxy would retry failed requests to another Pod. With the shift to the <kbd>iptables</kbd> mode, that feature is lost. However, <kbd>iptables</kbd> are much faster and more reliable, so the loss of the retry mechanism is well compensated. That does not mean that the requests are sent to Pods "blindly". The lack of the retry mechanism is mitigated with <kbd>readinessProbe</kbd>, which we added to the ReplicaSet.</p>
+<p>The <kbd>readinessProbe</kbd> has the same fields as the <kbd>livenessProbe</kbd>. We used the same values for both, except for the <kbd>periodSeconds</kbd>, where instead of relying on the default value of <kbd>10</kbd>, we set it to <kbd>1</kbd>. While <kbd>livenessProbe</kbd> is used to determine whether a Pod is alive or it should be replaced by a new one, the <kbd>readinessProbe</kbd> is used by the <kbd>iptables</kbd>. A Pod that does not pass the <kbd>readinessProbe</kbd> will be excluded and will not receive requests. In theory, Requests might be still sent to a faulty Pod, between two iterations. Still, such requests will be small in number since the <kbd>iptables</kbd> will change as soon as the next probe responds with HTTP code less than <kbd>200</kbd>, or equal or greater than <kbd>400</kbd>.</p>
+<p>Ideally, an application would have different end-points for the <kbd>readinessProbe</kbd> and the <kbd>livenessProbe</kbd>. This one doesn't so the same one should do. You can blame it on me being too lazy to add them.</p>
+<p>Let's create the ReplicaSet.</p>
+<pre><strong>kubectl create \</strong>
+<strong>    -f svc/go-demo-2-api-rs.yml</strong>  </pre>
+<p>Only one object is missing, that is service:</p>
+<pre><strong>cat svc/go-demo-2-api-svc.yml</strong>  </pre>
+<p>The output is as follows:</p>
+<pre><strong>apiVersion: v1</strong>
+<strong>kind: Service</strong>
+<strong>metadata:</strong>
+<strong>  name: go-demo-2-api</strong>
+<strong>spec:</strong>
+<strong>  type: NodePort</strong>
+<strong>  ports:</strong>
+<strong>  - port: 8080</strong>
+<strong>  selector:</strong>
+<strong>    type: api</strong>
+<strong>    service: go-demo-2</strong> </pre>
+<p>There's nothing truly new in this definition. The <kbd>type</kbd> is set to <kbd>NodePort</kbd> since the API should be accessible from outside the cluster. The <kbd>selector</kbd> label <kbd>type</kbd> is set to <kbd>api</kbd> so that it matches the labels defined for the Pods.</p>
+<p>That is the last object we'll create (in this section), so let's move on and do it:</p>
+<pre><strong>kubectl create \</strong>
+<strong>    -f svc/go-demo-2-api-svc.yml</strong>  </pre>
+<p>We'll take a look at what we have in the cluster:</p>
+<pre><strong>kubectl get all</strong>  </pre>
+<p>The output is as follows:</p>
+<pre><strong>NAME             DESIRED CURRENT READY AGE</strong>
+<strong>rs/go-demo-2-api 3       3       3     18m</strong>
+<strong>rs/go-demo-2-db  1       1       1     48m</strong>
+<strong>rs/go-demo-2-api 3       3       3     18m</strong>
+<strong>rs/go-demo-2-db  1       1       1     48m</strong>    
+<strong>NAME                   READY STATUS  RESTARTS AGE</strong>
+<strong>po/go-demo-2-api-6brtz 1/1   Running 0        18m</strong>
+<strong>po/go-demo-2-api-fj9mg 1/1   Running 0        18m</strong>
+<strong>po/go-demo-2-api-vrcxh 1/1   Running 0        18m</strong>
+<strong>po/go-demo-2-db-qcftz  1/1   Running 0        48m</strong>  
+<strong>NAME              TYPE      CLUSTER-IP EXTERNAL-IP PORT(S)        <br/>AGE</strong>
+<strong>svc/go-demo-2-api NodePort  10.0.0.162 &lt;none&gt;      8080:31256/TCP <br/>2m</strong>
+<strong>svc/go-demo-2-db  ClusterIP 10.0.0.19  &lt;none&gt;      27017/TCP      <br/>48m</strong>
+<strong>svc/kubernetes    ClusterIP 10.0.0.1   &lt;none&gt;      443/TCP        <br/>1h</strong>  </pre>
+<p>Both ReplicaSets for <kbd>db</kbd> and api are there, followed by the three replicas of the <kbd>go-demo-2-api</kbd> Pods and one replica of the <kbd>go-demo-2-db</kbd> Pod. Finally, the two Services are running as well, together with the one created by Kubernetes itself.</p>
+<div class="packt_infobox">I'm not sure why are the ReplicaSets duplicated in this view. My best guess is that it is a bug that will be corrected soon. To be honest, I haven't spent time investigating that since it does not affect how the cluster and ReplicaSets work. If you execute <kbd>kubectl get rs</kbd>, you'll see that there are only two of them, not four.</div>
+<p>Before we proceed, it might be worth mentioning that the code behind the <kbd>vfarcic/go-demo-2</kbd> image is designed to fail if it cannot connect to the database. The fact that the three replicas of the <kbd>go-demo-2-api</kbd> Pod are running means that the communication is established. The only verification left is to check whether we can access the API from outside the cluster. Let's try that out.</p>
+<pre><strong>PORT=$(kubectl get svc go-demo-2-api \</strong>
+<strong>    -o jsonpath="{.spec.ports[0].nodePort}")</strong>
+    
+<strong>curl -i "http://$IP:$PORT/demo/hello"</strong>  </pre>
+<p>We retrieved the port of the service (we still have the Minikube node <kbd>IP</kbd> from before) and used it to send a request. The output of the last command is as follows:</p>
+<pre><strong>HTTP/1.1 200 OK</strong>
+<strong>Date: Tue, 12 Dec 2017 21:27:51 GMT</strong>
+<strong>Content-Length: 14</strong>
+<strong>Content-Type: text/plain; charset=utf-8</strong>
+    
+<strong>hello, world!</strong>  </pre>
+<p>We got the response <kbd>200</kbd> and a friendly <kbd>hello, world!</kbd> message indicating that the API is indeed accessible from outside the cluster.</p>
+<p>At this point, you might be wondering whether it is overkill to have four YAML files for a single application. Can't we simplify the definitions? Not really. Can we define everything in a single file? Read on.</p>
+<p>Before we move further, we'll delete the objects we created. By now, you probably noticed that I like destroying things and starting over. Bear with me. There is a good reason for the imminent destruction:</p>
+<pre><strong>kubectl delete -f svc/go-demo-2-db-rs.yml</strong>
+  
+<strong>kubectl delete -f svc/go-demo-2-db-svc.yml</strong>
+  
+<strong>kubectl delete -f svc/go-demo-2-api-rs.yml</strong>
+    
+<strong>kubectl delete -f svc/go-demo-2-api-svc.yml</strong>  </pre>
+<p>Everything we created is gone, and we can start over.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Defining multiple objects in the same YAML file</h1>
+                </header>
+            
+            <article>
+                
+<p>The <kbd>vfarcic/go-demo-2</kbd> and <kbd>mongo</kbd> images form the same stack. They work together and having four YAML definitions is confusing. It would get even more confusing later on since we are going to add more objects to the stack. Things would be much simpler and easier if we would move all the objects we created thus far into a single YAML definition. Fortunately, that is very easy to accomplish.</p>
+<p>Let's take a look at yet another YAML file:</p>
+<pre><strong>cat svc/go-demo-2.yml</strong>  </pre>
+<p>We won't display the output since it is the same as the contents of the previous four YAML files combined. The only difference is that each object definition is separated by three dashes (<kbd>---</kbd>).</p>
+<p>If you're as paranoid as I am, you'd like to double check that everything works as expected, so let's create the objects defined in that file:</p>
+<pre><strong>kubectl create -f svc/go-demo-2.yml</strong>
+   
+<strong>kubectl get -f svc/go-demo-2.yml</strong>  </pre>
+<p>The output of the latter command is as follows:</p>
+<pre><strong>NAME            DESIRED CURRENT READY AGE</strong>
+<strong>rs/go-demo-2-db 1       1       1     1m</strong>
+    
+<strong>NAME             TYPE      CLUSTER-IP EXTERNAL-IP PORT(S)   AGE</strong>
+<strong>svc/go-demo-2-db ClusterIP 10.0.0.250 &lt;none&gt;      27017/TCP 1m</strong>
+    
+<strong>NAME             DESIRED CURRENT READY AGE</strong>
+<strong>rs/go-demo-2-api 3       3       3     1m</strong>
+   
+<strong>NAME              TYPE     CLUSTER-IP EXTERNAL-IP PORT(S)        <br/>AGE</strong>
+<strong>svc/go-demo-2-api NodePort 10.0.0.99  &lt;none&gt;      8080:31726/TCP <br/>1m</strong>  </pre>
+<p>The two ReplicaSets and the two Services were created, and we can rejoice in replacing four files with one.</p>
+<p>Finally, to be on the safe side, we'll also double check that the stack API is up-and-running and accessible.</p>
+<pre><strong>PORT=$(kubectl get svc go-demo-2-api \</strong>
+<strong>    -o jsonpath="{.spec.ports[0].nodePort}")</strong>
+    
+<strong>curl -i "http://$IP:$PORT/demo/hello"</strong>  </pre>
+<p>The response is <kbd>200</kbd> indicating that everything works as expected.</p>
+<p>Before we finish the discussion about Services, we might want to go through the discovery process.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Discovering Services</h1>
+                </header>
+            
+            <article>
+                
+<p>Services can be discovered through two principal modes; environment variables and DNS.</p>
+<p>Every Pod gets environment variables for each of the active Services. They are provided in the same format as what Docker links expect, as well with the simpler Kubernetes-specific syntax.</p>
+<p>Let's take a look at the environment variables available in one of the Pods we're running.</p>
+<pre><strong>POD_NAME=$(kubectl get pod \</strong>
+<strong>    --no-headers \</strong>
+<strong>    -o=custom-columns=NAME:.metadata.name \</strong>
+<strong>    -l type=api,service=go-demo-2 \</strong>
+<strong>    | tail -1)</strong>
+    
+<strong>kubectl exec $POD_NAME env</strong>  </pre>
+<p>The output, limited to the environment variables related to the <kbd>go-demo-2-db</kbd> service, is as follows:</p>
+<pre><strong>GO_DEMO_2_DB_PORT=tcp://10.0.0.250:27017</strong>
+<strong>GO_DEMO_2_DB_PORT_27017_TCP_ADDR=10.0.0.250</strong>
+<strong>GO_DEMO_2_DB_PORT_27017_TCP_PROTO=tcp</strong>
+<strong>GO_DEMO_2_DB_PORT_27017_TCP_PORT=27017</strong>
+<strong>GO_DEMO_2_DB_PORT_27017_TCP=tcp://10.0.0.250:27017</strong>
+<strong>GO_DEMO_2_DB_SERVICE_HOST=10.0.0.250</strong>
+<strong>GO_DEMO_2_DB_SERVICE_PORT=27017</strong>  </pre>
+<p>The first five variables are using the Docker format. If you already worked with Docker networking, you should be familiar with them. At least, if you're familiar with the way Swarm (standalone) and Docker Compose operate. Later version of Swarm (Mode) still generate the environment variables but they are mostly abandoned by the users in favour of DNSes.</p>
+<p>The last two environment variables are Kubernetes specific and follow the <kbd>[SERVICE_NAME]_SERVICE_HOST</kbd> and <kbd>[SERVICE_NAME]_SERIVCE_PORT</kbd> format (service name is upper-cased).</p>
+<p>No matter which set of environment variables you choose to use (if any), they all serve the same purpose. They provide a reference we can use to connect to a Service and, therefore to the related Pods.</p>
+<p>Things will become more evident when we describe the <kbd>go-demo-2-db</kbd> Service.</p>
+<pre><strong>kubectl describe svc go-demo-2-db</strong>  </pre>
+<p>The output is as follows:</p>
+<pre><strong>Name:              go-demo-2-db</strong>
+<strong>Namespace:         default</strong>
+<strong>Labels:            &lt;none&gt;</strong>
+<strong>Annotations:       &lt;none&gt;</strong>
+<strong>Selector:          service=go-demo-2,type=db</strong>
+<strong>Type:              ClusterIP</strong>
+<strong>IP:                10.0.0.250</strong>
+<strong>Port:              &lt;unset&gt;  27017/TCP</strong>
+<strong>TargetPort:        27017/TCP</strong>
+<strong>Endpoints:         172.17.0.4:27017</strong>
+<strong>Session Affinity:  None</strong>
+<strong>Events:            &lt;none&gt;</strong></pre>
+<p>The key is in the <kbd>IP</kbd> field. That is the IP through which this service can be accessed and it matches the values of the environment variables <kbd>GO_DEMO_2_DB_*</kbd> and <kbd>GO_DEMO_2_DB_SERVICE_HOST</kbd>.</p>
+<p>The code inside the containers that form the <kbd>go-demo-2-api</kbd> Pods could use any of those environment variables to construct a connection string towards the <kbd>go-demo-2-db</kbd> Pods. For example, we could have used <kbd>GO_DEMO_2_DB_SERVICE_HOST</kbd> to connect to the database. And, yet, we didn't do that. The reason is simple. It is easier to use DNS instead.</p>
+<p>Let's take another look at the snippet from the <kbd>go-demo-2-api-rs.yml</kbd> ReplicaSet definition:</p>
+<pre><strong>cat svc/go-demo-2-api-rs.yml</strong>
+<strong>...</strong>
+<strong>env:</strong>
+<strong>- name: DB</strong>
+<strong>  value: go-demo-2-db</strong>
+<strong>...</strong>  </pre>
+<p>We declared an environment variable with the name of the Service (<kbd>go-demo-2-db</kbd>). That variable is used by the code as a connection string to the database. Kubernetes converts Service names into DNSes and adds them to the DNS server. It is a cluster add-on that is already set up by Minikube.</p>
+<p>Let's go through the sequence of events related to service discovery and components involved:</p>
+<ol>
+<li>When the <kbd>api</kbd> container <kbd>go-demo-2</kbd> tries to connect with the <kbd>go-demo-2-db</kbd> Service, it looks at the nameserver configured in <kbd>/etc/resolv.conf</kbd>. <kbd>kubelet</kbd> configured the nameserver with the kube-dns Service IP (<kbd>10.96.0.10</kbd>) during the Pod scheduling process.</li>
+<li>The container queries the DNS server listening to port <kbd>53</kbd>. <kbd>go-demo-2-db</kbd> DNS gets resolved to the service IP <kbd>10.0.0.19</kbd>. This DNS record was added by kube-dns during the service creation process.</li>
+<li>The container uses the service IP which forwards requests through the iptables rules. They were added by kube-proxy during Service and Endpoint creation process.</li>
+</ol>
+<ol start="4">
+<li>Since we only have one replica of the <kbd>go-demo-2-db</kbd> Pod, iptables forwards requests to just one endpoint. If we had multiple replicas, iptables would act as a load balancer and forward requests randomly among Endpoints of the Service.</li>
+</ol>
+<div class="CDPAlignCenter CDPAlign packt_figref"><img src="assets/238e11b0-6ce1-47d2-927e-c28311551956.png" style="width:55.75em;height:26.83em;"/><br/>
+<span>Figure 5-5: Service discovery process and components involved</span></div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">What now?</h1>
+                </header>
+            
+            <article>
+                
+<p>That was it. We went through most important aspects of Services. There are a few other cases we did not yet explore, but the current knowledge should be more than enough to get you going.</p>
+<p>Services are indispensable objects without which communication between Pods would be hard and volatile. They provide static addresses through which we can access them not only from other Pods but also from outside the cluster. This ability to have fixed entry points is crucial as it provides stability to otherwise dynamic elements of the cluster. Pods come and go, Services stay.</p>
+<p>We are one crucial topic away from having a fully functional, yet still simple, strategy for deployment and management of our applications. We are yet to explore how to deploy and update our services without downtime.</p>
+<p>We have exhausted this topic and the time has come to destroy everything we did so far.</p>
+<pre><strong>minikube delete</strong>  </pre>
+<div class="packt_infobox">If you'd like to know more about Services, please explore Service v1 core (<a href="https://v1-9.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.9/#service-v1-core" target="_blank"><span class="URLPACKT">https://v1-9.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.9/#service-v1-core</span></a>) API documentation.</div>
+<div class="packt_figure">Figure 5-6: The components explored so far</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Kubernetes Pods, ReplicaSets, and Services compared to Docker Swarm stacks</h1>
+                </header>
+            
+            <article>
+                
+<p>Starting from this chapter, we'll compare each Kubernetes feature with Docker Swarm equivalents. That way, Swarm users can have a smoother transition into Kubernetes or, depending on their goals, choose to stick with Swarm.</p>
+<p>Please bear in mind that the comparisons will be made only for a specific set of features. You will not (yet) be able to conclude whether Kubernetes is better or worse than Docker Swarm. You'll need to grasp both products in their entirety to make an educated decision. The comparisons like those that follow are useful only as a base for more detailed examinations of the two products.</p>
+<p>For now, we'll limit the comparison scope to Pods, ReplicaSets, and Services on the one hand, and Docker Service stacks, on the other.</p>
+<p>Let's start with Kubernetes file <kbd>go-demo-2.yml</kbd> (<a href="https://github.com/vfarcic/k8s-specs/blob/master/svc/go-demo-2.yml" target="_blank"><span class="URLPACKT">https://github.com/vfarcic/k8s-specs/blob/master/svc/go-demo-2.yml</span></a>) (the same one we used before).</p>
+<p>The definition is as follows:</p>
+<pre><strong>apiVersion: apps/v1beta2</strong>
+<strong>kind: ReplicaSet</strong>
+<strong>metadata:</strong>
+<strong>  name: go-demo-2-db</strong>
+<strong>spec:</strong>
+<strong>  selector:</strong>
+<strong>    matchLabels:</strong>
+<strong>      type: db</strong>
+<strong>      service: go-demo-2</strong>
+<strong>  template:</strong>
+<strong>    metadata:</strong>
+<strong>      labels:</strong>
+<strong>        type: db</strong>
+<strong>        service: go-demo-2</strong>
+<strong>    spec:</strong>
+<strong>      containers:</strong>
+<strong>      - name: db</strong>
+<strong>        image: mongo:3.3</strong>
+<strong>        ports:</strong>
+<strong>        - containerPort: 28017</strong>
+    
+<strong>---</strong>
+    
+<strong>apiVersion: v1</strong>
+<strong>kind: Service</strong>
+<strong>metadata:</strong>
+<strong>  name: go-demo-2-db</strong>
+<strong>spec:</strong>
+<strong>  ports:</strong>
+<strong>  - port: 27017</strong>
+<strong>  selector:</strong>
+<strong>    type: db</strong>
+<strong>    service: go-demo-2</strong>
+  
+<strong>---</strong>
+    
+<strong>apiVersion: apps/v1beta2</strong>
+<strong>kind: ReplicaSet</strong>
+<strong>metadata:</strong>
+<strong>  name: go-demo-2-api</strong>
+<strong>spec:</strong>
+<strong>  replicas: 3</strong>
+<strong>  selector:</strong>
+<strong>    matchLabels:</strong>
+<strong>      type: api</strong>
+<strong>      service: go-demo-2</strong>
+<strong>  template:</strong>
+<strong>    metadata:</strong>
+<strong>      labels:</strong>
+<strong>        type: api</strong>
+<strong>        service: go-demo-2</strong>
+<strong>    spec:</strong>
+<strong>      containers:</strong>
+<strong>      - name: api</strong>
+<strong>        image: vfarcic/go-demo-2</strong>
+<strong>        env:</strong>
+<strong>        - name: DB</strong>
+<strong>          value: go-demo-2-db</strong>
+<strong>        readinessProbe:</strong>
+<strong>          httpGet:</strong>
+<strong>            path: /demo/hello</strong>
+<strong>            port: 8080</strong>
+<strong>          periodSeconds: 1</strong>
+<strong>        livenessProbe:</strong>
+<strong>          httpGet:</strong>
+<strong>            path: /demo/hello</strong>
+<strong>            port: 8080</strong>
+    
+<strong>---</strong>
+    
+<strong>apiVersion: v1</strong>
+<strong>kind: Service</strong>
+<strong>metadata:</strong>
+<strong>  name: go-demo-2-api</strong>
+<strong>spec:</strong>
+<strong>  type: NodePort</strong>
+<strong>  ports:</strong>
+<strong>  - port: 8080</strong>
+<strong>  selector:</strong>
+<strong>    type: api</strong>
+<strong>    service: go-demo-2</strong>  </pre>
+<p>Now, let's take a look at the Docker stack defined in <kbd>go-demo-2-swarm.yml</kbd> (<a href="https://github.com/vfarcic/k8s-specs/blob/master/svc/go-demo-2-swarm.yml" target="_blank"><span class="URLPACKT">https://github.com/vfarcic/k8s-specs/blob/master/svc/go-demo-2-swarm.yml</span></a>).</p>
+<p>The specification is as follows:</p>
+<pre><strong>version: "3"</strong>
+<strong>services:</strong>
+<strong>  api:</strong>
+<strong>    image: vfarcic/go-demo-2</strong>
+<strong>    environment:</strong>
+<strong>      - DB=db</strong>
+<strong>    ports:</strong>
+<strong>      - 8080</strong>
+<strong>    deploy:</strong>
+<strong>      replicas: 3</strong>
+<strong>  db:</strong>
+<strong>    image: mongo</strong>  </pre>
+<p>Both definitions accomplish the same result. There is no important difference from the functional point of view, except in Pods. Docker does not have the option to create something similar. When Swarm services are created, they are spread across the cluster, and there is no easy way to specify that multiple containers should run on the same node. Whether multi-container Pods are useful or not is something we'll explore later. For now, we'll ignore that feature.</p>
+<p>If we execute something like <kbd>docker stack deploy -c svc/go-demo-2-swarm.yml go-demo-2</kbd>, the result would be equivalent to what we got when we run <kbd>kubectl create -f svc/go-demo-2.yml</kbd>. In both cases, we get three replicas of <kbd>vfarcic/go-demo-2</kbd>, and one replica of <kbd>mongo</kbd>. Respective schedulers are making sure that the desired state (almost) always matches the actual state. Networking communication through internal DNSes is also established with both solutions. Each node in a cluster would expose a randomly defined port that forwards requests to the <kbd>api</kbd>. All in all, there are no functional differences between the two solutions.</p>
+<p>When it comes to the way services are defined, there is indeed, a considerable difference. Docker's stack definition is much more compact and straight-forward. We defined, in twelve lines, what took around eighty lines in the Kubernetes format.</p>
+<p>One might argue that Kubernetes YAML file could have been smaller. Maybe it could. Still, it'll be bigger and more complex no matter how much we simplify it. One might also say that Docker's stack is missing <kbd>readinessProbe</kbd> and <kbd>livenessProbe</kbd>. Yes it is, and that is because I decided not to put it there, because the <kbd>vfarcic/go-demo-2</kbd> image already has <kbd>HEALTHCHECK</kbd> definition that Docker uses for similar purposes. In most cases, Dockerfile is a better place to define health checks than a stack definition. That does not mean that it cannot be set, or overwritten, in a YAML file. It can, when needed. But, that is not the case in this example.</p>
+<p>All in all, if we limit ourselves only to Kubernetes Pods, ReplicaSets, and Services, and their equivalents in Docker Swarm, the latter wins due to a much simpler and more straightforward way to define specs. From the functional perspective, both are very similar.</p>
+<p>Should you conclude that Swarm is a better option than Kubernetes? Not at all. At least, not until we compare other features. Swarm won the battle, but the war has just begun. As we progress, you'll see that there's much more to Kubernetes. We only scratched the surface.</p>
+
+
+            </article>
+
+            
+        </section>
+    </body></html>

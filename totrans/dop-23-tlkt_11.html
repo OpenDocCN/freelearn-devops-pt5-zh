@@ -1,0 +1,407 @@
+<html><head></head><body>
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Dividing a Cluster into Namespaces</h1>
+                </header>
+            
+            <article>
+                
+<div class="packt_tip">Applications and corresponding objects often need to be separated from each other to avoid conflicts and other undesired effects.</div>
+<p>We might need to separate objects created by different teams. We can, for example, give each team a separate cluster so that they can "experiment" without affecting others. In other cases, we might want to create different clusters that will be used for various purposes. For example, we could have a production and a testing cluster. There are many other problems that we tend to solve by creating different clusters. Most of them are based on the fear that some objects will produce adverse effects on others. We might be afraid that a team will accidentally replace a production release of an application with an untested beta. Or, we might be concerned that performance tests will slow down the whole cluster. Fear is one of the main reasons why we tend to be defensive and conservative. In some cases, it is founded on past experiences. In others, it might be produced by insufficient knowledge of the tools we adopted. More often than not, it is a combination of the two.</p>
+<p>The problem with having many Kubernetes clusters is that each has an operational and resource overhead. Managing one cluster is often far from trivial. Having a few is complicated. Having many can become a nightmare and require quite a significant investment in hours dedicated to operations and maintenance. If that overhead is not enough, we must also be aware that each cluster needs resources dedicated to Kubernetes. The more clusters we have, the more resources (CPU, memory, IO) are spent. While that can be said for big clusters as well, the fact remains that the resource overhead of having many smaller clusters is higher than having a single big one.</p>
+<p>I am not trying to discourage you from having multiple Kubernetes clusters. In many cases, that is a welcome, if not a required, strategy. However, there is the possibility of using Kubernetes Namespaces instead. In this chapter, we'll explore ways to split a cluster into different segments as an alternative to having multiple clusters.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Creating a Cluster</h1>
+                </header>
+            
+            <article>
+                
+<p>You know the drill, so let's get the cluster setup over and done with.</p>
+<div class="packt_infobox">All the commands from this chapter are available in the <kbd>11-ns.sh</kbd> (<a href="https://gist.github.com/vfarcic/6e0a03df4c64a9248fbb68673c1ab719" target="_blank"><span class="URLPACKT">https://gist.github.com/vfarcic/6e0a03df4c64a9248fbb68673c1ab719</span></a>) Gist.</div>
+<pre><strong>cd k8s-specs</strong>
+    
+<strong>git pull</strong>
+    
+<strong>minikube start --vm-driver=virtualbox</strong>
+    
+<strong>minikube addons enable ingress</strong>
+    
+<strong>kubectl config current-context</strong>  </pre>
+<p>Now that the cluster is created (again), we can start exploring Namespaces.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Deploying the first release</h1>
+                </header>
+            
+            <article>
+                
+<p>We'll start by deploying the <kbd>go-demo-2</kbd> application and use it to explore Namespaces.</p>
+<pre><strong>cat ns/go-demo-2.yml</strong>  </pre>
+<p>The definition is the same as the one we used before, so we'll skip the explanation of the YAML file. Instead, we'll jump right away into the deployment.</p>
+<p>Unlike previous cases, we'll deploy a specific tag of the application. If this would be a Docker Swarm stack, we'd define the tag of the <kbd>vfarcic/go-demo-2</kbd> image as an environment variable with the default value set to <kbd>latest</kbd>. Unfortunately, Kubernetes does not have that option. Since I don't believe that it is a good idea to create a different version of the YAML file for each release, we'll use <kbd>sed</kbd> to modify the definition before passing it to <kbd>kubectl</kbd>.</p>
+<p>Using <kbd>sed</kbd> to alter Kubernetes definitions is not a good solution. Heck, it's a terrible one. We should use a templating solution like, for example, Helm (<a href="https://helm.sh/" target="_blank"><span class="URLPACKT">https://helm.sh/</span></a>). However, we are focusing purely on Kubernetes. Helm and other third-party products are out of the scope of this book. So, we'll have to do with a workaround in the form of <kbd>sed</kbd> commands:</p>
+<pre><strong>IMG=vfarcic/go-demo-2</strong>
+  
+<strong>TAG=1.0</strong>
+    
+<strong>cat ns/go-demo-2.yml \</strong>
+<strong>    | sed -e \</strong>
+    <strong>"s@image: $IMG@image: $IMG:$TAG@g" \</strong>
+    <strong>| kubectl create -f -</strong> </pre>
+<p>We declared environment variables <kbd>IMG</kbd> and <kbd>TAG</kbd>. Further on, we <kbd>cat</kbd> the YAML file and piped the output to <kbd>sed</kbd>. It, in return, replaced <kbd>image: vfarcic/go-demo-2</kbd> with <kbd>image: vfarcic/go-demo-2:1.0</kbd>. Finally, the modified definition was piped to <kbd>kubectl</kbd>. When the <kbd>-f</kbd> argument is followed with a dash (<kbd>-</kbd>), <kbd>kubectl</kbd> uses standard input (<kbd>stdin</kbd>) instead of a file. In our case, that input is the YAML definition altered by adding the specific <kbd>tag (1.0)</kbd> to the <kbd>vfarcic/go-demo-2</kbd> image.</p>
+<p>Let's confirm that the deployment rolled out successfully:</p>
+<pre><strong>kubectl rollout status \</strong>
+    <strong>deploy go-demo-2-api</strong></pre>
+<p>We'll check whether the application is deployed correctly by sending an HTTP request. Since the Ingress resource we just created has the <kbd>host</kbd> set to <kbd>go-demo-2.com</kbd>, we'll have to "fake" it by adding <kbd>Host: go-demo-2.com</kbd> header to the request:</p>
+<pre><strong>curl -H "Host: go-demo-2.com" \</strong>
+<strong>    "http://$(minikube ip)/demo/hello"</strong></pre>
+<p>The output is as follows:</p>
+<pre><strong>hello, release 1.0!</strong>  </pre>
+<p>The reason we jumped through so many hoops to deploy a specific release will be revealed soon. For now, we'll assume that we're running the first release in production.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Exploring virtual clusters</h1>
+                </header>
+            
+            <article>
+                
+<p>Almost all of the system services are running as Kubernetes objects. Kube DNS is a deployment. Minikube Addon Manager, Dashboard, Storage Controller, and nginx Ingress are a few of the system Pods that are currently running in our Minikube cluster. Still, we haven't seen them yet. Even though we executed <kbd>kubectl get all</kbd> quite a few times, there was not a trace of any of those objects. How can that be? Will we see them now if we list all the objects? Let's check it out.</p>
+<pre><strong>kubectl get all</strong>  </pre>
+<p>The output shows only the objects we created. There are <kbd>go-demo-2</kbd> Deployments, ReplicaSets, Services, and Pods. The only system object we can observe is the <kbd>kubernetes</kbd> Service.</p>
+<p>Judging from the current information, if we limit our observations to Pods, our cluster can be described through the <em>Figure 11-1</em>.</p>
+<div class="CDPAlignCenter CDPAlign"><img src="assets/d10ad6a3-d890-4fed-b5e4-bfc1dcfa9e37.png" style="width:25.42em;height:9.58em;"/></div>
+<div class="packt_figure packt_figref CDPAlignCenter CDPAlign">Figure 11-1: The cluster with go-demo-2 Pods</div>
+<p>All in all, our cluster runs a mixture of system-level objects and the objects we created, but only the latter is visible. You might be compelled to execute <kbd>kubectl get --help</kbd> hoping that there is an argument that will allow you to retrieve the information about system level objects. You might think that they are hidden from you by default. That's not the case. They are not hidden. Instead, they do not live in the Namespace we're looking at.</p>
+<p>Kubernetes uses Namespaces to create virtual clusters. When we created the Minikube cluster, we got three Namespaces. In a way, each Namespace is a cluster within the cluster. They provide scope for names.</p>
+<p>So far our experience tells us that we cannot have two of the same types of objects with the same name. There cannot be, for example, two deployments named <kbd>go-demo-2-api</kbd>. However, that rule applies only within a Namespace. Inside a cluster, we can have many of same object types with the same name as long as they belong to different Namespaces.</p>
+<p>So far, we had the impression that we are operating on the level of a Minikube Kubernetes cluster. That was a wrong assumption. All this time we were inside one Namespace of all the possible Namespaces in the cluster. To be more concrete, all the commands we executed thus far created objects in the <kbd>default</kbd> Namespace.</p>
+<p>Namespaces are so much more than scopes for object names. They allow us to split a cluster among different groups of users. Each of those Namespaces can have different permissions and resources quotas. There are quite a few other things we can do if we combine Namespaces with other Kubernetes services and concepts. However, we'll ignore permissions, quotas, policies, and other things we did not yet explore. We'll focus on Namespaces alone.</p>
+<p>We'll start by exploring the pre-defined Namespaces first.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Exploring the existing Namespaces</h1>
+                </header>
+            
+            <article>
+                
+<p>Now that we know that our cluster has multiple Namespaces, let's explore them a bit.</p>
+<p>We can list all the Namespaces through the <kbd>kubectl get namespaces</kbd> command. As with the most of the other Kubernetes objects and resources, we can also use a shortcut <kbd>ns</kbd> instead of the full name.</p>
+<pre><strong>kubectl get ns</strong>  </pre>
+<p>The output is as follows:</p>
+<pre><strong>NAME          STATUS    AGE</strong>
+<strong>default       Active    3m</strong>
+<strong>kube-public   Active    3m</strong>
+<strong>kube-system   Active    3m</strong>  </pre>
+<p>We can see that three Namespaces were set up automatically when we created the Minikube cluster.</p>
+<p>The <kbd>default</kbd> Namespace is the one we used all this time. If we do not specify otherwise, all the <kbd>kubectl</kbd> commands will operate against the objects in the <kbd>default</kbd> Namespace. That's where our <kbd>go-demo-2</kbd> application is running. Even though we were not aware of its existence, we now know that's where the objects we created are placed.</p>
+<div class="CDPAlignCenter CDPAlign"><img src="assets/60c3a763-527e-4a1e-a93a-1f6dd7eff781.png" style="width:45.33em;height:12.33em;"/></div>
+<div class="packt_figure packt_figref CDPAlignCenter CDPAlign">Figure 11-2: The Namespaces and the go-demo-2 Pods</div>
+<p>There are quite a few ways to specify a Namespace. For now, we'll use the <kbd>--namespace</kbd> argument. It is one of the global options that is available for all <kbd>kubectl</kbd> commands.</p>
+<p>The command that will retrieve all the objects from the <kbd>kube-public</kbd> Namespace is as follows:</p>
+<pre><strong>kubectl --namespace kube-public get all</strong>  </pre>
+<p>The output states that <kbd>No resources</kbd> were <kbd>found</kbd>. That's disappointing, isn't it? Kubernetes does not use the <kbd>kube-public</kbd> Namespace for its system-level object. All the objects we created are in the <kbd>default</kbd> Namespace.</p>
+<p>The <kbd>kube-public</kbd> Namespace is readable by all users from all Namespaces. The primary reason for its existence is to provide space where we can create objects that should be visible throughout the whole cluster. A good example is ConfigMaps. When we create one in, let's say, the <kbd>default</kbd> Namespace, it is accessible only by the other objects in the same Namespace. Those residing somewhere else would be oblivious of its existence. If we'd like such a ConfigMap to be visible to all objects no matter where they are, we'd put it into the <kbd>kube-public</kbd> Namespace instead. We won't use this Namespace much (if at all).</p>
+<p>The <kbd>kube-system</kbd> Namespace is critical. Almost all the objects and resources Kubernetes needs are running inside it. We can check that by executing the command that follows:</p>
+<pre><strong>kubectl --namespace kube-system get all</strong>  </pre>
+<p>We retrieved all the objects and resources running inside the <kbd>kube-system</kbd> Namespace. The output is as follows:</p>
+<pre><strong>NAME            DESIRED CURRENT UP-TO-DATE AVAILABLE AGE</strong>
+<strong>deploy/kube-dns 1       1       1          1         3m</strong>
+    
+<strong>NAME                   DESIRED CURRENT READY AGE</strong>
+<strong>rs/kube-dns-86f6f55dd5 1       1       1     3m</strong>
+    
+<strong>NAME            DESIRED CURRENT UP-TO-DATE AVAILABLE AGE</strong>
+<strong>deploy/kube-dns 1       1       1          1         3m</strong>
+  
+<strong>NAME                   DESIRED CURRENT READY AGE</strong>
+<strong>rs/kube-dns-86f6f55dd5 1       1       1     3m</strong>
+    
+<strong>NAME                              READY STATUS  RESTARTS AGE</strong>
+<strong>po/default-http-backend-j7mlp     1/1   Running 0        3m</strong>
+<strong>po/kube-addon-manager-minikube    1/1   Running 0        4m</strong>
+<strong>po/kube-dns-86f6f55dd5-62dsn      3/3   Running 0        3m</strong>
+<strong>po/kubernetes-dashboard-mtkrl     1/1   Running 1        3m</strong>
+<strong>po/nginx-ingress-controller-fxrhn 1/1   Running 0        3m</strong>
+<strong>po/storage-provisioner            1/1   Running 0        3m</strong>
+  
+<strong>NAME                        DESIRED CURRENT READY AGE</strong>
+<strong>rc/default-http-backend     1       1       1     3m</strong>
+<strong>rc/kubernetes-dashboard     1       1       1     3m</strong>
+<strong>rc/nginx-ingress-controller 1       1       1     3m</strong>
+    
+<strong>NAME                     TYPE      CLUSTER-IP    EXTERNAL-IP PORT<br/>(S)       AGE</strong>
+<strong>svc/default-http-backend NodePort  10.107.189.73 &lt;none&gt;      80:3<br/>0001/TCP  3m</strong>
+<strong>svc/kube-dns             ClusterIP 10.96.0.10    &lt;none&gt;      53/U<br/>DP,53/TCP 3m</strong>
+<strong>svc/kubernetes-dashboard NodePort  10.96.41.245  &lt;none&gt;      80:3<br/>0000/TCP  3m</strong>  </pre>
+<p>As we can see, quite a few things are running inside the <kbd>kube-system</kbd> Namespace. For example, we knew that there is an nginx Ingress controller, but this is the first time we saw its objects. It consists of a Replication Controller <kbd>nginx-ingress-controller</kbd>, and the Pod it created, <kbd>nginx-ingress-controller-fxrhn</kbd>.</p>
+<div class="CDPAlignCenter CDPAlign"><img src="assets/c31706ce-4181-4892-91d1-65fcc0f1b824.png" style="width:45.17em;height:15.17em;"/></div>
+<div class="packt_figure packt_figref CDPAlignCenter CDPAlign">Figure 11-3: The Namespaces and the Pods</div>
+<p>As long as the system works as expected, there isn't much need to do anything inside the <kbd>kube-system</kbd> Namespace. The real fun starts when we create new Namespaces.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Deploying to a new Namespace</h1>
+                </header>
+            
+            <article>
+                
+<p>Currently, we're running the release 1.0 of the <kbd>go-demo-2</kbd> application. We can consider it the production release. Now, let's say that the team in charge of the application just made a new release. They ran unit tests and built the binary. They produced a new Docker image and tagged it as <kbd>vfarcic/go-demo-2:2.0</kbd>. What they didn't do is run functional, performance, and other types of tests that require a running application. The new release is still not ready to be deployed to production so we cannot yet execute a rolling update and replace the production release with the new one. We need to finish running the tests, and for that we need the new release running in parallel with the old one.</p>
+<p>We could, for example, create a new cluster that would be used only for testing purposes. While that is indeed a good option in some situations, in others it might be a waste of resources. Moreover, we'd face the same challenge in the testing cluster. There might be multiple new releases that need to be deployed and tested in parallel.</p>
+<p>Another option could be to create a new cluster for each release that is to be tested. That would create the necessary separation and maintain the freedom we strive for. However, that is slow. Creating a cluster takes time. Even though it might not look like much, wasting ten minutes (if not more) only on that is too much time. Even if you disagree with me and you think that ten minutes is not that much, such an approach would be too expensive. Every cluster has a resource overhead that needs to be paid. While the overall size of a cluster affects the resource overhead, the number of clusters affects it even more. It's more expensive to have many smaller clusters than a big one. On top of all that, there is the operational cost. While it is often not proportional to the number of clusters, it still increases.</p>
+<p>Having a separate cluster for all our testing needs is not a bad idea. We shouldn't discard it, just as we should consider creating (and destroying) a new cluster for each new release. However, before you start creating new Kubernetes clusters, we'll explore how we might accomplish the same goals with a single cluster and with the help of Namespaces.</p>
+<p>First things first. We need to create a new Namespace before we can use it.</p>
+<pre><strong>kubectl create ns testing</strong>
+    
+<strong>kubectl get ns</strong>  </pre>
+<p>The output of the latter command is as follows:</p>
+<pre><strong>NAME          STATUS    AGE</strong>
+<strong>default       Active    5m</strong>
+<strong>kube-public   Active    5m</strong>
+<strong>kube-system   Active    5m</strong>
+<strong>testing       Active    3s</strong></pre>
+<p>We can see that the new Namespace <kbd>testing</kbd> was created.</p>
+<p>We can continue using the <kbd>--namespace</kbd> argument to operate within the newly created Namespace. However, adding <kbd>--namespace</kbd> with every command is tedious. Instead, we'll create a new context.</p>
+<pre><strong>kubectl config set-context testing \</strong>
+<strong>    --namespace testing \</strong>
+    <strong>--cluster minikube \</strong>
+    <strong>--user minikube</strong>  </pre>
+<p>We created a new context called <kbd>testing</kbd>. It is the same as the <kbd>minikube</kbd> context, except that it uses the <kbd>testing</kbd> Namespace.</p>
+<pre><strong>kubectl config view</strong>  </pre>
+<p>The output, limited to the relevant parts, is as follows:</p>
+<pre><strong>...</strong>
+<strong>contexts:</strong>
+<strong>- context:</strong>
+<strong>    cluster: minikube</strong>
+<strong>    user: minikube</strong>
+<strong>  name: minikube</strong>
+<strong>- context:</strong>
+<strong>    cluster: minikube</strong>
+<strong>    Namespace: testing</strong>
+<strong>    user: minikube</strong>
+<strong>  name: testing</strong>
+<strong>...</strong>  </pre>
+<p>We can see that there are two contexts. Both are set to use the same <kbd>minikube</kbd> cluster with the same <kbd>minikube</kbd> user. The only difference is that one does not have the Namespace set, meaning that it will use the <kbd>default</kbd>. The other has it set to <kbd>testing</kbd>.</p>
+<p>Now that we have two contexts, we can switch to <kbd>testing</kbd>.</p>
+<pre><strong>kubectl config use-context testing</strong>  </pre>
+<p>We switched to the <kbd>testing</kbd> context that uses the Namespace of the same name. From now on, all the <kbd>kubectl</kbd> commands will be executed within the context of the <kbd>testing</kbd> Namespace. That is, until we change the context again, or use the <kbd>--namespace</kbd> argument.</p>
+<p>To be on the safe side, we'll confirm that nothing is running in the newly created Namespace.</p>
+<pre><strong>kubectl get all</strong>  </pre>
+<p>The output shows that <kbd>no resources</kbd> were <kbd>found</kbd>.</p>
+<p>If we repeat the same command with the addition of the <kbd>--namespace=default</kbd> argument, we'll see that the <kbd>go-demo-2</kbd> objects we created earlier are still running.</p>
+<p>Let's continue and deploy a new release. As we explained before, the main objective of the deployment is to provide a means to test the release. It should remain hidden from our users. They should be oblivious to the existence of the new Deployment and continue using the release 1.0 until we are confident that 2.0 works as expected:</p>
+<pre><strong>TAG=2.0</strong>
+    
+<strong>DOM=go-demo-2.com</strong>
+    
+<strong>cat ns/go-demo-2.yml \</strong>
+    <strong>| sed -e \</strong>
+    <strong>"s@image: $IMG@image: $IMG:$TAG@g" \</strong>
+    <strong>| sed -e \</strong>
+    <strong>"s@host: $DOM@host: $TAG\.$DOM@g" \</strong>
+    <strong>| kubectl create -f -</strong>  </pre>
+<p>Just as before, we used <kbd>sed</kbd> to alter the image definition. This time, we're deploying the tag <kbd>2.0</kbd>.</p>
+<p>Apart from changing the image tag, we also modified the host. This time, the Ingress resource will be configured with the host <kbd>2.0.go-demo-2.com</kbd>. That will allow us to test the new release using that domain while our users will continue seeing the production release 1.0 through the domain <kbd>go-demo-2.com</kbd>.</p>
+<p>Let's confirm that the rollout finished.</p>
+<pre><strong>kubectl rollout status \</strong>
+<strong>    deploy go-demo-2-api</strong></pre>
+<p>The output is as follows:</p>
+<pre><strong>deployment "go-demo-2-api" successfully rolled out</strong>  </pre>
+<p>As you can see, we rolled out the Deployment <kbd>go-demo-2-api</kbd>, along with some other resources. That means that we have two sets of the same objects with the same name. One is running in the <kbd>default</kbd> Namespace, while the other (release 2.0) is running in the <kbd>testing</kbd> Namespace.</p>
+<div class="CDPAlignCenter CDPAlign"><img src="assets/3c63451b-d096-468e-a676-d1ff58a57423.png" style="width:42.50em;height:20.25em;"/></div>
+<div class="packt_figure packt_figref CDPAlignCenter CDPAlign">Figure 11-4: The cluster with the new Namespace testing</div>
+<p>Before we open a new bottle of Champagne and celebrate the successful deployment of the new release without affecting production, we should verify that both are indeed working as expected.</p>
+<p>If we send a request to <kbd>go-demo-2.com</kbd>, we should receive a response from the release 1.0 running in the <kbd>default</kbd> Namespace.</p>
+<pre><strong>curl -H "Host: go-demo-2.com" \</strong>
+    <strong>"http://$(minikube ip)/demo/hello"</strong></pre>
+<p>The output is as follows:</p>
+<pre><strong>hello, release 1.0!</strong>  </pre>
+<p>If, on the other hand, we send a request to <kbd>2.0.go-demo-2.com</kbd>, we should get a response from the release 2.0 running in the <kbd>testing</kbd> Namespace.</p>
+<pre><strong>curl -H "Host: 2.0.go-demo-2.com" \</strong>
+<strong>    "http://$(minikube ip)/demo/hello"</strong></pre>
+<p>The output is as follows:</p>
+<pre><strong>hello, release 2.0!</strong>  </pre>
+<p>The result we accomplished through different Namespaces is very similar to what we'd expect by using separate clusters. The main difference is that we did not need to complicate things by creating a new cluster. We saved time and resources by using a new Namespace instead.</p>
+<p>If this would be a "real world" situation, we'd run functional and other types of tests using the newly deployed release. Hopefully, those tests would be automated, and they would last for only a few minutes. We'll skip the testing part since it's not within the scope of this chapter (and probably not even the book). Instead, we'll imagine that the tests were executed and that they were successful.</p>
+<p>Communication is an important subject when working with Namespaces, so we'll spend a few moments exploring it.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Communicating between Namespaces</h1>
+                </header>
+            
+            <article>
+                
+<p>We'll create an <kbd>alpine-based</kbd> Pod that we'll use to demonstrate communication between Namespaces.</p>
+<pre><strong>kubectl config use-context minikube</strong>
+    
+<strong>kubectl run test --image=alpine \</strong>
+<strong>    --restart=Never sleep 10000</strong></pre>
+<p>We switched to the <kbd>minikube</kbd> context (<kbd>default</kbd> Namespace) and created a Pod with a container based on the <kbd>alpine</kbd> image. We let it <kbd>sleep</kbd> for a long time. Otherwise, the container would be without a process and would stop almost immediately.</p>
+<p>Before we proceed, we should confirm that the Pod is indeed running.</p>
+<pre><strong>kubectl get pod test</strong>  </pre>
+<p>The output is as follows:</p>
+<pre><strong>NAME READY STATUS  RESTARTS AGE</strong>
+<strong>test 1/1   Running 0        10m</strong>  </pre>
+<p>Please wait a few moments if, in your case, the Pod is not yet ready.</p>
+<p>Before we proceed, we'll install <kbd>curl</kbd> inside the container in the <kbd>test</kbd> Pod.</p>
+<pre><strong>kubectl exec -it test \</strong>
+    <strong>-- apk add -U curl</strong>  </pre>
+<p>We already explored communication between objects in the same Namespace. Since the <kbd>test</kbd> Pod is running in the <kbd>default</kbd> Namespace, we can, for example, reach the <kbd>go-demo-2-api</kbd> Service by using the Service name as a DNS name.</p>
+<pre><strong>kubectl exec -it test -- curl \</strong>
+    <strong>"http://go-demo-2-api:8080/demo/hello"</strong></pre>
+<p>The output is as follows:</p>
+<pre><strong>hello, release 1.0!</strong>  </pre>
+<p>We got the response from the release 1.0 because that's the one running in the same Namespace. Does that mean that we cannot reach Services from other Namespaces?</p>
+<p>When we create a Service, it creates a few DNS entries. One of them corresponds to the name of the Service. So, the <kbd>go-demo-2-api</kbd> Service created a DNS based on that name. Actually, the full DNS entry is <kbd>go-demo-2-api.svc.cluster.local</kbd>. Both resolve to the same service <kbd>go-demo-2-api</kbd> which, in this case, runs in the <kbd>default</kbd> Namespace.</p>
+<p>The third DNS entry we got is in the format <kbd>&lt;service-name&gt;.&lt;namespace-name&gt;.svc.cluster.local</kbd>. In our case, that is <kbd>go-demo-2-api.default.svc.cluster.local</kbd>. Or, if we prefer a shorter version, we could use <kbd>go-demo-2-api.default</kbd>.</p>
+<p>In most cases, there is no good reason to use the <kbd>&lt;service-name&gt;.&lt;namespace-name&gt;</kbd> format when communicating with Services within the same Namespace. The primary objective behind the existence of the DNSes with the Namespace name is when we want to reach services running in a different Namespace.</p>
+<p>If we'd like to reach <kbd>go-demo-2-api</kbd> running in the <kbd>testing</kbd> Namespace from the <kbd>test</kbd> Pod in the <kbd>default</kbd> Namespace, we should use the <kbd>go-demo-2-api.testing.svc.cluster.local</kbd> DNS or, even better, the shorter version <kbd>go-demo-2-api.testing</kbd>.</p>
+<pre><strong>kubectl exec -it test -- curl \</strong>
+    <strong>"http://go-demo-2-api.testing:8080/demo/hello"</strong></pre>
+<p>This time, the output is different:</p>
+<pre><strong>hello, release 2.0!</strong>  </pre>
+<p>Kube DNS used the DNS suffix <kbd>testing</kbd> to deduce that we want to reach the Service located in that Namespace. As a result, we got the response from the release 2.0 of the <kbd>go-demo-2</kbd> application.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Deleting a Namespace and all its Objects</h1>
+                </header>
+            
+            <article>
+                
+<p>Another handy feature of the Namespaces is their cascading effect. If, for example, we delete the <kbd>testing</kbd> Namespace, all the objects and the resources running inside it will be removed as well.</p>
+<pre><strong>kubectl delete ns testing</strong>
+    
+<strong>kubectl -n testing get all</strong>  </pre>
+<p>We deleted the <kbd>testing</kbd> Namespace and retrieved all the objects residing in it. The output is as follows:</p>
+<pre><strong>NAME                              READY STATUS      RESTARTS AGE</strong>
+<strong>po/go-demo-2-api-56dfb69dbd-8w6rf 0/1   Terminating 0        2m</strong>
+<strong>po/go-demo-2-api-56dfb69dbd-hrr4b 0/1   Terminating 0        2m</strong>
+<strong>po/go-demo-2-api-56dfb69dbd-ws855 0/1   Terminating 0        2m</strong>
+<strong>po/go-demo-2-db-5b49cc946b-xdd6v  0/1   Terminating 0        2m</strong>  </pre>
+<p>Please note that, in your case, the output might show more objects. If that's the case, you were too fast, and Kubernetes did not yet have time to remove them.</p>
+<p>After a second or two, the only objects in the <kbd>testing</kbd> Namespace are the Pods with the status <kbd>terminating</kbd>. Once the grace period is over, they will be removed as well. The Namespace is gone, and everything we created in it was removed as well.</p>
+<p>The ability to remove a Namespace and all the objects and the resources it hosts is especially useful when we want to create temporary objects. A good example would be <strong>continuous deployment</strong> (<strong>CDP</strong>) processes. We can create a Namespace to build, package, test, and do all the other tasks our pipeline requires. Once we're finished, we can simply remove the Namespace. Otherwise, we would need to keep track of all the objects we created and make sure that they are removed before we terminate the CDP pipeline.</p>
+<p>Now that the Namespace hosting our release 2.0 is gone, we might want to double check that the production release (1.0) is still running.</p>
+<pre><strong>kubectl get all</strong>  </pre>
+<p>The output should show the <kbd>go-demo-2</kbd> Deployments, ReplicaSets, Pods, and Services since we are still using the <kbd>default</kbd> context.</p>
+<p>To be on the safe side, we'll check that a request coming from the <kbd>go-demo-2.com</kbd> domain still returns a response from the release 1.0.</p>
+<pre><strong>curl -H "Host: go-demo-2.com" \</strong>
+<strong>    "http://$(minikube ip)/demo/hello"</strong></pre>
+<p>As expected, the response is <kbd>hello, release 1.0!</kbd>.</p>
+<p>If this were a continuous deployment pipeline, the only thing left would be to execute rolling updates that would change the image of the production release to <kbd>vfarcic/go-demo-2:2.0</kbd>. The command could be as follows:</p>
+<pre><strong>kubectl set image \</strong>
+<strong>    deployment/go-demo-2-api \</strong>
+    <strong>api=vfarcic/go-demo-2:2.0 \</strong>
+    <strong>--record</strong></pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">What now?</h1>
+                </header>
+            
+            <article>
+                
+<p>Deploying test releases as part of a continuous deployment process is not the only usage of Namespaces. There can be many other situations when they are useful. We could, for example, give a separate Namespace to each team in our organization. Or we could split the cluster into Namespaces based on the type of applications (for example, monitoring, continuous-deployment, back-end, and so on). All in all, Namespaces are a handy way to separate the cluster into different sections. Some of the Namespaces we'll create will be long-lasting while others, like testing Namespace from our examples, will be short-lived.</p>
+<p>The real power behind Namespaces comes when they are combined with authorization policies and constraints. However, we did not yet explore those subjects so, for now, we'll need to limit our Namespaces experience to their basic form.</p>
+<p>The chapter is finished, and that means that we are about to remove the cluster.</p>
+<pre><strong>minikube delete</strong>  </pre>
+<div class="packt_infobox">If you'd like to know more about Namespaces, please explore Namespace v1 core (<a href="https://v1-9.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.9/#namespace-v1-core" target="_blank"><span class="URLPACKT">https://v1-9.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.9/#namespace-v1-core</span></a>) API documentation.</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Kubernetes Namespaces compared to Docker Swarm equivalent (if there is any)</h1>
+                </header>
+            
+            <article>
+                
+<p>Docker Swarm does not have anything like Kubernetes Namespaces. We cannot split a Swarm cluster into sections. Therefore, we can finish this comparison by saying that Kubernetes is a clear winner regarding this feature since Docker Swarm doesn't have Namespaces. But, that would not be entirely accurate.</p>
+<p>Docker Swarm stacks are, in a way, similar to Kubernetes Namespaces. All the services in a stack are uniquely identified through a combination of a stack name and the names of services inside it. By default, all services within a stack can communicate with each other through the stack's default network. Services can speak with those from other stacks only if they are explicitly attached to the same network. All in all, each Swarm stack is separated from other stacks. They are, in a way, similar to Kubernetes Namespaces.</p>
+<p>Even though Docker Swarm stacks do provide a functionality similar to Kubernetes Namespaces, their usage is limited. If, for example, we'd like to split the cluster into production and testing, we'd need to create two potentially large Swarm stack files. That would be impractical. Moreover, Kubernetes Namespaces can be associated with resource quotas, policies, and quite a few other things. They do act as genuinely separate clusters. Swarm stacks, on the other hand, are meant to group services into logical entities. While some of the features in Kubernetes Namespaces and Docker Swarm stacks coincide, this is still a clear win for Kubernetes.</p>
+<p>Some might argue that they are useful only for bigger clusters or organizations with many teams. I think that's an understatement. Namespaces can be applied to many other use-cases. For example, creating a new Namespace for every continuous integration, delivery, or deployment pipeline is a beneficial practice. We get a unique scope for names, we can mitigate potential problems through resource quotas, and we can increase security. At the end of the process, we can remove the Namespace and all the objects we created inside it.</p>
+<p>Kubernetes Namespaces are one of the things that make Kubernetes a more likely candidate for teams that are in need of big clusters as well as those relying heavily on automation. Among the features we compared so far, this is the first real differentiator between the two platforms. Kubernetes is the winner of this round.</p>
+
+
+            </article>
+
+            
+        </section>
+    </body></html>

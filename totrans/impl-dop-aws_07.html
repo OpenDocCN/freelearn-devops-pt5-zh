@@ -1,0 +1,342 @@
+<html><head></head><body><div class="chapter" title="Chapter&#xA0;7.&#xA0;Metrics, Log Collection, and Monitoring"><div class="titlepage"><div><div><h1 class="title"><a id="ch07"/>Chapter 7. Metrics, Log Collection, and Monitoring</h1></div></div></div><p>
+</p><div class="mediaobject"><img src="graphics/image_07_001.jpg" alt="Metrics, Log Collection, and Monitoring"/></div><p>
+</p><p>That's it. This chapter could well have ended here but I shall carry on for the benefit of those amongst us who would prefer things in more detail.</p><p>A great deal of the DevOps practice(s) evolve around the idea of being able to review and react to the state of your infrastructure at any given time – should you need to.</p><p>That is not to say, setup e-mail notifications for every time the date changes on your host, but a stream of sensible, usable amount of event data which would allow an operator to make a reasonably informed decision under stress and/or uncertainy.</p><p>If you have been paying attention in life so far, you would have noticed many a wise man talking about <span class="emphasis"><em>balance, the golden middle</em></span>.</p><p>You should aim to configure your monitoring system in a way that you are notified of events of potential interest and in a timely manner. The notifications should arrive in a format that is hard to overlook, and should provide enough detail for an operator to be able to make an informed guess at what is going on.</p><p>At the same time, the said monitoring system must cause the least amount of alert fatigue (as outlined in this concise Datadog article: <a class="ulink" href="https://www.datadoghq.com/blog/monitoring-101-alerting">https://www.datadoghq.com/blog/monitoring-101-alerting</a>).</p><p>Unfortunately for our friendship, finding that middle ground which suits your case (your infrastructure and the people looking after it) is an adventure which you will have to go on alone. We could however spend some quality time together, discussing a few of the tools that could make it even more enjoyable!</p><p>Checklists are sophisticated, so here is one:</p><div class="itemizedlist"><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc"><span class="strong"><strong>Centralized logging</strong></span>:<div class="itemizedlist"><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">Ingesting and storing logs with <span class="strong"><strong>Logstash</strong></span> and <span class="strong"><strong>Elasticsearch</strong></span></li><li class="listitem" style="list-style-type: disc">Collecting logs with Elasticsearch <span class="strong"><strong>Filebeat</strong></span></li><li class="listitem" style="list-style-type: disc">Visualizing logs with <span class="strong"><strong>Kibana</strong></span></li></ul></div><p>
+</p></li><li class="listitem" style="list-style-type: disc"><span class="strong"><strong>Metrics</strong></span>:<div class="itemizedlist"><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">Ingesting and storing metrics with <span class="strong"><strong>Prometheus</strong></span></li><li class="listitem" style="list-style-type: disc">Gathering OS and application metrics with <span class="strong"><strong>Telegraf</strong></span></li><li class="listitem" style="list-style-type: disc">Visualizing metrics with <span class="strong"><strong>Grafana</strong></span></li></ul></div><p>
+</p></li><li class="listitem" style="list-style-type: disc"><span class="strong"><strong>Monitoring</strong></span>:<div class="itemizedlist"><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">Alerting with <span class="strong"><strong>Prometheus</strong></span></li><li class="listitem" style="list-style-type: disc">Self-remediation with <span class="strong"><strong>Prometheus</strong></span> and <span class="strong"><strong>Jenkins</strong></span></li></ul></div><p>
+</p></li></ul></div><p>Naturally, we would require a few hosts to form our playground for all of the preceding checklist. There has been sufficient practice in deploying VPC EC2 instances on AWS in previous chapters, thus I hereby exercise the great power of delegation and assume the existence of:</p><div class="itemizedlist"><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">A VPC with an IGW, NAT gateway, 2x private and 2x public subnets</li><li class="listitem" style="list-style-type: disc">2x standalone, vanilla Amazon Linux EC2 instances (say <code class="literal">t2.small</code>) within the public subnets</li><li class="listitem" style="list-style-type: disc">1x Auto Scale Group (<code class="literal">t2.nano</code>) within the private subnets</li><li class="listitem" style="list-style-type: disc">1x Internet-facing ELB passing HTTP traffic to the Auto Scale Group</li></ul></div><div class="section" title="Centralized logging"><div class="titlepage"><div><div><h1 class="title"><a id="ch07lvl1sec25"/>Centralized logging</h1></div></div></div><p>Since the olden days, mankind has strived to use its limited attention span only on what really matters in life, and without having to look for it too hard – if possible. So we started with copying log files around, evolution brought us centralized (r)syslog and today (we learn from our mistakes) we have Logstash and Elasticsearch.</p><div class="blockquote"><table border="0" width="100%" cellspacing="0" cellpadding="0" class="blockquote" summary="Block quote"><tr><td valign="top"> </td><td valign="top"><p>
+<span class="emphasis"><em>Elasticsearch is a distributed, open source search and analytics engine, designed for horizontal scalability, reliability, and easy management. It combines the speed of search with the power of analytics via a sophisticated, developer-friendly query language covering structured, unstructured, and time-series data.</em></span></p><p><span class="emphasis"><em>Logstash is a flexible, open source data collection, enrichment, and transportation pipeline. With connectors to common infrastructure for easy integration, Logstash is designed to efficiently process a growing list of log, event, and unstructured data sources for distribution into a variety of outputs, including Elasticsearch.</em></span>
+</p></td><td valign="top"> </td></tr><tr><td valign="top"> </td><td colspan="2" align="right" valign="top" style="text-align: center">--<span class="attribution"><a class="ulink" href="https://www.elastic.co/products">https://www.elastic.co/products</a></span></td></tr></table></div><div class="section" title="Ingesting and storing logs with Logstash and Elasticsearch"><div class="titlepage"><div><div><h2 class="title"><a id="ch07lvl2sec45"/>Ingesting and storing logs with Logstash and Elasticsearch</h2></div></div></div><p>We will be using Logstash to receive, process and then store log events into Elasticsearch.</p><p>For the purposes of the demos in this chapter, we'll be installing and configuring services manually, directly on the hosts. When done experimenting, you should, of course, use configuration management instead (wink).</p><p>Let us start by installing the two services on one of the standalone EC2 instances (we shall call it ELK):</p><pre class="programlisting">
+<span class="strong"><strong># yum -y install https://download.elastic.co/elasticsearch/release/org/elasticsearch/distribution/rpm/elasticsearch/2.4.1/elasticsearch-2.4.1.rpm https://download.elastic.co/logstash/logstash/packages/centos/logstash-2.4.0.noarch.rpm</strong></span>
+</pre><p>Edit <code class="literal">/etc/elasticsearch/elasticsearch.yml</code>:</p><div class="note" title="Note" style=""><div class="inner"><h3 class="title"><a id="note63"/>Note</h3><p>Please refer to:
+<a class="ulink" href="https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_07_CodeFiles/elk/etc/elasticsearch/elasticsearch.yml">https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_07_CodeFiles/elk/etc/elasticsearch/elasticsearch.yml</a>
+</p></div></div><pre class="programlisting">cluster.name: wonga-bonga &#13;
+index.number_of_shards: 1 &#13;
+index.number_of_replicas: 0 &#13;
+index : &#13;
+  refresh_interval: 5s &#13;
+</pre><p>It is important to select a unique name for the Elasticsearch cluster, so that the node does not join somebody else's inadvertently, should there be any on your LAN. For development, we only ask for a single shard and no replicas. Impatience dictates a five second refresh rate on any ES indices.</p><p>Create a Logstash <code class="literal">patterns</code> folder:</p><pre class="programlisting">
+<span class="strong"><strong># mkdir /opt/logstash/patterns</strong></span>
+</pre><p>Create a sample NGINX pattern <code class="literal">/opt/logstash/patterns/nginx</code> (ref: <a class="ulink" href="https://www.digitalocean.com/community/tutorials/adding-logstash-filters-to-improve-centralized-logging">https://www.digitalocean.com/community/tutorials/adding-logstash-filters-to-improve-centralized-logging</a>):</p><div class="note" title="Note" style=""><div class="inner"><h3 class="title"><a id="note64"/>Note</h3><p>Please refer to:
+<a class="ulink" href="https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_07_CodeFiles/elk/opt/logstash/patterns/nginx">https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_07_CodeFiles/elk/opt/logstash/patterns/nginx</a>
+</p></div></div><pre class="programlisting">NGUSERNAME [a-zA-Z\.\@\-\+_%]+ &#13;
+NGUSER %{NGUSERNAME} &#13;
+NGINXACCESS %{IPORHOST:clientip} %{NGUSER:ident} %{NGUSER:auth} \[%{HTTPDATE:timestamp}\] "%{WORD:verb} %{URIPATHPARAM:request} HTTP/%{NUMBER:httpversion}" %{NUMBER:response} (?:%{NUMBER:bytes}|-) (?:"(?:%{URI:referrer}|-)"|%{QS:referrer}) %{QS:agent} &#13;
+</pre><p>Create <code class="literal">/etc/logstash/conf.d/main.conf</code>:</p><div class="note" title="Note" style=""><div class="inner"><h3 class="title"><a id="note65"/>Note</h3><p>Please refer to:
+<a class="ulink" href="https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_07_CodeFiles/elk/etc/logstash/conf.d/main.conf">https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_07_CodeFiles/elk/etc/logstash/conf.d/main.conf</a>
+</p></div></div><pre class="programlisting">input { &#13;
+  beats { &#13;
+    port =&gt; 5044 &#13;
+  } &#13;
+} &#13;
+ &#13;
+filter { &#13;
+  if [type] == "nginx-access" { &#13;
+    grok { &#13;
+      match =&gt; { "message" =&gt; "%{NGINXACCESS}" } &#13;
+    } &#13;
+  } &#13;
+} &#13;
+ &#13;
+output { &#13;
+  elasticsearch { &#13;
+    hosts =&gt; "localhost:9200" &#13;
+    manage_template =&gt; false &#13;
+    index =&gt; "%{[@metadata][beat]}-%{+YYYY.MM.dd}" &#13;
+    document_type =&gt; "%{[@metadata][type]}" &#13;
+  } &#13;
+} &#13;
+</pre><p>Logstash allows us to configure one or more listeners (inputs) in order to receive data, filters to help us process it and outputs specifying where that data should be forwarded once processed.</p><p>We expect logs to be delivered by Elasticsearch Filebeat on <code class="literal">TCP: 5044</code>. If the log event happens to be of type <code class="literal">nginx-access</code>, we have it modified according to the <code class="literal">NGINXACCESS</code> pattern then shipped to Elasticsearch on localhost <code class="literal">TCP: 9200</code> for storage.</p><p>Finally, let us start the services:</p><pre class="programlisting">
+<span class="strong"><strong># service elasticsearch start</strong></span>
+<span class="strong"><strong># service logstash start</strong></span>
+</pre></div><div class="section" title="Collecting logs with Elasticsearch Filebeat"><div class="titlepage"><div><div><h2 class="title"><a id="ch07lvl2sec46"/>Collecting logs with Elasticsearch Filebeat</h2></div></div></div><p>We have the systems in place; let us push somes from the ELK node that we are on.</p><p>We will use Filebeat to collect local logs of interest and forward those to Logstash (incidentally also local in this case):</p><div class="blockquote"><table border="0" width="100%" cellspacing="0" cellpadding="0" class="blockquote" summary="Block quote"><tr><td valign="top"> </td><td valign="top"><p>
+<span class="emphasis"><em>Filebeat is a log data shipper. Installed as an agent on your servers, Filebeat monitors the log directories or specific log files, tails the files, and forwards them either to Elasticsearch or Logstash for indexing.</em></span>
+</p></td><td valign="top"> </td></tr><tr><td valign="top"> </td><td colspan="2" align="right" valign="top" style="text-align: center">--<span class="attribution"><span class="emphasis"><em>https://www.elastic.co/guide/en/beats/filebeat/current/filebeat-overview.html</em></span></span></td></tr></table></div><p>Installation:</p><pre class="programlisting">
+<span class="strong"><strong># yum -y install https://download.elastic.co/beats/filebeat/filebeat-1.3.1-x86_64.rpm</strong></span>
+</pre><p>While functionality is provided to ship directly to ES, we are planning to use Logstash so we need to disable the Elasticsearch output and enable the logstash one in <code class="literal">/etc/filebeat/filebeat.yml</code>:</p><div class="note" title="Note" style=""><div class="inner"><h3 class="title"><a id="note66"/>Note</h3><p>Please refer to:
+<a class="ulink" href="https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_07_CodeFiles/elk/etc/filebeat/filebeat.yml">https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_07_CodeFiles/elk/etc/filebeat/filebeat.yml</a>
+</p></div></div><pre class="programlisting">output: &#13;
+  #elasticsearch: &#13;
+  #  hosts: ["localhost:9200"] &#13;
+  logstash: &#13;
+    hosts: ["localhost:5044"] &#13;
+</pre><p>We could also list a few more log files to collect:</p><pre class="programlisting">filebeat: &#13;
+  prospectors: &#13;
+    - &#13;
+      paths: &#13;
+     - /var/log/*.log &#13;
+        - /var/log/messages &#13;
+        - /var/log/secure &#13;
+</pre><p>Then start the service:</p><pre class="programlisting">
+<span class="strong"><strong># service filebeat start</strong></span>
+</pre><p>Fun, but let us launch a few other EC2 instances for even more of it!</p><p>We shall use the Auto Scale Group we mentioned earlier. We will install Filebeat on each instance and configure it to forward selected logs to our Logstash node.</p><p>First, ensure that the security group of the Logstash instance allows inbound connections from the Auto Scale Group (<code class="literal">TCP: 5044</code>).</p><p>Next, we use an EC2 User Data script to bootstrap the Filebeat binary and configuration onto each of the EC2 instances in our Auto Scale Group (we will call them webservers):</p><div class="note" title="Note" style=""><div class="inner"><h3 class="title"><a id="note67"/>Note</h3><p>Please refer to:
+<a class="ulink" href="https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_07_CodeFiles/webserver/user_data.sh">https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_07_CodeFiles/webserver/user_data.sh</a>
+</p></div></div><pre class="programlisting">#!/bin/bash &#13;
+ &#13;
+yum -y install https://download.elastic.co/beats/filebeat/filebeat-1.3.1-x86_64.rpm &#13;
+yum -y install nginx &#13;
+ &#13;
+cat &lt;&lt; EOF &gt; /etc/filebeat/filebeat.yml &#13;
+filebeat: &#13;
+  prospectors: &#13;
+    - &#13;
+      paths: &#13;
+        - /var/log/*.log &#13;
+        - /var/log/messages &#13;
+        - /var/log/secure &#13;
+    - &#13;
+      paths: &#13;
+        - /var/log/nginx/access.log &#13;
+      document_type: nginx-access &#13;
+  registry_file: /var/lib/filebeat/registry &#13;
+output: &#13;
+  logstash: &#13;
+    hosts: ["10.0.1.132:5044"] &#13;
+EOF &#13;
+ &#13;
+service nginx start &#13;
+service filebeat start &#13;
+</pre><p>With that in place, go ahead and scale the group up. The new web server instances, should start streaming logs promptly.</p></div><div class="section" title="Visualizing logs with Kibana"><div class="titlepage"><div><div><h2 class="title"><a id="ch07lvl2sec47"/>Visualizing logs with Kibana</h2></div></div></div><p>We have our logs collected by Filebeat and stored in Elasticsearch, how about browsing them?</p><p>Kibana, right on time:</p><div class="blockquote"><table border="0" width="100%" cellspacing="0" cellpadding="0" class="blockquote" summary="Block quote"><tr><td valign="top"> </td><td valign="top"><p>
+<span class="emphasis"><em>Kibana is an open source analytics and visualization platform designed to work with Elasticsearch. You use Kibana to search, view, and interact with data stored in Elasticsearch indices. You can easily perform advanced data analysis and visualize your data in a variety of charts, tables, and maps.</em></span>
+</p></td><td valign="top"> </td></tr><tr><td valign="top"> </td><td colspan="2" align="right" valign="top" style="text-align: center">--<span class="attribution"><span class="emphasis"><em>https://www.elastic.co/guide/en/kibana/current/introduction.html</em></span></span></td></tr></table></div><p>Install the package:</p><pre class="programlisting">
+<span class="strong"><strong># yum -y install https://download.elastic.co/kibana/kibana/kibana-4.6.1-x86_64.rpm</strong></span>
+</pre><p>Start the service:</p><pre class="programlisting">
+<span class="strong"><strong># service kibana start</strong></span>
+</pre><p>The default port is <code class="literal">TCP:5601</code>, if allowed in the relevant security group, you should be able to see the Kibana dashboard:</p><p>
+</p><div class="mediaobject"><img src="graphics/image_07_002.jpg" alt="Visualizing logs with Kibana"/></div><p>
+</p><p>Set the <span class="strong"><strong>index pattern</strong></span> to <span class="strong"><strong>filebeat-*</strong></span> and click <span class="strong"><strong>Create</strong></span>.</p><p>Kibana is now ready to display our Filebeat data. Switch to the <span class="strong"><strong>Discover</strong></span> tab to see the list of recent events:</p><p>
+</p><div class="mediaobject"><img src="graphics/image_07_003.jpg" alt="Visualizing logs with Kibana"/></div><p>
+</p><p>In addition to the standard <span class="strong"><strong>Syslog</strong></span> messages, you will also notice some <span class="strong"><strong>NGINX access-log</strong></span> entries, with various fields populated as per the filter we specified earlier:</p><p>
+</p><div class="mediaobject"><img src="graphics/image_07_004.jpg" alt="Visualizing logs with Kibana"/></div><p>
+</p><p>Logs: done. Now, how about some metrics?</p></div></div></div>
+<div class="section" title="Metrics"><div class="titlepage"><div><div><h1 class="title"><a id="ch07lvl1sec26"/>Metrics</h1></div></div></div><p>For ingesting, storing and alerting on our metrics, we shall explore another, quite popular open-source project called Prometheus:</p><div class="blockquote"><table border="0" width="100%" cellspacing="0" cellpadding="0" class="blockquote" summary="Block quote"><tr><td valign="top"> </td><td valign="top"><p><span class="emphasis"><em>Prometheus is an open-source systems monitoring and alerting toolkit originally built at SoundCloud.</em></span></p><p><span class="emphasis"><em>Prometheus's main features are:</em></span></p><p><span class="emphasis"><em>-a multi-dimensional data model (time series identified by metric name and key/value pairs)</em></span></p><p><span class="emphasis"><em>- a flexible query language to leverage this dimensionality</em></span></p><p><span class="emphasis"><em>- no reliance on distributed storage; single server nodes are autonomous</em></span></p><p><span class="emphasis"><em>- time series collection happens via a pull model over HTTP</em></span></p><p><span class="emphasis"><em>- pushing time series is supported via an intermediary gateway</em></span></p><p><span class="emphasis"><em>- targets are discovered via service discovery or static configuration</em></span></p><p><span class="emphasis"><em>- multiple modes of graphing and dashboarding support</em></span></p></td><td valign="top"> </td></tr><tr><td valign="top"> </td><td colspan="2" align="right" valign="top" style="text-align: center">--<span class="attribution"><span class="emphasis"><em>https://prometheus.io/docs/introduction/overview/emphasis&gt;</em></span></span></td></tr></table></div><p>Even though it is the kind of system that takes care of pretty much everything, the project still follows the popular UNIX philosophy of modular development. Prometheus is composed of multiple components, each providing a specific function:</p><div class="blockquote"><table border="0" width="100%" cellspacing="0" cellpadding="0" class="blockquote" summary="Block quote"><tr><td valign="top"> </td><td valign="top"><p><span class="emphasis"><em>- the main Prometheus server which scrapes and stores time series data</em></span></p><p><span class="emphasis"><em>- client libraries for instrumenting application code</em></span></p><p><span class="emphasis"><em>- a push gateway for supporting short-lived jobs</em></span></p><p><span class="emphasis"><em>- a GUI-based dashboard builder based on Rails/SQL</em></span></p><p><span class="emphasis"><em>- special-purpose exporters (for HAProxy, StatsD, Ganglia, etc.)</em></span></p><p><span class="emphasis"><em>- an (experimental) alertmanager</em></span></p><p><span class="emphasis"><em>- a command-line querying tool</em></span></p></td><td valign="top"> </td></tr><tr><td valign="top"> </td><td colspan="2" align="right" valign="top" style="text-align: center">--<span class="attribution"><span class="emphasis"><em>https://prometheus.io/docs/introduction/overview/</em></span></span></td></tr></table></div><div class="section" title="Ingesting and storing metrics with Prometheus"><div class="titlepage"><div><div><h2 class="title"><a id="ch07lvl2sec48"/>Ingesting and storing metrics with Prometheus</h2></div></div></div><p>Our second EC2 instance is going to host the Prometheus service alongside Jenkins (we will come to that shortly), thus a rather appropriate name would be promjenkins.</p><p>As a start, download and extract Prometheus and Alertmanager in <code class="literal">/opt/prometheus/server</code> and <code class="literal">/opt/prometheus/alertmanager</code> respectively (ref: <a class="ulink" href="https://prometheus.io/download">https://prometheus.io/download</a>).</p><p>We create a basic configuration file for the Alertmanager in <code class="literal">/opt/prometheus/alertmanager/alertmanager.yml</code> (replace e-mail addresses as needed):</p><div class="note" title="Note" style=""><div class="inner"><h3 class="title"><a id="note68"/>Note</h3><p>Please refer to:
+<a class="ulink" href="https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_07_CodeFiles/promjenkins/opt/prometheus/alertmanager/alertmanager.yml">https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_07_CodeFiles/promjenkins/opt/prometheus/alertmanager/alertmanager.yml</a>
+</p></div></div><pre class="programlisting">global: &#13;
+  smtp_smarthost: 'localhost:25' &#13;
+  smtp_from: 'alertmanager@example.org' &#13;
+ &#13;
+route: &#13;
+  group_by: ['alertname', 'cluster', 'service'] &#13;
+  group_wait: 30s &#13;
+  group_interval: 5m &#13;
+  repeat_interval: 1h  &#13;
+  receiver: team-X-mails &#13;
+ &#13;
+receivers: &#13;
+- name: 'team-X-mails' &#13;
+  e-mail_configs: &#13;
+  - to: 'team-X+alerts@example.org' &#13;
+    require_tls: false &#13;
+</pre><p>This will simply e-mail out alert notifications.</p><p>Start the service:</p><pre class="programlisting">
+<span class="strong"><strong># cd /opt/prometheus/alertmanager</strong></span>
+<span class="strong"><strong># (./alertmanager 2&gt;&amp;1 | logger -t prometheus_alertmanager)&amp;</strong></span>
+</pre><p>Ensure the default <code class="literal">TCP:9093</code> is allowed, then you should be able to get to the dashboard at <code class="literal">http://$public_IP_of_promjenkins_node:9093/#/status</code>:</p><p>
+</p><div class="mediaobject"><img src="graphics/image_07_005.jpg" alt="Ingesting and storing metrics with Prometheus"/></div><p>
+</p><p>Back to the Prometheus server, the default <code class="literal">/opt/prometheus/server/prometheus.yml</code> will suffice for now. We can start the service:</p><pre class="programlisting">
+<span class="strong"><strong># cd /opt/prometheus/server</strong></span>
+<span class="strong"><strong># (./prometheus -alertmanager.url=http://localhost:9093 2&gt;&amp;1 | logger -t prometheus_server)</strong></span>
+</pre><p>Open up <code class="literal">TCP:9090</code>, then try <code class="literal">http://$public_IP_of_promjenkins_node:9090/status</code>:</p><p>
+</p><div class="mediaobject"><img src="graphics/image_07_006.jpg" alt="Ingesting and storing metrics with Prometheus"/></div><p>
+</p><p>We are ready to start adding hosts to be monitored. That is to say targets for Prometheus to scrape.</p><p>Prometheus offers various ways in which targets can be defined. The one most suitable for our case is called <code class="literal">ec2_sd_config</code> (ref: <a class="ulink" href="https://prometheus.io/docs/operating/configuration/#&lt;ec2_sd_config&gt;">https://prometheus.io/docs/operating/configuration/#&lt;ec2_sd_config&gt;</a>). All we need to do is provide a set of API keys with read-only EC2 access (<span class="strong"><strong>AmazonEC2ReadOnlyAccess</strong></span> IAM policy) and Prometheus will do the host discovery for us (ref: <a class="ulink" href="https://www.robustperception.io/automatically-monitoring-ec2-instances">https://www.robustperception.io/automatically-monitoring-ec2-instances</a>).</p><p>We append the <code class="literal">ec2_sd_config</code> settings to: <code class="literal">/opt/prometheus/server/prometheus.yml</code>:</p><div class="note" title="Note" style=""><div class="inner"><h3 class="title"><a id="note69"/>Note</h3><p>Please refer to:
+<a class="ulink" href="https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_07_CodeFiles/promjenkins/opt/prometheus/server/prometheus.yml">https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_07_CodeFiles/promjenkins/opt/prometheus/server/prometheus.yml</a>
+</p></div></div><pre class="programlisting">  - job_name: 'ec2' &#13;
+    ec2_sd_configs: &#13;
+      - region: 'us-east-1' &#13;
+        access_key: 'xxxx' &#13;
+        secret_key: 'xxxx' &#13;
+        port: 9126 &#13;
+    relabel_configs: &#13;
+      - source_labels: [__meta_ec2_tag_Name] &#13;
+        regex: ^webserver &#13;
+        action: keep &#13;
+</pre><p>We are interested only in any instances in the <code class="literal">us-east-1</code> region with a name matching the <code class="literal">^webserver</code> regex expression.</p><p>Now let us bring some of those online.</p></div><div class="section" title="Gathering OS and application metrics with Telegraf"><div class="titlepage"><div><div><h2 class="title"><a id="ch07lvl2sec49"/>Gathering OS and application metrics with Telegraf</h2></div></div></div><p>We will be using the pull method of metric collection in Prometheus. This means that our clients (targets) will expose their metrics for Prometheus to scrape.</p><p>To expose OS metrics, we shall deploy InfluxData's Telegraf (ref: <a class="ulink" href="https://github.com/influxdata/telegraf">https://github.com/influxdata/telegraf</a>).</p><p>It comes with a rich set of plugins, which will provide for a good deal of metrics. Should you need more, you have the option to write your own (in Go) or use the <code class="literal">exec</code> plugin which will essentially attempt to launch any type of script you point it at.</p><p>As for application metrics, we have two options (at least):</p><div class="itemizedlist"><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">Build a metrics API endpoint in the application itself</li><li class="listitem" style="list-style-type: disc">Have the application submit metrics data to an external daemon (StatsD as an example)</li></ul></div><p>Incidentally, Telegraf comes with a built-in StatsD listener, so if your applications already happen to have StatsD instrumentation, you should be able to simply point them at it.</p><p>Following on from the ELK example, we will extend the EC2 user data script to get Telegraf on our the Auto Scale Group instances.</p><div class="note" title="Note" style=""><div class="inner"><h3 class="title"><a id="note70"/>Note</h3><p>Please refer to:
+<a class="ulink" href="https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_07_CodeFiles/webserver/user_data.sh">https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_07_CodeFiles/webserver/user_data.sh</a>
+</p></div></div><p>We append:</p><pre class="programlisting">yum -y install https://dl.influxdata.com/telegraf/releases/telegraf-1.0.1.x86_64.rpm &#13;
+ &#13;
+cat &lt;&lt; EOF &gt; /etc/telegraf/telegraf.conf &#13;
+[global_tags] &#13;
+[agent] &#13;
+  interval = "10s" &#13;
+  round_interval = true &#13;
+  metric_batch_size = 1000 &#13;
+  metric_buffer_limit = 10000 &#13;
+  collection_jitter = "0s" &#13;
+  flush_interval = "10s" &#13;
+  flush_jitter = "0s" &#13;
+  precision = "" &#13;
+  debug = false &#13;
+  quiet = false &#13;
+  hostname = "" &#13;
+  omit_hostname = false &#13;
+[[outputs.prometheus_client]] &#13;
+  listen = ":9126" &#13;
+[[inputs.cpu]] &#13;
+  percpu = true &#13;
+  totalcpu = true &#13;
+  fielddrop = ["time_*"] &#13;
+[[inputs.disk]] &#13;
+  ignore_fs = ["tmpfs", "devtmpfs"] &#13;
+[[inputs.diskio]] &#13;
+[[inputs.kernel]] &#13;
+[[inputs.mem]] &#13;
+[[inputs.processes]] &#13;
+[[inputs.swap]] &#13;
+[[inputs.system]] &#13;
+EOF &#13;
+ &#13;
+service telegraf start &#13;
+</pre><p>The important one here is <code class="literal">outputs.prometheus_client</code> with which we turn Telegraf into a Prometheus scrape target. By all means check the default configuration file if you'd like to enable more metrics during this test (ref: <a class="ulink" href="https://github.com/influxdata/telegraf/blob/master/etc/telegraf.conf">https://github.com/influxdata/telegraf/blob/master/etc/telegraf.conf</a>)</p><p>Next, check that TCP: <code class="literal">9126</code> is allowed into the Auto Scale Group security group, then launch a couple of nodes. In a few moments, you should see any matching instances listed in the targets dashboard (ref: <code class="literal">http://$ public_IP_of_promjenkins_node:9090/targets</code>):</p><p>
+</p><div class="mediaobject"><img src="graphics/image_07_007.jpg" alt="Gathering OS and application metrics with Telegraf"/></div><p>
+</p><p>We see the new hosts under the <span class="strong"><strong>ec2</strong></span> scrape job which we configured earlier.</p></div><div class="section" title="Visualizing metrics with Grafana"><div class="titlepage"><div><div><h2 class="title"><a id="ch07lvl2sec50"/>Visualizing metrics with Grafana</h2></div></div></div><p>It is true that Prometheus is perfectly capable of visualizing the data we are now collecting from our targets, as seen here:</p><p>
+</p><div class="mediaobject"><img src="graphics/image_07_008.jpg" alt="Visualizing metrics with Grafana"/></div><p>
+</p><p>In fact, this is the recommended approach for any ad-hoc queries you might want to run.</p><p>Should you have an appetite for dashboards however, you would most certainly appreciate <span class="emphasis"><em>Grafana - The 8th Wonder</em></span> (ref: <a class="ulink" href="http://grafana.org">http://grafana.org</a>)</p><p>Check this out to get a feel for the thing: http://play.grafana.org</p><p>I mean, how many other projects do you know of with a <span class="emphasis"><em>play</em></span> URL?!</p><div class="orderedlist"><ol class="orderedlist arabic"><li class="listitem">So, yes, Grafana, let us install the service on the promjenkins node:<pre class="programlisting">
+<span class="strong"><strong># yum -y install https://grafanarel.s3.amazonaws.com/builds/&#13;
+        grafana-3.1.1-1470047149.x86_64.rpm</strong></span>
+<span class="strong"><strong># service grafana-server start</strong></span>
+</pre><p>The default Grafana port is TCP:<code class="literal">3000</code>, auth <code class="literal">admin:admin</code>. After updating the relevant security group, we should be able to see the screen at: <code class="literal">http://$ public_IP_of_promjenkins_node:3000</code>:</p><p>
+</p><div class="mediaobject"><img src="graphics/image_07_009.jpg" alt="Visualizing metrics with Grafana"/></div><p>
+</p></li><li class="listitem">After logging in, first we need to create a <span class="strong"><strong>Data Sources</strong></span> for our <span class="strong"><strong>Dashboards</strong></span>:<p>
+</p><div class="mediaobject"><img src="graphics/image_07_010.jpg" alt="Visualizing metrics with Grafana"/></div><p>
+</p></li><li class="listitem">Back at the home screen, choose to create a new dashboard, then use the green button on the left to <span class="strong"><strong>Add Panel</strong></span> then a <span class="strong"><strong>Graph</strong></span>:<p>
+</p><div class="mediaobject"><img src="graphics/image_07_011.jpg" alt="Visualizing metrics with Grafana"/></div><p>
+</p></li><li class="listitem">Then, adding a basic CPU usage plot looks like this:<p>
+</p><div class="mediaobject"><img src="graphics/image_07_012.jpg" alt="Visualizing metrics with Grafana"/></div><p>
+</p><p>At this point I encourage you to browse <a class="ulink" href="http://docs.grafana.org">http://docs.grafana.org</a> to find out more about templating, dynamic dashboards, access control, tagging, scripting, playlist, and so on.</p></li></ol></div></div></div>
+<div class="section" title="Monitoring"><div class="titlepage"><div><div><h1 class="title"><a id="ch07lvl1sec27"/>Monitoring</h1></div></div></div><p>We have our metrics flowing into Prometheus. We also have a way of exploring and visualizing them. The next step should probably be to configure some sort of alerts, so that we show other people we are doing real work.</p><div class="section" title="Alerting with Prometheus"><div class="titlepage"><div><div><h2 class="title"><a id="ch07lvl2sec51"/>Alerting with Prometheus</h2></div></div></div><div class="blockquote"><table border="0" width="100%" cellspacing="0" cellpadding="0" class="blockquote" summary="Block quote"><tr><td valign="top"> </td><td valign="top"><p><span class="emphasis"><em>ALERTING OVERVIEW</em></span></p><p><span class="emphasis"><em>Alerting with Prometheus is separated into two parts. Alerting rules in Prometheus servers send alerts to an Alertmanager. The Alertmanager then manages those alerts, including silencing, inhibition, aggregation and sending out notifications via methods such as e-mail, PagerDuty and HipChat.</em></span></p><p><span class="emphasis"><em>The main steps to setting up alerting and notifications are:</em></span></p><p><span class="emphasis"><em>- Setup and configure the Alertmanager</em></span></p><p><span class="emphasis"><em>- Configure Prometheus to talk to the Alertmanager with the-alertmanager.url flag</em></span></p><p><span class="emphasis"><em>- Create alerting rules in Prometheus</em></span></p></td><td valign="top"> </td></tr><tr><td valign="top"> </td><td colspan="2" align="right" valign="top" style="text-align: center">--<span class="attribution"><span class="emphasis"><em>https://prometheus.io/docs/alerting/overview/</em></span></span></td></tr></table></div><p>Let us break this down.</p><p>We already have Alertmanager running with some minimal configuration in <code class="literal">/opt/prometheus/alertmanager/alertmanager.yml</code>.</p><p>Our Prometheus instance is aware of it as we passed the <code class="literal">-alertmanager.url=http://localhost:9093</code> flag.</p><p>What is left is to create alerting rules. We'll store these in a <code class="literal">rules/</code> folder:</p><pre class="programlisting">
+<span class="strong"><strong># mkdir /opt/prometheus/server/rules</strong></span>
+</pre><p>We need to tell Prometheus about this location, so we add a <code class="literal">rule_files</code> section to <code class="literal">prometheus.yml</code>:</p><div class="note" title="Note" style=""><div class="inner"><h3 class="title"><a id="note71"/>Note</h3><p>Please refer to:
+<a class="ulink" href="https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_07_CodeFiles/promjenkins/opt/prometheus/server/prometheus.yml">https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_07_CodeFiles/promjenkins/opt/prometheus/server/prometheus.yml</a>
+</p></div></div><pre class="programlisting">rule_files: &#13;
+  - "rules/*.rules" &#13;
+</pre><p>This way we can store separate rule files, perhaps based on the type of rules they contain?</p><p>As an example, let us have a keepalive and a disk usage alert:</p><div class="note" title="Note" style=""><div class="inner"><h3 class="title"><a id="note72"/>Note</h3><p>Please refer to:
+<a class="ulink" href="https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/tree/master/5585_07_CodeFiles/promjenkins/opt/prometheus/server/rules">https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/tree/master/5585_07_CodeFiles/promjenkins/opt/prometheus/server/rules</a>
+</p></div></div><p>
+<code class="literal">/opt/prometheus/server/rules/keepalive.rules</code>:</p><pre class="programlisting">ALERT Keepalive &#13;
+  IF up == 0 &#13;
+  FOR 1m &#13;
+  ANNOTATIONS { &#13;
+    summary = "Instance {{$labels.instance}} down", &#13;
+    description = "{{$labels.instance}} of job {{$labels.job}} has been down for more than 1 minute." &#13;
+  } &#13;
+</pre><p>
+<code class="literal">/opt/prometheus/server/rules/disk.rules</code>:</p><pre class="programlisting">ALERT High_disk_space_usage &#13;
+  IF disk_used_percent &gt; 20 &#13;
+  FOR 1m &#13;
+  ANNOTATIONS { &#13;
+    summary = "High disk space usage on {{ $labels.instance }}", &#13;
+    description = "{{ $labels.instance }} has a disk_used value of {{ $value }}% on {{ $labels.path }})", &#13;
+  } &#13;
+</pre><p>As you'll notice, we are being impatient with the <code class="literal">FOR 1m</code> and <code class="literal">&gt;20</code>, meaning notifications will fire after just 60 seconds of alert detection and the alert threshold is only 20% of space used.</p><p>In a more realistic scenario, we should wait a bit longer to filter any transient issues and use severities to distinguish between critical alerts and warnings (ref: <a class="ulink" href="https://github.com/prometheus/alertmanager">https://github.com/prometheus/alertmanager</a>).</p><p>Reload Prometheus with the new rules in place. Now let us suppose that one of the web server nodes goes down:</p><p>
+</p><div class="mediaobject"><img src="graphics/image_07_013.jpg" alt="Alerting with Prometheus"/></div><p>
+</p><p>Switching to the <span class="strong"><strong>Alerts</strong></span> tab we see:</p><p>
+</p><div class="mediaobject"><img src="graphics/image_07_014.jpg" alt="Alerting with Prometheus"/></div><p>
+</p><p>In the Alertmanager respectively: (<code class="literal">http://$ public_IP_of_promjenkins_node:9093/#/alerts</code>):</p><p>
+</p><div class="mediaobject"><img src="graphics/image_07_015.jpg" alt="Alerting with Prometheus"/></div><p>
+</p><p>At this point an e-mail notification should have gone out as well.</p></div><div class="section" title="Self-remediation with Prometheus and Jenkins"><div class="titlepage"><div><div><h2 class="title"><a id="ch07lvl2sec52"/>Self-remediation with Prometheus and Jenkins</h2></div></div></div><p>The dream of every operator is an ecosystem that looks after itself.</p><p>Imagine for a moment an environment in which, instead of receiving alerts prompting for action, we received mere notifications or reports of actions taken on our behalf.</p><p>For example, no more "CRITICAL: Service X is not responding. Please check." but "INFO: Service X was unresponsive at nn:nn:nn and was restarted after N seconds at nn:nn:nn" instead.</p><p>Well, technically, this should not be too difficult to achieve if we were to provide enough context to the tools we use today. It is not uncommon to find alerts which tend to get resolved in the same manner under the same conditions and those are to be considered prime candidates for automation.</p><p>To demonstrate, let us assume we inherited this old, no longer supported application. A cool app overall, but it does not have the habit of tidying up after itself, so would occasionally fill up its <code class="literal">tmp</code> directory.</p><p>Let us also assume that while we are not particularly excited about having to connect to this app's server to delete <code class="literal">tmp</code> files at random times of the day, our friend, Mr. Jenkins - does not mind at all.</p><p>Conveniently, Jenkins allows jobs to be triggered via a relevant <code class="literal">JOB_URL</code> and at the same time Prometheus supports webhook calls as a method of alert notification.</p><p>Here is the plan:</p><div class="orderedlist"><ol class="orderedlist arabic"><li class="listitem">Prometheus will make a webhook call to Jenkins whenever a <code class="literal">disk_space</code> alert is fired with the alert details passed as parameters.</li><li class="listitem">Jenkins will use the parameters to determine which host to connect to and clean up the application's <code class="literal">tmp</code> directory.</li></ol></div><p>We would need to:</p><div class="orderedlist"><ol class="orderedlist arabic"><li class="listitem">Create a parameterized Jenkins job which can be triggered remotely.</li><li class="listitem">Allow Jenkins to <code class="literal">ssh</code> into the application's host.</li><li class="listitem">Setup a webhook receiver in Prometheus which calls the Jenkins job when a certain alert is fired.</li></ol></div><p>First a quick Jenkins installation onto our <code class="literal">promjenkins</code> node:</p><pre class="programlisting">
+<span class="strong"><strong># yum install http://mirrors.jenkins-ci.org/redhat-stable/&#13;
+      jenkins-2.7.1-1.1.noarch.rpm</strong></span>
+<span class="strong"><strong># service jenkins start</strong></span>
+</pre><p>
+<code class="literal">TCP: 8080</code> needs to be open, then you should be able to reach the Jenkins service at <code class="literal">http://$public_IP_of_promjenkins_node:8080</code>.</p><p>Under <span class="strong"><strong>Manage Jenkins</strong></span> | <span class="strong"><strong>Manage Users</strong></span> create an account for Prometheus:</p><p>
+</p><div class="mediaobject"><img src="graphics/image_07_016.jpg" alt="Self-remediation with Prometheus and Jenkins"/></div><p>
+</p><p>Then, under <span class="strong"><strong>Manage Jenkins</strong></span> | <span class="strong"><strong>Configure Global Security</strong></span>, select Jenkins' own user database and <span class="strong"><strong>Matrix-based Security</strong></span>, then add both accounts.</p><div class="note" title="Note" style=""><div class="inner"><h3 class="title"><a id="tip73"/>Tip</h3><p>Untick <span class="strong"><strong>Prevent Cross Site Request Forgery exploits</strong></span> if you find that it causes issues when making <code class="literal">curl</code> request to Jenkins.</p></div></div><p>Grant yourself <span class="strong"><strong>Overall Administer rights</strong></span> and <span class="strong"><strong>Prometheus Overall Read</strong></span> plus <span class="strong"><strong>Job Build/Read</strong></span>:</p><p>
+</p><div class="mediaobject"><img src="graphics/image_07_017.jpg" alt="Self-remediation with Prometheus and Jenkins"/></div><p>
+</p><p>To be able to ssh into the app (web server) nodes we need a key for the Jenkins user:</p><pre class="programlisting">
+<span class="strong"><strong># su - -s /bin/bash jenkins</strong></span>
+<span class="strong"><strong>$ ssh-keygen -trsa -b4096</strong></span>
+<span class="strong"><strong>Generating public/private rsa key pair.</strong></span>
+<span class="strong"><strong>Enter file in which to save the key (/var/lib/jenkins/.ssh/id_rsa): </strong></span>
+<span class="strong"><strong>Created directory '/var/lib/jenkins/.ssh'</strong></span>
+<span class="strong"><strong>...</strong></span>
+</pre><p>While we are here, let us create an ssh config file for the Jenkins user (<code class="literal">~/.ssh/config</code>) containing:</p><pre class="programlisting">Host 10.0.* &#13;
+   StrictHostKeyChecking no &#13;
+   UserKnownHostsFile=/dev/null &#13;
+   User ec2-user &#13;
+</pre><p>This is to allow our non-interactive jobs to ssh to instances for the first time.</p><p>We also need to take the generated public key and add it to the Auto Scale Group user data , so that it gets onto our web server instances. We will be using the standard (Amzn-Linux) ec2-user account to connect:</p><div class="note" title="Note" style=""><div class="inner"><h3 class="title"><a id="note74"/>Note</h3><p>Please refer to:
+<a class="ulink" href="https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_07_CodeFiles/webserver/user_data.sh">https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_07_CodeFiles/webserver/user_data.sh</a>
+</p></div></div><pre class="programlisting">... &#13;
+# Add Jenkins's key &#13;
+cat &lt;&lt; EOF &gt;&gt; /home/ec2-user/.ssh/authorized_keys &#13;
+{{JENKINS_PUB_KEY_GOES_HERE}} &#13;
+EOF &#13;
+</pre><p>Now let us create the Jenkins job (freestyle project) with a few parameters:</p><p>
+</p><div class="mediaobject"><img src="graphics/image_07_018.jpg" alt="Self-remediation with Prometheus and Jenkins"/></div><p>
+</p><p>We will discuss those four parameters (<code class="literal">alertname</code>, <code class="literal">alertcount</code>, <code class="literal">instance</code>, <code class="literal">labels</code>) later. In the <span class="strong"><strong>Build</strong></span> section, select <span class="strong"><strong>Execute shell</strong></span> and enter <code class="literal">exit 0</code> as a placeholder until we are ready to configure the job further. <span class="strong"><strong>Save</strong></span> and let's get back to Prometheus.</p><p>As we mentioned earlier, we will be using the webhook receiver to trigger the Jenkins job. While the receiver allows us to set a URL to call, it does not seem to allow for any parameters to be included. To accomplish this, we will use a small helper application called <span class="strong"><strong>prometheus-am-executor</strong></span> (ref: <a class="ulink" href="https://github.com/imgix/prometheus-am-executor">https://github.com/imgix/prometheus-am-executor</a>).</p><p>The executor sits between the Alertmanager and an arbitrary executable. It receives the webhook call from the Alertmanager and runs the executable, passing a list of alert variables to it. In our case, we will be executing a shell script which processes those variables and constructs a <code class="literal">curl</code> call in the format that Jenkins expects.</p><p>Let us install the helper app alongside Prometheus and the Alertmanager:</p><pre class="programlisting">
+<span class="strong"><strong># yum -y install golang</strong></span>
+<span class="strong"><strong># mkdir /opt/prometheus/executor &amp;&amp; export GOPATH=$_</strong></span>
+<span class="strong"><strong># go get github.com/imgix/prometheus-am-executor</strong></span>
+</pre><p>On success, you should have a binary in <code class="literal">/opt/prometheus/executor/bin</code>. Now the script (executable) that we mentioned:</p><div class="note" title="Note" style=""><div class="inner"><h3 class="title"><a id="note75"/>Note</h3><p>Please refer to:
+<a class="ulink" href="https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_07_CodeFiles/promjenkins/opt/prometheus/executor/executor.sh">https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_07_CodeFiles/promjenkins/opt/prometheus/executor/executor.sh</a>
+</p></div></div><pre class="programlisting">#!/bin/bash &#13;
+ &#13;
+if [[ "$AMX_STATUS" != "firing" ]]; then &#13;
+  exit 0 &#13;
+fi &#13;
+ &#13;
+main() { &#13;
+  for i in $(seq 1 "$AMX_ALERT_LEN"); do &#13;
+    ALERT_NAME=AMX_ALERT_${i}_LABEL_alertname &#13;
+    INSTANCE=AMX_ALERT_${i}_LABEL_instance &#13;
+    LABELS=$(set|egrep "^AMX_ALERT_${i}_LABEL_"|tr '\n' ' '|base64 -w0) &#13;
+    PAYLOAD="{'parameter': [{'name':'alertcount', 'value':'${i}'}, {'name':'alertname', 'value':'${!ALERT_NAME}'}, {'name':'instance', 'value':'${!INSTANCE}'}, {'name':'labels', 'value':'${LABELS}'}]}" &#13;
+    curl -s -X POST http://localhost:8080/job/prometheus_webhook/build --user 'prometheus:password' --data-urlencode json="${PAYLOAD}" &#13;
+  done &#13;
+  wait &#13;
+} &#13;
+ &#13;
+main "$@" &#13;
+</pre><p>In essence we are constructing an HTTP call to our Jenkins job URL at <code class="literal">http://localhost:8080/job/prometheus_webhook/build</code> passing the <code class="literal">alertcount</code>, <code class="literal">alertname</code>, <code class="literal">instance</code> and <code class="literal">labels</code> parameters. All values come from the AMX environment variables which the prometheus-am-executor exposes (ref: <a class="ulink" href="https://github.com/imgix/prometheus-am-executor">https://github.com/imgix/prometheus-am-executor</a>).</p><p>Now we need to reconfigure the Alertmanager to use webhooks:</p><div class="note" title="Note" style=""><div class="inner"><h3 class="title"><a id="note76"/>Note</h3><p>Please refer to:
+<a class="ulink" href="https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_07_CodeFiles/promjenkins/opt/prometheus/alertmanager/alertmanager.yml">https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_07_CodeFiles/promjenkins/opt/prometheus/alertmanager/alertmanager.yml</a>
+</p></div></div><pre class="programlisting">global: &#13;
+  smtp_smarthost: 'localhost:25' &#13;
+  smtp_from: 'alertmanager@example.org' &#13;
+ &#13;
+route: &#13;
+  group_by: ['alertname', 'cluster', 'service'] &#13;
+  group_wait: 10s &#13;
+  group_interval: 30s &#13;
+  repeat_interval: 1m &#13;
+  receiver: team-X-mails &#13;
+ &#13;
+  routes: &#13;
+  - receiver: 'jenkins-webhook' &#13;
+    match: &#13;
+      alertname: "High_disk_space_usage" &#13;
+ &#13;
+receivers: &#13;
+- name: 'team-X-mails' &#13;
+  e-mail_configs: &#13;
+  - to: 'veselin+testprom@kantsev.com' &#13;
+    require_tls: false &#13;
+    send_resolved: true &#13;
+ &#13;
+- name: 'jenkins-webhook' &#13;
+  webhook_configs: &#13;
+  - url: http://localhost:8888 &#13;
+</pre><p>So, we have added a new sub-route which would match on <code class="literal">alertname</code>: <code class="literal">High_disk_space_usage</code> and use the <code class="literal">jenkins-webhook</code> receiver.</p><p>Reload Alertmanager and let us start the executor. Assuming that the <code class="literal">executor.sh</code> has been placed in <code class="literal">/opt/prometheus/executor</code>:</p><pre class="programlisting">
+<span class="strong"><strong># cd /opt/prometheus/executor</strong></span>
+<span class="strong"><strong># ./bin/prometheus-am-executor -l ':8888' ./executor.sh</strong></span>
+<span class="strong"><strong>2016/10/16 17:57:36 Listening on :8888 and running [./executor.sh]</strong></span>
+</pre><p>We have the executor running (port <code class="literal">8888</code>) and ready to accept requests from the Alertmanager.</p><p>Before triggering any test alerts, let's go back to our Jenkins job. You are now familiar with the parameters it expects and the ones that we pass via the <code class="literal">webhook</code> | <code class="literal">executor</code> | <code class="literal">jenkins</code> setup that we have, so we can replace the contents of the placeholder <span class="strong"><strong>Build</strong></span> step with this shell script:</p><pre class="programlisting">echo "alertname: ${alertname}" &#13;
+echo "alertcount: ${alertcount}" &#13;
+echo "instance: ${instance}" &#13;
+ &#13;
+export $(echo ${labels}|base64 -d) &#13;
+ &#13;
+NODE=$(echo ${instance}|cut -d: -f1) &#13;
+LABEL_DIR=AMX_ALERT_${alertcount}_LABEL_path &#13;
+APP_DIR='/opt/myapp/tmp' &#13;
+ &#13;
+if [ ${!LABEL_DIR} == ${APP_DIR} ];then &#13;
+ssh ${NODE} "sudo rm -f ${APP_DIR}/*.tmp"&#13;
+fi &#13;
+</pre><p>To test all of this, we need to ssh into one of the ASG (web server) instances which Prometheus is monitoring and setup a pretend App temporary folder like so:</p><pre class="programlisting">
+<span class="strong"><strong># dd if=/dev/zero of=/tmp/dd.out bs=1M count=256</strong></span>
+<span class="strong"><strong># mkfs.ext4 /tmp/dd.out</strong></span>
+<span class="strong"><strong># mkdir -p /opt/myapp/tmp</strong></span>
+<span class="strong"><strong># mount -oloop /tmp/dd.out /opt/myapp/tmp/</strong></span>
+</pre><p>This should give us a small filesystem to play with. Next, we fill it up:</p><pre class="programlisting">
+<span class="strong"><strong># dd if=/dev/zero of=/opt/myapp/tmp/dd.tmp bs=1M count=196</strong></span>
+</pre><p>This is way over the 20% we have set in the <code class="literal">High_disk_space_usage</code> and should trigger it. In turn the executor should call Jenkins and run our job:</p><p>
+</p><div class="mediaobject"><img src="graphics/image_07_019.jpg" alt="Self-remediation with Prometheus and Jenkins"/></div><p>
+</p><p>We can see Jenkins connecting to the affected instance over SSH, then clearing our fake application <code class="literal">tmp</code> directory.</p><p>It is important to note that while we allow ourselves root access for the purpose of this example, in any other circumstances you would either ensure that Jenkins could handle the given <code class="literal">tmp</code> directory as a non-privileged user, or if you would absolutely have to use <code class="literal">sudo</code> and then limit the commands and command line arguments that can be used.</p></div></div>
+<div class="section" title="Summary"><div class="titlepage"><div><div><h1 class="title"><a id="ch07lvl1sec28"/>Summary</h1></div></div></div><p>In this chapter we looked at a way of centralizing our logs with Logstash and Elasticsearch then browsing them in Kibana. We configured a metrics collection and visualization with the help of Prometheus, Telegraf and Grafana. Finally, we added monitoring via Prometheus and self-remediation using Jenkins.</p><p>The next chapter takes us into the area of optimization. We shall discuss cost considerations and approaches to demand-based scaling.</p></div></body></html>

@@ -1,0 +1,505 @@
+<html><head></head><body>
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Using Ingress to Forward Traffic</h1>
+                </header>
+            
+            <article>
+                
+<div class="packt_tip">Applications that are not accessible to users are useless. Kubernetes Services provide accessibility with a usability cost. Each application can be reached through a different port. We cannot expect users to know the port of each service in our cluster.</div>
+<p>Ingress objects manage external access to the applications running inside a Kubernetes cluster. While, at first glance, it might seem that we already accomplished that through Kubernetes Services, they do not make the applications truly accessible. We still need forwarding rules based on paths and domains, SSL termination and a number of other features. In a more traditional setup, we'd probably use an external proxy and a load balancer. Ingress provides an API that allows us to accomplish these things, in addition to a few other features we expect from a dynamic cluster.</p>
+<p>We'll explore the problems and the solutions through examples. For now, we first need to create a cluster.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Creating a cluster</h1>
+                </header>
+            
+            <article>
+                
+<p>As every other chapter so far, we'll start by creating a Minikube single-node cluster.</p>
+<div class="packt_infobox">All the commands from this chapter are available in the <kbd>07-ingress.sh</kbd> (<a href="https://gist.github.com/vfarcic/54ef6592bce747ff2d1b089834fc755b" target="_blank"><span class="URLPACKT">https://gist.github.com/vfarcic/54ef6592bce747ff2d1b089834fc755b</span></a>) Gist.</div>
+<pre><strong>cd k8s-specs</strong>
+    
+<strong>git pull</strong>
+    
+<strong>minikube start --vm-driver=virtualbox</strong>
+    
+<strong>kubectl config current-context</strong>  </pre>
+<p>The cluster should be up-and-running, and we can move on.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Exploring deficiencies when enabling external access through Kubernetes services</h1>
+                </header>
+            
+            <article>
+                
+<p>We cannot explore solutions before we know what the problems are. Therefore, we'll re-create a few objects using the knowledge we already gained. That will let us see whether Kubernetes services satisfy all the needs users of our applications might have. Or, to be more explicit, we'll explore which features we're missing when making our applications accessible to users.</p>
+<p>We already discussed that it is a bad practice to publish fixed ports through services. That method is likely to result in conflicts or, at the very least, create the additional burden of carefully keeping track of which port belongs to which service. We already discarded that option before, and we won't change our minds now. Since we've clarified that, let's go back and create the Deployments and the Services from the previous chapter.</p>
+<pre><strong>kubectl create \</strong>
+<strong>    -f ingress/go-demo-2-deploy.yml</strong>
+  
+<strong>kubectl get \</strong>
+<strong>    -f ingress/go-demo-2-deploy.yml</strong>  </pre>
+<p>The output of the <kbd>get</kbd> command is as follows:</p>
+<pre><strong>NAME                DESIRED CURRENT UP-TO-DATE AVAILABLE AGE</strong>
+<strong>deploy/go-demo-2-db 1       1       1          1         48s</strong>
+    
+<strong>NAME             TYPE      CLUSTER-IP EXTERNAL-IP PORT(S)   AGE</strong>
+<strong>svc/go-demo-2-db ClusterIP 10.0.0.14  &lt;none&gt;      27017/TCP 48s</strong>
+    
+<strong>NAME                 DESIRED CURRENT UP-TO-DATE AVAILABLE AGE</strong>
+<strong>deploy/go-demo-2-api 3       3       3          3         48s</strong>
+    
+<strong>NAME              TYPE     CLUSTER-IP EXTERNAL-IP PORT(S)        <br/>AGE</strong>
+<strong>svc/go-demo-2-api NodePort 10.0.0.179 &lt;none&gt;      8080:30417/TCP <br/>48s</strong>  </pre>
+<p>As you can see, these are the same Services and Deployments we previously created.</p>
+<p>Before we move on, we should wait until all the Pods are up and running.</p>
+<pre><strong>kubectl get pods</strong>  </pre>
+<p>The output is as follows:</p>
+<pre><strong>NAME                           READY STATUS  RESTARTS AGE</strong>
+<strong>go-demo-2-api-68df567fb5-8qcmv 1/1   Running 0        3m</strong>
+<strong>go-demo-2-api-68df567fb5-k55d4 1/1   Running 0        3m</strong>
+<strong>go-demo-2-api-68df567fb5-ws9cj 1/1   Running 0        3m</strong>
+<strong>go-demo-2-db-dd48b7dfc-hdxbz   1/1   Running 0        3m</strong>  </pre>
+<p>If, in your case, some of the Pods are not yet running, please wait a few moments and re-execute the <kbd>kubectl get pods</kbd> command. We'll continue once they're ready.</p>
+<p>One obvious way to access the applications is through Services:</p>
+<pre><strong>IP=$(minikube ip)</strong>
+   
+<strong>PORT=$(kubectl get svc go-demo-2-api \</strong>
+<strong>    -o jsonpath="{.spec.ports[0].nodePort}")</strong>
+    
+<strong>curl -i "http://$IP:$PORT/demo/hello"</strong>  </pre>
+<p>We retrieved the Minikube IP and the port of the <kbd>go-demo-2-api</kbd> Service. We used that information to send a request.</p>
+<p>The output of the <kbd>curl</kbd> command is as follows:</p>
+<pre><strong>HTTP/1.1 200 OK</strong>
+<strong>Date: Sun, 24 Dec 2017 13:35:26 GMT</strong>
+<strong>Content-Length: 14</strong>
+<strong>Content-Type: text/plain; charset=utf-8</strong>
+    
+<strong>hello, world!</strong>  </pre>
+<p>The application responded with the status code <kbd>200</kbd> thus confirming that the Service indeed forwards the requests.</p>
+<p>While publishing a random, or even a hard-coded port of a single application might not be so bad, if we'd apply the same principle to more applications, the user experience would be horrible. To make the point a bit clearer, we'll deploy another application:</p>
+<pre><strong>kubectl create \</strong>
+<strong>    -f ingress/devops-toolkit-dep.yml \</strong>
+<strong>    --record --save-config</strong>
+    
+<strong>kubectl get \</strong>
+<strong>    -f ingress/devops-toolkit-dep.yml</strong>  </pre>
+<p>This application follows similar logic to the first. From the latter command, we can see that it contains a Deployment and a Service. The details are of no importance since the YAML definition is very similar to those we used before. What matters is that now we have two applications running inside the cluster.</p>
+<p>Let's check whether the new application is indeed reachable:</p>
+<pre><strong>PORT=$(kubectl get svc devops-toolkit \</strong>
+<strong>    -o jsonpath="{.spec.ports[0].nodePort}")</strong>
+    
+<strong>open "http://$IP:$PORT"</strong>  </pre>
+<p>We retrieved the port of the new Service and opened the application in a browser. You should see a simple front-end with <em>The DevOps Toolkit</em> books. If you don't, you might want to wait a bit longer until the containers are pulled, and try again.</p>
+<p>A simplified flow of requests is depicted in the <em>Figure 7-1</em>. A user sends a request to one of the nodes of the cluster. That request is received by a Service and load balanced to one of the associated Pods. It's a bit more complicated than that, with iptables, kube DNS, kube proxy, and a few other things involved in the process. We explored them in more detail in <a href="e499b152-2e33-455d-84be-5b3d201829f9.xhtml">Chapter 5</a>, <em>Using Services to Enable Communication Between Pods</em>, and there's probably no need to go through them all again. For the sake of brevity, the simplified diagram should do:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="assets/3a4b96e8-7b0b-4bd1-8646-e5cc1ef6736a.png" style="width:39.50em;height:23.00em;"/></div>
+<div class="packt_figure packt_figref CDPAlignCenter CDPAlign">Figure 7-1: Applications access through Services</div>
+<p>We cannot expect our users to know specific ports behind each of those applications. Even with only two, that would not be very user-friendly. If that number would rise to tens or even hundreds of applications, our business would be very short-lived.</p>
+<p>What we need is a way to make all services accessible through standard HTTP (<kbd>80</kbd>) or HTTPS (<kbd>443</kbd>) ports. Kubernetes Services alone cannot get us there. We need more.</p>
+<p>What we need is to grant access to our services on predefined paths and domains. Our <kbd>go-demo-2</kbd> service could be distinguished from others through the base path <kbd>/demo</kbd>. Similarly, the books application could be reachable through the <kbd>devopstoolkitseries.com</kbd> domain. If we could accomplish that, we could access them with the commands the follow:</p>
+<pre><strong>curl "http://$IP/demo/hello"</strong>  </pre>
+<p>The request received the <kbd>Connection refused</kbd> response. There is no process listening on port <kbd>80</kbd>, so this outcome is not a surprise. We could have changed one of the Services to publish the fixed port <kbd>80</kbd> instead assigning a random one. Still, that would provide access only to one of the two applications.</p>
+<p>We often want to associate each application with a different domain or sub-domain. Outside the examples we're running, the books application is accessible through the <kbd>devopstoolkitseries.com</kbd> (<a href="http://www.devopstoolkitseries.com/" target="_blank"><span class="URLPACKT">http://www.devopstoolkitseries.com/</span></a>) domain. Since I'm not going to give you permissions to modify my domain's DNS records, we'll simulate it by adding the domain to the <kbd>Host</kbd> header.</p>
+<p>The command that should verify whether the application running inside our cluster is accessible through the <kbd>devopstoolkitseries.com</kbd> domain is as follows:</p>
+<pre><strong>curl -i \</strong>
+<strong>    -H "Host: devopstoolkitseries.com" \</strong>
+<strong>    "http://$IP"</strong>  </pre>
+<p>As expected, the request is still refused.</p>
+<p>Last, but not least, we should be able to make some, if not all, applications (partly) secure by enabling HTTPS access. That means that we should have a place to store our SSL certificates. We could put them inside our applications, but that would only increase the operational complexity. Instead, we should aim towards SSL offloading somewhere between clients and the applications.</p>
+<p>The problems that we are facing are common, and it should come as no surprise that Kubernetes has a solution.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Enabling Ingress controllers</h1>
+                </header>
+            
+            <article>
+                
+<p>We need a mechanism that will accept requests on pre-defined ports (for example, <kbd>80</kbd> and <kbd>443</kbd>) and forward them to Kubernetes services. It should be able to distinguish requests based on paths and domains as well as to be able to perform SSL offloading.</p>
+<p>Kubernetes itself does not have a ready-to-go solution for this. Unlike other types of Controllers that are typically part of the <kbd>kube-controller-manager</kbd> binary, Ingress Controller needs to be installed separately. Instead of a Controller, <kbd>kube-controller-manager</kbd> offers <em>Ingress resource</em> that other third-party solutions can utilize to provide requests forwarding and SSL features. In other words, Kubernetes only provides an <em>API</em>, and we need to set up a Controller that will use it.</p>
+<p>Fortunately, the community already built a myriad of Ingress controllers. We won't evaluate all of the available options since that would require a lot of space, and it would mostly depend on your needs and your hosting vendor. Instead, we'll explore how Ingress controllers work through the one that is already available in Minikube.</p>
+<p>Let's take a look at the list of the Minikube addons:</p>
+<pre><strong>minikube addons list</strong>  </pre>
+<p>The output is as follows:</p>
+<pre><strong>- kube-dns: enabled</strong>
+<strong>- registry: disabled</strong>
+<strong>- registry-creds: disabled</strong>
+<strong>- dashboard: enabled</strong>
+<strong>- coredns: disabled</strong>
+<strong>- heapster: disabled</strong>
+<strong>- ingress: disabled</strong>
+<strong>- addon-manager: enabled</strong>
+<strong>- default-storageclass: enabled</strong>  </pre>
+<p>We can see that <kbd>ingress</kbd> is available as one of the Minikube addons. However, it is disabled by default, so our next action will be to enable it.</p>
+<div class="packt_infobox">If you used Minikube before, the <kbd>ingress</kbd> addon might already be enabled. If that's the case, please skip the command that follows.</div>
+<pre><strong>minikube addons enable ingress</strong>  </pre>
+<p>Now that <kbd>ingress</kbd> addon is enabled, we'll check whether it is running inside our cluster:</p>
+<pre><strong>kubectl get pods -n kube-system \</strong><br/><strong>    | grep ingress</strong></pre>
+<p>Ignore the <kbd>-n</kbd> argument. We did not yet explore Namespaces. For now, please note that the output of the command should show that <kbd>nginx-ingress-controller-...</kbd> Pod is running.</p>
+<p class="mce-root">If the output is empty, you might need to wait for a few moments until the containers are pulled, and re-execute the <kbd>kubectl get all --namespace ingress-nginx</kbd> command again.</p>
+<div class="packt_infobox">The Ingress controller that ships with Minikube is based on the <kbd>gcr.io/google_containers/nginx-ingress-controller</kbd> (<a href="https://console.cloud.google.com/gcr/images/google-containers/GLOBAL/nginx-ingress-controller?gcrImageListsize=50" target="_blank"><span class="URLPACKT">https://console.cloud.google.com/gcr/images/google-containers/GLOBAL/nginx-ingress-controller?gcrImageListsize=50</span></a>) image hosted in <strong>Google Cloud Platform</strong> (<strong>GCP</strong>) Container Registry. The image is based on NGINX Ingress Controller (<a href="https://github.com/kubernetes/ingress-nginx/blob/master/README.md" target="_blank"><span class="URLPACKT">https://github.com/kubernetes/ingress-nginx/blob/master/README.md</span></a>). It is one of the only two currently supported and maintained by the Kubernetes community. The other one is GLBC (<a href="https://github.com/kubernetes/ingress-gce/blob/master/README.md" target="_blank"><span class="URLPACKT">https://github.com/kubernetes/ingress-gce/blob/master/README.md</span></a>) that comes with <strong>Google Compute Engine</strong> (<strong>GCE</strong>) (<a href="https://cloud.google.com/compute/" target="_blank"><span class="URLPACKT">https://cloud.google.com/compute/</span></a>) Kubernetes hosted solution.</div>
+<p>By default, the Ingress controller is configured with only two endpoints.</p>
+<p>If we'd like to check Controller's health, we can send a request to <kbd>/healthz</kbd>.</p>
+<pre><strong>curl -i "http://$IP/healthz"</strong>  </pre>
+<p>The output is as follows:</p>
+<pre><strong>HTTP/1.1 200 OK</strong>
+<strong>Server: nginx/1.13.5</strong>
+<strong>Date: Sun, 24 Dec 2017 15:22:20 GMT</strong>
+<strong>Content-Type: text/html</strong>
+<strong>Content-Length: 0</strong>
+<strong>Connection: keep-alive</strong>
+<strong>Strict-Transport-Security: max-age=15724800; includeSubDomains;</strong>  </pre>
+<p>It responded with the status code <kbd>200 OK</kbd>, thus indicating that it is healthy and ready to serve requests. There's not much more to it so we'll move to the second endpoint.</p>
+<p>The Ingress controller has a default catch-all endpoint that is used when a request does not match any of the other criteria. Since we did not yet create any Ingress Resource, this endpoint should provide the same response to all requests except <kbd>/healthz</kbd>:</p>
+<pre><strong>curl -i "http://$IP/something"</strong> </pre>
+<p>The output is as follows:</p>
+<pre><strong>HTTP/1.1 404 Not Found</strong>
+<strong>Server: nginx/1.13.5</strong>
+<strong>Date: Sun, 24 Dec 2017 15:36:23 GMT</strong>
+<strong>Content-Type: text/plain; charset=utf-8</strong>
+<strong>Content-Length: 21</strong>
+<strong>Connection: keep-alive</strong>
+<strong>Strict-Transport-Security: max-age=15724800; includeSubDomains;</strong>
+    
+<strong>default backend - 404</strong>  </pre>
+<p>We got the response indicating that the requested resource could not be found.</p>
+<p>Now we're ready to create our first Ingress Resource.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Creating Ingress Resources based on paths</h1>
+                </header>
+            
+            <article>
+                
+<p>We'll try to make our <kbd>go-demo-2-api</kbd> service available through the port <kbd>80</kbd>. We'll do that by defining an Ingress resource with the rule to forward all requests with the path starting with <kbd>/demo</kbd> to the service <kbd>go-demo-2-api</kbd>.</p>
+<p>Let's take a look at the Ingress' YAML definition:</p>
+<pre><strong>cat ingress/go-demo-2-ingress.yml</strong>  </pre>
+<p>The output is as follows:</p>
+<pre><strong>apiVersion: extensions/v1beta1</strong>
+<strong>kind: Ingress</strong>
+<strong>metadata:</strong>
+<strong>  name: go-demo-2</strong>
+<strong>  annotations:</strong>
+<strong>    ingress.kubernetes.io/ssl-redirect: "false"<br/></strong>    <strong>nginx.ingress.kubernetes.io/ssl-redirect: "false"</strong>
+<strong>spec:</strong>
+<strong>  rules:</strong>
+<strong>  - http:</strong>
+<strong>      paths:</strong>
+<strong>      - path: /demo</strong>
+<strong>        backend:</strong>
+<strong>          serviceName: go-demo-2-api</strong>
+<strong>          servicePort: 8080</strong>  </pre>
+<p>This time, <kbd>metadata</kbd> contains a field we haven't used before. The <kbd>annotations</kbd> section allows us to provide additional information to the Ingress controller. As you'll see soon, Ingress API specification is concise and limited. That is done on purpose. The specification API defines only the fields that are mandatory for all Ingress controllers. All the additional info an Ingress controller needs is specified through <kbd>annotations</kbd>. That way, the community behind the Controllers can progress at great speed, while still providing basic general compatibility and standards.</p>
+<div class="packt_infobox">The list of general annotations and the Controllers that support them can be found in the Ingress Annotations page(<a href="https://github.com/kubernetes/ingress-nginx/blob/master/docs/user-guide/nginx-configuration/annotations.md" target="_blank"><span class="URLPACKT">https://github.com/kubernetes/ingress-nginx/blob/master/docs/user-guide/nginx-configuration/annotations.md</span></a>). For those specific to the NGINX Ingress controller (<a href="https://github.com/kubernetes/ingress-nginx/blob/master/README.md" target="_blank"><span class="URLPACKT">https://github.com/kubernetes/ingress-nginx/blob/master/README.md</span></a>), please visit the NGINX Annotations (<a href="https://github.com/kubernetes/ingress-nginx/blob/master/docs/user-guide/nginx-configuration/annotations.md" target="_blank"><span class="URLPACKT">https://github.com/kubernetes/ingress-nginx/blob/master/docs/user-guide/nginx-configuration/annotations.md</span></a>)page, and for those specific to GCE Ingress, visit the <kbd>ingress-gce</kbd> (<a href="https://github.com/kubernetes/ingress-gce" target="_blank"><span class="URLPACKT">https://github.com/kubernetes/ingress-gce</span></a>) page.<br/>
+You'll notice that documentation uses <kbd>nginx.ingress.kubernetes.io/</kbd> annotation prefixes. That is a relatively recent change that, at the time of this writing, applies to the beta versions of the Controller. We're combining it with <kbd>ingress.kubernetes.io/</kbd> prefixes so that the definitions work in all Kubernetes versions.</div>
+<p>We specified only one annotation. <kbd>nginx.ingress.kubernetes.io/ssl-redirect: "false"</kbd> tells the Controller that we do NOT want to redirect all HTTP requests to HTTPS. We're forced to do so since we do not have SSL certificates for the exercises that follow.</p>
+<p>Now that we shed some light on the <kbd>metadata annotations</kbd>, we can move to the <kbd>ingress</kbd> specification.</p>
+<p>We specified a set of <kbd>rules</kbd> in the <kbd>spec</kbd> section. They are used to configure Ingress resource. For now, our rule is based on <kbd>http</kbd> with a single <kbd>path</kbd> and a <kbd>backend</kbd>. All the requests with the <kbd>path</kbd> starting with <kbd>/demo</kbd> will be forwarded to the service <kbd>go-demo-2-api</kbd> on the port <kbd>8080</kbd>.</p>
+<p>Now that we had a short tour around some of the Ingress configuration options, we can proceed and create the resource.</p>
+<pre><strong>kubectl create \</strong>
+<strong>    -f ingress/go-demo-2-ingress.yml</strong>
+    
+<strong>kubectl get \</strong>
+<strong>    -f ingress/go-demo-2-ingress.yml</strong>  </pre>
+<p>The output of the latter command is as follows:</p>
+<pre><strong>NAME      HOSTS ADDRESS        PORTS AGE</strong>
+<strong>go-demo-2 *     192.168.99.100 80    29s</strong>  </pre>
+<p>We can see that the Ingress resource was created. Don't panic if, in your case, the address is blank. It might take a while for it to obtain it.</p>
+<p>Let's see whether requests sent to the base path <kbd>/demo</kbd> work.</p>
+<pre><strong>IP=$(kubectl get ingress go-demo-2 \<br/>    -o jsonpath="{.status.loadBalancer.ingress[0].ip}")<br/> <br/>curl -i "http://$IP/demo/hello"</strong>  </pre>
+<p>The output is as follows:</p>
+<pre><strong>HTTP/1.1 200 OK</strong>
+<strong>Server: nginx/1.13.5</strong>
+<strong>Date: Sun, 24 Dec 2017 14:19:04 GMT</strong>
+<strong>Content-Type: text/plain; charset=utf-8</strong>
+<strong>Content-Length: 14</strong>
+<strong>Connection: keep-alive</strong>
+<strong>Strict-Transport-Security: max-age=15724800; includeSubDomains;</strong>
+  
+<strong>hello, world!</strong>  </pre>
+<p>The status code <kbd>200 OK</kbd> is a clear indication that this time, the application is accessible through the port <kbd>80</kbd>. If that's not enough of assurance, you can observe the <kbd>hello, world!</kbd> response as well.</p>
+<p>The <kbd>go-demo-2</kbd> service we're currently using is no longer properly configured for our Ingress setup. Using <kbd>type: NodePort</kbd>, it is configured to export the port <kbd>8080</kbd> on all of the nodes. Since we're expecting users to access the application through the Ingress Controller on port <kbd>80</kbd>, there's probably no need to allow external access through the port <kbd>8080</kbd> as well. We should switch to the <kbd>ClusterIP</kbd> type. That will allow direct access to the Service only within the cluster, thus limiting all external communication through Ingress.</p>
+<p>We cannot just update the Service with a new definition. Once a Service port is exposed, it cannot be un-exposed. We'll delete the <kbd>go-demo-2</kbd> objects we created and start over. Besides the need to change the Service type, that will give us an opportunity to unify everything in a single YAML file:</p>
+<pre><strong>kubectl delete \</strong>
+<strong>    -f ingress/go-demo-2-ingress.yml</strong>
+    
+<strong>kubectl delete \</strong>
+<strong>    -f ingress/go-demo-2-deploy.yml</strong>  </pre>
+<p>We removed the objects related to <kbd>go-demo-2</kbd>, and now we can take a look at the unified definition.</p>
+<pre><strong>cat ingress/go-demo-2.yml</strong>  </pre>
+<p>We won't go into details of the new definition since it does not have any significant changes. It combines <kbd>ingress/go-demo-2-ingress.yml</kbd> and <kbd>ingress/go-demo-2-deploy.yml</kbd> into a single file, and it removes <kbd>type: NodePort</kbd> from the <kbd>go-demo-2</kbd> Service.</p>
+<pre><strong>kubectl create \</strong>
+<strong>    -f ingress/go-demo-2.yml \</strong>
+<strong>    --record --save-config</strong>
+    
+<strong>curl -i "http://$IP/demo/hello"</strong>  </pre>
+<p>We created the objects from the unified definition and sent a request to validate that everything works as expected. The response should be <kbd>200 OK</kbd> indicating that everything (still) works as expected.</p>
+<p>Please note that Kubernetes needs a few seconds until all the objects are running as expected. If you were too fast, you might have received the response <kbd>404 Not Found</kbd> instead <kbd>200 OK</kbd>. If that was the case, all you have to do is send the <kbd>curl</kbd> request again.</p>
+<p>Let's see, through a sequence diagram, what happened when we created the Ingress resource.</p>
+<ol>
+<li>The Kubernetes client (<kbd>kubectl</kbd>) sent a request to the API server requesting the creation of the Ingress resource defined in the <kbd>ingress/go-demo-2.yml</kbd> file.</li>
+<li>The ingress controller is watching the API server for new events. It detected that there is a new Ingress resource.</li>
+<li>The ingress controller configured the load balancer. In this case, it is nginx which was enabled by <kbd>minikube addons enable ingress</kbd> command. It modified <kbd>nginx.conf</kbd> with the values of all <kbd>go-demo-2-api</kbd> endpoints.</li>
+</ol>
+<div class="CDPAlignCenter CDPAlign"><img src="assets/f97fc587-e82a-4442-be25-8b4464320e11.png" style="width:40.83em;height:26.33em;"/></div>
+<div class="packt_figure CDPAlignCenter CDPAlign packt_figref">Figure 7-2: The sequence of events followed by the request to create an Ingress resource</div>
+<p>Now that one of the applications is accessible through Ingress, we should apply the same principles to the other.</p>
+<p>Let's take a look at the full definition of all the objects behind the <kbd>devops-toolkit</kbd> application.</p>
+<pre><strong>cat ingress/devops-toolkit.yml</strong>  </pre>
+<p>The output, limited to the Ingress object, is as follows:</p>
+<pre><strong>apiVersion: extensions/v1beta1</strong>
+<strong>kind: Ingress</strong>
+<strong>metadata:</strong>
+<strong>  name: devops-toolkit</strong>
+<strong>  annotations:<br/>    ingress.kubernetes.io/ssl-redirect: "false"<br/>    nginx.</strong><strong>ingress.kubernetes.io/ssl-redirect: "false"</strong>
+<strong>spec:</strong>
+<strong>  rules:</strong>
+<strong>  - http:</strong>
+<strong>      paths:</strong>
+<strong>      - path: /</strong>
+<strong>        backend:</strong>
+<strong>          serviceName: devops-toolkit</strong>
+<strong>          servicePort: 80</strong>
+<strong>...</strong>  </pre>
+<p>The <kbd>devops-toolkit</kbd> Ingress resource is very similar to <kbd>go-demo-2</kbd>. The only significant difference is that the <kbd>path</kbd> is set to <kbd>/</kbd>. It will serve all requests. It would be a much better solution if we'd change it to a unique base path (for example, <kbd>/devops-toolkit</kbd>) since that would provide a unique identifier. However, this application does not have an option to define a base path, so an attempt to do so in Ingress would result in a failure to retrieve resources. We'd need to write <kbd>rewrite</kbd> rules instead. We could, for example, create a rule that rewrites path base <kbd>/devops-toolkit</kbd> to <kbd>/</kbd>. That way if, for example, someone sends a request to <kbd>/devops-toolkit/something</kbd>, Ingress would rewrite it to <kbd>/something</kbd> before sending it to the destination Service. While such an action is often useful, we'll ignore it for now. I have better plans for this application. Until I decide to reveal them, <kbd>/</kbd> as the base <kbd>path</kbd> should do.</p>
+<p>Apart from adding Ingress to the mix, the definition removed <kbd>type: NodePort</kbd> from the Service. This is the same type of action we did previously with the <kbd>go-demo-2</kbd> service. We do not need external access to the Service.</p>
+<p>Let's remove the old objects and create those defined in the <kbd>ingress/devops-toolkit.yml</kbd> file:</p>
+<pre><strong>kubectl delete \</strong>
+<strong>    -f ingress/devops-toolkit-dep.yml</strong>
+    
+<strong>kubectl create \</strong>
+<strong>    -f ingress/devops-toolkit.yml \</strong>
+<strong>    --record --save-config</strong>  </pre>
+<p>We removed the old <kbd>devops-toolkit</kbd> and created new ones.</p>
+<p>Let's take a look at the Ingresses running inside the cluster:</p>
+<pre><strong>kubectl get ing</strong>  </pre>
+<p>The output is as follows:</p>
+<pre><strong>NAME           HOSTS ADDRESS        PORTS AGE</strong>
+<strong>devops-toolkit *     192.168.99.100 80    20s</strong>
+<strong>go-demo-2      *     192.168.99.100 80    58s</strong>  </pre>
+<p>We can see that now we have multiple Ingress resources. The Ingress controller (in this case NGINX) configured itself taking both of those resources into account.</p>
+<div class="packt_tip">We can define multiple Ingress resources that will configure a single Ingress controller.</div>
+<p>Let's confirm that both applications are accessible through HTTP (port <kbd>80</kbd>).</p>
+<pre><strong>open http://$IP</strong>
+    
+<strong>curl "http://$IP/demo/hello"</strong>  </pre>
+<p>The first command opened one of the applications in a browser, while the other returned the already familiar <kbd>hello, world!</kbd> message.</p>
+<div class="packt_tip">Ingress is a (kind of) Service that runs on all nodes of a cluster. A user can send requests to any and, as long as they match one of the rules, they will be forwarded to the appropriate Service.</div>
+<div class="mce-root CDPAlignCenter CDPAlign"><img src="assets/e7cc7cb0-6848-4f69-b323-a82bb583d64e.png" style="width:35.50em;height:22.50em;"/></div>
+<div class="packt_figure packt_figref CDPAlignCenter CDPAlign">Figure 7-3: Applications accessed through Ingress controller</div>
+<p>Even though we can send requests to both applications using the same port (<kbd>80</kbd>), that is often a sub-optimal solution. Our users would probably be happier if they could access those applications through different domains.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Creating Ingress resources based on domains</h1>
+                </header>
+            
+            <article>
+                
+<p>We'll try to refactor our <kbd>devops-toolkit</kbd> Ingress definition so that the Controller forwards requests coming from the <kbd>devopstoolkitseries.com</kbd> domain. The change should be minimal, so we'll get down to it right away.</p>
+<pre><strong>cat ingress/devops-toolkit-dom.yml</strong>  </pre>
+<p>When compared with the previous definition, the only difference is in the additional entry <kbd>host: devopstoolkitseries.com</kbd>. Since that will be the only application accessible through that domain, we also removed the <kbd>path: /</kbd> entry.</p>
+<p>Let's <kbd>apply</kbd> the new definition:</p>
+<pre><strong>kubectl apply \</strong>
+<strong>  -f ingress/devops-toolkit-dom.yml \</strong>
+<strong>  --record</strong>  </pre>
+<p>What would happen if we send a similar domain-less request to the Application? I'm sure you already know the answer, but we'll check it out anyways:</p>
+<pre><strong>curl -I "http://$IP"</strong>  </pre>
+<p>The output is as follows:</p>
+<pre><strong>HTTP/1.1 404 Not Found</strong>
+<strong>Server: nginx/1.13.5</strong>
+<strong>Date: Sun, 24 Dec 2017 14:50:29 GMT</strong>
+<strong>Content-Type: text/plain; charset=utf-8</strong>
+<strong>Content-Length: 21</strong>
+<strong>Connection: keep-alive</strong>
+<strong>Strict-Transport-Security: max-age=15724800; includeSubDomains;</strong>  </pre>
+<p>There is no Ingress resource defined to listen to <kbd>/</kbd>. The updated Ingress will forward requests only if they come from <kbd>devopstoolkitseries.com</kbd>.</p>
+<p>I own the <kbd>devopstoolkitseries.com</kbd> domain, and I'm not willing to give you the access to my DNS registry to configure it with the IP of your Minikube cluster. Therefore, we won't be able to test it by sending a request to <kbd>devopstoolkitseries.com</kbd>. What we can do is to "fake" it by adding that domain to the request header:</p>
+<pre><strong>curl -I \ </strong>
+<strong>    -H "Host: devopstoolkitseries.com" \</strong>
+<strong>    "http://$IP"</strong>
+  </pre>
+<p>The output is as follows:</p>
+<pre><strong>HTTP/1.1 200 OK</strong>
+<strong>Server: nginx/1.13.5</strong>
+<strong>Date: Sun, 24 Dec 2017 14:51:09 GMT</strong>
+<strong>Content-Type: text/html</strong>
+<strong>Content-Length: 12872</strong>
+<strong>Connection: keep-alive</strong>
+<strong>Last-Modified: Thu, 14 Dec 2017 13:59:34 GMT</strong>
+<strong>ETag: "5a3283c6-3248"</strong>
+<strong>Accept-Ranges: bytes</strong>  </pre>
+<p>Now that Ingress received a request that looks like it's coming from the domain <kbd>devopstoolkitseries.com</kbd>, it forwarded it to the <kbd>devops-toolkit</kbd> Service which, in turn, load balanced it to one of the <kbd>devops-toolkit</kbd> Pods. As a result, we got the response <kbd>200 OK</kbd>.</p>
+<p>Just to be on the safe side, we'll verify whether <kbd>go-demo-2</kbd> Ingress still works.</p>
+<pre><strong>curl -H "Host: acme.com" \</strong>
+<strong>    "http://$IP/demo/hello"</strong>  </pre>
+<p>We got the famous <kbd>hello, world!</kbd> response, thus confirming that both Ingress resources are operational. Even though we "faked" the last request as if it's coming from <kbd>acme.com</kbd>, it still worked. Since the <kbd>go-demo-2</kbd> Ingress does not have any <kbd>host</kbd> defined, it accepts any request with the <kbd>path</kbd> starting with <kbd>/demo</kbd>.</p>
+<p>We're still missing a few things. One of those is a setup of a default backend.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Creating an Ingress resource with default backends</h1>
+                </header>
+            
+            <article>
+                
+<p>In some cases, we might want to define a default backend. We might want to forward requests that do not match any of the Ingress rules.</p>
+<p>Let's take a look at an example:</p>
+<pre><strong>curl -I -H "Host: acme.com" \</strong>
+    <strong>"http://$IP"</strong></pre>
+<p>So far, we have two sets of Ingress rules in our cluster. One accepts all requests with the base path <kbd>/demo</kbd>. The other forwards all requests coming from the <kbd>devopstoolkitseries.com</kbd> domain. The request we just sent does not match either of those rules, so the response was once again <span class="packt_screen">404 Not Found</span>.</p>
+<p>Let's imagine that it would be a good idea to forward all requests with the wrong domain to the <kbd>devops-toolkit</kbd> application. Of course, by "wrong domain", I mean one of the domains we own, and not one of those that are already included in Ingress rules:</p>
+<pre><strong>cat ingress/default-backend.yml</strong>  </pre>
+<p>The output is as follows:</p>
+<pre><strong>apiVersion: extensions/v1beta1</strong>
+<strong>kind: Ingress</strong>
+<strong>metadata:</strong>
+<strong>  name: default</strong>
+<strong>  annotations:</strong>
+<strong>    ingress.kubernetes.io/ssl-redirect: "false"<br/>    nginx.ingress.kubernetes.io/ssl-redirect: "false"</strong>
+<strong>spec:</strong>
+<strong>  backend:</strong>
+<strong>    serviceName: devops-toolkit</strong>
+<strong>    servicePort: 80</strong>  </pre>
+<p>There's no Deployment, nor is there a Service. This time, we're creating only an Ingress resource.</p>
+<p>The <kbd>spec</kbd> has no rules, but only a single <kbd>backend</kbd>.</p>
+<div class="packt_tip">When an Ingress <kbd>spec</kbd> is without rules, it is considered a default backend. As such, it will forward all requests that do not match paths and/or domains set as rules in the other Ingress resources.</div>
+<p>We can use the default backend as a substitute for the default <kbd>404</kbd> pages or for any other occasion that is not covered by other rules.</p>
+<p>You'll notice that the <kbd>serviceName</kbd> is <kbd>devops-toolkit</kbd>. The example would be much better if I created a separate application for this purpose. At the risk of you calling me lazy, I'll say that it does not matter for this example. All we want, at the moment, is to see something other than <kbd>404 Not Found</kbd> response.</p>
+<pre><strong>kubectl create \</strong>
+<strong>    -f ingress/default-backend.yml</strong>  </pre>
+<p>We created the Ingress resource with the default backend, and now we can test whether it truly works:</p>
+<pre><strong>curl -I -H "Host: acme.com" \</strong>
+<strong>    "http://$IP"</strong></pre>
+<p>This time, the output is different. We got <kbd>200 OK</kbd> instead of the <kbd>404 Not Found</kbd> response.</p>
+<pre><strong>HTTP/1.1 200 OK</strong>
+<strong>...</strong>  </pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">What now?</h1>
+                </header>
+            
+            <article>
+                
+<p>We explored some of the essential functions of Ingress resources and Controllers. To be more concrete, we examined almost all those that are defined in the Ingress API.</p>
+<p>One notable feature we did not explore is TLS configuration. Without it, our services cannot serve HTTPS requests. To enable it, we'd need to configure Ingress to offload SSL certificates.</p>
+<p>There are two reasons we did not explore TLS. For one, we do not have a valid SSL certificate. On top of that, we did not yet study Kubernetes Secrets. I'd suggest you explore SSL setup yourself once you make a decision which Ingress controller to use. Secrets, on the other hand, will be explained soon.</p>
+<p>We'll explore other Ingress controllers once we move our cluster to "real" servers that we'll create with one of the hosting vendors. Until then, you might benefit from reading <span class="URLPACKT">NGINX Ingress controller (<a href="https://github.com/kubernetes/ingress-nginx/blob/master/README.md" target="_blank">https://github.com/kubernetes/ingress-nginx/blob/master/README.md</a>)</span> documentation in more detail. Specifically, I suggest you pay close attention to its <span class="URLPACKT">annotations (<a href="https://github.com/kubernetes/ingress-nginx/blob/master/docs/user-guide/nginx-configuration/annotations.md" target="_blank">https://github.com/kubernetes/ingress-nginx/blob/master/docs/user-guide/nginx-configuration/annotations.md</a>)</span>.</p>
+<p>Now that another chapter is finished, we'll destroy the cluster and let your laptop rest for a while. It deserves a break.</p>
+<pre><strong>minikube delete</strong>  </pre>
+<div class="packt_infobox">If you'd like to know more about Ingress, please explore <span class="URLPACKT">Ingress v1beta1 extensions (<a href="https://v1-9.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.9/#ingress-v1beta1-extensions" target="_blank">https://v1-9.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.9/#ingress-v1beta1-extensions</a>)</span> API documentation.</div>
+<p>Before we move into the next chapter, we'll explore the differences between Kubernetes Ingress and its Docker Swarm equivalent.</p>
+<div class="mce-root CDPAlignCenter CDPAlign"><img src="assets/7da80e08-4e4f-49b8-ae73-d32018eebff9.png" style="width:58.08em;height:24.92em;"/></div>
+<div class="packt_figure packt_figref CDPAlignCenter CDPAlign">Figure 7-4: The components explored so far</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Kubernetes Ingress compared to Docker Swarm equivalent</h1>
+                </header>
+            
+            <article>
+                
+<p>Both Kubernetes and Docker Swarm have Ingress, and it might sound compelling to compare them and explore the differences. While that, at first glance, might seem like the right thing to do, there is a problem. Ingress works quite differently across the two.</p>
+<p>Swarm Ingress networking is much more similar to Kubernetes services. Both can, and should, be used to expose ports to clients both inside and outside a cluster. If we compare the two products, we'll discover that Kubernetes services are similar to a combination of Docker Swarm's Overlay and Ingress networking. The Overlay is used to provide communication between applications inside a cluster, and Swarm's Ingress is a flavor of Overlay network that publishes ports to the outside world. The truth is that Swarm does not have an equivalent to Kubernetes Ingress controllers. That is, <em>if we do not include Docker Enterprise Edition to the mix</em>.</p>
+<p>The fact that a Kubernetes Ingress equivalent does not ship with Docker Swarm does not mean that similar functionality cannot be accomplished through other means. It can. <a href="https://traefik.io/" target="_blank"><span class="URLPACKT">Traefik</span></a>, for example, can act both as a Kubernetes Ingress Controller, as well as a dynamic Docker Swarm proxy. It provides, more or less, the same functionality no matter which scheduler you choose. If you're looking for a Swarm specific alternative, you might choose <span class="URLPACKT">Docker Flow Proxy</span> (<a href="http://proxy.dockerflow.com/" target="_blank">http://proxy.dockerflow.com/</a>) (written by yours truly).</p>
+<p>All in all, as soon as we stop comparing Ingress on both platforms and start looking for a similar set of functionality, we can quickly conclude that both Kubernetes and Docker Swarm allow a similar set of features. We can use paths and domains to route traffic from a single set of ports (for example, <kbd>80</kbd> and <kbd>443</kbd>) to a specific application that matches the rules. Both allow us to offload SSL certificates, and both provide solutions that make all the necessary configurations dynamically.</p>
+<p>If on the functional level both platforms provide a very similar set of features, can we conclude that there is no essential difference between the two schedulers when taking into account only dynamic routing and load balancing? <em>I would say no</em>. Some important differences might not be of functional nature.</p>
+<p>Kubernetes provides a well-defined Ingress API that third-party solutions can utilize to deliver a seamless experience. Let's take a look at one example:</p>
+<pre><strong>apiVersion: extensions/v1beta1</strong>
+<strong>kind: Ingress</strong>
+<strong>metadata:</strong>
+<strong>  name: devops-toolkit</strong>
+<strong>spec:</strong>
+<strong>  rules:</strong>
+<strong>  - host: devopstoolkitseries.com</strong>
+<strong>    http:</strong>
+<strong>      paths:</strong>
+<strong>      - backend:</strong>
+<strong>          serviceName: devops-toolkit</strong>
+<strong>          servicePort: 80</strong>  </pre>
+<p>This definition can be used with many different solutions. Behind this Ingress resource could be nginx, voyager, haproxy, or trafficserver Ingress controller. All of them use the same Ingress API to deduce which Services should be used by forwarding algorithms. Even Traefik, known for its incompatibility with commonly used Ingress annotations, would accept that YAML definition.</p>
+<p>Having a well-defined API still leaves a lot of room for innovation. We can use <kbd>annotations</kbd> to provide the additional information our Ingress controller of choice might need. Some of the same annotations are used across different solutions, while the others are specific to a controller.</p>
+<p>All in all, Kubernetes Ingress controller combines a well-defined (and simple) specification that all Ingress controllers must accept and, at the same time, it leaves ample room for innovation through custom <kbd>annotations</kbd> specified in <kbd>metadata</kbd>.</p>
+<p>Docker Swarm does not have anything resembling an Ingress API. Functionality similar to Kubernetes Ingress controllers can be accomplished either by using Swarm Kit or using the Docker API. The problem is that there is no defined API that third-party solutions should follow, so each is a world in itself. For example, understanding how Traefik works will not help you much when trying to switch to Docker Flow Proxy. Each is operated differently in isolation. There is no standard because Docker did not focus on making one.</p>
+<p>Docker's approach to scheduling is based entirely on the features baked into Docker Server. There is only one way to do things. Often, that provides a very user-friendly and reliable experience. If Swarm does what you need it to do, it is an excellent choice. However, the problem occurs when you need more. In that case, you might experience difficulties finding a solution with Docker Swarm.</p>
+<p>When we compared Kubernetes ReplicaSets, Services, and Deployments with their Docker Swarm equivalents, the result was the same set of features. There was no substantial difference on the functional level. From the user experience perspective, Swarm provided much better results. Its YAML file was much more straightforward and more concise. With only those features in mind, Swarm had the edge over Kubernetes. This time it's different.</p>
+<p>Kubernetes strategy is primarily based on API. Once a specific type of a resource is defined, any solution can utilize it to provide the given functionality. That is especially true with Ingress. We can choose among a myriad of solutions. Some of them are developed and maintained by the Kubernetes community (for example, GLBC and NGINX Ingress controllers), while others are provided by third-parties. No matter where the solution comes from, it adheres to the same API and, therefore, to the same YAML definition. As a result, we have a more substantial number of solutions to choose from, without sacrificing consistency in how we define resources.</p>
+<p>If we limit the comparison to Kubernetes Ingress controllers and their equivalents in Docker Swarm, the former is a clear winner. Assuming that the current strategy continues, Docker would need to add layer 7 forwarding into Docker Server if it is to get back in the game on this front. If we limit ourselves only to this set of features, Kubernetes wins through its Ingress API that opened the door, not only to internal solutions, but also to third-party Controllers.</p>
+<p>We are still at the beginning. There are many more features worth comparing. We only scratched the surface. Stay tuned for more.</p>
+
+
+            </article>
+
+            
+        </section>
+    </body></html>

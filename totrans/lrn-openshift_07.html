@@ -1,0 +1,1155 @@
+<html><head></head><body>
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Managing Persistent Storage</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">In the previous chapter, we described how to install an OpenShift cluster using an advanced installation method. The next step of the installation process is to make persistent storage available for OpenShift users. <span class="calibre11">In <a target="_blank" href="part0021.html#K0RQ0-78aafb146b304cdeb9b3261a70edabde" class="calibre8">Chapter 1</a>, <em class="calibre17">Containers and Docker Overview</em></span>, <span class="calibre11">we already how to use Docker persistent volumes. </span>Usually, we do not need any for development or testing purposes, but it is not the case with production environments where we need to store persistent data in certain cases. In this chapter, we will describe the persistent storage concept regarding the OpenShift infrastructure. We will also explain the need for using persistent storage in a production environment. The focus of this chapter is all about configuring an infrastructure to support persistent storage. This includes the following storage types: NFS, GlusterFS, iSCSI, and more. Besides infrastructure preparations, this chapter covers how to leverage persistent storage in OpenShift using <strong class="calibre4">Persistent Volumes</strong> (<strong class="calibre4">PVs</strong>) and <strong class="calibre4">Persistent Volume Claims</strong> (<strong class="calibre4">PVCs</strong>). Lastly, we will show you how to use persistent storage in your pods/applications that are deployed on OpenShift.</p>
+<p class="calibre2">In this chapter, we will cover the following topics:</p>
+<ul class="calibre9">
+<li class="calibre10">Persistent versus ephemeral storage</li>
+<li class="calibre10">OpenShift persistent storage concept</li>
+<li class="calibre10">Storage backends comparison</li>
+<li class="calibre10">Storage infrastructure setup</li>
+<li class="calibre10">Configuring PVs</li>
+<li class="calibre10">Using persistent storage in Pods</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Technical requirements</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">The learning environment for this chapter consists of two VMs with the following characteristics:</p>
+<table border="1" class="calibre22">
+<tbody class="calibre23">
+<tr class="calibre24">
+<td class="calibre25"><strong class="calibre1">Hostname</strong></td>
+<td class="calibre25"><strong class="calibre1">RAM</strong></td>
+<td class="calibre25"><strong class="calibre1">vCPU</strong></td>
+<td class="calibre25"><strong class="calibre1">OS</strong></td>
+</tr>
+<tr class="calibre24">
+<td class="calibre25"><kbd class="calibre12">openshift.example.com</kbd></td>
+<td class="calibre25">4GB</td>
+<td class="calibre25">2</td>
+<td class="calibre25">CentOS 7</td>
+</tr>
+<tr class="calibre24">
+<td class="calibre25"><kbd class="calibre12">storage.example.com</kbd></td>
+<td class="calibre25">
+<p class="calibre2">2GB</p>
+</td>
+<td class="calibre25">1</td>
+<td class="calibre25">CentOS 7</td>
+</tr>
+</tbody>
+</table>
+<p class="calibre2"> </p>
+<p class="calibre2">These machines can be deployed anywhere (bare metal, VMware, OpenStack, AWS, and so on). However, for educational purposes, we recommend using the Vagrant + VirtualBox/libvirt configuration to simplify the process of deployment and re-deployment of our virtual environment.</p>
+<p class="calibre2">We also assume that all servers are accessible via both FQDNs and short names. This requires configuring <kbd class="calibre12">/etc/hosts</kbd> records, which is shown as follows:</p>
+<pre class="calibre18">172.24.0.11 openshift.example.com openshift<br class="title-page-name"/>172.24.0.12 storage.example.com storage</pre>
+<div class="packt_infobox">The IPs must be the same as the ones that are specified in the following Vagrantfile. If you only want to use one machine for this lab, configure the <kbd class="calibre26">/etc/hosts</kbd> file to point both records to the same machine. </div>
+<p class="calibre2">Lab environment deployment can be simplified by using the following <kbd class="calibre12">Vagrantfile</kbd>:</p>
+<pre class="calibre18"><strong class="calibre1">$ cat Vagrantfile<br class="title-page-name"/></strong><br class="title-page-name"/>$lab_script = &lt;&lt;SCRIPT<br class="title-page-name"/>cat &lt;&lt;EOF &gt;&gt; /etc/hosts<br class="title-page-name"/>172.24.0.11 openshift.example.com openshift<br class="title-page-name"/>172.24.0.12 storage.example.com storage<br class="title-page-name"/>EOF<br class="title-page-name"/>SCRIPT<br class="title-page-name"/><br class="title-page-name"/>$lab_openshift = &lt;&lt;SCRIPT<br class="title-page-name"/>systemctl disable firewalld<br class="title-page-name"/>systemctl stop firewalld<br class="title-page-name"/>yum install -y epel-release git<br class="title-page-name"/>yum install -y docker<br class="title-page-name"/>cat &lt;&lt; EOF &gt;/etc/docker/daemon.json<br class="title-page-name"/>{<br class="title-page-name"/> "insecure-registries": [<br class="title-page-name"/> "172.30.0.0/16"<br class="title-page-name"/> ]<br class="title-page-name"/>}<br class="title-page-name"/>EOF<br class="title-page-name"/>systemctl start docker<br class="title-page-name"/>systemctl enable docker<br class="title-page-name"/>yum -y install centos-release-openshift-origin39<br class="title-page-name"/>yum -y install origin-clients<br class="title-page-name"/>oc cluster up<br class="title-page-name"/>SCRIPT<br class="title-page-name"/><br class="title-page-name"/>Vagrant.configure(2) do |config|<br class="title-page-name"/> config.vm.define "openshift" do |conf|<br class="title-page-name"/> conf.vm.box = "centos/7"<br class="title-page-name"/> conf.vm.hostname = 'openshift.example.com'<br class="title-page-name"/> conf.vm.network "private_network", ip: "172.24.0.11"<br class="title-page-name"/> conf.vm.provider "virtualbox" do |v|<br class="title-page-name"/> v.memory = 4096<br class="title-page-name"/> v.cpus = 2<br class="title-page-name"/> end<br class="title-page-name"/> conf.vm.provision "shell", inline: $lab_script<br class="title-page-name"/> conf.vm.provision "shell", inline: $lab_openshift<br class="title-page-name"/> end<br class="title-page-name"/><br class="title-page-name"/> config.vm.define "storage" do |conf|<br class="title-page-name"/> conf.vm.box = "centos/7"<br class="title-page-name"/> conf.vm.hostname = 'storage.example.com'<br class="title-page-name"/> conf.vm.network "private_network", ip: "172.24.0.12"<br class="title-page-name"/> conf.vm.provider "virtualbox" do |v|<br class="title-page-name"/> v.memory = 2048<br class="title-page-name"/> v.cpus = 1<br class="title-page-name"/> end<br class="title-page-name"/> conf.vm.provision "shell", inline: $lab_script<br class="title-page-name"/> end<br class="title-page-name"/>end</pre>
+<div class="packt_infobox">It's not mandatory to use the same IPs that were used in the preceding code. What is important is that you point your <kbd class="calibre26">/etc/hosts</kbd> records to them.</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Persistent versus ephemeral storage</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">By default, OpenShift/Kubernetes containers don't store data persistently. We can start an application and OpenShift will start a new container from an immutable Docker image. It uses an ephemeral storage, which means that data is available until the container is deleted or rebuilt. If our application (and all related containers) has been rebuilt, all data will be lost. Still, this approach is fine for any stateless application. For example, it will work for a simple website that doesn't act as a portal and only provides information embedded into HTML/CSS. Another example would be a database used for development—usually, no one cares if data is lost.</p>
+<p class="calibre2">Let's consider another example. Imagine that we need a database for a WordPress container. If we store database files on an ephemeral storage, we can lose all our data if the database container was rebuilt or deleted. We cannot allow our database files to be deleted or lost. OpenShift can rebuild our database container without any issues. It will give us a working instance of a database but without required databases/table structures and data in the tables. From the application's perspective, this means that all required information is lost. For these kinds of applications (stateful), we need a persistent storage that will be available even if the container crashed, was deleted, or was rebuilt.</p>
+<p class="calibre2">Storage requirements (ephemeral versus persistent) are dependent on your particular use case.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">The OpenShift persistent storage concept</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">OpenShift uses the <strong class="calibre4">Persistent Volume</strong> (<strong class="calibre4">PV</strong>) concept to allow administrators to provide persistent storage for a cluster and then let developers request storage resources via <strong class="calibre4">Persistent Volume Claims</strong> (<strong class="calibre4">PVC</strong>). Thus, end users can request storage without having deep knowledge of the underlying storage infrastructure. At the same time, administrators can configure the underlying storage infrastructure and make it available to end users via the PV concept.</p>
+<p class="calibre2">PV resources are shared across the OpenShift cluster since any of them can (if it is allowed) potentially be used by any users/projects. On the other hand, PVC resources are specific to a project (namespace) and they are usually created and used by end users, such as developers. Once PVC resources are created, OpenShift tries to find a suitable PV resource that matches specific criteria, like size requirements, access mode (RWO, ROX, RWX), and so on.  If PV has been found to satisfy the request from the PVC, OpenShift binds that PV to our PVC. Once this is complete, PV cannot be bound to additional PVCs.</p>
+<p class="calibre2">This concept is shown in the following screenshot:</p>
+<div class="cdpaligncenter2"><img class="alignnone41" src="../images/00049.jpeg"/></div>
+<div class="cdpaligncenter1">OpenShift Pod, PV, PVC, and the storage relationship </div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Persistent Volumes</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">PVs are represented by a PersistentVolume OpenShift API object, which describes an existing piece of storage infrastructure like NFS share, GlusterFS volume, iSCSI target, a Ceph RBD device, and so on. It is assumed that the underlying storage component already exists and is ready to be consumed by the OpenShift cluster.</p>
+<p class="calibre2">PVs have their own life cycle, which is independent of any pods that use PV.</p>
+<div class="packt_infobox"><span>High availability of storage in the infrastructure is left to the underlying storage provider.</span></div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Persistent Volume Claims</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">As I mentioned previously, OpenShift users can request storage resources <span class="calibre11">for their applications</span> by means of PVCs that are defined by a <kbd class="calibre12">PersistentVolumeClaim</kbd> OpenShift API object. PVC represents a request made by an end user (usually developers). PVC consumes PV resources.</p>
+<p class="calibre2">A PVC contains some important information regarding resources that are requested by applications/users:</p>
+<ul class="calibre9">
+<li class="calibre10">Size needed</li>
+<li class="calibre10">Access mode</li>
+</ul>
+<p class="calibre2">There are several access modes that can be used in the OpenShift infrastructure:</p>
+<table border="1" class="calibre22">
+<tbody class="calibre23">
+<tr class="calibre24">
+<td class="calibre25">
+<p class="calibre2"><strong class="calibre4">Mode</strong></p>
+</td>
+<td class="calibre25">
+<p class="calibre2"><strong class="calibre4">Description</strong></p>
+</td>
+<td class="calibre25">
+<p class="calibre2"><strong class="calibre4">Examples</strong></p>
+</td>
+</tr>
+<tr class="calibre24">
+<td class="calibre25">
+<p class="calibre2"><span class="calibre11">ReadOnlyMany</span></p>
+</td>
+<td class="calibre25">
+<p class="calibre2"><span class="calibre11">The volume can be mounted read-only by many nodes.</span></p>
+</td>
+<td class="calibre25">
+<p class="calibre2">NFS in RO mode</p>
+</td>
+</tr>
+<tr class="calibre24">
+<td class="calibre25">
+<p class="calibre2"><span class="calibre11">ReadWriteOnce</span></p>
+</td>
+<td class="calibre25">
+<p class="calibre2"><span class="calibre11">The volume can be mounted as read-write by a single node.</span></p>
+</td>
+<td class="calibre25">
+<p class="calibre2">iSCSI-based xfs, and so on</p>
+</td>
+</tr>
+<tr class="calibre24">
+<td class="calibre25">
+<p class="calibre2"><span class="calibre11">ReadWriteMany</span></p>
+</td>
+<td class="calibre25">
+<p class="calibre2"><span class="calibre11">The volume can be mounted as read-write by many nodes.</span></p>
+</td>
+<td class="calibre25">
+<p class="calibre2">GlusterFS</p>
+<p class="calibre2">NFS</p>
+</td>
+</tr>
+</tbody>
+</table>
+<p class="calibre2"> </p>
+<p class="calibre2">Once a PVC resource is created, OpenShift has to find a suitable PV resource and bind it to the PVC. If the binding is successful, the PVC resource can be consumed by an application.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">The storage life cycle in OpenShift</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">The interaction between PV and PVC resources is comprised of several steps, which are shown in the following diagram:</p>
+<div class="cdpaligncenter2"><img class="alignnone42" src="../images/00050.jpeg"/></div>
+<div class="cdpaligncenter1">OpenShift: storage lifecycle</div>
+<p class="calibre2">OpenShift cluster administrators can configure dynamic PV provisioning or configure PV resources in advance. Once a user has requested a storage resource using the PVC with specific size and access mode requirements, OpenShift looks for an available PV resource. The user always gets what they ask for, <span class="calibre11">at least</span>. In order to keep storage usage to a minimum, OpenShift binds the smallest PV that matches all criteria. A PVC remains unbound until a suitable PV is found. If there is a volume matching all criteria, OpenShift software binds them together. Starting from this step, storage can be used by pods. A pod consumes PVC resources as volumes. </p>
+<div class="title-page-name">
+<div class="title-page-name">
+<p class="calibre2">OpenShift inspects the claim to find the bound volume and mounts that volume to the pod. For those volumes that support multiple access modes, the user specifies which mode is desired when using their claim as a volume in a pod.</p>
+<p class="calibre2">Users can delete PVC objects, which allows reclamation of storage resources. If PVC is deleted, the volume is considered as <em class="calibre17">released</em> but is not yet immediately available to be bound to other claims. This requires that data stored on the volumes are handled according to the reclaim policy. </p>
+<p class="calibre2">The reclaim policy defines the way OpenShift understands what to do with the volume after it is released. The following reclaim policies are supported:</p>
+<table border="1" class="calibre22">
+<tbody class="calibre23">
+<tr class="calibre24">
+<td class="calibre25">
+<p class="calibre2"><strong class="calibre4">Policy</strong></p>
+</td>
+<td class="calibre25">
+<p class="calibre2"><strong class="calibre4">Description</strong></p>
+</td>
+</tr>
+<tr class="calibre24">
+<td class="calibre25">Retain</td>
+<td class="calibre25">
+<p class="calibre2"><span class="calibre11">Allows manual reclamation of the resource for those volume plugins that support it. In this case, storage administrators should delete data manually.</span></p>
+</td>
+</tr>
+<tr class="calibre24">
+<td class="calibre25">Delete</td>
+<td class="calibre25">
+<p class="calibre2"><span class="calibre11">Deletes both the PV </span><span class="calibre11">object from the OpenShift Container Platform and the associated storage asset in external infrastructures, such as AWS EBS, GCE PD, or Cinder volume.</span></p>
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Storage backends comparison</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">OpenShift supports a number of persistent storage backends that work differently. Some of them support reads/writes from many clients (like NFS), while others support only one mount.</p>
+<p class="calibre2">The following table contains a comparison of supported storage backends/plugins:</p>
+<table border="1" class="calibre22">
+<tbody class="calibre23">
+<tr class="calibre24">
+<td class="calibre25"><strong class="calibre1">Volume backend</strong></td>
+<td class="calibre25"><strong class="calibre1">ReadWriteOnce</strong></td>
+<td class="calibre25"><strong class="calibre1"><span>ReadWriteMany</span></strong></td>
+<td class="calibre25"><strong class="calibre1"><span>ReadOnlyMany</span></strong></td>
+</tr>
+<tr class="calibre24">
+<td class="calibre25">AWS EBS</td>
+<td class="calibre25">Yes</td>
+<td class="calibre25"/>
+<td class="calibre25"><span> </span></td>
+</tr>
+<tr class="calibre24">
+<td class="calibre25">Azure Disk</td>
+<td class="calibre25">Yes</td>
+<td class="calibre25"/>
+<td class="calibre25"/>
+</tr>
+<tr class="calibre24">
+<td class="calibre25">Ceph RBD</td>
+<td class="calibre25">Yes</td>
+<td class="calibre25"/>
+<td class="calibre25"><span>Yes</span></td>
+</tr>
+<tr class="calibre24">
+<td class="calibre25">Fibre Channel</td>
+<td class="calibre25">Yes</td>
+<td class="calibre25"/>
+<td class="calibre25"><span>Yes</span></td>
+</tr>
+<tr class="calibre24">
+<td class="calibre25"><span>GCE Persistent Disk</span></td>
+<td class="calibre25">Yes</td>
+<td class="calibre25"/>
+<td class="calibre25"/>
+</tr>
+<tr class="calibre24">
+<td class="calibre25"><span>GlusterFS</span></td>
+<td class="calibre25">Yes</td>
+<td class="calibre25">Yes</td>
+<td class="calibre25">Yes</td>
+</tr>
+<tr class="calibre24">
+<td class="calibre25"><span>HostPath</span></td>
+<td class="calibre25">Yes</td>
+<td class="calibre25"/>
+<td class="calibre25"/>
+</tr>
+<tr class="calibre24">
+<td class="calibre25"><span>iSCSI</span></td>
+<td class="calibre25">Yes</td>
+<td class="calibre25"/>
+<td class="calibre25"><span>Yes</span></td>
+</tr>
+<tr class="calibre24">
+<td class="calibre25"><span>NFS (Network File System)</span></td>
+<td class="calibre25">Yes</td>
+<td class="calibre25">Yes</td>
+<td class="calibre25">Yes</td>
+</tr>
+<tr class="calibre24">
+<td class="calibre25">OpenStack Cinder</td>
+<td class="calibre25">Yes</td>
+<td class="calibre25"/>
+<td class="calibre25"/>
+</tr>
+<tr class="calibre24">
+<td class="calibre25"><span>VMware vSphere</span></td>
+<td class="calibre25">Yes</td>
+<td class="calibre25"/>
+<td class="calibre25"/>
+</tr>
+<tr class="calibre24">
+<td class="calibre25"><span>Local</span></td>
+<td class="calibre25">Yes</td>
+<td class="calibre25"/>
+<td class="calibre25"/>
+</tr>
+</tbody>
+</table>
+<div class="packt_infobox"><kbd class="calibre26">HostPath</kbd> allows you to mount persistent storage directly from the node your pod runs on and as such is not suitable for production usage. Please only use it for testing or development purposes.</div>
+<p class="calibre2">There are two types of supported storage in an OpenShift cluster:</p>
+<ul class="calibre9">
+<li class="calibre10">Filesystem-based storage (like NFS, Gluster, and HostPath)</li>
+<li class="calibre10">Block-based storage (like iSCSI, OpenStack Cinder, and so on)</li>
+</ul>
+<p class="calibre2"><span class="calibre11">Docker containers need file system-based storage to use as a persistent volume. This means that OpenShift can use file system-based storage directly.  </span>OpenShift needs to create a file system on block storage before using it as a persistent volume. For example, if an iSCSI block device is provided, the cluster administrator has to define what file system will be created on the block device <span class="calibre11">during the PV creation process</span>.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Storage infrastructure setup</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">Configuring the underlying storage infrastructure is usually a task for storage administrators. This requires a number of settings and design decisions so that you can achieve the expected level of durability, availability, and performance. This requires a significant knowledge of underlying resources, physical infrastructure, networking, and so on. Once the storage subsystem has been configured properly by storage administrators, OpenShift cluster administrators can leverage it to create PVs.</p>
+<p class="calibre2">This book is about OpenShift administration, and thus the configuration of an underlying storage technology is out of its scope. However, we want to demonstrate how to perform the basic setup of storage infrastructure on Linux systems for NFS, GlusterFS, and iSCSI.</p>
+<div class="packt_infobox">If you still need to set up a different kind of storage, please refer to the relevant documentation. For example, you may find some Ceph storage documentation at <a href="https://ceph.com" class="calibre6">https://ceph.com</a>; OpenStack Cinder documentation may be found on the project homepage at <a href="http://openstack.org" class="calibre6">openstack.org</a>.</div>
+<p class="calibre2">We have chosen NFS and GlusterFS-based storage for a number of reasons:</p>
+<ul class="calibre9">
+<li class="calibre10">Both are file system-based storage solutions</li>
+<li class="calibre10">Both support the <kbd class="calibre12">ReadWriteMany</kbd> OpenShift access type</li>
+<li class="calibre10">Both can easily be configured on any OpenShift cluster nodes</li>
+<li class="calibre10">NFS is known to any Linux system administrator</li>
+</ul>
+<p class="calibre2">We also want to demonstrate how to use block-based storage in the OpenShift cluster. We have chosen iSCSI-based storage as an example storage, as it is one of the easiest ways to go with block-based storage on Linux.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Setting up NFS</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">The <strong class="calibre4">Network File System </strong>(<strong class="calibre4">NFS</strong>) <span class="calibre11">is a </span>client/server filesystem <span class="calibre11">protocol that was originally developed by </span>Sun Microsystems<span class="calibre11"> in 1984. NFS </span><span class="calibre11">allows a user on a client </span>computer (NFS client)<span class="calibre11"> to access files stored on the NFS server over a network, or even over the internet. The NFS server shares one or more NFS shares with a number of allowed NFS clients. </span><span class="calibre11">NFS clients mount NFS shares as regular filesystems. No specific application settings are required since NFS is a POSIX compliant file system protocol. This is the main reason why NFS is very popular as a network storage solution. </span>NFS is supported by Linux kernel by default and can be configured on any Linux-based server.</p>
+<p class="calibre2">In this tutorial, we will use a standalone NFS server for providing persistent storage to applications that will be deployed on our OpenShift cluster.</p>
+<div class="packt_infobox">The installation process that is described is for CentOS 7.</div>
+<p class="calibre2">The NFS installation and configuration process involves several steps:</p>
+<ol class="calibre13">
+<li value="1" class="calibre10">Installing NFS packages on the server and clients</li>
+<li value="2" class="calibre10">Configuring NFS exports on the server</li>
+<li value="3" class="calibre10">Starting and enabling the NFS service</li>
+<li value="4" class="calibre10">Verification or mounting the NFS share(s) on clients</li>
+</ol>
+<div class="packt_infobox">Before we begin, we need to deploy two machines, as described in the <em class="calibre28">Technical requirements</em> section. In this lab, we assume that machines were deployed as VMs using Vagrant.</div>
+<p class="calibre2">Bring your Vagrant environment up and log in to <kbd class="calibre12">storage</kbd> VM:</p>
+<pre class="calibre18"><strong class="calibre1">$ vagtrant up</strong><br class="title-page-name"/><strong class="calibre1">$ vagrant ssh storage</strong></pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Installing NFS packages on the server and clients</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">NFS packages need to be installed on the NFS server, as well as on all OpenShift nodes, as they will act as NFS clients. NFS libraries and binaries are provided by the <kbd class="calibre12">nfs-utils</kbd> package:</p>
+<pre class="calibre18"><strong class="calibre1">#</strong> <strong class="calibre1">yum install -y nfs-utils</strong><br class="title-page-name"/>…<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>…<br class="title-page-name"/>Updated:<br class="title-page-name"/>  nfs-utils.x86_64 1:1.3.0-0.54.el7<br class="title-page-name"/>Complete!</pre>
+<div class="packt_infobox">We will configure NFS services on storage.example.com. All configuration is done under the <kbd class="calibre26">root</kbd> account. You can use <kbd class="calibre26">sudo -i</kbd> command to switch to root. </div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Configuring NFS exports on the server</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">This needs to be done on the server-side only. We are going to export several file systems under the <kbd class="calibre12">/exports</kbd> directory. The exports will only be accessible by OpenShift nodes.</p>
+<p class="calibre2">OpenShift cluster runs Docker containers using random <strong class="calibre4">User IDs</strong> (<strong class="calibre4">UIDs</strong>). It is difficult to predict a UID to give proper NFS permissions, so we have to configure the following NFS settings to allow OpenShift to use NFS shares properly:</p>
+<ul class="calibre9">
+<li class="calibre10">A share should be owned by the <kbd class="calibre12">nfsnobody</kbd> user and group.</li>
+<li class="calibre10">A share should have <kbd class="calibre12">0700</kbd> access permissions.</li>
+</ul>
+<ul class="calibre9">
+<li class="calibre10">A share should be exported using the <kbd class="calibre12">all_squash</kbd> option. This will be described later in this topic.</li>
+</ul>
+<ol class="calibre13">
+<li value="1" class="calibre10">Create the required directories and assign them to the proper permissions:</li>
+</ol>
+<pre class="calibre19"># <strong class="calibre1">mkdir -p /exports/{nfsvol1,nfsvol2,nfsvol3}</strong><br class="title-page-name"/># <strong class="calibre1">chmod 0700 /exports/{nfsvol1,nfsvol2,nfsvol3}</strong><br class="title-page-name"/># <strong class="calibre1">chown nfsnobody:nfsnobody /exports/{nfsvol1,nfsvol2,nfsvol3}</strong></pre>
+<ol start="2" class="calibre13">
+<li value="2" class="calibre10">Configure the firewall:</li>
+</ol>
+<pre class="calibre19"><strong class="calibre1"># firewall-cmd --perm --add-service={nfs,mountd,rpc-bind}</strong><br class="title-page-name"/>success<br class="title-page-name"/><br class="title-page-name"/><strong class="calibre1"># firewall-cmd --reload</strong><br class="title-page-name"/>success</pre>
+<div class="packt_infobox">This is not required on Vagrant box centos/7 since <kbd class="calibre26">firewalld</kbd> is disabled by default.</div>
+<ol start="3" class="calibre13">
+<li value="3" class="calibre10">Create an NFS export by adding the following lines to <kbd class="calibre12">/etc/exports</kbd>:</li>
+</ol>
+<pre class="calibre19"># <strong class="calibre1">cat &lt;&lt;EOF &gt; /etc/exports</strong><br class="title-page-name"/><strong class="calibre1">/exports/nfsvol1 openshift.example.com(rw<span>,sync,all_squash</span>)</strong><br class="title-page-name"/><strong class="calibre1">/exports/nfsvol2 openshift.example.com(rw<span>,sync,</span><span>all_squash</span>)</strong><br class="title-page-name"/><strong class="calibre1">/exports/nfsvol3 openshift.example.com(rw<span>,sync,</span><span>all_squash</span>)</strong><br class="title-page-name"/><strong class="calibre1">EOF</strong></pre>
+<div class="packt_tip">Instead of providing FQDNs, you may also specify IP addresses of the nodes. This will look like as shown in the following code:</div>
+<pre class="calibre19"><strong class="calibre1"><span># cat &lt;&lt;EOF &gt; /etc/exports</span></strong><br class="title-page-name"/><strong class="calibre1"><span>/exports/nfsvol1 172.24.0.11(rw</span><span>,sync,all_squash</span><span>)</span></strong><br class="title-page-name"/><strong class="calibre1"><span>/exports/nfsvol2 172.24.0.11(rw</span><span>,sync,all_squash</span><span>)</span></strong><br class="title-page-name"/><strong class="calibre1"><span>/exports/nfsvol3 172.24.0.11(rw</span><span>,sync,all_squash</span><span>)</span></strong><br class="title-page-name"/><strong class="calibre1"><span>EOF</span></strong></pre>
+<div class="packt_infobox">The <kbd class="calibre26">all_squash</kbd> NFS export option configures NFS to map all UIDs to the <kbd class="calibre26">nfsnobody</kbd> user ID.</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Starting and enabling the NFS service</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">We also need to enable and start nfs-server using the <kbd class="calibre12">systemctl</kbd> command. The following snippet shows how to enable and start all services required for NFS service:</p>
+<pre class="calibre18"><strong class="calibre1"># systemctl enable rpcbind nfs-server</strong><br class="title-page-name"/>Created symlink from /etc/systemd/system/multi-user.target.wants/nfs-server.service to /usr/lib/systemd/system/nfs-server.service.<br class="title-page-name"/><strong class="calibre1"># systemctl start rpcbind nfs-server</strong></pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Verification</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">You may want to check that NFS share was exported properly. The following command will show all available exports:</p>
+<pre class="calibre18"><strong class="calibre1"># exportfs -v</strong><br class="title-page-name"/>/exports/nfsvol1 openshift.example.com(rw,sync,wdelay,hide,no_subtree_check,sec=sys,secure,root_squash,all_squash)<br class="title-page-name"/>/exports/nfsvol2 openshift.example.com(rw,sync,wdelay,hide,no_subtree_check,sec=sys,secure,root_squash,all_squash)<br class="title-page-name"/>/exports/nfsvol3 openshift.example.com(rw,sync,wdelay,hide,no_subtree_check,sec=sys,secure,root_squash,all_squash)</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Configuring GlusterFS shares</h1>
+                
+            
+            <article>
+                
+<p class="calibre2"><span class="calibre11">GlusterFS is a free and scalable network file system that is suitable for data-intensive tasks, such as cloud storage and media streaming. GlusterFS creates a volume on top of one or more storage nodes using <em class="calibre17">bricks</em>. A brick represents a file system on a storage node. There are several types of GlusterFS volumes defined by the placement of data on bricks. More information can be found by following the links provided at the end of this chapter. In this chapter, we only need to have a basic knowledge of the following volume types:</span></p>
+<table border="1" class="calibre22">
+<tbody class="calibre23">
+<tr class="calibre24">
+<td class="calibre25">
+<p class="calibre2"><strong class="calibre4">Type</strong></p>
+</td>
+<td class="calibre25">
+<p class="calibre2"><strong class="calibre4">Description</strong></p>
+</td>
+</tr>
+<tr class="calibre24">
+<td class="calibre25">
+<p class="calibre2">Distributed</p>
+</td>
+<td class="calibre25">
+<p class="calibre2">All files are distributed between bricks/storage nodes. No redundancy is provided by this volume type.</p>
+</td>
+</tr>
+<tr class="calibre24">
+<td class="calibre25">
+<p class="calibre2">Replicated</p>
+</td>
+<td class="calibre25">
+<p class="calibre2">All files are replicated between two or more bricks. Thus, each file is stored on at least two bricks, which provides redundancy.</p>
+</td>
+</tr>
+<tr class="calibre24">
+<td class="calibre25">
+<p class="calibre2">Striped</p>
+</td>
+<td class="calibre25">
+<p class="calibre2">Each file is striped across several bricks.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<p class="calibre2"><span class="calibre11">For this demonstration, we will set up a basic GlusterFS volume on a single storage node.</span></p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Installing packages</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">First, we need to install the GlusterFS packages, which are located in a special GlusterFS repository. The <kbd class="calibre12">centos-release-gluster312</kbd> package configures the GlusterFS 3.12 repository. We need to install the <kbd class="calibre12">glusterfs-server</kbd> on the server side (<kbd class="calibre12">storage.example.com</kbd>) and the <kbd class="calibre12">glusterfs</kbd> package on the client side (<kbd class="calibre12">openshift.example.com</kbd>):</p>
+<pre class="calibre18"><strong class="calibre1"># yum install -y centos-release-gluster312<br class="title-page-name"/></strong>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...<br class="title-page-name"/><strong class="calibre1"># yum install -y glusterfs-server</strong><br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...<br class="title-page-name"/>Dependency Installed:<br class="title-page-name"/> attr.x86_64 0:2.4.46-12.el7<br class="title-page-name"/> glusterfs.x86_64 0:3.12.6-1.el7<br class="title-page-name"/> glusterfs-api.x86_64 0:3.12.6-1.el7<br class="title-page-name"/> glusterfs-cli.x86_64 0:3.12.6-1.el7<br class="title-page-name"/> glusterfs-client-xlators.x86_64 0:3.12.6-1.el7<br class="title-page-name"/> glusterfs-fuse.x86_64 0:3.12.6-1.el7<br class="title-page-name"/> glusterfs-libs.x86_64 0:3.12.6-1.el7<br class="title-page-name"/> psmisc.x86_64 0:22.20-15.el7<br class="title-page-name"/> userspace-rcu.x86_64 0:0.10.0-3.el7<br class="title-page-name"/><br class="title-page-name"/>Complete!</pre>
+<p class="calibre2">Once the GlusterFS packages are installed, we need to start and enable the gluster management service—<kbd class="calibre12">glusterd</kbd>:</p>
+<pre class="calibre18"># <strong class="calibre1">systemctl enable glusterd</strong><br class="title-page-name"/>Created symlink from /etc/systemd/system/multi-user.target.wants/glusterd.service to /usr/lib/systemd/system/glusterd.service.<br class="title-page-name"/># <strong class="calibre1">systemctl start glusterd</strong></pre>
+<p class="calibre2"/>
+<p class="calibre2"/>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Configuring a brick and volume</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">The following steps of GlusterFS volume configuration require that we create a brick file system and the volume itself:</p>
+<div class="packt_infobox">For this lab, we will use the root file system to create a GlusterFS brick. This setup can only be used for test and development purposes and is not suitable for production usage. All GlusterFS production installations should use separate file systems for GlusterFS bricks, preferably located on separate physical block devices.</div>
+<pre class="calibre18"><strong class="calibre1"># mkdir /exports/gluster</strong><br class="title-page-name"/><strong class="calibre1"># gluster volume create gvol1 storage.example.com:/exports/gluster force</strong><br class="title-page-name"/>volume create: gvol1: success: please start the volume to access data</pre>
+<div class="title-page-name">
+<p class="calibre2">The <kbd class="calibre12">force</kbd> option is required here since we are using the <kbd class="calibre12">/</kbd> file system to create glusterFS volume. If this isn't provided, you may see the following output:</p>
+<pre class="calibre18"><strong class="calibre1"># gluster volume create gvol1 storage.example.com:/exports/gluster</strong><br class="title-page-name"/>volume create: gvol1: failed: The brick storage.example.com:/exports/gluster is being created in the root partition. It is recommended that you don't use the system's root partition for storage backend. Or use 'force' at the end of the command if you want to override this behavior.</pre></div>
+<p class="calibre2">Now that we have created a volume, it is a good time to start it, making it available to clients:</p>
+<pre class="calibre18"><strong class="calibre1"># gluster volume start gvol1</strong><br class="title-page-name"/>volume start: gvol1: success</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Configuring iSCSI</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">The <strong class="calibre4">internet Small Computer Systems Interface</strong> (<strong class="calibre4">iSCSI</strong>) is a client/server protocol that<span class="calibre11"> provides </span>block-level access<span class="calibre11"> to </span>storage devices<span class="calibre11"> by carrying </span>SCSI<span class="calibre11"> commands over a </span>TCP/IP<span class="calibre11"> network. Since iSCSI uses the TCP/IP network, i</span><span class="calibre11">t can be used to transmit data over </span><strong class="calibre4">local area networks</strong><span class="calibre11"> (<strong class="calibre4">LANs</strong>), </span><strong class="calibre4">wide area networks</strong><span class="calibre11"><strong class="calibre4"> </strong>(<strong class="calibre4">WANs</strong>), and the i</span>nternet,<span class="calibre11"> making location-independent data storage and retrieval possible. </span><span class="calibre11">This </span>protocol<span class="calibre11"> allows clients (</span><em class="calibre17">initiators)</em> to send SCSI commands to <span class="calibre11">storage devices (</span><em class="calibre17">targets</em><span class="calibre11">) on remote servers. It is a<strong class="calibre4"> </strong></span><strong class="calibre4">storage area network</strong><span class="calibre11"> (<strong class="calibre4">SAN</strong>) protocol. iSCSI allows clients to work with remote block devices and treat them as locally attached disks. </span>There are a number of iSCSI target implementations (like stgtd, LIO target, and so on). As a part of this chapter, we will configure LIO target-based iSCSI storage.</p>
+<p class="calibre2">The necessary steps to configure an iSCSI target on <kbd class="calibre12">storage.example.com</kbd> are outlined as follows:</p>
+<ol class="calibre13">
+<li value="1" class="calibre10">Install the CLI tool:</li>
+</ol>
+<pre class="calibre19"><strong class="calibre1"># yum install -y targetcli</strong></pre>
+<ol start="2" class="calibre13">
+<li value="2" class="calibre10">Enable the <kbd class="calibre12">target</kbd> service:</li>
+</ol>
+<pre class="calibre19"><strong class="calibre1"># systemctl enable target; systemctl start target</strong></pre>
+<ol start="3" class="calibre13">
+<li value="3" class="calibre10">Configure the firewall:</li>
+</ol>
+<pre class="calibre19"><strong class="calibre1"># firewall-cmd --permanent --add-port=3260/tcp</strong><br class="title-page-name"/><strong class="calibre1"># firewall-cmd --reload</strong></pre>
+<ol start="4" class="calibre13">
+<li value="4" class="calibre10">Configure the iSCSI export using <kbd class="calibre12">targetcli</kbd>:</li>
+</ol>
+<pre class="calibre19"><strong class="calibre1"># targetcli</strong><br class="title-page-name"/>targetcli shell version 2.1.fb46<br class="title-page-name"/>Copyright 2011-2013 by Datera, Inc and others.<br class="title-page-name"/>For help on commands, type 'help'.<br class="title-page-name"/><br class="title-page-name"/>/&gt; <strong class="calibre1">/backstores/fileio create iscsivol1 /exports/iscsivol1.raw 1g</strong><br class="title-page-name"/>Created fileio iscsivol1 with size 1073741824<br class="title-page-name"/>/&gt; <strong class="calibre1">/iscsi create iqn.2018-04.com.example.storage:disk1</strong><br class="title-page-name"/>Created target iqn.2018-04.com.example.storage:disk1.<br class="title-page-name"/>Created TPG 1.<br class="title-page-name"/>Global pref auto_add_default_portal=true<br class="title-page-name"/>Created default portal listening on all IPs (0.0.0.0), port 3260.<br class="title-page-name"/>/&gt; <strong class="calibre1">cd iscsi/iqn.2018-04.com.example.storage:disk1/tpg1/</strong><br class="title-page-name"/>/iscsi/iqn.20...ge:disk1/tpg1&gt; <strong class="calibre1">luns/ create /backstores/fileio/iscsivol1</strong><br class="title-page-name"/>Created LUN 0.<br class="title-page-name"/>/iscsi/iqn.20...ge:disk1/tpg1&gt; <strong class="calibre1">set attribute authentication=0 demo_mode_write_protect=0 generate_node_acls=1 cache_dynamic_acls=1</strong><br class="title-page-name"/>Parameter generate_node_acls is now '1'.<br class="title-page-name"/>/iscsi/iqn.20...ge:disk1/tpg1&gt; <strong class="calibre1">exit</strong><br class="title-page-name"/>Global pref auto_save_on_exit=true<br class="title-page-name"/>Last 10 configs saved in /etc/target/backup.<br class="title-page-name"/>Configuration saved to /etc/target/saveconfig.json</pre>
+<div class="packt_infobox">All basic configuration options can be found in man <kbd class="calibre26">targetcli</kbd> under the <em class="calibre28">QUICKSTART</em> section. For educational purposes, the preceding example exports the iSCSI volume to any host. Please be aware that it is not a production-ready configuration. In production, you may only want to grant access to the target to certain hosts.</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Client-side verification</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">The followings topics will describe how to use NFS, Gluster, and iSCSI storage resources inside the OpenShift cluster. However, you can use previously configured resources manually as well. Before going to the next topic, we strongly recommend verifying that all your resources are configured properly by mounting them on the client side. In our case, the client is located on the <kbd class="calibre12">openshift.example.com</kbd> node. Let's log in to openshift node and switch to root account before we begin:</p>
+<pre class="calibre18"><strong class="calibre1">$ vagrant ssh openshift</strong><br class="title-page-name"/>Last login: Sun Jul 8 22:24:44 2018 from 10.0.2.2<br class="title-page-name"/>[vagrant@openshift ~]<strong class="calibre1">$ sudo -i</strong></pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">NFS verification</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">To verify that the NFS exports work properly, we need to mount them on the <kbd class="calibre12">openshift.example.com</kbd> node, which is shown in the following code. If all shares can be mounted without any issues, you can assume that that share was exported properly:</p>
+<pre class="calibre18"># <strong class="calibre1">yum install -y<span> </span>nfs-utils<br class="title-page-name"/>...<br class="title-page-name"/></strong>&lt;output omitted&gt;<br class="title-page-name"/>...<br class="title-page-name"/># <strong class="calibre1">showmount -e storage.example.com</strong><br class="title-page-name"/>Export list for storage.example.com:<br class="title-page-name"/>/exports/nfsvol3 openshift.example.com<br class="title-page-name"/>/exports/nfsvol2 openshift.example.com<br class="title-page-name"/>/exports/nfsvol1 openshift.example.com<br class="title-page-name"/># <strong class="calibre1">mkdir /mnt/{nfsvol1,nfsvol2,nfsvol3}</strong><br class="title-page-name"/># <strong class="calibre1">mount storage.example.com:/exports/nfsvol1 /mnt/nfsvol1</strong><br class="title-page-name"/># <strong class="calibre1">mount storage.example.com:/exports/nfsvol2 /mnt/nfsvol2</strong><br class="title-page-name"/># <strong class="calibre1">mount storage.example.com:/exports/nfsvol3 /mnt/nfsvol3</strong><br class="title-page-name"/># <strong class="calibre1">df -h|grep nfsvol</strong><br class="title-page-name"/>storage.example.com:/exports/nfsvol1 38G 697M 37G 2% /mnt/nfsvol1<br class="title-page-name"/>storage.example.com:/exports/nfsvol2 38G 697M 37G 2% /mnt/nfsvol2<br class="title-page-name"/>storage.example.com:/exports/nfsvol3 38G 697M 37G 2% /mnt/nfsvol3<br class="title-page-name"/># <strong class="calibre1">umount /mnt/nfsvol1 /mnt/nfsvol2 /mnt/nfsvol3</strong></pre>
+<div class="packt_infobox">It's assumed that all required packages are already installed by running <kbd class="calibre26">yum install -y nfs-utils</kbd>.</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">GlusterFS verification</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">The GlusterFS volume can be mounted manually by using the FUSE client. The verification procedure looks like this:</p>
+<pre class="calibre18"># <strong class="calibre1">yum install centos-release-gluster312 -y</strong><br class="title-page-name"/># <strong class="calibre1">yum install glusterfs-fuse -y</strong><br class="title-page-name"/># <strong class="calibre1">mkdir /mnt/gvol1</strong><br class="title-page-name"/># <strong class="calibre1">mount -t glusterfs storage.example.com:/gvol1 /mnt/gvol1<br class="title-page-name"/></strong></pre>
+<p class="calibre2">Create a sample of persistent data to be used later:</p>
+<pre class="calibre18"><strong class="calibre1"># echo "Persistent data on GlusterFS" &gt; /mnt/gvol1/index.html</strong></pre>
+<div class="packt_infobox">This storage will be used as web server root data storage.</div>
+<p class="calibre2">Verify that mount point is available and then unmount the storage:</p>
+<pre class="calibre18"># <strong class="calibre1">df -h /mnt/gvol1/</strong><br class="title-page-name"/>Filesystem Size Used Avail Use% Mounted on<br class="title-page-name"/>storage.example.com:/gvol1 38G 713M 37G 2% /mnt/gvol1<br class="title-page-name"/># <strong class="calibre1">umount /mnt/gvol1</strong></pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">iSCSI verification</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">iSCSI verification assumes that an OpenShift node can access block storage devices. If everything goes well, you should see an additional disk at <kbd class="calibre12">/proc/partitions</kbd>. The iSCSI client utilities are provided by the <kbd class="calibre12">iscsi-initiator-utils</kbd> package. Once the package is installed, the <kbd class="calibre12">iscsiadm</kbd> utility can be used to scan the target for iSCSI exports:</p>
+<pre class="calibre18"># <strong class="calibre1">yum install -y iscsi-initiator-utils<br class="title-page-name"/>...<br class="title-page-name"/></strong>&lt;output omitted&gt;<br class="title-page-name"/><strong class="calibre1">...<br class="title-page-name"/># iscsiadm --mode discoverydb --type sendtargets --portal storage.example.com --discover<br class="title-page-name"/></strong>172.24.0.12:3260,1 iqn.2018-04.com.example.storage:disk1<strong class="calibre1"><br class="title-page-name"/># iscsiadm --mode node --login<br class="title-page-name"/></strong>Logging in to [iface: default, target: iqn.2018-04.com.example.storage:disk1, portal: 172.24.0.12,3260] (multiple)<br class="title-page-name"/>Login to [iface: default, target: iqn.2018-04.com.example.storage:disk1, portal: 172.24.0.12,3260] successful.<br class="title-page-name"/><strong class="calibre1"># cat /proc/partitions<br class="title-page-name"/></strong>major minor #blocks name<br class="title-page-name"/><br class="title-page-name"/>   8 0 41943040 sda<br class="title-page-name"/>   8 1 1024 sda1<br class="title-page-name"/>   8 2 1048576 sda2<br class="title-page-name"/>   8 3 40892416 sda3<br class="title-page-name"/> 253 0 39288832 dm-0<br class="title-page-name"/> 253 1 1572864 dm-1<br class="title-page-name"/>   <strong class="calibre1">8 16 1048576 sdb<br class="title-page-name"/><br class="title-page-name"/># iscsiadm --mode node --logout<br class="title-page-name"/></strong>Logging out of session [sid: 2, target: iqn.2018-04.com.example.storage:disk1, portal: 172.24.0.12,3260]<br class="title-page-name"/>Logout of [sid: 2, target: iqn.2018-04.com.example.storage:disk1, portal: 172.24.0.12,3260] successful.<br class="title-page-name"/><br class="title-page-name"/><strong class="calibre1"># iscsiadm --mode node -T iqn.2018-04.com.example.storage:disk1 --op delete</strong></pre>
+<div class="packt_tip">You can also use the <kbd class="calibre26">lsblk</kbd> utility to discover block devices that are available in the system.</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Configuring Physical Volumes (PV)</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">As we mentioned previously, OpenShift cluster administrators can create PV resources for future usage by OpenShift users.</p>
+<div class="packt_infobox">This topic assumes that the OpenShift environment is up and running on the <kbd class="calibre26">openshift.example.com</kbd> node. You may use <kbd class="calibre26">oc cluster up</kbd> or do an advanced OpenShift installation by using <span>Ansible</span>. </div>
+<p class="calibre2">As we mentioned previously, only cluster administrators can configure PVs. So, before you begin the following labs, you have to switch to the admin account:</p>
+<pre class="calibre18"><strong class="calibre1"># oc login -u system:admin<br class="title-page-name"/></strong></pre>
+<p class="calibre2">We recommend<span class="calibre11"> </span>creating<span class="calibre11"> </span>a new project to perform this <kbd class="calibre12">persistent storage</kbd>-related lab:</p>
+<pre class="calibre18"># <strong class="calibre1">oc new-project persistent-storage</strong></pre>
+<div class="packt_infobox">The client<span> </span>will automatically change the current project to the newly created one.</div>
+<p class="calibre2">In the upcoming examples, we will create the following PVs:</p>
+<table border="1" class="calibre22">
+<tbody class="calibre23">
+<tr class="calibre24">
+<td class="calibre25"><strong class="calibre1">PV</strong></td>
+<td class="calibre25"><strong class="calibre1">Storage backend</strong></td>
+<td class="calibre25"><strong class="calibre1">Size</strong></td>
+</tr>
+<tr class="calibre24">
+<td class="calibre25"><kbd class="calibre12">pv-nfsvol1</kbd></td>
+<td class="calibre25">NFS</td>
+<td class="calibre25">2 GiB</td>
+</tr>
+<tr class="calibre24">
+<td class="calibre25"><kbd class="calibre12">pv-gluster</kbd></td>
+<td class="calibre25">GlusterFS</td>
+<td class="calibre25">3 GiB</td>
+</tr>
+<tr class="calibre24">
+<td class="calibre25"><kbd class="calibre12">pv-iscsi</kbd></td>
+<td class="calibre25">iSCSI</td>
+<td class="calibre25">1 GiB</td>
+</tr>
+</tbody>
+</table>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Creating PVs for NFS shares</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">The NFS-related <kbd class="calibre12">PersistentVolume</kbd> resource that was created by the <span class="calibre11">OpenShift API</span> can be defined using either a YAML or JSON notation and can be submitted to the API by using the <kbd class="calibre12">oc create</kbd> command. Previously, we set up several NFS exports on <kbd class="calibre12">storage.example.com</kbd>. Now, we need to create the appropriate PV resources for each of them.</p>
+<p class="calibre2">The following example provides a file that can make NFS resources available for OpenShift clusters:</p>
+<pre class="calibre18"><strong class="calibre1"># cat pv-nfsvol1.yaml</strong><br class="title-page-name"/>apiVersion: v1<br class="title-page-name"/>kind: PersistentVolume<br class="title-page-name"/>metadata:<br class="title-page-name"/>  name: <strong class="calibre1">pv-nfsvol1</strong><br class="title-page-name"/>spec:<br class="title-page-name"/>  capacity:<br class="title-page-name"/>    storage: 2Gi <br class="title-page-name"/>  accessModes:<br class="title-page-name"/>    - <strong class="calibre1">ReadWriteMany</strong> <br class="title-page-name"/>  persistentVolumeReclaimPolicy: <strong class="calibre1"><span>Retain</span></strong> <br class="title-page-name"/>  nfs: <br class="title-page-name"/>    path: <strong class="calibre1">/exports/nfsvol1</strong><br class="title-page-name"/>    server: <strong class="calibre1">storage.example.com</strong><br class="title-page-name"/>    readOnly: false</pre>
+<p class="calibre2">This file contains the following information:</p>
+<ul class="calibre9">
+<li class="calibre10">Persistent Volume name (<kbd class="calibre12">pv_nfsvol1</kbd>) in the <kbd class="calibre12">metadata</kbd> section</li>
+<li class="calibre10">Available capacity (2 GibiBytes)</li>
+<li class="calibre10">Supported access modes (ReadWriteMany)</li>
+<li class="calibre10">Storage reclaim policy (Retain)</li>
+<li class="calibre10">NFS export information (server address and path)</li>
+</ul>
+<p class="calibre2">Once the file is created, we can make the resource available for the cluster by using the following command:</p>
+<pre class="calibre18"><strong class="calibre1"># oc create -f </strong><strong class="calibre1">pv-nfsvol1.yaml<br class="title-page-name"/></strong>persistentvolume "pv-nfsvol1" created</pre>
+<p class="calibre2">The preceding command creates the appropriate OpenShift API resource. Please be aware that the resource is not mounted to pod yet, but is ready to be bound to a PVC.</p>
+<div class="packt_infobox">You may want to create two other definitions to abstract the rest of the NFS shares we created previously. The shares are located on <kbd class="calibre26">storage.example.com:/exports/nfsvol2</kbd> and <kbd class="calibre26">storage.example.com:/exports/nfsvol3</kbd>. Shares <kbd class="calibre26">/exports/nfsvol2</kbd> and <kbd class="calibre26">/exports/nfsvol3</kbd> will not be used. </div>
+<p class="calibre2">As with any other OpenShift API resource, we can see its configuration by running the <kbd class="calibre12">describe</kbd> command:</p>
+<pre class="calibre18"># <strong class="calibre1">oc describe pv pv-nfsvol1</strong><br class="title-page-name"/>Name: pv-nfsvol1<br class="title-page-name"/>Labels: &lt;none&gt;<br class="title-page-name"/>Annotations: &lt;none&gt;<br class="title-page-name"/>StorageClass:<br class="title-page-name"/>Status: Available<br class="title-page-name"/>Claim:<br class="title-page-name"/>Reclaim Policy: Retain<br class="title-page-name"/>Access Modes: RWX<br class="title-page-name"/>Capacity: 2Gi<br class="title-page-name"/>Message:<br class="title-page-name"/>Source:<br class="title-page-name"/>    Type: NFS (an NFS mount that lasts the lifetime of a pod)<br class="title-page-name"/>    Server: storage.example.com<br class="title-page-name"/>    Path: /exports/nfsvol1<br class="title-page-name"/>    ReadOnly: false<br class="title-page-name"/>Events: &lt;none&gt;</pre>
+<p class="calibre2">You can see our PV using the <kbd class="calibre12">oc get pv</kbd> command as follows:</p>
+<pre class="calibre18"><strong class="calibre1"># oc get pv | egrep "^NAME|^pv-"</strong><br class="title-page-name"/>NAME CAPACITY ACCESSMODES RECLAIMPOLICY STATUS CLAIM STORAGECLASS REASON AGE<br class="title-page-name"/>pv-nfsvol1 2Gi RWX Retain Available 37s</pre>
+<div class="packt_infobox"><kbd class="calibre26">oc cluster up</kbd> creates a number of pre-defined PVs, which are named <kbd class="calibre26">pv0001</kbd> and <kbd class="calibre26">pv0100</kbd>. They are not shown in the preceding output.</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Creating a PV for the GlusterFS volume</h1>
+                
+            
+            <article>
+                
+<div class="title-page-name">
+<p class="calibre2">GlusterFS is distributed <span class="calibre11">by nature</span> and is quite different from the previous NFS-based storage. OpenShift cluster needs to be aware of the underlying Gluster storage infrastructure so that any schedulable OpenShift node can mount a GlusterFS volume. Configuring a GlusterFS persistent volume involves the following:</p>
+</div>
+<ul class="calibre9">
+<li class="calibre10">The <kbd class="calibre12">glusterfs<strong class="calibre1">-</strong>fuse</kbd> package being installed on every schedulable OpenShift node</li>
+<li class="calibre10">An existing GlusterFS storage in your underlying infrastructure</li>
+<li class="calibre10">A distinct list of servers (IP addresses) in the GlusterFS cluster to be defined as endpoints</li>
+<li class="calibre10">A service to persist the endpoints (optional)</li>
+<li class="calibre10">An existing Gluster volume to be referenced in the persistent volume object</li>
+</ul>
+<p class="calibre2">First, we need to install the <kbd class="calibre12">glusterfs-fuse</kbd> package on our OpenShift nodes:</p>
+<pre class="calibre18"># <strong class="calibre1">yum install -y centos-release-gluster312</strong><br class="title-page-name"/># <strong class="calibre1">yum install -y glusterfs-fuse</strong></pre>
+<div class="title-page-name">
+<p class="calibre2"><span class="calibre11">An endpoints' definition is intended to represent the GlusterFS cluster's servers as e</span>ndpoints and as such includes the IP addresses of your Gluster servers. The port value can be any numeric value within the accepted range of ports (<kbd class="calibre12">0</kbd> – <kbd class="calibre12">65535</kbd>). Optionally, you can create a service that persists the endpoints.</p>
+<p class="calibre2">The GlusterFS service is represented by a <kbd class="calibre12">Service</kbd> OpenShift API object, which is shown as follows:</p>
+</div>
+<pre class="calibre18"><strong class="calibre1"># cat gluster-service.yaml</strong><br class="title-page-name"/>apiVersion: v1<br class="title-page-name"/>kind: Service<br class="title-page-name"/>metadata:<br class="title-page-name"/>  name: glusterfs-cluster<br class="title-page-name"/>spec:<br class="title-page-name"/>  ports:<br class="title-page-name"/>    - port: 1</pre>
+<p class="calibre2">Once this file is created, <kbd class="calibre12">glusterfs</kbd> endpoints can be created as regular API objects:</p>
+<pre class="calibre18"><strong class="calibre1"># oc create -f gluster-service.yaml</strong><br class="title-page-name"/>service "glusterfs-cluster" created<br class="title-page-name"/><strong class="calibre1"># oc get svc</strong><br class="title-page-name"/>NAME CLUSTER-IP EXTERNAL-IP PORT(S) AGE<br class="title-page-name"/>glusterfs-cluster 172.30.193.29 &lt;none&gt; 1/TCP 3s</pre>
+<p class="calibre2">The GlusterFS endpoint's definition should contain information about all Gluster Storage nodes that are going to be used for data exchange. Our example only contains one node with an IP address of <kbd class="calibre12">172.24.0.12</kbd>. So, in order to create a Gluster endpoint definition file and create Gluster endpoints, run the following commands:</p>
+<pre class="calibre18"><strong class="calibre1"># cat gluster-endpoint.yaml</strong><br class="title-page-name"/>apiVersion: v1<br class="title-page-name"/>kind: Endpoints<br class="title-page-name"/>metadata:<br class="title-page-name"/>  name: glusterfs-cluster <br class="title-page-name"/>subsets:<br class="title-page-name"/>  - addresses:<br class="title-page-name"/>      - ip: 172.24.0.12<br class="title-page-name"/>    ports:<br class="title-page-name"/>      - port: 1<br class="title-page-name"/><br class="title-page-name"/><strong class="calibre1"># oc create -f gluster-endpoint.yaml</strong><br class="title-page-name"/>endpoints "glusterfs-cluster" created<br class="title-page-name"/><br class="title-page-name"/><strong class="calibre1"># oc get endpoints</strong><br class="title-page-name"/>NAME ENDPOINTS AGE<br class="title-page-name"/>glusterfs-cluster 172.24.0.12:1 17s</pre>
+<p class="calibre2">Now, we are ready to create a PV which points to the Gluster volume we created previously:</p>
+<pre class="calibre18"><strong class="calibre1"># cat pv-gluster.yaml</strong><br class="title-page-name"/>apiVersion: v1<br class="title-page-name"/>kind: PersistentVolume<br class="title-page-name"/>metadata:<br class="title-page-name"/>  name: pv-gluster <br class="title-page-name"/>spec:<br class="title-page-name"/>  capacity:<br class="title-page-name"/>    storage: 3Gi <br class="title-page-name"/>  accessModes: <br class="title-page-name"/>    - ReadWriteMany<br class="title-page-name"/>  glusterfs: <br class="title-page-name"/>    endpoints: glusterfs-cluster <br class="title-page-name"/>    path: gvol1 <br class="title-page-name"/>    readOnly: false<br class="title-page-name"/>  persistentVolumeReclaimPolicy: Retain <br class="title-page-name"/><br class="title-page-name"/># <strong class="calibre1">oc create -f pv-gluster.yaml</strong><br class="title-page-name"/>persistentvolume "pv-gluster" created</pre>
+<div class="packt_infobox">We are using the <kbd class="calibre26">Retain</kbd> policy to demonstrate that the system administrator has to take care of data reclamation manually.</div>
+<p class="calibre2">As we can see, the PV definition file for <span class="calibre11">GlusterFS</span> contains endpoints information and the volume's name.</p>
+<p class="calibre2">Now, the following volumes should be available:</p>
+<pre class="calibre18"><strong class="calibre1"># oc get pv | egrep "^NAME|^pv-"</strong><br class="title-page-name"/>NAME CAPACITY ACCESSMODES RECLAIMPOLICY STATUS CLAIM STORAGECLASS REASON AGE<br class="title-page-name"/>pv-gluster 3Gi RWX Retain Available 2s<br class="title-page-name"/>pv-nfsvol1 2Gi RWX Retain Available 2m</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">PV for iSCSI</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">Unlike NFS or GlusterFS persistent volumes, iSCSI volumes can only be accessed from one client/pod at a time. This is a block-based persistent storage and we should provide the file system type we are going to use. In the following example, the <kbd class="calibre12">ext4</kbd> file system will be used:</p>
+<pre class="calibre18"># <strong class="calibre1">cat pv-iscsi.yaml</strong><br class="title-page-name"/>apiVersion: v1<br class="title-page-name"/>kind: PersistentVolume<br class="title-page-name"/>metadata:<br class="title-page-name"/>  name: pv-iscsi<br class="title-page-name"/>spec:<br class="title-page-name"/>  capacity:<br class="title-page-name"/>    storage: 1Gi<br class="title-page-name"/>  accessModes:<br class="title-page-name"/>    - ReadWriteOnce<br class="title-page-name"/>  iscsi:<br class="title-page-name"/>     targetPortal: storage.example.com<br class="title-page-name"/>     iqn: iqn.2018-04.com.example.storage:disk1<br class="title-page-name"/>     lun: 0<br class="title-page-name"/>     fsType: 'ext4'<br class="title-page-name"/>     readOnly: false</pre>
+<p class="calibre2">Let's create the volume:</p>
+<pre class="calibre18"># <strong class="calibre1">oc create -f pv-iscsi.yaml</strong><br class="title-page-name"/>persistentvolume "pv-iscsi" created</pre>
+<p class="calibre2">At the end of the lab, you should have at least three PVs, like the ones shown in the following code:</p>
+<pre class="calibre18"><strong class="calibre1"># oc get pv | egrep "^NAME|^pv-"</strong><br class="title-page-name"/>NAME CAPACITY ACCESSMODES RECLAIMPOLICY STATUS CLAIM STORAGECLASS REASON AGE<br class="title-page-name"/>pv-gluster 3Gi RWX Retain Available 1m<br class="title-page-name"/>pv-iscsi   1Gi RWO Retain Available 6s<br class="title-page-name"/>pv-nfsvol1 2Gi RWX Retain Available 3m</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Using persistent storage in pods</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">Previously, we created all required PV OpenShift API objects, which are provided by OpenStack cluster administrators. Now, we are going to show you how to use persistent storage in your applications. Any OpenShift users can request persistent volume through the PVC concept.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Requesting persistent volume</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">Once the PV resource is available, any OpenShift user can create a PVC to request storage and later use that PVC to attach it as a volume to containers in pods.</p>
+<div class="packt_infobox">Upcoming examples don't have to be run under the <kbd class="calibre26">system:admin</kbd> account. Any unprivileged OpenShift user can request persistent volumes using PVC.</div>
+<p class="calibre2">Users should create PVC definitions using either YAML or JSON syntax. The following example shows a claim that requests 1 GiB of persistent storage with <kbd class="calibre12">ReadWriteOnce</kbd> capabilities:</p>
+<pre class="calibre18"><strong class="calibre1"># cat pvc-db.yaml</strong><br class="title-page-name"/>apiVersion: v1<br class="title-page-name"/>kind: PersistentVolumeClaim<br class="title-page-name"/>metadata:<br class="title-page-name"/>  name: pvc-db <br class="title-page-name"/>spec:<br class="title-page-name"/>  accessModes:<br class="title-page-name"/>  - ReadWriteOnce <br class="title-page-name"/>  resources:<br class="title-page-name"/>     requests:<br class="title-page-name"/>       storage: 1Gi </pre>
+<p class="calibre2">Now, we are able to create the corresponding API entity—PVC:</p>
+<pre class="calibre18"><strong class="calibre1"># oc create -f pvc-db.yaml</strong><br class="title-page-name"/>persistentvolumeclaim "pvc-db" created</pre>
+<p class="calibre2">We can verify the PVC status by using the <kbd class="calibre12">oc get pv</kbd> and <kbd class="calibre12">oc get pvc</kbd> commands. Both should show the status of PV/PVC:</p>
+<pre class="calibre18"><strong class="calibre1"># oc get pv | egrep "^NAME|^pv-"</strong><br class="title-page-name"/>NAME CAPACITY ACCESSMODES RECLAIMPOLICY STATUS CLAIM STORAGECLASS REASON AGE<br class="title-page-name"/>pv-gluster 3Gi RWX Retain Available 2m<br class="title-page-name"/>pv-iscsi   1Gi RWO Retain <strong class="calibre1">Bound</strong> persistent-storage/pvc-db 1m<br class="title-page-name"/>pv-nfsvol1 2Gi RWX Retain Available 4m<br class="title-page-name"/><br class="title-page-name"/><strong class="calibre1"># oc get pvc</strong><br class="title-page-name"/>NAME STATUS VOLUME CAPACITY ACCESSMODES STORAGECLASS AGE<br class="title-page-name"/>pvc-db Bound pv-iscsi 1Gi RWO 28s</pre>
+<div class="packt_infobox">In your particular case, PVC will be bound to the iSCSI-based physical volume, because it satisfies all requirements (<kbd class="calibre26">ReadWriteOnce</kbd> and <kbd class="calibre26">capacity</kbd>). <kbd class="calibre26">Bound</kbd> state means that OpenShift was able to find a proper physical volume to perform the binding process.</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Binding a PVC to a particular PV</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">Usually, users don't have to worry about underlying storage infrastructure. A user just needs to order required storage using PVC with the size and access mode specified. In some cases, there is a need to bind a PVC to a specific PV. Imagine the following scenario, where your storage infrastructure is complex and you need the storage for your database server to be as fast as possible. It would be good to place it on an SSD storage. In this case, storage administrators can provide you with either an FC or iSCSI-based volume that is backed by SSD drives. The OpenShift administrator may create a specific PV for future usage. On the user side, we will need to bind the newly created PVC to that specific PV. Static binding PVC to PV can be achieved by specifying the <kbd class="calibre12">volumeName</kbd> parameter under the <kbd class="calibre12">spec</kbd> section (<kbd class="calibre12">spec.volumeName</kbd>).</p>
+<p class="calibre2">In our particular example, we have two remaining unbound volumes with the <kbd class="calibre12">ReadWriteMany</kbd> access type: <kbd class="calibre12">pv-gluster</kbd> and <kbd class="calibre12">pv-nfsvol1</kbd>. In the following example, we are going to perform their static binding.</p>
+<p class="calibre2">Let's create a PVS definition for web server data:</p>
+<pre class="calibre18"><strong class="calibre1"># cat pvc-web.yaml</strong><br class="title-page-name"/>apiVersion: "v1"<br class="title-page-name"/>kind: "PersistentVolumeClaim"<br class="title-page-name"/>metadata:<br class="title-page-name"/>  name: "pvc-web"<br class="title-page-name"/>spec:<br class="title-page-name"/>  accessModes:<br class="title-page-name"/>    - "ReadWriteMany"<br class="title-page-name"/>  resources:<br class="title-page-name"/>    requests:<br class="title-page-name"/>      storage: "1Gi"<br class="title-page-name"/> <strong class="calibre1"> volumeName: "pv-gluster"</strong></pre>
+<p class="calibre2">Create the PVC from the previous definition and see if OpenShift found a matching PV for it:</p>
+<pre class="calibre18"># <strong class="calibre1">oc create -f pvc-web.yaml</strong><br class="title-page-name"/>persistentvolumeclaim "pvc-web" created<br class="title-page-name"/><br class="title-page-name"/><strong class="calibre1"># oc get pv | egrep "^NAME|^pv-"</strong><br class="title-page-name"/>NAME CAPACITY ACCESSMODES RECLAIMPOLICY STATUS CLAIM STORAGECLASS REASON AGE<br class="title-page-name"/><strong class="calibre1">pv-gluster 3Gi RWX Retain Bound persistent-storage/pvc-web</strong> <strong class="calibre1">3m</strong><br class="title-page-name"/>pv-iscsi   1Gi RWO Retain Bound persistent-storage/pvc-db 2m<br class="title-page-name"/>pv-nfsvol1 2Gi RWX Retain Available 5m</pre>
+<p class="calibre2">And lastly, we will request 100 MiB of data by using the following PVC:</p>
+<pre class="calibre18"># <strong class="calibre1">cat pvc-data.yaml</strong><br class="title-page-name"/>apiVersion: "v1"<br class="title-page-name"/>kind: "PersistentVolumeClaim"<br class="title-page-name"/>metadata:<br class="title-page-name"/>  name: "pvc-data"<br class="title-page-name"/>spec:<br class="title-page-name"/>  accessModes:<br class="title-page-name"/>    - "ReadWriteMany"<br class="title-page-name"/>  resources:<br class="title-page-name"/>    requests:<br class="title-page-name"/>      storage: "100Mi"<br class="title-page-name"/><br class="title-page-name"/># <strong class="calibre1">oc create -f pvc-data.yaml</strong><br class="title-page-name"/>persistentvolumeclaim "pvc-data" created<br class="title-page-name"/><br class="title-page-name"/><strong class="calibre1"># oc get pv | egrep "^NAME|^pv-"</strong><br class="title-page-name"/>NAME CAPACITY ACCESSMODES RECLAIMPOLICY STATUS CLAIM STORAGECLASS REASON AGE<br class="title-page-name"/>pv-gluster 3Gi RWX Retain Bound persistent-storage/pvc-web 4m<br class="title-page-name"/>pv-iscsi 1Gi RWO Retain Bound persistent-storage/pvc-db 2m<br class="title-page-name"/><strong class="calibre1">pv-nfsvol1 2Gi RWX Recycle Bound persistent-storage/pvc-data 6m</strong></pre>
+<p class="calibre2">Notice that all PVSs are in the <kbd class="calibre12">Bound</kbd> state now.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Using claims as volumes in pod definition</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">Previously, we requested a persistent storage by creating PVCs, and now we are going to create an application using corresponding PVCs, as they are now bound to PVs that are backed by real storage. OpenShift allows developers to create a <kbd class="calibre12">Pod</kbd> and use PVC as a volume. The following example<span class="calibre11"> </span>shows how it can be used in order to create an Apache-based container:</p>
+<pre class="calibre18"># <strong class="calibre1">cat pod-webserver.yaml</strong><br class="title-page-name"/>apiVersion: v1<br class="title-page-name"/>kind: Pod<br class="title-page-name"/>metadata:<br class="title-page-name"/>  name: mywebserverpod<br class="title-page-name"/>  labels:<br class="title-page-name"/>    name: webeserver<br class="title-page-name"/>spec:<br class="title-page-name"/>  containers:<br class="title-page-name"/>    - name: webserver<br class="title-page-name"/>      image: docker.io/centos/httpd<br class="title-page-name"/>      ports:<br class="title-page-name"/>        - name: web<br class="title-page-name"/>          containerPort: 80<br class="title-page-name"/>      volumeMounts:<br class="title-page-name"/>        - name: volume-webroot<br class="title-page-name"/>          mountPath: /var/www/html<br class="title-page-name"/><strong class="calibre1">  volumes:</strong><br class="title-page-name"/><strong class="calibre1">    - name: volume-webroot</strong><br class="title-page-name"/><strong class="calibre1">      persistentVolumeClaim:</strong><br class="title-page-name"/><strong class="calibre1">        claimName: pvc-web</strong></pre>
+<p class="calibre2">In the preceding code, we defined an Apache pod and configured it to attach persistent volume that was provided as part of our previous claim to <kbd class="calibre12">pvc-web</kbd> to its container. OpenShift will automatically find the bound PV and mount it to the container.</p>
+<div class="packt_infobox">The PVC named <kbd class="calibre26">pvc-web</kbd> is bound to the GlusterFS-based PV. This persistent storage implementation requires gluster endpoints and services to be defined in each namespace/project in OpenShift. So, before moving on to the next part of the lab, we will need to create these service and endpoints again by running the following commands:<br class="title-page-name"/>
+<br class="title-page-name"/>
+<kbd class="calibre26"><span>oc </span>create -f<span> gluster</span>-service.yaml</kbd><span><br class="title-page-name"/></span><kbd class="calibre26"><span>oc </span>create -f<span> gluster</span>-endpoint.yaml</kbd><span>:</span></div>
+<pre class="calibre18"># <strong class="calibre1">oc create -f pod-webserver.yaml</strong><br class="title-page-name"/>pod "mywebserverpod" created</pre>
+<p class="calibre2">We can display pod and volume-related information by using the following command:</p>
+<pre class="calibre18"><strong class="calibre1"># oc describe pod mywebserverpod | grep -A 4 Volumes:</strong><br class="title-page-name"/>Volumes:<br class="title-page-name"/>  nfsvol:<br class="title-page-name"/>    Type: PersistentVolumeClaim (a reference to a PersistentVolumeClaim in the same namespace)<br class="title-page-name"/>    ClaimName: pvc-web<br class="title-page-name"/>    ReadOnly: false</pre>
+<p class="calibre2">If we connect to the container and try to create the <kbd class="calibre12">/var/www/index.html</kbd> file, it will reside in GlusterFS. We can verify that the GlusterFS volume was mounted on the node:</p>
+<pre class="calibre18"># <strong class="calibre1">df -h | grep gvol1</strong><br class="title-page-name"/>172.24.0.12:gvol1 38G 720M 37G 2% /var/lib/origin/openshift.local.volumes/pods/e2ca34d3-4823-11e8-9445-5254005f9478/volumes/kubernetes.io~glusterfs/pv-gluster</pre>
+<p class="calibre2">So, now the container has access to persistent data mounted at <kbd class="calibre12">/var/www/html</kbd>.</p>
+<div class="packt_infobox">Previously, we created an <kbd class="calibre26">index.html</kbd> file stored on GlusterFS storage. This means that our web server will automatically have access to all data on the GlusterFS volume <kbd class="calibre26">gvol1</kbd>.</div>
+<p class="calibre2">Now, we can verify that the persistent data written earlier is accessible. First, we will need to get the cluster IP address of our web server:</p>
+<pre class="calibre18"><strong class="calibre1"># oc describe pod mywebserverpod | grep IP:</strong><br class="title-page-name"/>IP: 172.17.0.2</pre>
+<p class="calibre2">And secondly, try to reach it via <kbd class="calibre12">curl</kbd>:</p>
+<pre class="calibre18"><strong class="calibre1"># curl http://172.17.0.2</strong><br class="title-page-name"/>Persistent data on GlusterFS</pre>
+<p class="calibre2">As we can see, now, the web server displays data that's available on the GlusterFS.</p>
+<p class="calibre2">We can now verify that data is stored <span class="calibre11">persistently</span> using two different ways:</p>
+<ul class="calibre9">
+<li class="calibre10">On the backend storage</li>
+<li class="calibre10">By recreating the container</li>
+</ul>
+<p class="calibre2">Let's verify that the file indeed exists on our <kbd class="calibre12">storage.example.com</kbd> server:</p>
+<pre class="calibre18"><strong class="calibre1">[root@storage ~]# cat /exports/gluster/index.html<br class="title-page-name"/></strong>Persistent data on GlusterFS</pre>
+<p class="calibre2">Finally, let's try to delete and create the container again:</p>
+<pre class="calibre18"><strong class="calibre1"># oc delete pod mywebserverpod</strong><br class="title-page-name"/>pod "mywebserverpod" deleted<br class="title-page-name"/><strong class="calibre1"># oc create -f pod-webserver.yaml</strong><br class="title-page-name"/>pod "mywebserverpod" created<br class="title-page-name"/><strong class="calibre1"># oc describe pod mywebserverpod | grep IP:</strong><br class="title-page-name"/>IP: 172.17.0.2<br class="title-page-name"/><strong class="calibre1"># curl http://172.17.0.2:80<br class="title-page-name"/></strong>Persistent data on GlusterFS</pre>
+<p class="calibre2">As we can see, the data persists and is available, even after the container has been deleted.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Managing volumes through oc volume</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">OpenShift users can attach a volume to any running application by using <kbd class="calibre12">oc volume</kbd>. In this example, we are going to create a pod with a basic application and attach a persistent volume to it.</p>
+<p class="calibre2">First, just deploy a basic Apache web server using <kbd class="calibre12">oc new-app</kbd>:</p>
+<pre class="calibre18"><strong class="calibre1"># oc new-app httpd<br class="title-page-name"/></strong>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...</pre>
+<p class="calibre2">After a little while, all httpd service resources will be available:</p>
+<pre class="calibre18"><strong class="calibre1"># oc get pod | egrep "^NAME|httpd"</strong><br class="title-page-name"/>NAME           READY STATUS   RESTARTS  AGE<br class="title-page-name"/>httpd-1-qnh5k   1/1  Running    0       49s</pre>
+<p class="calibre2"><kbd class="calibre12">oc new-app</kbd> created a deployment configuration that controls the application deployment process.</p>
+<p class="calibre2">In this example, we are going to attach a PVC named <kbd class="calibre12">pvc-data</kbd> as a volume to the running container:</p>
+<pre class="calibre18"><strong class="calibre1"># oc volume dc/httpd --add --name=demovolume -t pvc --claim-name=pvc-data --mount-path=/var/www/html</strong><br class="title-page-name"/>deploymentconfig "httpd" updated<br class="title-page-name"/><br class="title-page-name"/><strong class="calibre1"># oc get pod | egrep "^NAME|httpd"<br class="title-page-name"/></strong>NAME READY STATUS RESTARTS AGE<br class="title-page-name"/>httpd-2-bfbft 1/1 Running 0 40s<br class="title-page-name"/><br class="title-page-name"/><strong class="calibre1"># oc describe pod httpd-2-bfbft | grep -A 4 Volumes:</strong><br class="title-page-name"/>Volumes:<br class="title-page-name"/> demovolume:<br class="title-page-name"/> Type: PersistentVolumeClaim (a reference to a PersistentVolumeClaim in the same namespace)<br class="title-page-name"/> ClaimName: pvc-data<br class="title-page-name"/> ReadOnly: false</pre>
+<p class="calibre2">We can verify that an NFS share was mounted to the container:</p>
+<pre class="calibre18"># <strong class="calibre1">df -h | grep nfsvol1</strong><br class="title-page-name"/>storage.example.com:/exports/nfsvol1 38G 720M 37G 2% /var/lib/origin/openshift.local.volumes/pods/12cfe985-482b-11e8-9445-5254005f9478/volumes/kubernetes.io~nfs/pv-nfsvol1</pre>
+<p class="calibre2">Now, we can create an <kbd class="calibre12">index.html</kbd> file on our storage server directly in the export:</p>
+<pre class="calibre18">[root@storage ~]# <strong class="calibre1">echo "New NFS data" &gt;/exports/nfsvol1/index.html</strong></pre>
+<div class="packt_infobox">The previous command was run on the storage server, not on OpenShift!</div>
+<p class="calibre2">Once persistent data is available, we can try to access the web service:</p>
+<pre class="calibre18"><strong class="calibre1"># oc describe pod httpd-2-bfbft | grep IP:</strong><br class="title-page-name"/>IP: 172.17.0.3<br class="title-page-name"/><br class="title-page-name"/><strong class="calibre1"># curl http://172.17.0.3:8080</strong><br class="title-page-name"/>New NFS data</pre>
+<p class="calibre2">As we can see, attaching a volume to the pod worked fine. Now, we can detach it:</p>
+<pre class="calibre18"><strong class="calibre1"># oc volume dc/httpd --remove --name=demovolume</strong><br class="title-page-name"/>deploymentconfig "httpd" updated</pre>
+<div class="packt_infobox">Please be aware that OpenShift rolls new pods <span>out</span> each time you update the corresponding deployment config. This means that the container's IP addresses will be changed. To avoid that, we recommend testing your configuration using the service's IP address.</div>
+<p class="calibre2">Once the container is recreated, notice that the persistent data is not available. The <kbd class="calibre12">httpd</kbd> daemon shows the default page:</p>
+<pre class="calibre18"><strong class="calibre1"># oc get pod</strong><br class="title-page-name"/>NAME READY STATUS RESTARTS AGE<br class="title-page-name"/>httpd-3-fbq74 1/1 Running 0 1m<br class="title-page-name"/><br class="title-page-name"/><strong class="calibre1"># oc describe pod httpd-3-fbq74 | grep IP:</strong><br class="title-page-name"/>IP: 172.17.0.4<br class="title-page-name"/><br class="title-page-name"/><strong class="calibre1"># curl http://172.17.0.4:8080</strong><br class="title-page-name"/>&lt;!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd"&gt;<br class="title-page-name"/><br class="title-page-name"/>&lt;html  xml:lang="en"&gt;<br class="title-page-name"/> &lt;head&gt;<br class="title-page-name"/> &lt;title&gt;Test Page for the Apache HTTP Server on Red Hat Enterprise Linux&lt;/title&gt;<br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Persistent data for a database container</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">Let's attach an iSCSI-based persistent volume to a MariaDB instance. First, we will have to launch a <kbd class="calibre12">mariadb</kbd> application as follows:</p>
+<pre class="calibre18"><strong class="calibre1"># oc new-app \</strong><br class="title-page-name"/><strong class="calibre1">-e MYSQL_USER=openshift \</strong><br class="title-page-name"/><strong class="calibre1">-e MYSQL_PASSWORD=openshift \</strong><br class="title-page-name"/><strong class="calibre1">-e MYSQL_DATABASE=openshift \</strong><br class="title-page-name"/><strong class="calibre1">mariadb</strong><br class="title-page-name"/>Found image a339b72 (10 days old) in image stream "openshift/mariadb" under tag "10.1" for "mariadb"<br class="title-page-name"/><br class="title-page-name"/>MariaDB 10.1<br class="title-page-name"/>------------<br class="title-page-name"/>MariaDB is a multi-user, multi-threaded SQL database server. The container image provides a containerized packaging of the MariaDB mysqld daemon and client application. The mysqld server daemon accepts connections from clients and provides access to content from MariaDB databases on behalf of the clients.<br class="title-page-name"/><br class="title-page-name"/>Tags: database, mysql, mariadb, mariadb101, rh-mariadb101, galera<br class="title-page-name"/><br class="title-page-name"/>* This image will be deployed in deployment config "mariadb"<br class="title-page-name"/>* Port 3306/tcp will be load balanced by service "mariadb"<br class="title-page-name"/>* Other containers can access this service through the hostname "mariadb"<br class="title-page-name"/>* This image declares volumes and will default to use non-persistent, host-local storage.<br class="title-page-name"/>You can add persistent volumes later by running 'volume dc/mariadb --add ...'<br class="title-page-name"/><br class="title-page-name"/>--&gt; Creating resources ...<br class="title-page-name"/><br class="title-page-name"/>deploymentconfig "mariadb" created<br class="title-page-name"/>service "mariadb" created<br class="title-page-name"/>--&gt; Success<br class="title-page-name"/>Application is not exposed. You can expose services to the outside world by executing one or more of the commands below:<br class="title-page-name"/>'oc expose svc/mariadb'<br class="title-page-name"/>Run 'oc status' to view your app.</pre>
+<p class="calibre2">Wait a couple of minutes, and check the status of the <kbd class="calibre12">mariadb</kbd> instance:</p>
+<pre class="calibre18"><strong class="calibre1"># oc get pod | egrep "^NAME|mariadb"</strong><br class="title-page-name"/>NAME            READY STATUS   RESTARTS AGE<br class="title-page-name"/>mariadb-1-lfmrn 1/1   Running   0       1m</pre>
+<p class="calibre2">We need to know the default location of the database files. This can be gathered using the <kbd class="calibre12">oc describe dc</kbd> command, as shown in the following code:</p>
+<pre class="calibre18"><strong class="calibre1"># oc describe dc mariadb</strong><br class="title-page-name"/>Name: mariadb<br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...<br class="title-page-name"/> Mounts:<br class="title-page-name"/> <strong class="calibre1">/var/lib/mysql/data</strong> from mariadb-volume-1 (rw)<br class="title-page-name"/> Volumes:<br class="title-page-name"/> mariadb-volume-1:<br class="title-page-name"/> Type: EmptyDir (a temporary directory that shares a pod's lifetime)<br class="title-page-name"/> Medium:<br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...</pre>
+<p class="calibre2">As we can see, by default, that container stores all data at <kbd class="calibre12">/var/lib/mysql/data</kbd> in the <kbd class="calibre12">mariadb-volume-1</kbd> volume. This allows us to replace data on it by using the <kbd class="calibre12">oc volume</kbd> subcommand.</p>
+<p class="calibre2">Now, we are going to attach a volume to the <kbd class="calibre12">mariadb</kbd> container. Please be aware that previously created database structures will be lost, as they are not stored persistently:</p>
+<pre class="calibre18"><strong class="calibre1"># oc volume dc/mariadb --add --name=mariadb-volume-1 -t pvc --claim-name=pvc-db --mount-path=/var/lib/mysql --overwrite<br class="title-page-name"/></strong>deploymentconfig "mariadb" updated</pre>
+<p class="calibre2">This will automatically redeploy <kbd class="calibre12">mariadb</kbd> and place database files on the persistent storage.</p>
+<div class="packt_infobox">The <kbd class="calibre26">ext4</kbd> file system should be created on the iSCSI target in advance.</div>
+<p class="calibre2">Now you see that Openshift integrates easily with the most popular storage protocols and allows you to make containerized applications to be more resilient.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Summary</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">Persistent storage usage is a daily activity for OpenShift cluster administrators and OpenShift users in a production environment. <span class="calibre11">In this chapter, we briefly discussed persistent storage OpenShift API objects such as PV and PVC. Both PV and PVC allow you to define and use persistent storage. We showed you how to configure basic underlying storage services such as NFS, GlusterFS, and iSCSI, and how to add them to OpenShift's infrastructure via <kbd class="calibre12">PV</kbd> objects. Additionally, we worked on requesting persistent storage via <kbd class="calibre12">PVC</kbd> objects. Lastly, we showed you a </span><span class="calibre11">basic example of persistent storage usage from an application point of view.</span></p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Questions</h1>
+                
+            
+            <article>
+                
+<ol class="calibre13">
+<li value="1" class="calibre10">Which would be a good use case for persistent storage?
+<ol class="calibre14">
+<li value="1" class="calibre10">PostgreSQL database for development</li>
+<li value="2" class="calibre10">MariaDB database for production</li>
+<li value="3" class="calibre10">Memcached</li>
+<li value="4" class="calibre10">JDBC-connector</li>
+</ol>
+</li>
+</ol>
+<ol start="2" class="calibre13">
+<li value="2" class="calibre10">Which of the following OpenShift storage plugins supports the <kbd class="calibre12">ReadWriteMany</kbd> access mode? choose two:
+<ol class="calibre14">
+<li value="1" class="calibre10">NFS</li>
+<li value="2" class="calibre10">iSCSI</li>
+<li value="3" class="calibre10">Cinder Volume</li>
+<li value="4" class="calibre10">GlusterFS</li>
+</ol>
+</li>
+<li value="3" class="calibre10">Which project must PVs belong to?
+<ol class="calibre14">
+<li value="1" class="calibre10">default</li>
+<li value="2" class="calibre10">openshift</li>
+<li value="3" class="calibre10">Any project</li>
+<li value="4" class="calibre10">openshift-infra</li>
+</ol>
+</li>
+<li value="4" class="calibre10">Suppose we created a PVC that requests 2 Gi storage. Which PV will be bound to it?
+<ol class="calibre14">
+<li value="1" class="calibre10">1950 Mi</li>
+<li value="2" class="calibre10">1950 M</li>
+<li value="3" class="calibre10">2 Gi</li>
+<li value="4" class="calibre10">3 Gi</li>
+</ol>
+</li>
+<li value="5" class="calibre10">Which OpenShift API objects must be created before using GlusterFS volumes? choose two:
+<ol class="calibre14">
+<li value="1" class="calibre10">Pod</li>
+<li value="2" class="calibre10">Service</li>
+<li value="3" class="calibre10">Endpoint</li>
+<li value="4" class="calibre10">Route</li>
+</ol>
+</li>
+</ol>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Further reading</h1>
+                
+            
+            <article>
+                
+<p class="calibre2"><span class="calibre11">Here is a list of links for you to take a look at if you are interested in the topics we covered in this chapter:</span></p>
+<ul class="calibre9">
+<li class="calibre10"><a href="https://docs.openshift.org/latest/install_config/persistent_storage/index.html" class="calibre8">https://docs.openshift.org/latest/install_config/persistent_storage/index.html</a></li>
+<li class="calibre10"><a href="http://linux-iscsi.org/wiki/LIO" class="calibre8">http://linux-iscsi.org/wiki/LIO</a></li>
+<li class="calibre10"><a href="https://docs.gluster.org/en/latest/Administrator%20Guide/Setting%20Up%20Volumes/" class="calibre8">https://docs.gluster.org/en/latest/Administrator%20Guide/Setting%20Up%20Volumes/</a></li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    </body></html>

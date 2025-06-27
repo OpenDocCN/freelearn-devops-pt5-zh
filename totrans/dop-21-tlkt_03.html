@@ -1,0 +1,395 @@
+<html><head></head><body>
+        <section>
+
+            <header>
+                <h1 class="header-title">Docker Swarm Networking and Reverse Proxy</h1>
+            </header>
+
+            <article>
+                
+<div class="packt_quote">The most compelling reason for most people to buy a computer for the home will be to link it to a nationwide communications network. We’re just in the beginning stages of what will be a truly remarkable breakthrough for most people - as remarkable as the telephone.<br/>
+                                                                                                                             –Steve Jobs</div>
+<p><strong>Software-Defined Network</strong> (<strong>SDN</strong>) is a cornerstone of efficient cluster management. Without it, services distributed across the cluster would not be able to find each other.</p>
+<p>Having proxies based on static configuration does not fit the world of highly dynamic scheduling. Services are created, updated, moved around the cluster, scaled and de-scaled, and so on. In such a setting, information changes all the time.</p>
+<p>One approach we can take is to use a proxy as a central communication point and make all the services speak with each other through it. Such a setting would require us to monitor changes in the cluster continuously and update the proxy accordingly. To make our lives easier, a monitoring process would probably use one of the service registries to store the information and a templating solution that would update proxy configuration whenever a change in the registry is detected. As you can imagine, building such a system is anything but trivial.</p>
+<p>Fortunately, Swarm comes with a brand new networking capability. In a nutshell, we can create networks and attach them to services. All services that belong to the same network can speak with each other using only the name of the service. It goes even further. If we scale a service, Swarm networking will perform round-robin load balancing and distribute the requests across all the instances. When even that is not enough, we have a new network called <kbd>ingress</kbd> with <kbd>routing mesh</kbd> that has all those and a few additional features.</p>
+<p>Efficient usage of Swarm networking is not sufficient by itself. We still need a reverse proxy that will be a bridge between the external world and our services. Unless there are special requirements, the proxy does not need to perform load balancing (Swarm networking does that for us). However, it does need to evaluate request paths and forward requests to a destination service. Even in that case, Swarm networking helps a lot. Configuring reverse proxy becomes a relatively easy thing to do as long as we understand how networking works and can harness its full potential.</p>
+<p>Let’s see the networking in practice.</p>
+
+
+            </article>
+
+            <footer style="margin-top: 5em;">
+                
+            </footer>
+
+        </section>
+    
+
+        <section>
+
+            <header>
+                <h1 class="header-title">Setting up a cluster</h1>
+            </header>
+
+            <article>
+                
+<p>We’ll create a similar environment as we did in the previous chapter. We'll have three nodes which will form a Swarm cluster.</p>
+<p>All the commands from this chapter are available in the <kbd>03-networking.sh</kbd> (<a href="https://gist.github.com/vfarcic/fd7d7e04e1133fc3c90084c4c1a919fe">https://gist.github.com/vfarcic/fd7d7e04e1133fc3c90084c4c1a919fe</a>) Gist.</p>
+<p>By this time, you already know how to set up a cluster so we'll skip the explanation and just do it:</p>
+<pre>
+<strong><span class="hljs-keyword">for</span> i <span class="hljs-keyword">in</span> <span class="hljs-number">1</span> <span class="hljs-number">2</span> <span class="hljs-number">3</span>; <span class="hljs-keyword">do</span><br/>  docker-machine create <span class="hljs-operator">-d</span> virtualbox node-<span class="hljs-variable">$i</span><br/><span class="hljs-keyword">done</span><br/><br/><span class="hljs-built_in">eval</span> $(docker-machine env node-<span class="hljs-number">1</span>)<br/><br/>docker swarm init \<br/>  --advertise-addr $(docker-machine ip node-<span class="hljs-number">1</span>)<br/><br/>TOKEN=$(docker swarm join-token -q worker)<br/><br/><span class="hljs-keyword">for</span> i <span class="hljs-keyword">in</span> <span class="hljs-number">2</span> <span class="hljs-number">3</span>; <span class="hljs-keyword">do</span><br/><span class="hljs-built_in">eval</span> $(docker-machine env node-<span class="hljs-variable">$i</span>)<br/><br/>  docker swarm join \<br/>    --token <span class="hljs-variable">$TOKEN</span> \<br/>    --advertise-addr $(docker-machine ip node-<span class="hljs-variable">$i</span>) \<br/>    $(docker-machine ip node-<span class="hljs-number">1</span>):<span class="hljs-number">2377</span><br/><span class="hljs-keyword">done</span><br/><br/><span class="hljs-built_in">eval</span> $(docker-machine env node-<span class="hljs-number">1</span>)<br/><br/>docker node ls</strong>
+</pre>
+<p>The output of the last command <kbd>node ls</kbd> is as follows (IDs were removed for brevity):</p>
+<pre>
+<strong>HOSTNAME  STATUS  AVAILABILITY  MANAGER STATUS<br/>node-<span class="hljs-number">2</span>    Ready   <span class="hljs-keyword">Active</span><br/>node-<span class="hljs-number">1</span>    Ready   <span class="hljs-keyword">Active</span>        Leader<br/>node-<span class="hljs-number">3</span>    Ready   <span class="hljs-keyword">Active</span></strong>
+</pre>
+<p>As you can see, we have a cluster of three nodes with <kbd>node-1</kbd> being the only manager (and hence the leader).</p>
+<p>Now that we have a fully operating cluster, we can explore the benefits Docker networking provides in conjunction with Swarm. We already worked with Swarm networking in the previous chapter. Now its time to go deeper, gain a better understanding of what we already saw, and unlock some new features and use cases.</p>
+
+
+            </article>
+
+            <footer style="margin-top: 5em;">
+                
+            </footer>
+
+        </section>
+    
+
+        <section>
+
+            <header>
+                <h1 class="header-title">Requirements of secured and fault tolerant services running with high availability</h1>
+            </header>
+
+            <article>
+                
+<p>Let us quickly go over the internals of the <em>go-demo</em> application. It consists of two services. Data is stored in a MongoDB. The database is consumed by a backend service called <kbd>go-demo</kbd>. No other service should access the database directly. If another service needs the data, it should send a request to the <kbd>go-demo</kbd> service. That way we have clear boundaries. Data is owned and managed by the <kbd>go-demo</kbd> service. It exposes an API that is the only access point to the data.</p>
+<p>The system should be able to host multiple applications. Each will have a unique base URL. For example, the <kbd>go-demo</kbd> path starts with <kbd>/demo</kbd>. The other applications will have different paths (example:  <kbd>/users</kbd>, <kbd>/products</kbd>, and so on). The system will be accessible only through ports <kbd>80</kbd>  for HTTP and <kbd>443</kbd> HTTPS. Please note that there can be no two processes that can listen to the same port. In other words, only a single service can be configured to listen to port <kbd>80</kbd>.</p>
+<p>To meet load fluctuations and use the resources effectively, we must be able to scale (or de-scale) each service individually and independently from the others. Any request to any of the services should pass through a load balancer that will distribute the load across all instances. As a minimum, at least two instances of any service should be running at any given moment. That way, we can accomplish high availability even in case one of the instances stops working. We should aim even higher than that and make sure that even a failure of a whole node does not interrupt the system as a whole.</p>
+<p>To meet performance and fail-over needs services should be distributed across the cluster.</p>
+<p>We'll make a temporary exception to the rule that each service should run multiple instances. Mongo volumes do not work with Docker Machine on OS X and Windows. Later on, when we reach the chapters that provide guidance towards production setup inside major hosting providers (example: AWS), we'll remove this exception and make sure that the database is also configured to run with multiple instances.</p>
+<p>Taking all this into account, we can make the following requirements:</p>
+<ol>
+<li>A <strong>load balancer</strong> will distribute requests evenly (<em>round-robin</em>) across all instances of any given service (<strong>proxy</strong> included). It should be fault tolerant and not depend on any single node.</li>
+<li>A reverse proxy will be in charge of routing requests based on their base URLs.</li>
+<li>The <strong>go-demo</strong> service will be able to communicate freely with the <strong>go-demo-db</strong> service and will be accessible only through the reverse proxy.</li>
+<li>The database will be isolated from any but the service it belongs to <strong>go-demo</strong>.</li>
+</ol>
+<p>A logical architecture of what we're trying to accomplish can be presented with the diagram that follows:</p>
+<div class="CDPAlignCenter CDPAlign"><img class="image-border" height="193" src="assets/go-demo-logical.png" width="334"/></div>
+<div class="packt_figref CDPAlignCenter CDPAlign">Figure 3-1: A logical architecture of the go-demo service<span><br/></span></div>
+<p>How can we accomplish those requirements?</p>
+<p>Let us solve each of the four requirements one by one. We'll start from the bottom and move towards the top.</p>
+<p>The first problem to tackle is how to run a database isolated from any but the service it belongs to.</p>
+
+
+            </article>
+
+            <footer style="margin-top: 5em;">
+                
+            </footer>
+
+        </section>
+    
+
+        <section>
+
+            <header>
+                <h1 class="header-title">Running a database in isolation</h1>
+            </header>
+
+            <article>
+                
+<p>We can isolate a database service by not exposing its ports. That can be accomplished easily with the <kbd>service create</kbd> command:</p>
+<pre>
+<strong>docker service create --name go-demo-db \<br/>  mongo:<span class="hljs-number">3.2</span>.<span class="hljs-number">10</span></strong>
+</pre>
+<p>We can confirm that the ports are indeed not exposed by inspecting the service:</p>
+<pre>
+<strong>docker service inspect --pretty go-demo-db</strong>
+</pre>
+<p>The output is as follows:</p>
+<pre>
+<strong><span class="hljs-label">ID:</span>            rcedo70r2f1njpm0eyb3nwf8w<br/><span class="hljs-label">Name:</span>          go-demo-db<br/>Service Mode:  Replicated<br/> Replicas:     <span class="hljs-number">1</span><br/><span class="hljs-label">Placement:</span><br/><span class="hljs-label">UpdateConfig:</span><br/> Parallelism:  <span class="hljs-number">1</span><br/> On failure:   pause<br/> Max failure ratio: <span class="hljs-number">0</span><br/><span class="hljs-label">ContainerSpec:</span><br/> Image:      mongo:<span class="hljs-number">3.2</span><span class="hljs-number">.10</span>@sha256:<span class="hljs-number">532</span>a19da83ee0e4e2a2ec6bc4212fc4af\<br/>26357c040675d5c2629a4e4c4563cef<br/><span class="hljs-label">Resources:</span><br/>Endpoint Mode: vip</strong>
+</pre>
+<p>As you can see, there is no mention of any port. Our <kbd>go-demo-db</kbd> service is fully isolated and inaccessible to anyone. However, that is too much isolation. We want the service to be isolated from anything but the service it belongs to <kbd>go-demo</kbd>. We can accomplish that through the usage of Docker Swarm networking.</p>
+<p>Let us remove the service we created and start over:</p>
+<pre>
+<strong>docker service rm go-demo-db</strong>
+</pre>
+<p>This time, we should create a network and make sure that the <kbd>go-demo-db</kbd> service is attached to it:</p>
+<pre>
+<strong>docker network create --driver overlay go-demo<br/><br/>docker service create --name go-demo-db \<br/>  --network go-demo \<br/>  mongo:<span class="hljs-number">3.2</span>.<span class="hljs-number">10</span></strong>
+</pre>
+<p>We created an overlay network called <kbd>go-demo</kbd> followed with the <kbd>go-demo-db service</kbd>. This time, we used the <kbd>--network</kbd> argument to attach the service to the network. From this moment on, all services attached to the <kbd>go-demo</kbd> network will be accessible to each other.</p>
+<p>Let's inspect the service and confirm that it is indeed attached to the network:</p>
+<pre>
+<strong>docker service inspect --pretty go-demo-db</strong>
+</pre>
+<p>The output of the <kbd>service inspect</kbd> command is as follows:</p>
+<pre>
+<strong><span class="hljs-label">ID:</span>            ktrxcgp3gtszsjvi7xg0hmd73<br/><span class="hljs-label">Name:</span>          go-demo-db<br/>Service Mode:  Replicated<br/> Replicas:     <span class="hljs-number">1</span><br/><span class="hljs-label">Placement:</span><br/><span class="hljs-label">UpdateConfig:</span><br/> Parallelism:  <span class="hljs-number">1</span><br/> On failure:   pause<br/> Max failure ratio: <span class="hljs-number">0</span><br/><span class="hljs-label">ContainerSpec:</span><br/> Image:           mongo:<span class="hljs-number">3.2</span><span class="hljs-number">.10</span>@sha256:<span class="hljs-number">532</span>a19da83ee0e4e2a2ec6bc4212fc4af26357c040675d<br/>5c2629a4e4c4563cef<br/><span class="hljs-label">Resources:</span><br/><span class="hljs-label">Networks:</span>      go-demo<br/>Endpoint Mode: vip</strong>
+</pre>
+<p>As you can see, this time, there is a <kbd>Networks</kbd> entry with the value set to the ID of the <kbd>go-demo</kbd> network we created earlier.</p>
+<p>Let us confirm that networking truly works. To prove it, we'll create a global service called <kbd>util</kbd>:</p>
+<pre>
+<strong>docker service create --name util \<br/>    --network go-demo --mode global \<br/>    alpine sleep <span class="hljs-number">1000000000</span></strong>
+</pre>
+<p>Just as <kbd>go-demo-db</kbd>, the <kbd>util</kbd> service also has the <kbd>go-demo</kbd> network attached.</p>
+<p>A new argument is <kbd>--mode</kbd>. When set to global, the service will run on every node of the cluster. That is a very useful feature when we want to set up infrastructure services that should span the whole cluster.</p>
+<p>We can confirm that it is running everywhere by executing the <kbd>service ps</kbd> command:</p>
+<pre>
+<strong>docker service ps util</strong>
+</pre>
+<p>The output is as follows (IDs and ERROR PORTS columns are removed for brevity):</p>
+<pre>
+<strong><span class="hljs-tag">NAME</span>    <span class="hljs-tag">IMAGE</span>         <span class="hljs-tag">NODE</span>   <span class="hljs-tag">DESIRED</span> <span class="hljs-tag">STATE</span> <span class="hljs-tag">CURRENT</span> <span class="hljs-tag">STATE</span>        <br/><span class="hljs-tag">util</span>... <span class="hljs-tag">alpine</span><span class="hljs-pseudo">:latest</span> <span class="hljs-tag">node-1</span> <span class="hljs-tag">Running</span>       <span class="hljs-tag">Running</span> 6 <span class="hljs-tag">minutes</span> <span class="hljs-tag">ago</span><br/><span class="hljs-tag">util</span>... <span class="hljs-tag">alpine</span><span class="hljs-pseudo">:latest</span> <span class="hljs-tag">node-3</span> <span class="hljs-tag">Running</span>       <span class="hljs-tag">Running</span> 6 <span class="hljs-tag">minutes</span> <span class="hljs-tag">ago</span><br/><span class="hljs-tag">util</span>... <span class="hljs-tag">alpine</span><span class="hljs-pseudo">:latest</span> <span class="hljs-tag">node-2</span> <span class="hljs-tag">Running</span>       <span class="hljs-tag">Running</span> 6 <span class="hljs-tag">minutes</span> <span class="hljs-tag">ago</span></strong>
+</pre>
+<p>As you can see, the <kbd>util</kbd> service is running on all three nodes.</p>
+<p>We are running the <kbd>alpine</kbd> image (a minuscule Linux distribution). We put it to sleep for a very long time. Otherwise, since no processes are running, the service would stop, Swarm would restart it, it would stop again, and so on.</p>
+<p>The purpose of the <kbd>util</kbd> service will be to demonstrate some of the concepts we're exploring. We'll exec into it and confirm that the networking truly works.</p>
+<p>To enter the <kbd>util</kbd> container, we need to find out the ID of the instance running on the <kbd>node-1</kbd> (the node our local Docker is pointing to):</p>
+<pre>
+<strong>ID=$(docker ps -q --filter label=com.docker.swarm.service.name=util)</strong>
+</pre>
+<p>We listed all the processes <kbd>ps</kbd> in quiet mode so that only IDs are returned <strong><kbd>-q</kbd></strong>, and limited the result to the service name util:<br/>
+     </p>
+<pre>
+<strong>--filter label=com.docker.swarm.service.name=util</strong>
+</pre>
+<p> <br/>
+ The result is stored as the environment variable ID.</p>
+<p>We'll install a tool called <em>drill</em>. It is a tool designed to get all sorts of information out of a DNS and it will come in handy very soon:</p>
+<pre>
+<strong>docker <span class="hljs-keyword">exec</span> -it <span class="hljs-variable">$ID</span> apk add --update drill</strong>
+</pre>
+<p><em>Alpine</em> Linux uses the package management called <kbd>apk</kbd>, so we told it to add drill.</p>
+<p>Now we can see whether networking truly works. Since both <kbd>go-demo-db</kbd> and util services belong to the same network, they should be able to communicate with each other using DNS names. Whenever we attach a service to the network, a new virtual IP is created together with a DNS that matches the name of the services.</p>
+<p>Let's try it out as follows:</p>
+<pre>
+<strong>docker <span class="hljs-keyword">exec</span> -it <span class="hljs-variable">$ID</span> drill go-demo-db</strong>
+</pre>
+<p>We entered into one of the instances of the <kbd>util</kbd> service and "drilled" the DNS <kbd>go-demo-db</kbd>. The output is as follows:</p>
+<pre>
+<strong>;; -&gt;&gt;<span class="hljs-tag">HEADER</span>&lt;&lt;- opcode<span class="hljs-value">: QUERY, rcode: NOERROR, id: <span class="hljs-number">5751</span><br/>;</span>; flags<span class="hljs-value">: qr rd ra ;</span> QUERY<span class="hljs-value">: <span class="hljs-number">1</span>, ANSWER: <span class="hljs-number">1</span>, AUTHORITY: <span class="hljs-number">0</span>, ADDITIONAL: <span class="hljs-number">0</span><br/>;</span>; QUESTION <span class="hljs-tag">SECTION</span><span class="hljs-value">:<br/>;</span>; go-demo-db.  IN      <span class="hljs-tag">A</span><br/><br/>;; ANSWER <span class="hljs-tag">SECTION</span><span class="hljs-value">:<br/>go-demo-db.     <span class="hljs-number">600</span>     IN      A       <span class="hljs-number">10.0</span>.<span class="hljs-number">0.2</span><br/><br/>;</span>; AUTHORITY <span class="hljs-tag">SECTION</span><span class="hljs-value">:<br/><br/>;</span>; ADDITIONAL <span class="hljs-tag">SECTION</span><span class="hljs-value">:<br/><br/>;</span>; Query <span class="hljs-tag">time</span><span class="hljs-value">: <span class="hljs-number">0</span> msec<br/>;</span>; SERVER<span class="hljs-value">: <span class="hljs-number">127.0</span>.<span class="hljs-number">0.11</span><br/>;</span>; WHEN<span class="hljs-value">: Thu Sep  <span class="hljs-number">1</span> <span class="hljs-number">12</span>:<span class="hljs-number">53</span>:<span class="hljs-number">42</span> <span class="hljs-number">2016</span><br/>;</span>; MSG SIZE  rcvd<span class="hljs-value">: <span class="hljs-number">54</span></span></strong>
+</pre>
+<p>The response code is <kbd>NOERROR</kbd> and the <kbd>ANSWER</kbd> is <kbd>1</kbd> meaning that the DNS <kbd>go-demo-db</kbd> responded correctly. It is reachable.</p>
+<p>We can also observe that the <kbd>go-demo-db</kbd> DNS is associated with the IP <kbd>10.0.0.2</kbd>. Every service attached to a network gets its IP. Please note that I said service, not an instance. That’s a huge difference that we'll explore later. For now, it is important to understand that all services that belong to the same network are accessible through service names:</p>
+<div class="CDPAlignCenter CDPAlign"><img class="image-border" height="194" src="assets/swarm-nodes-go-demo-db.png" width="672"/></div>
+<div class="packt_figref CDPAlignCenter CDPAlign">Figure 3-2: go-demo-db service attached to the go-demo network<span><br/></span></div>
+<p>Let's move up through the requirements.</p>
+
+
+            </article>
+
+            <footer style="margin-top: 5em;">
+                
+            </footer>
+
+        </section>
+    
+
+        <section>
+
+            <header>
+                <h1 class="header-title">Running a service through a reverse proxy</h1>
+            </header>
+
+            <article>
+                
+<p>We want the <kbd>go-demo</kbd> service to be able to communicate freely with the <kbd>go-demo-db</kbd> service and to be accessible only through the reverse proxy. We already know how to accomplish the first part. All we have to do is make sure that both services belong to the same network <kbd>go-demo</kbd>.</p>
+<p>How can we accomplish the integration with a reverse proxy?</p>
+<p>We can start by creating a new network and attach it to all services that should be accessible through a reverse proxy:</p>
+<pre>
+<strong>docker network create --driver overlay proxy</strong>
+</pre>
+<p>Let's list the currently running <kbd>overlay</kbd> networks:</p>
+<pre>
+<strong>docker network ls <span class="hljs-operator">-f</span> <span class="hljs-string">"driver=overlay"</span></strong>
+</pre>
+<p>The output is as follows:</p>
+<pre>
+<strong>NETWORK ID   NAME    DRIVER  SCOPE<br/>b17kzasd3gzu go<span class="hljs-attribute">-demo</span> overlay swarm<br/><span class="hljs-number">0</span>d7ssryojcyg ingress overlay swarm<br/><span class="hljs-number">9e4</span>o7abyts0v proxy   overlay swarm</strong>
+</pre>
+<p>We have the <kbd>go-demo</kbd> and <kbd>proxy</kbd> networks we created earlier. The third one is called ingress. It is set up by default and has a special purpose that we'll explore later.</p>
+<p>Now we are ready to run the <kbd>go-demo</kbd> service. We want it to be able to communicate with the <kbd>go-demo-db</kbd> service so it must be attached to the <kbd>go-demo</kbd> network. We also want it to be accessible to a <kbd>proxy</kbd> (we'll create it soon) so we'll attach it to the <kbd>proxy</kbd> network as well.</p>
+<p>The command that creates the <kbd>go-demo</kbd> service is as follows:</p>
+<pre>
+<strong>docker service create --name go-demo \<br/><span class="hljs-operator">  -e</span> DB=go-demo-db \<br/>  --network go-demo \<br/>  --network proxy \<br/>  vfarcic/go-demo:<span class="hljs-number">1.0</span></strong>
+</pre>
+<p>It is very similar to the command we executed in the previous chapter with the addition of the <kbd>--network proxy</kbd> argument:</p>
+<p><img class="image-border" src="assets/swarm-nodes-proxy-sdn.png"/></p>
+<div class="packt_figref CDPAlignCenter CDPAlign">Figure 3-3: Docker Swarm cluster with three nodes, two networks and a few containers<span><br/></span></div>
+<p>Now both services are running somewhere inside the cluster and can communicate with each other through the <kbd>go-demo</kbd> network. Let's bring the proxy into the mix. We'll use the <em>Docker Flow Proxy</em> (<a href="https://github.com/vfarcic/docker-flow-proxy">https:/</a><a href="https://github.com/vfarcic/docker-flow-proxy">/github.com/vfarcic/docker-flow-proxy</a>) project that is a combination of HAProxy (<a href="http://www.haproxy.org/">http://www.haproxy.org/</a>) and a few additional features that make it more dynamic. The principles we'll explore are the same no matter which one will be your choice.</p>
+<p>Please note that, at this moment, none of the services are accessible to anyone except those attached to the same network.</p>
+
+
+            </article>
+
+            <footer style="margin-top: 5em;">
+                
+            </footer>
+
+        </section>
+    
+
+        <section>
+
+            <header>
+                <h1 class="header-title">Creating a reverse proxy service in charge of routing requests depending on their base URLs</h1>
+            </header>
+
+            <article>
+                
+<p>We can implement a reverse proxy in a couple of ways. One would be to create a new image based on HAProxy (<a href="https://hub.docker.com/_/haproxy/">https://hub.docker.com/_/haproxy/</a>) and include configuration files inside it. That approach would be a good one if the number of different services is relatively static. Otherwise, we'd need to create a new image with a new configuration every time there is a new service (not a new release).<br/>
+The second approach would be to expose a volume. That way, when needed, we could modify the configuration file instead building a whole new image. However, that has downsides as well. When Deploying to a cluster, we should avoid using volumes whenever they're not necessary. As you'll see soon, a proxy is one of those that do not require a volume. As a side note, <kbd>--volume</kbd> has been replaced with the <kbd>docker service</kbd> argument <kbd>--mount</kbd>.</p>
+<p>The third option is to use one of the proxies designed to work with Docker Swarm. In this case, we'll use the container <kbd>vfarcic/docker-flow-proxy</kbd> (<a href="https://hub.docker.com/r/vfarcic/docker-flow-proxy/">https://hub.docker.com/r/vfarcic/docker-flow-proxy/</a>) It is based on HAProxy with additional features that allow us to reconfigure it by sending HTTP requests.</p>
+<p>Let's give it a spin.</p>
+<p>The command that creates the <kbd>proxy</kbd> service is as follows:</p>
+<pre>
+<strong>docker service create --name proxy \<br/>    -p <span class="hljs-number">80</span>:<span class="hljs-number">80</span> \<br/>    -p <span class="hljs-number">443</span>:<span class="hljs-number">443 \</span> <br/>    -p <span class="hljs-number">8080</span>:<span class="hljs-number">8080 \</span> <br/>    --network proxy \ <br/><span class="hljs-operator">    -e</span> MODE=swarm \<br/>    vfarcic/docker-flow-proxy</strong>
+</pre>
+<p>We opened ports <kbd>80</kbd> and <kbd>443</kbd> that will serve Internet traffic (HTTP and HTTPS). The third port is 8080. We'll use it to send configuration requests to the proxy. Further on, we specified that it should belong to the proxy network. That way, since go-demo is also attached to the same network, the proxy can access it through the proxy-SDN.</p>
+<p>Through the <strong>proxy</strong> we just ran, we can observe one of the cool features of the network routing mesh. It does not matter which server the <strong>proxy</strong> is running in. We can send a request to any of the nodes and Docker networking will make sure that it is redirected to one of the proxies. We'll see that in action very soon.</p>
+<p>The last argument is the environment variable <kbd>MODE</kbd> that tells the proxy that containers will be deployed to a Swarm cluster. Please consult the project README (<a href="https://github.com/vfarcic/docker-flow-proxy">https://github.com/vfarcic/docker-flow-proxy</a>) for other combinations.</p>
+<div class="CDPAlignCenter CDPAlign"><img class="image-border" src="assets/swarm-nodes-proxy.png"/></div>
+<div class="CDPAlignCenter packt_figref CDPAlign"> Figure 3-4: Docker Swarm cluster with the proxy service<span><br/></span></div>
+<p>Please note that the <strong>proxy</strong>, even though it is running inside one of the nodes, is placed outside to illustrate the logical separation better.</p>
+<p>Before we move on, let's confirm that the <kbd>proxy</kbd> is running.</p>
+<pre>
+<strong>docker service ps proxy</strong>
+</pre>
+<p>We can proceed if the <kbd>CURRENT STATE</kbd> is <kbd>Running</kbd>. Otherwise, please wait until the service is up and running.</p>
+<p>Now that the proxy is Deployed, we should let it know about the existence of the <kbd>go-demo</kbd> service:</p>
+<pre>
+<strong>curl <span class="hljs-string">"<span class="hljs-variable">$(docker-machine ip node-1)</span>:8080/v1/docker-flow-\<br/>proxy/reconfigure?serviceName=go-demo&amp;servicePath=/demo&amp;port=8080"</span></strong>
+</pre>
+<p>The request was sent to reconfigure the <kbd>proxy</kbd> specifying the service name <kbd>go-demo</kbd>, base URL path of the API <kbd>/demo</kbd>, and the internal port of the service <kbd>8080</kbd>. From now on, all the requests to the <kbd>proxy</kbd> with the path that starts with <kbd>/demo</kbd> will be redirected to the <kbd>go-demo</kbd> service. This request is one of the additional features Docker Flow Proxy provides on top of HAProxy.<br/>
+Please note that we sent the request to <kbd>node-1</kbd>. The proxy could be running inside any of the nodes and, yet, the request was successful. That is where Docker's Routing Mesh plays a critical role. We'll explore it in more detail later. For now, the important thing to note is that we can send a request to any of the nodes, and it will be redirected to the service that listens to the same port (in this case <kbd>8080</kbd>).</p>
+<p>The output of the request is as follows (formatted for readability):</p>
+<pre>
+<strong>{<br/>  "<span class="hljs-attribute">Mode</span>": <span class="hljs-value"><span class="hljs-string">"swarm"</span></span>,<br/>  "<span class="hljs-attribute">Status</span>": <span class="hljs-value"><span class="hljs-string">"OK"</span></span>,<br/>  "<span class="hljs-attribute">Message</span>": <span class="hljs-value"><span class="hljs-string">""</span></span>,<br/>  "<span class="hljs-attribute">ServiceName</span>": <span class="hljs-value"><span class="hljs-string">"go-demo"</span></span>,<br/>  "<span class="hljs-attribute">AclName</span>": <span class="hljs-value"><span class="hljs-string">""</span></span>,<br/>  "<span class="hljs-attribute">ConsulTemplateFePath</span>": <span class="hljs-value"><span class="hljs-string">""</span></span>,<br/>  "<span class="hljs-attribute">ConsulTemplateBePath</span>": <span class="hljs-value"><span class="hljs-string">""</span></span>,<br/>  "<span class="hljs-attribute">Distribute</span>": <span class="hljs-value"><span class="hljs-literal">false</span></span>,<br/>  "<span class="hljs-attribute">HttpsOnly</span>": <span class="hljs-value"><span class="hljs-literal">false</span></span>,<br/>  "<span class="hljs-attribute">HttpsPort</span>": <span class="hljs-value"><span class="hljs-number">0</span></span>,<br/>  "<span class="hljs-attribute">OutboundHostname</span>": <span class="hljs-value"><span class="hljs-string">""</span></span>,<br/>  "<span class="hljs-attribute">PathType</span>": <span class="hljs-value"><span class="hljs-string">""</span></span>,<br/>  "<span class="hljs-attribute">ReqMode</span>": <span class="hljs-value"><span class="hljs-string">"http"</span></span>,<br/>  "<span class="hljs-attribute">ReqRepReplace</span>": <span class="hljs-value"><span class="hljs-string">""</span></span>,<br/>  "<span class="hljs-attribute">ReqRepSearch</span>": <span class="hljs-value"><span class="hljs-string">""</span></span>,<br/>  "<span class="hljs-attribute">ReqPathReplace</span>": <span class="hljs-value"><span class="hljs-string">""</span></span>,<br/>  "<span class="hljs-attribute">ReqPathSearch</span>": <span class="hljs-value"><span class="hljs-string">""</span></span>,<br/>  "<span class="hljs-attribute">ServiceCert</span>": <span class="hljs-value"><span class="hljs-string">""</span></span>,<br/>  "<span class="hljs-attribute">ServiceDomain</span>": <span class="hljs-value"><span class="hljs-literal">null</span></span>,<br/>  "<span class="hljs-attribute">SkipCheck</span>": <span class="hljs-value"><span class="hljs-literal">false</span></span>,<br/>  "<span class="hljs-attribute">TemplateBePath</span>": <span class="hljs-value"><span class="hljs-string">""</span></span>,<br/>  "<span class="hljs-attribute">TemplateFePath</span>": <span class="hljs-value"><span class="hljs-string">""</span></span>,<br/>  "<span class="hljs-attribute">TimeoutServer</span>": <span class="hljs-value"><span class="hljs-string">""</span></span>,<br/>  "<span class="hljs-attribute">TimeoutTunnel</span>": <span class="hljs-value"><span class="hljs-string">""</span></span>,<br/>  "<span class="hljs-attribute">Users</span>": <span class="hljs-value"><span class="hljs-literal">null</span></span>,<br/>  "<span class="hljs-attribute">ServiceColor</span>": <span class="hljs-value"><span class="hljs-string">""</span></span>,<br/>  "<span class="hljs-attribute">ServicePort</span>": <span class="hljs-value"><span class="hljs-string">""</span></span>,<br/>  "<span class="hljs-attribute">AclCondition</span>": <span class="hljs-value"><span class="hljs-string">""</span></span>,<br/>  "<span class="hljs-attribute">FullServiceName</span>": <span class="hljs-value"><span class="hljs-string">""</span></span>,<br/>  "<span class="hljs-attribute">Host</span>": <span class="hljs-value"><span class="hljs-string">""</span></span>,<br/>  "<span class="hljs-attribute">LookupRetry</span>": <span class="hljs-value"><span class="hljs-number">0</span></span>,<br/>  "<span class="hljs-attribute">LookupRetryInterval</span>": <span class="hljs-value"><span class="hljs-number">0</span></span>,<br/>  "<span class="hljs-attribute">ServiceDest</span>": <span class="hljs-value">[<br/>    {<br/>      "<span class="hljs-attribute">Port</span>": <span class="hljs-value"><span class="hljs-string">"8080"</span></span>,<br/>      "<span class="hljs-attribute">ServicePath</span>": <span class="hljs-value">[<br/><span class="hljs-string">          "/demo"</span><br/>      ]</span>,<br/>      "<span class="hljs-attribute">SrcPort</span>": <span class="hljs-value"><span class="hljs-number">0</span></span>,<br/>      "<span class="hljs-attribute">SrcPortAcl</span>": <span class="hljs-value"><span class="hljs-string">""</span></span>,<br/>      "<span class="hljs-attribute">SrcPortAclName</span>": <span class="hljs-value"><span class="hljs-string">""</span><br/></span>    }<br/>  ]<br/></span>}</strong>
+</pre>
+<p>I won't go into details but note that the <kbd>Status</kbd> is <kbd>OK</kbd> indicating that the <kbd>proxy</kbd> was reconfigured correctly.</p>
+<p>We can test that the <kbd>proxy</kbd> indeed works as expected by sending an HTTP request:</p>
+<pre>
+<strong>curl -i <span class="hljs-string">"<span class="hljs-variable">$(docker-machine ip node-1)</span>/demo/hello"</span></strong>
+</pre>
+<p>The output of the <kbd>curl</kbd> command is as follows.</p>
+<pre>
+<strong><span class="hljs-status">HTTP/1.1 <span class="hljs-number">200</span> OK</span><br/><span class="hljs-attribute">Date</span>: <span class="hljs-string">Thu, 01 Sep 2016 14:23:33 GMT</span><br/><span class="hljs-attribute">Content-Length</span>: <span class="hljs-string">14</span><br/><span class="hljs-attribute">Content-Type</span>: <span class="hljs-string">text/plain; charset=utf-8</span><br/><br/><span class="erlang-repl"><span class="hljs-function_or_atom">hello</span>, <span class="hljs-function_or_atom">world</span><span class="hljs-exclamation_mark">!</span></span></strong>
+</pre>
+<p>The <kbd>proxy</kbd> works! It responded with the HTTP status <kbd>200</kbd> and returned the API response <kbd>hello, world!</kbd>. As before, the request was not, necessarily, sent to the node that hosts the service but to the routing mesh that forwarded it to the <kbd>proxy</kbd>.</p>
+<p>As an example, let's send the same request but this time, to <kbd>node-3</kbd>:</p>
+<pre>
+<strong>curl -i <span class="hljs-string">"<span class="hljs-variable">$(docker-machine ip node-3)</span>/demo/hello"</span></strong>
+</pre>
+<p>The result is still the same.</p>
+<p>Let's explore the configuration generated by the <kbd>proxy</kbd>. It will give us more insights into the Docker Swarm Networking inner workings. As another benefit, if you choose to roll your own <kbd>proxy</kbd> solution, it might be useful to understand how to configure the <kbd>proxy</kbd> and leverage new Docker networking features.</p>
+<p>We'll start by examining the configuration <em>Docker Flow Proxy</em> (<a href="https://github.com/vfarcic/docker-flow-proxy">https://github.com/vfa</a><a href="https://github.com/vfarcic/docker-flow-proxy">rcic/docker-flow-proxy</a>) created for us. We can do that by entering the running container to take a sneak peek at the file <kbd>/cfg/haproxy.cfg</kbd>. The problem is that finding a container run by Docker Swarm is a bit tricky. If we deployed it with Docker Compose, the container name would be predictable. It would use the format <kbd>&lt;PROJECT&gt;_&lt;SERVICE&gt;_&lt;INDEX&gt;</kbd>.</p>
+<p>The <kbd>docker service command</kbd> runs containers with hashed names. The <kbd>docker-flow-proxy</kbd> created on my laptop has the name <kbd>proxy.1.e07jvhdb9e6s76mr9ol41u4sn</kbd>. Therefore, to get inside a running container deployed with Docker Swarm, we need to use a filter with, for example, an image name.</p>
+<p>First, we need to find out on which node the <kbd>proxy</kbd> is running execute the following command:</p>
+<pre>
+<strong>NODE=$(docker service ps proxy | tail -n +<span class="hljs-number">2</span> | awk <span class="hljs-string">'{print $4}'</span>)</strong>
+</pre>
+<p>We listed the <kbd>proxy</kbd> service processes <kbd>docker service ps proxy</kbd>, removed the header <kbd>tail -n +2</kbd>, and output the node that resides inside the fourth column <kbd>awk '{print $4}'</kbd>. The output is stored as the environment variable <kbd>NODE</kbd>.</p>
+<p>Now we can point our local Docker Engine to the node where the <kbd>proxy</kbd> resides:</p>
+<pre>
+<strong><span class="hljs-built_in">eval</span> $(docker-machine env <span class="hljs-variable">$NODE</span>)</strong>
+</pre>
+<p>Finally, the only thing left is to find the ID of the <kbd>proxy</kbd> container. We can do that with the following command:</p>
+<pre>
+<strong>ID=$(docker ps -q \<br/>    --filter label=com.docker.swarm.service.name=proxy)</strong>
+</pre>
+<p>Now that we have the container ID stored inside the variable, we can execute the command that will retrieve the HAProxy configuration:</p>
+<pre>
+<strong>docker <span class="hljs-keyword">exec</span> -it \<br/><span class="hljs-variable">$ID</span> cat /cfg/haproxy.cfg</strong>
+</pre>
+<p>The important part of the configuration is as follows:</p>
+<pre>
+<strong>frontend services<br/>    bind <span class="hljs-subst">*</span>:<span class="hljs-number">80</span><br/>    bind <span class="hljs-subst">*</span>:<span class="hljs-number">443</span><br/>    mode http<br/><br/>    acl url_go<span class="hljs-attribute">-demo8080</span> path_beg /demo<br/>    use_backend go<span class="hljs-attribute">-demo</span><span class="hljs-attribute">-be8080</span> <span class="hljs-keyword">if</span> url_go<span class="hljs-attribute">-demo8080</span><br/><br/>backend go<span class="hljs-attribute">-demo</span><span class="hljs-attribute">-be8080</span><br/>    mode http<br/>    server go<span class="hljs-attribute">-demo</span> go<span class="hljs-attribute">-demo</span>:<span class="hljs-number">8080</span></strong>
+</pre>
+<p>The first part <kbd>frontend</kbd> should be familiar to those who have used HAProxy. It accepts requests on ports <kbd>80</kbd> HTTP and <kbd>443</kbd> HTTPS. If the path starts with <kbd>/demo</kbd>, it will be redirected to the <kbd>backend go-demo-be</kbd>. Inside it, requests are sent to the address <kbd>go-demo</kbd> on the port <kbd>8080</kbd>. The address is the same as the name of the service we deployed. Since <kbd>go-demo</kbd> belongs to the same network as the <kbd>proxy</kbd>, Docker will make sure that the request is redirected to the destination container. Neat, isn't it? There is no need, anymore, to specify IPs and external ports.</p>
+<p>The next question is how to do load balancing. How should we specify that the <kbd>proxy</kbd> should, for example, perform round-robin across all instances? Should we use a <kbd>proxy</kbd> for such a task?</p>
+
+
+            </article>
+
+            <footer style="margin-top: 5em;">
+                
+            </footer>
+
+        </section>
+    
+
+        <section>
+
+            <header>
+                <h1 class="header-title">Load balancing requests across all instances of a service</h1>
+            </header>
+
+            <article>
+                
+<p>Before we explore load balancing, we need to have something to balance. We need multiple instances of a service. Since we already explored scaling in the previous chapter, the command should not come as a surprise:</p>
+<pre>
+<strong><span class="hljs-built_in">eval</span> $(docker-machine env node-<span class="hljs-number">1</span>)<br/><br/>docker service scale go-demo=<span class="hljs-number">5</span></strong>
+</pre>
+<p>Within a few moments, five instances of the <kbd>go-demo</kbd> service will be running:</p>
+<div class="CDPAlignCenter CDPAlign"> <img class="image-border" height="337" src="assets/swarm-nodes-proxy-scaled.png" width="852"/></div>
+<div class="CDPAlignCenter packt_figref CDPAlign">Figure 3-5: Docker Swarm cluster with the go-demo service scaled<span><br/></span></div>
+<p>What should we do to make the <strong>proxy</strong> load balance requests across all instances? The answer is nothing. No action is necessary on our part. Actually, the question is wrong. The <strong>proxy</strong> will not load balance requests at all. Docker Swarm networking will. So, let us reformulate the question. What should we do to make the <em>Docker Swarm network</em> load balance requests across all instances? Again, the answer is nothing. No action is necessary on our part.</p>
+<p>To understand load balancing, we might want to go back in time and discuss load balancing before Docker networking came into being.</p>
+<p>Normally, if we didn't leverage Docker Swarm features, we would have something similar to the following <strong>proxy</strong> configuration mock-up:</p>
+<pre>
+<strong>backend go-demo-be<br/>  server instance_1 &lt;<span class="hljs-constant">INSTANCE_1_IP</span>&gt;<span class="hljs-symbol">:&lt;INSTANCE_1_PORT&gt;</span><br/>  server instance_2 &lt;<span class="hljs-constant">INSTANCE_2_IP</span>&gt;<span class="hljs-symbol">:&lt;INSTANCE_2_PORT&gt;</span><br/>  server instance_3 &lt;<span class="hljs-constant">INSTANCE_3_IP</span>&gt;<span class="hljs-symbol">:&lt;INSTANCE_3_PORT&gt;</span><br/>  server instance_4 &lt;<span class="hljs-constant">INSTANCE_4_IP</span>&gt;<span class="hljs-symbol">:&lt;INSTANCE_4_PORT&gt;</span><br/>  server instance_5 &lt;<span class="hljs-constant">INSTANCE_5_IP</span>&gt;<span class="hljs-symbol">:&lt;INSTANCE_5_PORT&gt;</span></strong>
+</pre>
+<p>Every time a new instance is added, we would need to add it to the configuration as well. If an instance is removed, we would need to remove it from the configuration. If an instance failed… Well, you get the point. We would need to monitor the state of the cluster and update the <kbd>proxy</kbd> configuration whenever a change occurs.</p>
+<p>If you read <em>The DevOps 2.0 Toolkit</em>, you probably remember that I advised a combination of <em>Registrator</em> (<a href="https://github.com/gliderlabs/registrator">https://github.com/gliderlabs/registrator</a>), <em>Consul</em> (<a href="https://www.consul.io/">https://www</a><a href="https://www.consul.io/">.consul.io/</a>), and <em>Consul Template</em> (<a href="https://github.com/hashicorp/consul-template">https://github.com/hashicorp/consul-template</a>). Registrator would monitor Docker events and update Consul whenever a container is created or destroyed. With the information stored in Consul, we would use Consul Template to update nginx or HAProxy configuration. There is no need for such a combination anymore. While those tools still provide value, for this particular purpose, there is no need for them.</p>
+<p>We are not going to update the <kbd>proxy</kbd> every time there is a change inside the cluster, for example, a scaling event. Instead, we are going to update the proxy every time a new service is created. Please note that service updates (Deployment of new releases) do not count as service creation. We create a service once and update it with each new release (among other reasons). So, only a new service requires a change in the <kbd>proxy</kbd> configuration.</p>
+<p>The reason behind that reasoning is in the fact that load balancing is now part of Docker Swarm networking. Let's do another round of drilling from the <kbd>util</kbd> service:</p>
+<pre>
+<strong>ID=$(docker ps -q --filter label=com.docker.swarm.service.name=util)<br/><br/>docker <span class="hljs-keyword">exec</span> -it <span class="hljs-variable">$ID</span> apk add --update drill<br/><br/>docker <span class="hljs-keyword">exec</span> -it <span class="hljs-variable">$ID</span> drill go-demo</strong>
+</pre>
+<p>The output of the previous command is as follows:</p>
+<pre>
+<strong>;; -&gt;&gt;<span class="hljs-tag">HEADER</span>&lt;&lt;- opcode<span class="hljs-value">: QUERY, rcode: NOERROR, id: <span class="hljs-number">50359</span><br/>;</span>; flags<span class="hljs-value">: qr rd ra ;</span> QUERY<span class="hljs-value">: <span class="hljs-number">1</span>, ANSWER: <span class="hljs-number">1</span>, AUTHORITY: <span class="hljs-number">0</span>, ADDITIONAL: <span class="hljs-number">0</span><br/>;</span>; QUESTION <span class="hljs-tag">SECTION</span><span class="hljs-value">:<br/>;</span>; go-demo.     IN      <span class="hljs-tag">A</span><br/><br/>;; ANSWER <span class="hljs-tag">SECTION</span><span class="hljs-value">:<br/>go-demo.        <span class="hljs-number">600</span>     IN      A       <span class="hljs-number">10.0</span>.<span class="hljs-number">0.8</span><br/><br/>;</span>; AUTHORITY <span class="hljs-tag">SECTION</span><span class="hljs-value">:<br/><br/>;</span>; ADDITIONAL <span class="hljs-tag">SECTION</span><span class="hljs-value">:<br/><br/>;</span>; Query <span class="hljs-tag">time</span><span class="hljs-value">: <span class="hljs-number">0</span> msec<br/>;</span>; SERVER<span class="hljs-value">: <span class="hljs-number">127.0</span>.<span class="hljs-number">0.11</span><br/>;</span>; WHEN<span class="hljs-value">: Thu Sep  <span class="hljs-number">1</span> <span class="hljs-number">17</span>:<span class="hljs-number">46</span>:<span class="hljs-number">09</span> <span class="hljs-number">2016</span><br/>;</span>; MSG SIZE  rcvd<span class="hljs-value">: <span class="hljs-number">48</span></span></strong>
+</pre>
+<p>The IP <kbd>10.0.0.8</kbd> represents the <kbd>go-demo</kbd> service, not an individual instance. When we sent a drill request, Swarm networking performed <strong>load balancing</strong> (<strong>LB</strong>) across all of the instances of the service. To be more precise, it performed <em>round-robin</em> LB.</p>
+<p>Besides creating a virtual IP for each service, each instance gets its own IP as well. In most cases, there is no need discovering those IPs (or any Docker network endpoint IP) since all we need is a service name, which gets translated to an IP and load balanced in the background.</p>
+
+
+            </article>
+
+            <footer style="margin-top: 5em;">
+                
+            </footer>
+
+        </section>
+    
+
+        <section>
+
+            <header>
+                <h1 class="header-title">What now?</h1>
+            </header>
+
+            <article>
+                
+<p>That concludes the exploration of basic concepts of the Docker Swarm networking.</p>
+<p>Is this everything there is to know to run a Swarm cluster successfully? In this chapter, we went deeper into Swarm features, but we are not yet done. There are quite a few questions waiting to be answered. In the next chapter, we'll explore <em>service discovery</em> and the role it has in the Swarm Mode.</p>
+<p>Now is the time to take a break before diving into the next chapter. As before, we'll destroy the machines we created and start fresh:</p>
+<pre>
+<strong>docker-machine rm <span class="hljs-operator">-f</span> node-<span class="hljs-number">1</span> node-<span class="hljs-number">2</span> node-<span class="hljs-number">3</span></strong>
+</pre>
+
+
+            </article>
+
+            <footer style="margin-top: 5em;">
+                
+            </footer>
+
+        </section>
+    </body></html>

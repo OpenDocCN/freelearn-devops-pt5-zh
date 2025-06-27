@@ -1,0 +1,295 @@
+<html><head></head><body>
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Building Application Images from Dockerfile</h1>
+                
+            
+            <article>
+                
+<p class="calibre2"><span class="calibre11">In the previous chapter, you learned w</span><span class="calibre11">hat OpenShift templates are, along with the concepts of how to </span><span class="calibre11">write your own templates and </span><span class="calibre11">deploy applications from templates.</span></p>
+<p class="calibre2"><span class="calibre11">In this chapter, we are going to see how </span>OpenShift simplifies Docker image life cycles by providing a Docker build strategy that automates application deployment from source code. <span class="calibre11">This chapter is a hands-on lab that describes application delivery using the Docker <strong class="calibre4">Source-to-Image</strong> (<strong class="calibre4">S2I</strong>) strategy.</span></p>
+<p class="calibre2">After completing this chapter, you will have learned how to b<span class="calibre11">uild and deploy an application from Dockerfile.</span></p>
+<p class="calibre2">We will cover the following topics in this chapter:</p>
+<ul class="calibre9">
+<li class="calibre10">Dockerfile development for OpenShift</li>
+<li class="calibre10">Building applications from Dockerfile</li>
+<li class="calibre10">Dockerfile build customization</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Technical requirements</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">This chapter doesn't have strict environmental restrictions; any OpenShift installations and development environment is supported—MiniShift, <kbd class="calibre12">oc cluster up</kbd>, standard Ansible-based production-ready deployment. It is up to you which version you use. However, this chapter is based on the <kbd class="calibre12">oc cluster up</kbd> method. The following Vagrantfile can be used to deploy development environment:</p>
+<pre class="calibre18">Vagrant.configure(2) do |config| <br class="title-page-name"/>  config.vm.define "openshift" do |conf| <br class="title-page-name"/>    conf.vm.box = "centos/7" <br class="title-page-name"/>    conf.vm.network "private_network", ip: "172.24.0.11" <br class="title-page-name"/>    conf.vm.hostname = 'openshift.example.com' <br class="title-page-name"/>    conf.vm.network "forwarded_port", guest: 80, host: 980<br class="title-page-name"/>    conf.vm.network "forwarded_port", guest: 443, host: 9443<br class="title-page-name"/>    conf.vm.network "forwarded_port", guest: 8080, host: 8080<br class="title-page-name"/>    conf.vm.network "forwarded_port", guest: 8443, host: 8443<br class="title-page-name"/>    conf.vm.provider "virtualbox" do |v| <br class="title-page-name"/>      v.memory = 4096 <br class="title-page-name"/>      v.cpus = 2 <br class="title-page-name"/>    end<br class="title-page-name"/>    conf.vm.provision "shell", inline: $lab_main <br class="title-page-name"/>  end <br class="title-page-name"/><br class="title-page-name"/>$lab_main = &lt;&lt;SCRIPT<br class="title-page-name"/>cat &lt;&lt;EOF &gt;&gt; /etc/hosts<br class="title-page-name"/>172.24.0.11 openshift.example.com openshift<br class="title-page-name"/>172.24.0.12 storage.example.com storage nfs<br class="title-page-name"/>EOF<br class="title-page-name"/>systemctl disable firewalld<br class="title-page-name"/>systemctl stop firewalld<br class="title-page-name"/>yum update -y<br class="title-page-name"/>yum install -y epel-release git<br class="title-page-name"/>yum install -y docker tree<br class="title-page-name"/>cat &lt;&lt; EOF &gt;/etc/docker/daemon.json<br class="title-page-name"/>{<br class="title-page-name"/>   "insecure-registries": [<br class="title-page-name"/>     "172.30.0.0/16"<br class="title-page-name"/>   ]<br class="title-page-name"/>}<br class="title-page-name"/>EOF<br class="title-page-name"/>systemctl start docker<br class="title-page-name"/>systemctl enable docker<br class="title-page-name"/>yum -y install centos-release-openshift-origin39<br class="title-page-name"/>yum -y install origin-clients<br class="title-page-name"/>oc cluster up<br class="title-page-name"/>SCRIPT</pre>
+<p class="calibre2">The environment can be deployed as follows:</p>
+<pre class="calibre18"><strong class="calibre1">$ vagrant up</strong></pre>
+<p class="calibre2">Once the previously listed vagrant machine is deployed, you may connect to it as follows:</p>
+<pre class="calibre18"><strong class="calibre1">$ vagrant ssh</strong></pre>
+<p class="calibre2">Finally, log in as the developer user in order to be able to perform operations:</p>
+<pre class="calibre18"><strong class="calibre1">$ oc login -u developer</strong><br class="title-page-name"/><strong class="calibre1">Server [https://localhost:8443]:</strong><br class="title-page-name"/><strong class="calibre1">The server uses a certificate signed by an unknown authority.</strong><br class="title-page-name"/><strong class="calibre1">You can bypass the certificate check, but any data you send to the server could be intercepted by others.</strong><br class="title-page-name"/><strong class="calibre1">Use insecure connections? (y/n): y</strong><br class="title-page-name"/><br class="title-page-name"/><strong class="calibre1">Authentication required for https://localhost:8443 (openshift)</strong><br class="title-page-name"/><strong class="calibre1">Username: developer</strong><br class="title-page-name"/><strong class="calibre1">Password: &lt;ANY PASSWORD&gt;</strong><br class="title-page-name"/><strong class="calibre1">Login successful.</strong><br class="title-page-name"/><br class="title-page-name"/><strong class="calibre1">You have one project on this server: "myproject"</strong><br class="title-page-name"/><br class="title-page-name"/><strong class="calibre1">Using project "myproject".</strong><br class="title-page-name"/><strong class="calibre1">Welcome! See 'oc help' to get started.<br class="title-page-name"/><br class="title-page-name"/>$ sudo -i<br class="title-page-name"/>#<br class="title-page-name"/></strong></pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Dockerfile development for OpenShift</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">Early in this book, we explained how to containerize applications through Dockerfile development. This involved the <kbd class="calibre12">docker build</kbd> utility, which creates a ready-to-use container image by following Dockerfile instructions.</p>
+<p class="calibre2">Generally speaking, OpenShift supports existing application Dockerfiles, but it has special default security-related requirements that require you to modify/adjust application Dockerfiles to be aligned with OpenShift security standards.</p>
+<p class="calibre2">The default security policy runs any containers using a random <strong class="calibre4">User ID</strong> (<strong class="calibre4">UID</strong>) and ignores the <kbd class="calibre12">USER</kbd> Dockerfile instruction. The applications are always run under the root user group.</p>
+<p class="calibre2">If the application needs read-write access, you need to configure RW access to the root group, which can usually be archived with the following Dockerfile snippet:</p>
+<pre class="calibre18">...<br class="title-page-name"/>RUN chown -R 1001:0 /var/lib/myaplication /var/log/myapplication &amp;amp;&amp;amp; \<br class="title-page-name"/>    chmod -R g=u /var/lib/myaplication /var/log/myapplication<br class="title-page-name"/>...<br class="title-page-name"/>USER 1001</pre>
+<p class="calibre2">The preceding example changes the directory and file owner to <kbd class="calibre12">1001</kbd> and sets the permission for the group to the same as for the owner. This allows applications to have read-write permissions under any UID.</p>
+<p class="calibre2">OpenShift doesn't allow applications to bind on ports less than <kbd class="calibre12">1024</kbd>. So, it may be required to adjust the <kbd class="calibre12">EXPOSE</kbd> instructions in your Dockerfiles to be able to run applications inside OpenShift infrastructure.</p>
+<p class="calibre2">The following Dockerfile snippet provides an example of how to modify the port for the HTTPD image:</p>
+<pre class="calibre18">EXPOSE 8080</pre>
+<div class="packt_infobox">It most cases, it will be required to adjust application configuration to listen on a new port. For example, for HTTPD, it is necessary to change <kbd class="calibre26">Listen</kbd> directive options.</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Building an application from Dockerfile</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">It is good practice to deploy an application in a separate namespace:</p>
+<pre class="calibre18"><strong class="calibre1">$ oc new-project dockerfile</strong><br class="title-page-name"/><strong class="calibre1">Now using project "dockerfile" on server "https://localhost:8443".</strong></pre>
+<p class="calibre2">For this lab, we are going to use the <kbd class="calibre12">redis</kbd> container. First, we need a Dockerfile with additional files located at   <a href="https://github.com/docker-library/redis.git" target="_blank" class="calibre8">https://github.com/docker-library/redis.git</a>. Let's clone this repository locally to understand its structure:</p>
+<pre class="calibre18"><strong class="calibre1">$ git clone https://github.com/docker-library/redis.git</strong><br class="title-page-name"/>Cloning into 'redis'...<br class="title-page-name"/>remote: Counting objects: 738, done.<br class="title-page-name"/>remote: Compressing objects: 100% (15/15), done.<br class="title-page-name"/>remote: Total 738 (delta 7), reused 13 (delta 4), pack-reused 719<br class="title-page-name"/>Receiving objects: 100% (738/738), 108.56 KiB | 0 bytes/s, done.<br class="title-page-name"/>Resolving deltas: 100% (323/323), done.</pre>
+<p class="calibre2">The repository contains a number of directories representing a particular version of Redis:</p>
+<pre class="calibre18"><strong class="calibre1">$ tree redis/</strong><br class="title-page-name"/>redis/<br class="title-page-name"/>├── 3.2<br class="title-page-name"/>│   ├── 32bit<br class="title-page-name"/>│   │   ├── docker-entrypoint.sh<br class="title-page-name"/>│   │   └── Dockerfile<br class="title-page-name"/>│   ├── alpine<br class="title-page-name"/>│   │   ├── docker-entrypoint.sh<br class="title-page-name"/>│   │   └── Dockerfile<br class="title-page-name"/>│   ├── docker-entrypoint.sh<br class="title-page-name"/>│   └── Dockerfile<br class="title-page-name"/>├── 4.0<br class="title-page-name"/>│   ├── 32bit<br class="title-page-name"/>│   │   ├── docker-entrypoint.sh<br class="title-page-name"/>│   │   └── Dockerfile<br class="title-page-name"/>│   ├── alpine<br class="title-page-name"/>│   │   ├── docker-entrypoint.sh<br class="title-page-name"/>│   │   └── Dockerfile<br class="title-page-name"/>│   ├── docker-entrypoint.sh<br class="title-page-name"/>│   └── Dockerfile<br class="title-page-name"/>├── 5.0-rc<br class="title-page-name"/>│   ├── 32bit<br class="title-page-name"/>│   │   ├── docker-entrypoint.sh<br class="title-page-name"/>│   │   └── Dockerfile<br class="title-page-name"/>│   ├── alpine<br class="title-page-name"/>│   │   ├── docker-entrypoint.sh<br class="title-page-name"/>│   │   └── Dockerfile<br class="title-page-name"/>│   ├── docker-entrypoint.sh<br class="title-page-name"/>│   └── Dockerfile<br class="title-page-name"/>├── generate-stackbrew-library.sh<br class="title-page-name"/>├── LICENSE<br class="title-page-name"/>├── README.md<br class="title-page-name"/>└── update.sh</pre>
+<p class="calibre2">The repository structure contains a number of directories representing a particular version. To build the application, we need to specify a directory that contains the required Dockerfile. This can be achieved by using the <kbd class="calibre12">--context-dir</kbd> option of <kbd class="calibre12">oc new-ap</kbd>. This will be described later.</p>
+<p class="calibre2"/>
+<p class="calibre2"/>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">A simple Dockerfile build</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">Well, we know about directory structure and want to build and deploy a Redis application from the available Dockerfile. Let's focus on version 3.2. The <kbd class="calibre12">oc new-app</kbd> may initiate a build from source code using a sub-directory. We are ready to initiate a simple Dockerfile build:</p>
+<pre class="calibre18"><strong class="calibre1">$ oc new-app https://github.com/docker-library/redis.git --context-dir=3.2</strong><br class="title-page-name"/>...<br class="title-page-name"/>&lt;OUTPUT OMITTED&gt;<br class="title-page-name"/>...<br class="title-page-name"/>Run 'oc status' to view your app.</pre>
+<p class="calibre2">As we can see, OpenShift created a number of objects such as the following:</p>
+<ul class="calibre9">
+<li class="calibre10"><kbd class="calibre12">imagestream</kbd> named <kbd class="calibre12">debian</kbd></li>
+<li class="calibre10"><kbd class="calibre12">buildconfig</kbd> named <kbd class="calibre12">redis</kbd></li>
+<li class="calibre10"><kbd class="calibre12">deploymentconfig</kbd> named <kbd class="calibre12">redis</kbd></li>
+<li class="calibre10"><kbd class="calibre12">service</kbd> named <kbd class="calibre12">redis</kbd></li>
+</ul>
+<p class="calibre2">You can run the <kbd class="calibre12">oc get all</kbd> command to make sure that all objects have been created:</p>
+<pre class="calibre18"><strong class="calibre1">$ oc get all</strong><br class="title-page-name"/>NAME                  TYPE        FROM        LATEST<br class="title-page-name"/>buildconfigs/redis    Docker      Git         1<br class="title-page-name"/><br class="title-page-name"/>NAME                TYPE    FROM        STATUS    STARTED        DURATION<br class="title-page-name"/>builds/redis-1      Docker  Git@d24f2be Complete  39 seconds ago 6s<br class="title-page-name"/><br class="title-page-name"/>NAME                DOCKER REPO                       TAGS        UPDATED<br class="title-page-name"/>imagestreams/debian 172.30.1.1:5000/dockerfile/debian jessie-slim 39 seconds ago<br class="title-page-name"/>imagestreams/redis  172.30.1.1:5000/dockerfile/redis  latest      34 seconds ago<br class="title-page-name"/><br class="title-page-name"/>NAME                    REVISION DESIRED CURRENT TRIGGERED BY<br class="title-page-name"/>deploymentconfigs/redis 1        1        1      config,image(redis:latest)<br class="title-page-name"/> <br class="title-page-name"/>NAME                    READY      STATUS      RESTARTS    AGE<br class="title-page-name"/>po/redis-1-build        0/1        Completed   0           40s<br class="title-page-name"/>po/redis-1-js789        1/1        Running     0           33s<br class="title-page-name"/><br class="title-page-name"/></pre>
+<p class="calibre2"/>
+<p class="calibre2"/>
+<pre class="calibre18">NAME                    DESIRED    CURRENT     READY       AGE<br class="title-page-name"/>rc/redis-1              1           1          1           35s<br class="title-page-name"/><br class="title-page-name"/>NAME                    CLUSTER-IP      EXTERNAL-IP   PORT(S)    AGE<br class="title-page-name"/>svc/redis               172.30.165.223  &lt;none&gt;        6379/TCP   41s</pre>
+<p class="calibre2">The previous command initiated a build. OpenShift starts a <kbd class="calibre12">-build</kbd> pod which does the build. You may temporarily see that a Pod with <kbd class="calibre12">-build</kbd> in the name is in the <kbd class="calibre12">Running</kbd> state:</p>
+<pre class="calibre18"><strong class="calibre1">$ oc get pod</strong><br class="title-page-name"/>NAME            READY    STATUS             RESTARTS    AGE<br class="title-page-name"/>redis-1-build   1/1      Running            0           6s<br class="title-page-name"/>redis-1-deploy  0/1      ContainerCreating  0           1s</pre>
+<p class="calibre2">Docker build is controlled by a <kbd class="calibre12">build</kbd> config object. Build status can be displayed by using the <kbd class="calibre12">oc logs bc/&lt;NAME&gt;</kbd> command:</p>
+<pre class="calibre18"><strong class="calibre1">$ oc logs bc/redis|tail -n10</strong><br class="title-page-name"/>Successfully built b3b7a77f988a<br class="title-page-name"/>Pushing image 172.30.1.1:5000/dockerfile/redis:latest ...<br class="title-page-name"/>Pushed 0/6 layers, 7% complete<br class="title-page-name"/>Pushed 1/6 layers, 30% complete<br class="title-page-name"/>Pushed 2/6 layers, 43% complete<br class="title-page-name"/>Pushed 3/6 layers, 57% complete<br class="title-page-name"/>Pushed 4/6 layers, 75% complete<br class="title-page-name"/>Pushed 5/6 layers, 87% complete<br class="title-page-name"/>Pushed 6/6 layers, 100% complete<br class="title-page-name"/>Push successful</pre>
+<div class="packt_infobox">Another way to work on build process troubleshooting is to use <kbd class="calibre26">oc status</kbd>.</div>
+<p class="calibre2">OpenShift built the Redis image from Dockerfile and uploaded it to a local registry. Let's make sure that container works:</p>
+<pre class="calibre18"><strong class="calibre1">$ oc get pod</strong><br class="title-page-name"/>NAME             READY    STATUS      RESTARTS  AGE<br class="title-page-name"/>redis-1-build    0/1      Completed   0         2m<br class="title-page-name"/>redis-1-js789    1/1      Running     0         1m<br class="title-page-name"/><br class="title-page-name"/>$ oc exec redis-1-8lf8h /usr/local/bin/redis-cli ping<br class="title-page-name"/>PONG</pre>
+<p class="calibre2"/>
+<p class="calibre2"/>
+<pre class="calibre18"><strong class="calibre1">$ oc rsh redis-1-js789 /usr/local/bin/redis-server --version</strong><br class="title-page-name"/>Redis server v=3.2.11 sha=00000000:0 malloc=jemalloc-4.0.3 bits=64 build=994283e2d09fba41</pre>
+<div class="packt_infobox">In this lab, we are using a simple <kbd class="calibre26">ping</kbd>  test to make sure that we have basic reachability. We use the <kbd class="calibre26">redis-cli</kbd> command delivered by the container.</div>
+<p class="calibre2">So, it looks like our Redis application works fine and has version 3.2.11.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Dockerfile build customization</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">As we saw before, OpenShift can build an application from Dockerfile. Sometimes, application source code is updated and there is a need to initiate the build process again using the new source code. OpenShift supports this functionality through the <kbd class="calibre12">oc start-build</kbd> command. </p>
+<p class="calibre2">During this section, we will initiate a build process using the new source code of the application using the image stream created recently by the <kbd class="calibre12">oc new-app</kbd> command.</p>
+<p class="calibre2">We built a Redis application from source code using a specific directory 3.0. </p>
+<p class="calibre2">The source code contains another Dockerfile, which uses the newer version 4.0:</p>
+<pre class="calibre18"><strong class="calibre1">$ tree redis/4.0/</strong><br class="title-page-name"/>redis/4.0/<br class="title-page-name"/>├── 32bit<br class="title-page-name"/>│   ├── docker-entrypoint.sh<br class="title-page-name"/>│   └── Dockerfile<br class="title-page-name"/>├── alpine<br class="title-page-name"/>│   ├── docker-entrypoint.sh<br class="title-page-name"/>│   └── Dockerfile<br class="title-page-name"/>├── docker-entrypoint.sh<br class="title-page-name"/>└── Dockerfile</pre>
+<p class="calibre2">Now, imagine that we need to update the application using new code available in another repository or another context directory in the existing repository. For our particular case, it sounds like we need to change the context directory to <kbd class="calibre12">4.0</kbd> instead of <kbd class="calibre12">3.2</kbd>.</p>
+<p class="calibre2"/>
+<p class="calibre2"/>
+<p class="calibre2">The <kbd class="calibre12">oc new-app</kbd> command created a number of entities that control application build and deployment. The build process is under <kbd class="calibre12">build config</kbd> object control. We need to display this object to understand what to change to point to another directory in the repository:</p>
+<pre class="calibre18"><strong class="calibre1">$ oc get bc</strong><br class="title-page-name"/>NAME             TYPE         FROM     LATEST<br class="title-page-name"/>redis            Docker       Git      1<br class="title-page-name"/><br class="title-page-name"/><strong class="calibre1">$ oc get bc redis -o yaml</strong><br class="title-page-name"/>apiVersion: v1<br class="title-page-name"/>kind: BuildConfig<br class="title-page-name"/>metadata:<br class="title-page-name"/>  annotations:<br class="title-page-name"/>    openshift.io/generated-by: OpenShiftNewApp<br class="title-page-name"/>  creationTimestamp: 2018-06-04T19:54:26Z<br class="title-page-name"/>  labels:<br class="title-page-name"/>    app: redis<br class="title-page-name"/>  name: redis<br class="title-page-name"/>  namespace: dockerfile<br class="title-page-name"/>  resourceVersion: "256886"<br class="title-page-name"/>  selfLink: /oapi/v1/namespaces/dockerfile/buildconfigs/redis<br class="title-page-name"/>  uid: 16116413-6831-11e8-91ff-5254005f9478<br class="title-page-name"/>spec:<br class="title-page-name"/>  failedBuildsHistoryLimit: 5<br class="title-page-name"/>  nodeSelector: null<br class="title-page-name"/>  output:<br class="title-page-name"/>    to:<br class="title-page-name"/>      kind: ImageStreamTag<br class="title-page-name"/>      name: redis:latest<br class="title-page-name"/>  postCommit: {}<br class="title-page-name"/>  resources: {}<br class="title-page-name"/>  runPolicy: Serial<br class="title-page-name"/><strong class="calibre1">  source:</strong><br class="title-page-name"/><strong class="calibre1">    contextDir: "3.2"</strong><br class="title-page-name"/><strong class="calibre1">    git:</strong><br class="title-page-name"/><strong class="calibre1">      uri: https://github.com/docker-library/redis.git</strong><br class="title-page-name"/><strong class="calibre1">    type: Git<br class="title-page-name"/><br class="title-page-name"/></strong>&lt;OMITTED&gt;</pre>
+<p class="calibre2">We highlighted a source element that specifies which directory to use during the build. Now, if there is a task to point to another context directory, we just need to update the <kbd class="calibre12">bc/redis</kbd> object by changing <kbd class="calibre12">spec.source.contextDir</kbd> in the object definition. This can be achieved in several ways:</p>
+<ul class="calibre9">
+<li class="calibre10">Manually using <kbd class="calibre12">oc edit</kbd></li>
+<li class="calibre10">In a script using <kbd class="calibre12">oc patch</kbd></li>
+</ul>
+<p class="calibre2"><kbd class="calibre12">oc edit bc/redis</kbd> will run a text editor to modify the object. Here is an example of how to use the <kbd class="calibre12">oc patch</kbd> command to update the object content:</p>
+<pre class="calibre18"><strong class="calibre1">$ oc patch bc/redis --patch '{"spec":{"source":{"contextDir":"4.0"}}}'</strong><br class="title-page-name"/>buildconfig "redis" patched<br class="title-page-name"/><br class="title-page-name"/><strong class="calibre1">$ oc get bc/redis -o yaml|grep contextDir:</strong><br class="title-page-name"/>    contextDir: 4.0</pre>
+<p class="calibre2">Well, we updated our build configuration but nothing happened. Our pod has not been changed. This indicates that the build process was not triggered. You may verify that by displaying pods through <kbd class="calibre12">oc get pod</kbd>.</p>
+<p class="calibre2">If there is a need to initiate the application rebuild process, <kbd class="calibre12">oc start-build</kbd> must be run. This command starts a new build from the available build configuration.</p>
+<p class="calibre2">Let's list all current builds:</p>
+<pre class="calibre18"><strong class="calibre1">$ oc get build</strong><br class="title-page-name"/>NAME         TYPE     FROM         STATUS     STARTED         DURATION<br class="title-page-name"/>redis-1      Docker   Git@d24f2be  Complete   12 minutes ago  6s</pre>
+<p class="calibre2">So, recently, we initiated a build, which was completed some time ago. Let's try to run the build again:</p>
+<pre class="calibre18"><strong class="calibre1">$ oc start-build bc/redis</strong><br class="title-page-name"/>build "redis-2" started</pre>
+<p class="calibre2">The build creates a number of new pods representing the new version (version 2). After some time, the pod statuses will be changed:</p>
+<pre class="calibre18"><strong class="calibre1">$ oc get pod</strong><br class="title-page-name"/>NAME              READY      STATUS             RESTARTS   AGE<br class="title-page-name"/>redis-1-build     0/1        Completed          0          13m<br class="title-page-name"/>redis-1-js789     1/1        Running            0          12m<br class="title-page-name"/>redis-2-build     0/1        Completed          0          8s<br class="title-page-name"/>redis-2-deploy    1/1        Running            0          2s<br class="title-page-name"/>redis-2-l6bbl     0/1        ContainerCreating  0          0s</pre>
+<p class="calibre2">You can see that <kbd class="calibre12">redis</kbd> is now going through Build and Deploy stages before the new version of <kbd class="calibre12">redis</kbd> container is up and running. If you wait for a minute or so, you should see the following:</p>
+<pre class="calibre18"><strong class="calibre1">$ oc get pod</strong><br class="title-page-name"/>NAME              READY      STATUS            RESTARTS    AGE</pre>
+<p class="calibre2"/>
+<p class="calibre2"/>
+<pre class="calibre18">redis-1-build     0/1        Completed         0           14m<br class="title-page-name"/>redis-2-build     0/1        Completed         0           1m<br class="title-page-name"/>redis-2-l6bbl     1/1        Running           0           57s</pre>
+<p class="calibre2">Well, it looks like that build has been completed:</p>
+<pre class="calibre18"><strong class="calibre1">$ oc get build</strong><br class="title-page-name"/>NAME      TYPE       FROM            STATUS     STARTED         DURATION<br class="title-page-name"/>redis-1   Docker     Git@d24f2be     Complete   15 minutes ago  6s<br class="title-page-name"/>redis-2   Docker     Git@d24f2be     Complete   2 minutes ago   6s</pre>
+<p class="calibre2">Now we can check the version of our application:</p>
+<pre class="calibre18"><strong class="calibre1">$ oc rsh redis-2-l6bbl /usr/local/bin/redis-server --version</strong><br class="title-page-name"/>Redis server v=4.0.9 sha=00000000:0 malloc=jemalloc-4.0.3 bits=64 build=40ca48d6a92db598<br class="title-page-name"/><br class="title-page-name"/></pre>
+<p class="calibre2">Finally, let's make sure that the application is up and running:</p>
+<pre class="calibre18"><strong class="calibre1">$ oc rsh redis-2-l6bbl /usr/local/bin/redis-cli ping</strong><br class="title-page-name"/>PONG</pre>
+<p class="calibre2">We were able to initiate the build from the updated source code.</p>
+<p class="calibre2">Clear out your lab environment.</p>
+<pre class="calibre18"><strong class="calibre1">$ oc delete all --all</strong><br class="title-page-name"/>deploymentconfig "redis" deleted<br class="title-page-name"/>buildconfig "redis" deleted<br class="title-page-name"/>imagestream "debian" deleted<br class="title-page-name"/>imagestream "redis" deleted<br class="title-page-name"/>pod "redis-2-vw92x" deleted<br class="title-page-name"/>service "redis" deleted<br class="title-page-name"/><br class="title-page-name"/><strong class="calibre1">$ oc delete project dockerfile</strong><br class="title-page-name"/>project "dockerfile" deleted<br class="title-page-name"/><br class="title-page-name"/><strong class="calibre1">$ oc project myproject</strong><br class="title-page-name"/>Now using project "myproject" on server "https://localhost:8443".</pre>
+<p class="calibre2">If you are going to continue with the following Chapter, you can leave your OpenShift cluster up, otherwise you can shutdown or delete vagrant VM.</p>
+<p class="calibre2"> </p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Summary</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">In this chapter, you have learned how to adjust Dockerfile to be able to run in OpenShift. We also explained how to build<span class="calibre11"> applications from Dockerfile, how to use</span><span class="calibre11"> <kbd class="calibre12">oc new-app</kbd> to initiate a Docker build, and finally how to use</span><span class="calibre11"> <kbd class="calibre12">oc start-build</kbd> to start the new build from the existing build config.</span></p>
+<p class="calibre2">In the following chapter, we are going to talk about the most frequently used application images that are already available on Docker Hub. But every now and then it is required to build a custom image that contains custom software or is aligned with company security policies/standards. We are going to learn how OpenShift automates the build process through the S2I build strategy, which is one of the main advantages of OpenShift, and how it allows you to build an image from your application's source code and then run it as a container.  </p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Questions</h1>
+                
+            
+            <article>
+                
+<ol class="calibre13">
+<li value="1" class="calibre10">Which of the following OpenShift commands can update existing API objects? choose two:</li>
+</ol>
+<ul class="calibre9">
+<li class="front-matter">
+<ol class="calibre14">
+<li value="1" class="calibre10"><kbd class="calibre12">oc edit bc/redis</kbd></li>
+<li value="2" class="calibre10"><kbd class="calibre12">oc get bc redis</kbd></li>
+<li value="3" class="calibre10"><kbd class="calibre12">oc patch bc/redis --patch ...</kbd></li>
+<li value="4" class="calibre10"><kbd class="calibre12">oc update bc/redis</kbd></li>
+<li value="5" class="calibre10"><kbd class="calibre12">oc build bc/redis</kbd> </li>
+</ol>
+</li>
+</ul>
+<ol start="2" class="calibre13">
+<li value="2" class="calibre10">Which of the following commands start a new build? (choose one):</li>
+</ol>
+<ul class="calibre9">
+<li class="front-matter">
+<ol class="calibre14">
+<li value="1" class="calibre10"><kbd class="calibre12">oc new-app</kbd></li>
+<li value="2" class="calibre10"><kbd class="calibre12">oc new build</kbd></li>
+<li value="3" class="calibre10"><kbd class="calibre12">oc start-build</kbd></li>
+<li value="4" class="calibre10"><kbd class="calibre12">oc get build</kbd></li>
+</ol>
+</li>
+</ul>
+<ol start="3" class="calibre13">
+<li value="3" class="calibre10">Which file must exist in the repository to perform docker build (choose one)?</li>
+</ol>
+<ul class="calibre9">
+<li class="front-matter">
+<ol class="calibre14">
+<li value="1" class="calibre10"><kbd class="calibre12">Jenkinsfile</kbd></li>
+<li value="2" class="calibre10"><kbd class="calibre12">Dockerfile</kbd></li>
+<li value="3" class="calibre10"><kbd class="calibre12">README.md</kbd></li>
+<li value="4" class="calibre10"><kbd class="calibre12">index.php</kbd></li>
+<li value="5" class="calibre10"><kbd class="calibre12">docker.info</kbd></li>
+</ol>
+</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Further reading</h1>
+                
+            
+            <article>
+                
+<p class="calibre2"><span class="calibre11">Here is a list of topics with links related to this chapter that you might want to deep dive into:</span></p>
+<ul class="calibre9">
+<li class="calibre10"><strong class="calibre1">Creating New Applications at</strong> <a href="https://docs.openshift.com/container-platform/3.9/dev_guide/application_lifecycle/new_app.html" target="_blank" class="calibre8">https://docs.openshift.com/container-platform/3.9/dev_guide/application_lifecycle/new_app.html</a></li>
+<li class="calibre10"><strong class="calibre1">How Builds Work at</strong> <a href="https://docs.openshift.org/latest/dev_guide/builds/index.html" class="calibre8">https://docs.openshift.org/latest/dev_guide/builds/index.html</a></li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    </body></html>

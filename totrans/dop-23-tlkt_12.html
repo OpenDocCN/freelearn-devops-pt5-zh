@@ -1,0 +1,799 @@
+<html><head></head><body>
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Securing Kubernetes Clusters</h1>
+                </header>
+            
+            <article>
+                
+<div class="packt_tip">Security implementation is a game between a team with a total lock-down strategy and a team that plans to win by providing complete freedom to everyone. You can think of it as a battle between anarchists and totalitarians. The only way the game can be won is if both blend into something new. The only viable strategy is freedom without sacrificing security (too much).</div>
+<p>Right now, our cluster is as secured as it can get. There is only one user (you). No one else can operate it. The others cannot even list the Pods in the cluster. You are the judge, the jury, and the executioner. You are the undisputed king with god-like powers that are not shared with anyone else.</p>
+<p>The I-and-only-I-can-do-things strategy works well when simulating a cluster on a laptop. It serves the purpose when the only goal is to learn alone. The moment we create a "real" cluster where the whole company will collaborate (in some form or another), we'll need to define (and apply) an authentication and authorization strategy. If your business is small and there are only a few people who will ever operate the cluster, giving everyone the same cluster-wide administrative set of permissions is a simple and legitimate solution. More often than not, this will not be the case.</p>
+<p>Your company probably has people with different levels of trust. Even if that's not the case, different people will require different levels of access. Some will be allowed to do anything they want, while others will not have any type of access. Most will be able to do something in between. We might choose to give everyone a separate Namespace and forbid them from accessing others. Some might be able to operate a production Namespace while others might have interest only in the one assigned for development and testing. The number of permutations we can apply is infinite. Still, one thing is certain. We will need to create an authentication and authorization mechanism. Most likely, we'll need to create permissions that are sometimes applied cluster-wide and, in other cases, limited to Namespaces.</p>
+<p>Those and many other policies can be created by employing Kubernetes authorization and authentication.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Accessing Kubernetes API</h1>
+                </header>
+            
+            <article>
+                
+<p>Every interaction with Kubernetes goes through its API and needs to be authorized. That communication can be initiated through a user or a service account. All Kubernetes objects currently running inside our cluster are interacting with the API through service accounts. We won't go deep into those. Instead, we'll concentrate on the authorization of human users.</p>
+<p>Typically, the Kubernetes API is served on a secured port. Our Minikube cluster is no exception. We can check the port from the <kbd>kubectl</kbd> config.</p>
+<div class="packt_infobox">All the commands from this chapter are available in the <a href="https://gist.github.com/f2c4a72a1e010f1237eea7283a9a0c11"><kbd>12-auth.sh</kbd></a> (<a href="https://gist.github.com/vfarcic/f2c4a72a1e010f1237eea7283a9a0c11" target="_blank"><span class="URLPACKT">https://gist.github.com/vfarcic/f2c4a72a1e010f1237eea7283a9a0c11</span></a>) Gist.</div>
+<pre><strong>kubectl config view \</strong>
+    <strong>-o jsonpath='{.clusters[?(@.name=="minikube")].cluster.server}'</strong>  </pre>
+<p>We used <kbd>jsonpath</kbd> to output the <kbd>cluster.server</kbd> entry located in the cluster with the name <kbd>minikube</kbd>.</p>
+<p>The output is as follows:</p>
+<pre><strong>https://192.168.99.105:8443</strong></pre>
+<p>We can see that <kbd>kubectl</kbd> accesses the Minikube Kubernetes API on the port <kbd>8443</kbd>. Since the access is secured, it requires certificates which are stored as the <kbd>certificate-authority</kbd> entry. Let's take a look.</p>
+<pre><strong>kubectl config view \</strong>
+<strong>    -o jsonpath='{.clusters[?(@.name=="minikube")].cluster.certif<br/>icate-authority}'</strong>  </pre>
+<p>The output is as follows:</p>
+<pre><strong>/Users/vfarcic/.minikube/ca.crt</strong>  </pre>
+<p>The <kbd>ca.crt</kbd> certificate was created with the Minikube cluster and, currently, provides the only way we can access the API.</p>
+<p>If this was a "real" cluster, we'd need to enable access for other users as well. We could send them the certificate we already have, but that would be very insecure and would lead to a lot of potential problems. Soon, we'll explore how to enable other users to access the cluster securely. For now, we'll focus on the exploration of the process Kubernetes uses to authorize requests to its API.</p>
+<p>Each request to the API goes through three stages. It needs to be authenticated, it needs to be authorized, and it needs to pass the admission control.</p>
+<p>The authentication process is retrieving the username from the HTTP request. If the request cannot be authenticated, the operation is aborted with the status code 401.</p>
+<p>Once the user is authenticated, the authorization validates whether it is allowed to execute the specified action. The authorization can be performed through ABAC, RBAC, or Webhook modes.</p>
+<p>Finally, once a request is authorized, it passes through admission controllers. They intercept requests to the API before the objects are persisted and can modify them. They are advanced topics that we won't cover in this chapter.</p>
+<p>Authentication is pretty standard, and there's not much to say about it. On the other hand, admission controllers are too advanced to be covered just yet. Therefore, we're left with authorization as the topic we'll explore in more detail.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Authorizing requests</h1>
+                </header>
+            
+            <article>
+                
+<p>Just like almost everything else in Kubernetes, authorization is modular. We can choose to use <em>Node</em>, <em>ABAC</em>, <em>Webhook</em>, or <em>RBAC</em> authorization. Node authorization is used for particular purposes. It grants permissions to kubelets based on the Pods they are scheduled to run. <strong>Attribute-based access control</strong> (<strong>ABAC</strong>) is based on attributes combined with policies and is considered deprecated in favor of RBAC. Webhooks are used for event notifications through HTTP POST requests. Finally, <strong>Role-based access control</strong> (<strong>RBAC</strong>) grants (or denies) access to resources based on roles of individual users or groups.</p>
+<p>Among the four authorization methods, RBAC is the right choice for user-based authorization. Since we'll focus this chapter on the exploration of the means to authorize humans, RBAC will be our primary focus.</p>
+<p>What can we do with RBAC? To begin with, we can use it to secure the cluster by allowing access only to authorized users. We can define roles that would grant different levels of access to users and groups. Some could have god-like permissions that would allow them to do almost anything, while others could be limited only to basic non-destructive operations. There can be many other roles in between. We can combine RBAC with Namespaces and allow users to operate only within specific segments of a cluster. There are many other combinations we could apply depending on particular use-cases.</p>
+<p>Since I get uncomfortable with too much theory, we'll leave the rest for later and explore details through a few examples. As you might already suspect, we'll kick it off with a new Minikube cluster.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Creating a Cluster</h1>
+                </header>
+            
+            <article>
+                
+<p>The commands that will create a Minikube cluster are as follows:</p>
+<pre><strong>cd k8s-specs</strong>
+    
+<strong>git pull</strong>
+    
+<strong>minikube start </strong><strong>--vm-driver virtualbox<br/> </strong>
+<strong>kubectl config current-context</strong>  </pre>
+<div class="packt_infobox">RBAC is installed by default starting from minikube v0.26. If your version is older than that, you'll need to add <kbd>--extra-config apiserver.Authorization.Mode=RBAC</kbd> argument. Or, better yet, upgrade your minikube binary.</div>
+<p>It might come in handy to have a few objects in the cluster so we'll deploy the <kbd>go-demo-2</kbd> application. We'll use it to test different permutations of the authorization strategies we'll use soon.</p>
+<p>The definition of the <kbd>go-demo-2</kbd> application is the same as the one we created in the previous chapters so we'll skip the explanation and just execute <kbd>kubectl create</kbd>:</p>
+<pre><strong>kubectl create \</strong>
+<strong>    -f auth/go-demo-2.yml \</strong>
+<strong>    --record --save-config</strong>  </pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Creating users</h1>
+                </header>
+            
+            <article>
+                
+<p>The word about Kubernetes awesomeness is spreading in your company. People are becoming curious and would like to try it out. Since you are the Kubernetes guru, it came as no surprise that you received a call from John Doe. He wants to "play" with Kubernetes, but he does not have time to set up his own cluster. Since he knows that you already have a cluster up and running, he'd appreciate if you would let him use yours.</p>
+<p>Since you have no intention giving John your certificates, you decide to let him authenticate with his user.</p>
+<p>You will have to create certificates for him, so the first step you'll need to do is to verify that OpenSSL is installed on your laptop.</p>
+<pre><strong>openssl version</strong>  </pre>
+<p>It shouldn't matter which version of OpenSSL is installed. We output the <kbd>version</kbd> only to verify that the software is working. If the output is something like <kbd>command not found: openssl</kbd>, you will have to install the binaries (<a href="https://wiki.openssl.org/index.php/Binaries" target="_blank"><span class="URLPACKT">https://wiki.openssl.org/index.php/Binaries</span></a>).</p>
+<p>The first thing we'll do is to create a private key for John. We'll assume that John Doe's username is <kbd>jdoe</kbd>.</p>
+<pre><strong>mkdir keys</strong>
+  
+<strong>openssl genrsa \</strong>
+<strong>    -out keys/jdoe.key 2048</strong></pre>
+<p>We created the directory <kbd>keys</kbd> and generated a private key <kbd>jdoe.key</kbd>.</p>
+<p>Next, we'll use the private key to generate a certificate:</p>
+<pre><strong>openssl req -new \</strong>
+    <strong>-key keys/jdoe.key \</strong>
+    <strong>-out keys/jdoe.csr \</strong>
+    <strong>-subj "/CN=jdoe/O=devs"</strong></pre>
+<div class="packt_infobox"><span class="packt_screen">A note to Windows users <br/></span>If you received an error like <kbd>Subject does not start with '/'. Problems making Certificate Request</kbd>, please replace <kbd>-subj "/CN=jdoe/O=devs"</kbd> with <kbd>-subj "//CN=jdoe\O=devs"</kbd> in the previous command and execute it again.</div>
+<p>We created the certificate <kbd>jdoe.csr</kbd> with a specific subject that will help us identify John. <kbd>CN</kbd> is the username and <kbd>O</kbd> represents the organization he belongs. John is a developer, so <kbd>devs</kbd> should do.</p>
+<p>For the final certificate, we'll need the cluster's <strong>certificate authority</strong> (<strong>CA</strong>). It will be responsible for approving the request and for generating the necessary certificate John will use to access the cluster. Since we used Minikube, the authority is already produced for us as part of the cluster creation. It should be in the <kbd>.minikube</kbd> directory inside the OS user's home folder. Let's confirm it's there.</p>
+<pre><strong>ls -1 ~/.minikube/ca.*</strong>  </pre>
+<div class="packt_infobox">Minikube's directory might be somewhere else. If that's the case, please replace <kbd>~/.minikube</kbd> with the correct path.</div>
+<p>The output is as follows:</p>
+<pre><strong>/Users/vfarcic/.minikube/ca.crt</strong>
+<strong>/Users/vfarcic/.minikube/ca.key</strong>
+<strong>/Users/vfarcic/.minikube/ca.pem</strong>  </pre>
+<p>Now we can generate the final certificate by approving the certificate sign request <kbd>jdoe.csr</kbd>.</p>
+<pre><strong>openssl x509 -req \</strong>
+    <strong>-in keys/jdoe.csr \</strong>
+    <strong>-CA ~/.minikube/ca.crt \</strong>
+    <strong>-CAkey ~/.minikube/ca.key \</strong>
+    <strong>-CAcreateserial \</strong>
+    <strong>-out keys/jdoe.crt \</strong>
+    <strong>-days 365</strong></pre>
+<p>Since we feel generous, we made the certificate <kbd>jdoe.crt</kbd> valid for a whole year (365 days).</p>
+<p>To simplify the process, we'll copy the cluster's certificate authority to the <kbd>keys</kbd> directory.</p>
+<pre><strong>cp ~/.minikube/ca.crt keys/ca.crt</strong>  </pre>
+<p>Let's check what we generated:</p>
+<pre><strong>ls -1 keys</strong>  </pre>
+<p>The output is as follows:</p>
+<pre><strong>ca.crt</strong>
+<strong>jdoe.crt</strong>
+<strong>jdoe.csr</strong>
+<strong>jdoe.key</strong>  </pre>
+<p>John does not need the <kbd>jdoe.csr</kbd> file. We used it only to generate the final certificate <kbd>jdoe.crt</kbd>. He will need all the others though.</p>
+<p>Apart from the keys, John will need to know the address of the cluster. At the beginning of the chapter, we already created the <kbd>jsonpath</kbd> that retrieves the server so that part should be easy.</p>
+<pre><strong>SERVER=$(kubectl config view \</strong>
+<strong>    -o jsonpath='{.clusters[?(@.name=="minikube")].cluster.server<br/>}')</strong>
+    
+<strong>echo $SERVER</strong>  </pre>
+<p>The output is as follows:</p>
+<pre><strong>https://192.168.99.106:8443</strong>  </pre>
+<p>Equipped with the new certificate, the key, the cluster authority, and the address of the server, John can configure his <kbd>kubectl</kbd> installation.</p>
+<p>Since John is not around, we'll do some role playing and impersonate him.</p>
+<p>John will first have to set the cluster using the address and the certificate authority we sent him.</p>
+<pre><strong>kubectl config set-cluster jdoe \</strong>
+    <strong>--certificate-authority \</strong>
+    <strong>keys/ca.crt \</strong>
+    <strong>--server $SERVER</strong></pre>
+<p>We created a new cluster called <kbd>jdoe</kbd>.</p>
+<p>Next, he'll have to set the credentials using the certificate and the key we created for him.</p>
+<pre><strong>kubectl config set-credentials jdoe \</strong>
+<strong>    --client-certificate keys/jdoe.crt \</strong>
+<strong>    --client-key keys/jdoe.key</strong>  </pre>
+<p>We created a new set of credentials called <kbd>jdoe</kbd>.</p>
+<p>Finally, John will have to create a new context:</p>
+<pre><strong>kubectl config set-context jdoe \</strong>
+<strong>    --cluster jdoe \</strong>
+<strong>    --user jdoe</strong>
+    
+<strong>kubectl config use-context jdoe</strong>  </pre>
+<p>We created the context <kbd>jdoe</kbd> that uses the newly created cluster and the user. We also made sure that we're using the newly created context.</p>
+<p>Let's take a look at the config:</p>
+<pre><strong>kubectl config view</strong>  </pre>
+<p>The output, limited to John's settings, is as follows:</p>
+<pre><strong>...</strong>
+<strong>clusters:</strong>
+<strong>- cluster:</strong>
+<strong>    certificate-authority: /Users/vfarcic/IdeaProjects/k8s-specs/<br/>keys/ca.crt</strong>
+<strong>    server: https://192.168.99.106:8443</strong>
+<strong>  name: jdoe</strong>
+<strong>...</strong>
+<strong>contexts:</strong>
+<strong>- context:</strong>
+<strong>    cluster: jdoe</strong>
+<strong>    user: jdoe</strong>
+<strong>  name: jdoe</strong>
+<strong>...</strong>
+<strong>current-context: jdoe</strong>
+<strong>...</strong>
+<strong>users:</strong>
+<strong>- name: jdoe</strong>
+<strong>  user:</strong>
+<strong>    client-certificate: /Users/vfarcic/IdeaProjects/k8s-specs/key<br/>s/jdoe.crt</strong>
+<strong>    client-key: /Users/vfarcic/IdeaProjects/k8s-specs/keys/jdoe.k<br/>ey</strong>
+<strong>...</strong>  </pre>
+<p>John should be happy thinking that he can access our cluster. Since he's a curious person, he'll want to see the Pods we're running.</p>
+<pre><strong>kubectl get pods</strong>  </pre>
+<p>The output is as follows:</p>
+<pre><strong>Error from server (Forbidden): pods is forbidden: User "jdoe" can<br/>not list pods in the namespace "default"</strong></pre>
+<p>That's frustrating. John can reach our cluster, but he cannot retrieve the list of Pods. Since hope dies last, John might check whether he is forbidden from seeing other types of objects.</p>
+<pre><strong>kubectl get all</strong>  </pre>
+<p>The output is a long list of all the objects he's forbidden from seeing.</p>
+<p>John picks up his phone to beg not only that you give him the access to the cluster, but also the permissions to "play" with it.</p>
+<p>Before we change John's permission, we should explore the components involved in the RBAC authorization process.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Exploring RBAC authorization</h1>
+                </header>
+            
+            <article>
+                
+<p>Managing Kubernetes RBAC requires knowledge of a few elements. Specifically, we should learn about Rules, Roles, Subjects, and RoleBindings.</p>
+<p>A <em>Rule</em> is a set of operations (verbs), resources, and API groups. Verbs describe activities that can be performed on resources which belong to different API Groups.</p>
+<p>Permissions defined through Rules are additive. We cannot deny access to some resources.</p>
+<p>Currently supported verbs are as follows:</p>
+<table border="1" style="border-collapse: collapse;width: 65.705%">
+<tbody>
+<tr>
+<td class="CDPAlignCenter CDPAlign" style="width: 24.031%"><strong>Verb</strong></td>
+<td class="CDPAlignCenter CDPAlign" style="width: 41.1563%"><strong>Description</strong></td>
+</tr>
+<tr>
+<td style="width: 24.031%">get</td>
+<td style="width: 41.1563%">Retrieves information about a specific object</td>
+</tr>
+<tr>
+<td style="width: 24.031%">list</td>
+<td style="width: 41.1563%">Retrieves information about a collection of objects</td>
+</tr>
+<tr>
+<td style="width: 24.031%">create</td>
+<td style="width: 41.1563%">Creates a specific object</td>
+</tr>
+<tr>
+<td style="width: 24.031%">update</td>
+<td style="width: 41.1563%">Updates a specific object</td>
+</tr>
+<tr>
+<td style="width: 24.031%">patch</td>
+<td style="width: 41.1563%">Patches a specific object</td>
+</tr>
+<tr>
+<td style="width: 24.031%">watch</td>
+<td style="width: 41.1563%">Watches for changes to an object</td>
+</tr>
+<tr>
+<td style="width: 24.031%">proxy</td>
+<td style="width: 41.1563%">Proxies requests</td>
+</tr>
+<tr>
+<td style="width: 24.031%">redirect</td>
+<td style="width: 41.1563%">Redirects requests</td>
+</tr>
+<tr>
+<td style="width: 24.031%">delete</td>
+<td style="width: 41.1563%">Deletes a specific object</td>
+</tr>
+<tr>
+<td style="width: 24.031%">deletecollection</td>
+<td style="width: 41.1563%">Deletes a collection of objects</td>
+</tr>
+</tbody>
+</table>
+<p> </p>
+<p>If, for example, we'd like to allow a user only to create objects and retrieve their information, we'd use the verbs <kbd>get</kbd>, <kbd>list</kbd> and <kbd>create</kbd>. A verb can be an asterisk (<kbd>*</kbd>), thus allowing all verbs (operations).</p>
+<p>Verbs are combined with Kubernetes resources. For example, if we'd like to allow a user only to create Pods and retrieve their information, we'd mix <kbd>get</kbd>, <kbd>list</kbd> and <kbd>create</kbd> verbs with the <kbd>pods</kbd> resource.</p>
+<p>The last element of a Rule is the API Group. RBAC uses the <kbd>rbac.authorization.k8s.io</kbd> group. If we'd switch to a different authorization method, we'd need to change the group as well.</p>
+<p>A <em>Role</em> is a collection of Rules. It defines one or more Rules that can be bound to a user or a group of users. The vital aspect of Roles is that they are applied to a Namespace. If we'd like to create a role that refers to a whole cluster, we'd use <em>ClusterRole</em> instead. Both are defined in the same way, and the only difference is in the scope (Namespace or an entire cluster).</p>
+<p>The next piece of the authorization mechanism is <em>Subjects</em>. They define entities that are executing operations. A Subject can be a <em>User</em>, a <em>Group</em>, or a <em>Service Account</em>. A User is a person or a process residing outside a cluster. A Service Account is used for processes running inside Pods that want to use the API. Since this chapter focuses on human authentication, we won't explore them right now. Finally, Groups are collections of Users or Service Accounts. Some Groups are created by default (for example, <kbd>cluster-admin</kbd>).</p>
+<p>Finally, we need <em>RoleBindings</em>. As the name suggests, they bind Subjects to Roles. Since Subjects define users, RoleBindings effectively bind users (or Groups or Service Accounts) to Roles, thus giving them permissions to perform certain operations on specific objects within a Namespace. Just like roles, RoleBindings have a cluster-wide alternative called <em>ClusterRoleBindings</em>. The only difference is that their scope is not limited to a Namespace, but applied to a whole cluster.</p>
+<p>All that might seem confusing and overwhelming. You might even say that you did not understand anything. Fear not. We'll explore each of the RBAC components in more details through practical examples. We went through the explanation because people say that things should be explained first, and demonstrated later. I don't think that's a right approach, but I didn't want you to say that I did not provide the theory. In any case, the examples that follow will clarify everything.</p>
+<p>Let's go back to John's issue and try to solve it.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Peeking into pre-defined Cluster roles</h1>
+                </header>
+            
+            <article>
+                
+<p>John is frustrated. He can access the cluster, but he is not permitted to perform any operation. He cannot even list the Pods. Naturally, he asked us to be more generous and allow him to "play" with our cluster.</p>
+<p>Since we are not taking anything for granted, we decided that the first action should be to verify John's claim. Is it true that he cannot even retrieve the Pods running inside the cluster?</p>
+<p>Before we move further, we'll stop impersonating John and go back to using the cluster with god-like administrative privileges granted to the <kbd>minikube</kbd> user.</p>
+<pre><strong>kubectl config use-context minikube</strong>
+   
+<strong>kubectl get all</strong>  </pre>
+<p>Now that we switched to the <kbd>minikube</kbd> context (and the <kbd>minikube</kbd> user), we regained full permissions, and <kbd>kubectl get all</kbd> returned all the objects from the <kbd>default</kbd> Namespace.</p>
+<p>Let's verify that John indeed cannot list Pods in the <kbd>default</kbd> Namespace.</p>
+<p>We could configure the same certificates as those he's using, but that would complicate the process. Instead, we'll use a <kbd>kubectl</kbd> command that will allow us to check whether we could perform an action if we would be a specific user.</p>
+<pre><strong>kubectl auth can-i get pods --as jdoe</strong>  </pre>
+<p>The response is <kbd>no</kbd>, indicating that <kbd>jdoe</kbd> cannot <kbd>get pods</kbd>. The <kbd>--as</kbd> argument is a global option that can be applied to any command. The <kbd>kubectl auth can-i</kbd> is a "special" command. It does not perform any action but only validates whether an operation could be performed. Without the <kbd>--as</kbd> argument, it would verify whether the current user (in this case <kbd>minikube</kbd>) could do something.</p>
+<p>We already discussed Roles and ClusterRoles briefly. Let's see whether there are any already configured in the cluster or the <kbd>default</kbd> namespace.</p>
+<pre><strong>kubectl get roles</strong>  </pre>
+<p>The output reveals that <kbd>no resources</kbd> were <kbd>found</kbd>. We do not have any Roles in the <kbd>default</kbd> Namespace. That was the expected outcome since a Kubernetes cluster comes with no pre-defined Roles. We'd need to create those we need ourselves.</p>
+<p>How about Cluster Roles? Let's check them out.</p>
+<pre><strong>kubectl get clusterroles</strong>  </pre>
+<p>This time we got quite a few resources. Our cluster already has some Cluster Roles defined by default. Those prefixed with <kbd>system:</kbd> are Cluster Roles reserved for Kubernetes system use. Modifications to those roles can result in non-functional clusters, so we should not update them. Instead, we'll skip system Roles and focus on those that should be assigned to users.</p>
+<p>The output, limited to Cluster Roles that are meant to be bound to users, is as follows:</p>
+<pre><strong>NAME          AGE</strong>
+<strong>admin         1h</strong>
+<strong>cluster-admin 1h</strong>
+<strong>edit          1h</strong>
+<strong>view          1h</strong>  </pre>
+<p>The Cluster Role with the least permissions is <kbd>view</kbd>. Let's take a closer look at it:</p>
+<pre><strong>kubectl describe clusterrole view</strong>  </pre>
+<p>The output, limited to the first few rows, is as follows:</p>
+<pre><strong>Name:        view</strong>
+<strong>Labels:      kubernetes.io/bootstrapping=rbac-defaults</strong>
+<strong>Annotations: rbac.authorization.kubernetes.io/autoupdate=true</strong>
+<strong>PolicyRule:</strong>
+<strong>  Resources              Non-Resource URLs Resource Names Verbs</strong>
+<strong>  ---------              ----------------- -------------- -----</strong>
+<strong>  bindings               []                []             [get li<br/>st watch]</strong>
+<strong>  configmaps             []                []             [get li<br/>st watch]</strong>
+<strong>  cronjobs.batch         []                []             [get li<br/>st watch]</strong>
+<strong>  daemonsets.extensions  []                []             [get li<br/>st watch]</strong>
+<strong>  deployments.apps       []                []             [get li<br/>st watch]</strong>
+<strong>  ...</strong>  </pre>
+<p>It contains a long list of resources, all of them with the <kbd>get</kbd>, <kbd>list</kbd>, and <kbd>watch</kbd> verbs. It looks like it would allow users bound to it to retrieve all the resources. We have yet to validate whether the list of resources is truly complete. For now, it looks like an excellent candidate to assign to users that should have very limited permissions. Unlike Roles that are tied to a specific Namespace, Cluster Roles are available across the whole cluster. That is a significant difference that we'll exploit later on.</p>
+<p>Let's explore another pre-defined Cluster Role.</p>
+<pre><strong>kubectl describe clusterrole edit</strong>  </pre>
+<p>The output, limited to Pods, is as follows:</p>
+<pre><strong>...</strong>
+<strong>pods             [] [] [create delete deletecollection get list p<br/>atch update watch]</strong>
+<strong>pods/attach      [] [] [create delete deletecollection get list p<br/>atch update watch]</strong>
+<strong>pods/exec        [] [] [create delete deletecollection get list p<br/>atch update watch]</strong>
+<strong>pods/log         [] [] [get list watch]</strong>
+<strong>pods/portforward [] [] [create delete deletecollection get list p<br/>atch update watch]</strong>
+<strong>pods/proxy       [] [] [create delete deletecollection get list p<br/>atch update watch]</strong>
+<strong>pods/status      [] [] [get list watch]</strong>
+<strong>...</strong>  </pre>
+<p>As we can see, the <kbd>edit</kbd> Cluster Role allows us to perform any action on Pods. If we go through the whole list, we'd see that the <kbd>edit</kbd> role allows us to execute almost any operation on any Kubernetes object. It seems like it gives us unlimited permissions. However, there are a few resources that are not listed. We can observe those differences through the Cluster Role <kbd>admin</kbd>.</p>
+<pre><strong>kubectl describe clusterrole admin</strong>  </pre>
+<p>If you pay close attention, you'll notice that the Cluster Role <kbd>admin</kbd> has a few additional entries.</p>
+<p>The output, limited to the records not present in the Cluster Role <kbd>edit</kbd>, is as follows:</p>
+<pre><strong>...</strong>
+<strong>localsubjectaccessreviews.authorization.k8s.io [] [] [create]</strong>
+<strong>rolebindings.rbac.authorization.k8s.io         [] [] [create dele<br/>te deletecollection get list patch update watch]</strong>
+<strong>roles.rbac.authorization.k8s.io                [] [] [create dele<br/>te deletecollection get list patch update watch]</strong>
+<strong>...</strong>  </pre>
+<p>The main difference between <kbd>edit</kbd> and <kbd>admin</kbd> is that the latter allows us to manipulate Roles and RoleBindings. While <kbd>edit</kbd> permits us to do almost any operation related to Kubernetes objects like Pods and Deployments, <kbd>admin</kbd> goes a bit further and provides an additional capability that allows us to define permissions for other users by modifying existing or creating new Roles and Role Bindings. The major restriction of the <kbd>admin</kbd> role is that it cannot alter the Namespace itself, nor it can update Resource Quotas (we haven't explored them yet).</p>
+<p>There is only one more pre-defined non-system Cluster Role left.</p>
+<pre><strong>kubectl describe clusterrole \</strong>
+<strong>    cluster-admin</strong>  </pre>
+<p>The output is as follows:</p>
+<pre><strong>Name:        cluster-admin</strong>
+<strong>Labels:      kubernetes.io/bootstrapping=rbac-defaults</strong>
+<strong>Annotations: rbac.authorization.kubernetes.io/autoupdate=true</strong>
+<strong>PolicyRule:</strong>
+<strong>  Resources Non-Resource URLs Resource Names Verbs</strong>
+<strong>  --------- ----------------- -------------- -----</strong>
+<strong>            [*]               []             [*]</strong>
+<strong>  *.*       []                []             [*]</strong> </pre>
+<p>The Cluster Role <kbd>cluster-admin</kbd> holds nothing back. An asterisk (<kbd>*</kbd>) means everything. It provides god-like powers. A user bound to this role can do anything, without any restrictions. The <kbd>cluster-admin</kbd> role is the one bound to the <kbd>minikube</kbd> user. We can confirm that easily by executing:</p>
+<pre><strong>kubectl auth can-i "*" "*"</strong>  </pre>
+<p>The output is <kbd>yes</kbd>. Even though we did not really confirm that the <kbd>cluster-admin</kbd> role is bound to <kbd>minikube</kbd>, we did verify that it can do anything.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Creating Role bindings and Cluster Role bindings</h1>
+                </header>
+            
+            <article>
+                
+<p>Role Bindings bind a User (or a Group, or a Service Account) to a Role (or a Cluster Role). Since John wants more visibility to our cluster, we'll create a Role Binding that will allow him to view (almost) all the objects in the <kbd>default</kbd> namespace. That should be a good start of our quest to give John just the right amount of privileges:</p>
+<pre><strong>kubectl create rolebinding jdoe \</strong>
+<strong>    --clusterrole view \</strong>
+<strong>    --user jdoe \</strong>
+<strong>    --namespace default \</strong>
+<strong>    --save-config</strong>
+    
+<strong>kubectl get rolebindings</strong>  </pre>
+<p>We created a Role Binding called <kbd>jdoe</kbd>. Since the Cluster Role <kbd>view</kbd> already provides, more or less, what we need, we used it instead of creating a whole new Role.</p>
+<p>The output of the latter command proved that the new Role Binding <kbd>jdoe</kbd> was indeed created.</p>
+<p>This is a good moment to clarify that a Role Binding does not need to be used only with a Role, but that it can also be combined with a Cluster Role (as in our example). As the rule of thumb, we define Cluster Roles when we think that they might be used cluster-wide (with Cluster Role Bindings) or in multiple Namespaces (with Role Bindings). The scope of the permissions is defined with the type of binding, not with the type of role. Since we used Role Binding, the scope is limited to a single Namespace which, in our case, is the <kbd>default</kbd>.</p>
+<p>Let's take a look at the details of the newly created Role Binding:</p>
+<pre><strong>kubectl describe rolebinding jdoe</strong>
+<strong>Name:        jdoe</strong>
+<strong>Labels:      &lt;none&gt;</strong>
+<strong>Annotations: &lt;none&gt;</strong>
+<strong>Role:</strong>
+<strong>  Kind: ClusterRole</strong>
+<strong>  Name: view</strong>
+<strong>Subjects:</strong>
+<strong>  Kind Name Namespace</strong>
+<strong>  ---- ---- ---------</strong>
+<strong>  User jdoe</strong>  </pre>
+<p>We can see that the Role Binding <kbd>jdoe</kbd> has a single subject with the User <kbd>jdoe</kbd>. It might be a bit confusing that the Namespace is empty and you might think that the Role Binding applies to all Namespaces. Such an assumption would be false. Remember, a Role Binding is always tied to a specific Namespace, and we just described the one created in the <kbd>default</kbd> Namespace. The same Role Binding should not be available anywhere else. Let's confirm that:</p>
+<pre><strong>kubectl --namespace kube-system \</strong>
+<strong>    describe rolebinding jdoe</strong>  </pre>
+<p>We described the Role Binding <kbd>jdoe</kbd> in the Namespace <kbd>kube-system</kbd>.</p>
+<p>The output is as follows:</p>
+<pre><strong>Error from server (NotFound): rolebindings.rbac.authorization.k8s<br/>.io "jdoe" not found</strong>  </pre>
+<p>The Namespace <kbd>kube-system</kbd> does not have that Role Binding. We never created it.</p>
+<p>It might be easier to verify that our permissions are set correctly through the <kbd>kubectl auth can-i</kbd> command:</p>
+<pre><strong>kubectl auth can-i get pods \</strong>
+<strong>    --as jdoe</strong>
+    
+<strong>kubectl auth can-i get pods \</strong>
+<strong>    --as jdoe --all-namespaces</strong>  </pre>
+<p>The first command validated whether the user <kbd>jdoe</kbd> can <kbd>get pods</kbd> from the <kbd>default</kbd> Namespace. The answer was <kbd>yes</kbd>. The second checked whether the Pods could be retrieved from all the Namespaces and the answer was <kbd>no</kbd>. Currently, John can only see the Pods from the <kbd>default</kbd> Namespace, and he is forbidden from exploring those from the other Namespaces.</p>
+<p>From now on, John should be able to view the Pods in the <kbd>default</kbd> Namespace. However, he works in the same company as we do and we should have more trust in him. Why don't we give him permissions to view Pods in any Namespace? Why not apply the same permissions cluster-wide? Before we do that, we'll delete the Role Binding we created and start over:</p>
+<pre><strong>kubectl delete rolebinding jdoe</strong>  </pre>
+<p>We'll change John's <kbd>view</kbd> permissions so that they are applied across the whole cluster. Instead of executing yet another ad-hoc kubectl commands, we'll define <kbd>ClusterRoleBinding</kbd> resource in YAML format so that the change is documented.</p>
+<p>Let's take a look at the definition in the <kbd>auth/crb-view.yml</kbd> file.</p>
+<pre><strong>cat auth/crb-view.yml</strong>  </pre>
+<p>The output is as follows:</p>
+<pre><strong>apiVersion: rbac.authorization.k8s.io/v1</strong>
+<strong>kind: ClusterRoleBinding</strong>
+<strong>metadata:</strong>
+<strong>  name: view</strong>
+<strong>subjects:</strong>
+<strong>- kind: User</strong>
+<strong>  name: jdoe</strong>
+<strong>  apiGroup: rbac.authorization.k8s.io</strong>
+<strong>roleRef:</strong>
+<strong>  kind: ClusterRole</strong>
+<strong>  name: view</strong>
+<strong>  apiGroup: rbac.authorization.k8s.io</strong>  </pre>
+<p>Functionally, the difference is that, this time, we're creating <kbd>ClusterRoleBinding</kbd> instead of <kbd>RoleBinding</kbd>. Also, we specified the <kbd>apiGroup</kbd> explicitly thus making it clear that the <kbd>ClusterRole</kbd> is RBAC.</p>
+<pre><strong>kubectl create -f auth/crb-view.yml \</strong>
+<strong>    --record --save-config</strong></pre>
+<p>We created the role defined in the YAML file, and the output confirmed that <kbd>clusterrolebinding "view"</kbd> was <kbd>created</kbd>.</p>
+<p>We can further validate that everything looks correct by describing the newly created role.</p>
+<pre><strong>kubectl describe clusterrolebinding \</strong>
+    <strong>view</strong></pre>
+<p>The output is as follows:</p>
+<pre><strong>Name:         view</strong>
+<strong>Labels:       &lt;none&gt;</strong>
+<strong>Annotations:  &lt;none&gt;</strong>
+<strong>Role:</strong>
+<strong>  Kind:  ClusterRole</strong>
+<strong>  Name:  view</strong>
+<strong>Subjects:</strong>
+<strong>  Kind  Name  Namespace</strong>
+<strong>  ----  ----  ---------</strong>
+<strong>  User  jdoe</strong>  </pre>
+<p>Finally, we'll impersonate John and validate that he can indeed retrieve the Pods from any Namespace:</p>
+<pre><strong>kubectl auth can-i get pods \</strong>
+<strong>    --as jdoe --all-namespaces</strong></pre>
+<p>The output is <kbd>yes</kbd>, thus confirming that <kbd>jdoe</kbd> can view the Pods.</p>
+<p>We're so excited that we cannot wait to let John know that he was granted permissions. However, a minute into the phone call, he raises a concern. While being able to view Pods across the cluster is a good start, he will need a place where he and other developers will have more freedom. They will need to be able to deploy, update, delete, and access their applications. They will probably need to do more, but they can't give you more information. They are not yet very experienced with Kubernetes, so they don't know what to expect. He's asking you to find a solution that will allow them to perform actions that will help them develop and test their software without affecting other users of the cluster.</p>
+<p>The new request provides an excellent opportunity to combine Namespaces with Role Bindings. We can create a <kbd>dev</kbd> Namespace and allow a selected group of users to do almost anything in it. That should give developers enough freedom within the <kbd>dev</kbd> Namespace while avoiding the risks of negatively impacting the resources running in others.</p>
+<p>Let's take a look at the <kbd>auth/rb-dev.yml</kbd> definition:</p>
+<pre><strong>cat auth/rb-dev.yml</strong>  </pre>
+<p>The output is as follows:</p>
+<pre><strong>apiVersion: v1</strong>
+<strong>kind: Namespace</strong>
+<strong>metadata:</strong>
+<strong>  name: dev</strong>
+    
+<strong>---</strong>
+    
+<strong>apiVersion: rbac.authorization.k8s.io/v1</strong>
+<strong>kind: RoleBinding</strong>
+<strong>metadata:</strong>
+<strong>  name: dev</strong>
+<strong>  namespace: dev</strong>
+<strong>subjects:</strong>
+<strong>- kind: User</strong>
+<strong>  name: jdoe</strong>
+<strong>  apiGroup: rbac.authorization.k8s.io</strong>
+<strong>roleRef:</strong>
+<strong>  kind: ClusterRole</strong>
+<strong>  name: admin</strong>
+<strong>  apiGroup: rbac.authorization.k8s.io</strong>  </pre>
+<p>The first section defines the <kbd>dev</kbd> Namespace, while the second specifies the binding with the same name. Since we're using <kbd>RoleBinding</kbd> (not <kbd>ClusterRoleBinding</kbd>), the effects will be limited to the <kbd>dev</kbd> Namespace. At the moment, there is only one subject (the User <kbd>jdoe</kbd>). We can expect the list to grow with time.</p>
+<p>Finally, <kbd>roleRef</kbd> uses <kbd>ClusterRole</kbd> (not <kbd>Role</kbd>) <kbd>kind</kbd>. Even though the Cluster Role is available across the whole cluster, the fact that we are combining it with <kbd>RoleBinding</kbd> will limit it to the specified Namespace.</p>
+<p>The Cluster Role <kbd>admin</kbd> has an extensive set of resources and verbs, and the Users (at the moment only <kbd>jdoe</kbd>) will be able to do almost anything within the <kbd>dev</kbd> Namespace.</p>
+<p>Let's create the new resources:</p>
+<pre><strong>ubectl create -f auth/rb-dev.yml \</strong>
+    <strong>--record --save-config</strong>  </pre>
+<p>The output is as follows:</p>
+<pre><strong>namespace "dev" created</strong>
+<strong>rolebinding "dev" created</strong>  </pre>
+<p>We can see that the Namespace and the Role Binding were created.</p>
+<p>Let's verify that, for example, <kbd>jdoe</kbd> can create and delete Deployments:</p>
+<pre><strong>kubectl --namespace dev auth can-i \</strong>
+<strong>    create deployments --as jdoe</strong>
+    
+<strong>kubectl --namespace dev auth can-i \</strong>
+<strong>    delete deployments --as jdoe</strong></pre>
+<p>In both cases, the output was <kbd>yes</kbd>, confirming that <kbd>jdoe</kbd> can perform at least <kbd>create</kbd> and <kbd>delete</kbd> actions with Deployments. Since we already explored the list of resources defined in the Cluster Role <kbd>admin</kbd>, we can assume that we'd get the same response if we'd check other operations.</p>
+<p>Still, there are a few permissions that are not granted to John. Only the <kbd>cluster-admin</kbd> role covers all the permissions. The Cluster Role <kbd>admin</kbd> is very wide, but it does not include all the resources and verbs. We can confirm that with the command that follows:</p>
+<pre><strong>kubectl --namespace dev auth can-i \</strong>
+<strong>    "*" "*" --as jdoe</strong></pre>
+<p>The output is <kbd>no</kbd>, indicating that there are still a few operations forbidden to John within the <kbd>dev</kbd> Namespace. Those operations are mostly related to cluster administration that is still in our control.</p>
+<p>John is happy. He and his fellow developers have a segment of the cluster where they can do almost anything without affecting other Namespaces.</p>
+<p>John is a team player, but he'd also like to have space for himself. Now that he knows how easy it was to create a Namespace for developers, he's wondering whether we could generate one only for him. You are starting to feel like he's an ungrateful guy that will always be asking for more, but you cannot deny the fact that his new request makes sense. It should be easy to create his personal Namespace, so why not grant him that wish.</p>
+<p>Let's take a look at yet another YAML definition:</p>
+<pre><strong>cat auth/rb-jdoe.yml</strong></pre>
+<p>The output is as follows:</p>
+<pre><strong>apiVersion: v1</strong>
+<strong>kind: Namespace</strong>
+<strong>metadata:</strong>
+    <strong>name: jdoe</strong>
+    
+<strong>---</strong>
+    
+<strong>apiVersion: rbac.authorization.k8s.io/v1</strong>
+<strong>kind: RoleBinding</strong>
+<strong>metadata:</strong>
+<strong>  name: jdoe</strong>
+<strong>  namespace: jdoe</strong>
+<strong>subjects:</strong>
+<strong>- kind: User</strong>
+<strong>  name: jdoe</strong>
+<strong>  apiGroup: rbac.authorization.k8s.io</strong>
+<strong>roleRef:</strong>
+<strong>  kind: ClusterRole</strong>
+<strong>  name: cluster-admin</strong>
+<strong>  apiGroup: rbac.authorization.k8s.io</strong>  </pre>
+<p>This definition is not much different from the previous one. The important change is that the Namespace is <kbd>jdoe</kbd>, and that John is likely to be its only user, at least until he decides to add someone else. By referencing the role <kbd>cluster-admin</kbd>, he's given full permissions to do whatever he wants within that Namespace. He might deploy something cool and give others permissions to see it. Everyone likes to show off every once in a while. In any case, that would be his decision. It's his Namespace, and he should be able to do anything he likes inside it.</p>
+<p>Let's create the new resources:</p>
+<pre><strong>kubectl create -f auth/rb-jdoe.yml \</strong>
+<strong>    --record --save-config</strong></pre>
+<p>Before we move on, we'll confirm that John can indeed do anything he likes in the <kbd>jdoe</kbd> Namespace.</p>
+<pre><strong>kubectl --namespace jdoe auth can-i \</strong>
+    <strong>"*" "*" --as jdoe</strong></pre>
+<p>As expected, the response is <kbd>yes</kbd>, indicating that John is a god-like figure in his own little galaxy.</p>
+<p>John loves the idea of having his own Namespace. He'll use it as his playground. However, there's one more thing he's missing. He happens to be a release manager. Unlike his other fellow developers, he's in charge of deploying new releases to production. He's planning to automate that process with Jenkins. However, that will require a bit of time, and until then he should be allowed to perform deployments manually. We already decided that production releases should be deployed to the <kbd>default</kbd> Namespace, so he'll need additional permissions.</p>
+<p>After a short discussion, we decided that the minimum permissions required for the release manager is to perform actions on Pods, Deployments, and ReplicaSets. People with that role should be able to do almost anything related to Pods, while the allowed actions for the Deployments and ReplicaSets should be restricted to <kbd>create</kbd>, <kbd>get</kbd>, <kbd>list</kbd>, <kbd>update</kbd>, and <kbd>watch</kbd>. We don't think that they should be able to delete them.</p>
+<p>We're not entirely confident that those are all the permissions release managers will need, but it's a good start. We can always update the role later on if the need arises.</p>
+<p>John will be the only release manager for now. We'll add more users once we're confident that the role is working as expected.</p>
+<p>Now that we have a plan, we can proceed to create a role and a binding that will define the permissions for release managers. The first thing we need to do is to figure out the resources, the Verbs, and the API Groups we'll use. We might want to take a look at the Cluster Role <kbd>admin</kbd> for inspiration:</p>
+<pre><strong>kubectl describe clusterrole admin</strong>  </pre>
+<p>The output, limited to Pods, is as follows:</p>
+<pre><strong>...</strong>
+<strong>pods             [] [] [create delete deletecollection get list p<br/>atch update watch]</strong>
+<strong>pods/attach      [] [] [create delete deletecollection get list p<br/>atch update watch]</strong>
+<strong>pods/exec        [] [] [create delete deletecollection get list p<br/>atch update watch]</strong>
+<strong>pods/log         [] [] [get list watch]</strong>
+<strong>pods/portforward [] [] [create delete deletecollection get list p<br/>atch update watch]</strong>
+<strong>pods/proxy       [] [] [create delete deletecollection get list p<br/>atch update watch]</strong>
+<strong>pods/status      [] [] [get list watch]</strong>
+<strong>...</strong>  </pre>
+<p>If we'd specify only <kbd>pods</kbd> as a Rule resource, we would probably not create all the Pods-related permissions we need. Even though most of the operations we can perform on Pods are covered with the <kbd>pods</kbd> resource, we might need to add a few sub-resources as well. For example, if we'd like to be able to retrieve the logs, we'll need <kbd>pods/log</kbd> resource. In that case, <kbd>pods</kbd> would be a namespaced resource, and <kbd>log</kbd> would be a sub-resource of <kbd>pods</kbd>.</p>
+<p>Deployment and ReplicaSet objects present a different challenge. If we go back to the output of the <kbd>kubectl describe clusterrole admin</kbd> command, we'll notice that the <kbd>deployments</kbd> have API Groups. Unlike sub-resources that are separated from resources with a slash (<kbd>/</kbd>), API Groups are separated with a dot (<kbd>.</kbd>). So, when we see a resource like <kbd>deployments.apps</kbd>, it means that it is a Deployment through the API Group <kbd>apps</kbd>. Core API Groups are omitted.</p>
+<p>It'll probably be easier to understand sub-resources and API Groups by exploring the definition in <kbd>auth/crb-release-manager.yml</kbd>:</p>
+<pre><strong>cat auth/crb-release-manager.yml</strong>  </pre>
+<p>Most of that definition follows the same formula we already used a few times. We'll focus only on the <kbd>rules</kbd> section of the <kbd>ClusterRole</kbd>. It is as follows:</p>
+<pre><strong>...</strong>
+<strong>rules:</strong>
+<strong>- resources: ["pods", "pods/attach", "pods/exec", "pods/log", "po<br/>ds/status"]</strong>
+<strong>  verbs: ["*"]</strong>
+<strong>  apiGroups: [""]</strong>
+<strong>- resources: ["deployments", "replicasets"]</strong>
+<strong>  verbs: ["create", "get", "list", "watch"]</strong>
+<strong>  apiGroups: ["", "apps", "extensions"]</strong>
+<strong>...</strong>  </pre>
+<p>The level of access release managers' need differs between Pods on the one hand and Deployments and ReplicaSets on the other. Therefore, we split them into two groups.</p>
+<p>The first group specifies the <kbd>pods</kbd> resource together with a few sub-resources (<kbd>attach</kbd>, <kbd>exec</kbd>, <kbd>log</kbd>, and <kbd>status</kbd>). That should cover all the use cases we explored so far. Since we did not create Pod proxies nor port forwarding, they are not included.</p>
+<p>We already said that release managers should be able to perform any operation on Pods, so the <kbd>verbs</kbd> consist of a single entry with an asterisk (<kbd>*</kbd>). On the other hand, all Pod resources belong to the same Core group, so we did not have to specify any in the <kbd>apiGroups</kbd> field.</p>
+<p>The second group of rules is set for <kbd>deployments</kbd> and <kbd>replicasets</kbd> resources. Considering we decided that we'll be more restrictive with them, we specified more specific <kbd>verbs</kbd>, allowing release managers only to <kbd>create</kbd>, <kbd>get</kbd>, <kbd>list</kbd>, and <kbd>watch</kbd>. Since we did not specify <kbd>delete</kbd>, <kbd>deletecollection</kbd>, <kbd>patch</kbd>, and <kbd>update</kbd> Verbs, release managers will not be able to perform related actions.</p>
+<p>As you can see, RBAC Rules can be anything from being very simple to finely tuned to particular needs. It's up to us to decide the level granularity we'd like to accomplish.</p>
+<p>Let's create the role and the binding related to release managers.</p>
+<pre><strong>kubectl create \</strong>
+<strong>    -f auth/crb-release-manager.yml \</strong>
+    <strong>--record --save-config</strong></pre>
+<p>To be on the safe side, we'll describe the newly created Cluster Role, and confirm that it has the permissions we need.</p>
+<pre><strong>kubectl describe \</strong>
+<strong>    clusterrole release-manager</strong></pre>
+<p>The output is as follows:</p>
+<pre><strong>Name:         release-manager</strong>
+<strong>Labels:       &lt;none&gt;</strong>
+<strong>Annotations:  kubectl.kubernetes.io/last-applied-configuration={"<br/>apiVersion":"rbac.authorization.k8s.io/v1","kind":"ClusterRole","<br/>metadata":{"annotations":{},"name":"release-manager","namespace":<br/>""},"rules":[{"apiG...</strong>
+<strong>              kubernetes.io/change-cause=kubectl create --filenam<br/>e=auth/crb-release-manager.yml --record=true --save-config=true</strong>
+<strong>PolicyRule:</strong>
+<strong>  Resources              Non-Resource URLs Resource Names Verbs</strong>
+<strong>  ---------              ----------------- -------------- -----</strong>
+<strong>  deployments            []                []             [create <br/>get list update watch]</strong>
+<strong>  deployments.apps       []                []             [create <br/>get list update watch]</strong>
+<strong>  deployments.extensions []                []             [create <br/>get list update watch]</strong>
+<strong>  pods                   []                []             [*]</strong>
+<strong>  pods/attach            []                []             [*]</strong>
+<strong>  pods/exec              []                []             [*]</strong>
+<strong>  pods/log               []                []             [*]</strong>
+<strong>  pods/status            []                []             [*]</strong>
+<strong>  replicasets            []                []             [create <br/>get list update watch]</strong>
+<strong>  replicasets.apps       []                []             [create <br/>get list update watch]</strong>
+<strong>  replicasets.extensions []                []             [create <br/>get list update watch]</strong>  </pre>
+<p>As you can see, the users assigned to the role can do (almost) anything with Pods, while their permissions with Deployments and ReplicaSets are limited to creation and viewing. They will not be able to update or delete them. Access to any other resource is forbidden.</p>
+<p>At the moment, John is the only User bound to the <kbd>release-manager</kbd> role. We'll impersonate him, and verify that he can, for example, do anything related to Pods:</p>
+<pre><strong>kubectl --namespace default auth \</strong>
+<strong>    can-i "*" pods --as jdoe</strong></pre>
+<p>We'll do a similar type of verification but limited to creation of Deployments.</p>
+<pre><strong>kubectl --namespace default auth \</strong>
+    <strong>can-i create deployments --as jdoe</strong></pre>
+<p>In both cases, we got the answer <kbd>yes</kbd>, thus confirming that John can perform those actions.</p>
+<p>The last verification we'll do, before letting John know about his new permissions, is to verify that he cannot delete Deployments.</p>
+<pre><strong>kubectl --namespace default auth can-i \</strong>
+<strong>    delete deployments --as jdoe</strong></pre>
+<p>The output is <kbd>no</kbd>, clearly indicating that such action is forbidden.</p>
+<p>We phone John to tell him all the things he's now permitted to do within the cluster in his role as release manager.</p>
+<p>Let's see a few of the things John would do with his newly generated permissions. We'll simulate that we are him by switching to the <kbd>jdoe</kbd> context.</p>
+<pre><strong>kubectl config use-context jdoe</strong>  </pre>
+<p>A quick validation that John can create Deployments could be done with Mongo DB.</p>
+<pre><strong>kubectl --namespace default \</strong>
+<strong>    run db --image mongo:3.3</strong></pre>
+<p>John managed to create the Deployment in the <kbd>default</kbd> Namespace.</p>
+<pre><strong>kubectl --namespace default \</strong>
+    <strong>delete deployment db</strong></pre>
+<p>The output is as follows:</p>
+<pre><strong>Error from server (Forbidden): replicasets.extensions "db-649df9d<br/>899" is forbidden: User "jdoe" cannot delete replicasets.extensio<br/>ns in the namespace "default"</strong>  </pre>
+<p>We can see that John cannot delete the ReplicaSet created by the Deployment.</p>
+<p>Let's check whether John can perform any action in his own Namespace:</p>
+<pre><strong>kubectl config set-context jdoe \</strong>
+    <strong>--cluster jdoe \</strong>
+    <strong>--user jdoe \</strong>
+    <strong>--namespace jdoe</strong>
+    
+<strong>kubectl config use-context jdoe</strong>
+    
+<strong>kubectl run db --image mongo:3.3</strong>  </pre>
+<p>We updated the <kbd>jdoe</kbd> context so that it uses the Namespace with the same name as default. Further on, we made sure that the context is used, and created a new Deployment based on the <kbd>mongo</kbd> image.</p>
+<p>Since John should be able to do anything within his Namespace, he should be able to delete the Deployment as well.</p>
+<pre><strong>kubectl delete deployment db</strong>  </pre>
+<p>Finally, let's try something that requires a truly high level of permissions:</p>
+<pre><strong>kubectl create rolebinding mgandhi \</strong>
+    <strong>--clusterrole=view \</strong>
+    <strong>--user=mgandhi \</strong>
+    <strong>--namespace=jdoe</strong></pre>
+<p>The output is as follows:</p>
+<pre><strong>rolebinding "mgandhi" created</strong>  </pre>
+<p>John is even able to add new users to his Namespace and bind them to any role (as long as it does not exceed his permissions).</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Replacing Users with Groups</h1>
+                </header>
+            
+            <article>
+                
+<p>Defining a single user that can access the <kbd>jdoe</kbd> Namespace was probably the best approach. We expect that only John will want to access it. He is the owner of that Namespace. It's his private playground. Even if he chooses to add more users to it, he'll probably do it independently from our YAML definitions. After all, what's the point of giving him god-like privileges if not to let him do things without asking for our permission or involvement? From our perspective, that Namespace has, and will continue having only one User.</p>
+<p>We cannot apply the same logic to the permissions in <kbd>default</kbd> and <kbd>dev</kbd> Namespaces. We might choose to give everyone in our organization the <kbd>view</kbd> role in the <kbd>default</kbd> Namespace. Similarly, developers in our company should be able to <kbd>deploy</kbd>, <kbd>update</kbd>, and <kbd>delete</kbd> resources from the <kbd>dev</kbd> Namespace. All in all, we can expect that the number of users in the <kbd>view</kbd> and <kbd>dev</kbd> bindings will increase with time. Continually adding new users is repetitive, boring, and error-prone process you probably don't want to do. Instead of becoming a person who hates his tedious job, we can create a system that groups users based on their roles. We already did a step in that direction when we created John's certificate.</p>
+<p>Let's take another look at the subject of the certificate we created earlier.</p>
+<pre><strong>openssl req -in keys/jdoe.csr \</strong>
+    <strong>-noout -subject</strong></pre>
+<p>The output is as follows:</p>
+<pre><strong>subject=/CN=jdoe/O=devs</strong>  </pre>
+<p>We can see that the name is <kbd>jdoe</kbd> and that he belongs to the organization <kbd>devs</kbd>. We'll ignore the fact that he should probably belong to at least one more organization (<kbd>release-manager</kbd>).</p>
+<p>If you paid close attention, you probably remember that I mentioned a few times that RBAC can be used with Users, Groups, and Service Accounts. Groups are the same as Users, except that they are validating whether the certificate attached to a request to the API belongs to a specified group (<kbd>O</kbd>), instead of a name (<kbd>CN</kbd>).</p>
+<p>Let's take a quick look at yet another YAML definition.</p>
+<pre><strong>cat auth/groups.yml</strong>  </pre>
+<p>The output is as follows:</p>
+<pre><strong>apiVersion: v1</strong>
+<strong>kind: Namespace</strong>
+<strong>metadata:</strong>
+<strong>  name: dev</strong>
+    
+<strong>---</strong>
+    
+<strong>apiVersion: rbac.authorization.k8s.io/v1</strong>
+<strong>kind: RoleBinding</strong>
+<strong>metadata:</strong>
+<strong>  name: dev</strong>
+<strong>  namespace: dev</strong>
+<strong>subjects:</strong>
+<strong>- kind: Group</strong>
+<strong>  name: devs</strong>
+<strong>  apiGroup: rbac.authorization.k8s.io</strong>
+<strong>roleRef:</strong>
+<strong>  kind: ClusterRole</strong>
+<strong>  name: admin</strong>
+<strong>  apiGroup: rbac.authorization.k8s.io</strong>
+    
+<strong>---</strong>
+    
+<strong>apiVersion: rbac.authorization.k8s.io/v1</strong>
+<strong>kind: ClusterRoleBinding</strong>
+<strong>metadata:</strong>
+<strong>  name: view</strong>
+<strong>subjects:</strong>
+<strong>- kind: Group</strong>
+<strong>  name: devs</strong>
+<strong>  apiGroup: rbac.authorization.k8s.io</strong>
+<strong>roleRef:</strong>
+<strong>  kind: ClusterRole</strong>
+<strong>  name: view</strong>
+<strong>  apiGroup: rbac.authorization.k8s.io</strong>  </pre>
+<p>You'll notice that the Role Binding <kbd>dev</kbd> and the Cluster Role Binding <kbd>view</kbd> are almost the same as those we used before. The only difference is in the <kbd>subjects.kind</kbd> field. This time, we're using <kbd>Group</kbd> as the value. As a result, we'll grant permissions to all users that belong to the organization <kbd>devs</kbd>.</p>
+<p>We'll need to switch the context back to <kbd>minikube</kbd> before we apply the changes.</p>
+<pre><strong>kubectl config use-context minikube</strong>
+    
+<strong>kubectl apply -f auth/groups.yml \</strong>
+    <strong>--record</strong></pre>
+<p>The output is as follows:</p>
+<pre><strong>namespace "dev" configured</strong>
+<strong>rolebinding "dev" configured</strong>
+<strong>clusterrolebinding "view" configured</strong>  </pre>
+<p>We can see that the new definition reconfigured a few resources.</p>
+<p>Now that the new definition is applied, we can validate whether John can still create objects inside the <kbd>dev</kbd> Namespace.</p>
+<pre><strong>kubectl --namespace dev auth \</strong>
+<strong>    can-i create deployments --as jdoe</strong></pre>
+<p>The output is <kbd>no</kbd>, indicating that <kbd>jdoe</kbd> cannot <kbd>create deployments</kbd>. Before you start wondering what's wrong, I should inform you that the response is expected and correct. The <kbd>--as</kbd> argument is impersonating John, but the certificate is still from <kbd>minikube</kbd>. Kubernetes has no way of knowing that <kbd>jdoe</kbd> belongs to the group <kbd>devs</kbd>. At least, not until John issues a request with his own certificate.</p>
+<p>Instead of using the <kbd>--as</kbd> argument, we'll switch back to the <kbd>jdoe</kbd> context and try to create a Deployment.</p>
+<pre><strong>kubectl config use-context jdoe</strong>
+    
+<strong>kubectl --namespace dev \</strong>
+    <strong>run new-db --image mongo:3.3</strong></pre>
+<p>This time the output is <kbd>deployment "new-db" created</kbd>, clearly indicating that the John as a member of the <kbd>devs</kbd> group can <kbd>create deployments</kbd>.</p>
+<p>From now on, any user with a certificate that has <kbd>/O=devs</kbd> in the subject will have the same permissions as John within the <kbd>dev</kbd> Namespace as well as <kbd>view</kbd> permissions everywhere else. We just saved ourselves from constantly modifying YAML files and applying changes.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">What now?</h1>
+                </header>
+            
+            <article>
+                
+<p>Authorization and authentication are critical security components. Without a proper set of permissions, we are risking exposure with potentially devastating results. Moreover, with appropriate Rules, Roles, and RoleBindings, we can make a cluster not only more secure but also increase collaboration between different members of our organization. The only trick is to find a right balance between tight security and freedom. It takes time until that equilibrium is established.</p>
+<p>RBAC combined with Namespaces provides an excellent separation. Without Namespaces, we'd need to create multiple clusters. Without RBAC, those clusters would be exposed or locked down to only a handful of users. The two combined provide an excellent way to increase collaboration without sacrificing security.</p>
+<p>We did not explore Service Accounts. They are the third kind of Subjects, besides Users and Groups. We'll leave that for some other time and place since they are used primarily for Pods that need to access the Kubernetes API. This chapter focused on humans and the ways we can enable them to reach a cluster in a safe and controlled manner.</p>
+<p>We are still missing one important restriction. By combining Namespaces and RBAC, we can restrict what users can do. However, that will not prevent them from deploying applications that could potentially bring down the whole cluster. We need to add Resource Quotas to the mix. That will be the subject of the next chapter.</p>
+<p>For now, we'll destroy the cluster and take a rest. We covered a lot of ground in this chapter. We deserve a break.</p>
+<pre><strong>minikube delete</strong>  </pre>
+<div class="packt_infobox">If you'd like to know more about Roles, please explore the Role v1 rbac (<a href="https://v1-9.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.9/#role-v1-rbac" target="_blank"><span class="URLPACKT">https://v1-9.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.9/#role-v1-rbac</span></a>) and ClusterRole v1 rbac (<a href="https://v1-9.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.9/#clusterrole-v1-rbac" target="_blank"><span class="URLPACKT">https://v1-9.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.9/#clusterrole-v1-rbac</span></a>) API documentation. Similarly, you might want to visit the RoleBinding v1 rbac (<a href="https://v1-9.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.9/#rolebinding-v1-rbac" target="_blank"><span class="URLPACKT">https://v1-9.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.9/#rolebinding-v1-rbac</span></a>) and ClusterRoleBinding v1 rbac (<a href="https://v1-9.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.9/#clusterrolebinding-v1-rbac" target="_blank"><span class="URLPACKT">https://v1-9.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.9/#clusterrolebinding-v1-rbac</span></a>) API documentation as well.</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Kubernetes RBAC compared to Docker Swarm RBAC</h1>
+                </header>
+            
+            <article>
+                
+<p>Docker has RBAC. Just as Kubernetes, it is organized around subjects, roles, and resource collections. In many aspects, both provide a very similar set of features. Should we quickly declare it a tie?</p>
+<p>There is one crucial difference between Kubernetes RBAC and the one provided by Docker. The latter is not free. You'd need to purchase Docker <strong>Enterprise Edition</strong> (<strong>EE</strong>) to secure your cluster beyond "only those with the certificate can access it." If you do have Docker EE, you already made up your mind, and the discussion whether to use one or the other is over. Docker EE is great, and soon it will work not only with Swarm but also with Kubernetes. You bought it, and there's not much reason to switch to something else. However, this comparison focuses on what open source core versions can offer. It ignores third party and enterprise additions.</p>
+<p>If we stick with an "only what's in the box" comparison, Kubernetes is a clear winner. It has RBAC, and Docker Swarm doesn't. The problem is not that Swarm doesn't have RBAC, but that it doesn't have any user-based authentication baked in. Therefore, this is a very short comparison. If you don't want to purchase enterprise products, and you do need an authorization and authentication mechanism, Kubernetes is the only option. Just as with Namespaces, Kubernetes shows its strength by the sheer number of features that do not exist in Swarm.</p>
+
+
+            </article>
+
+            
+        </section>
+    </body></html>

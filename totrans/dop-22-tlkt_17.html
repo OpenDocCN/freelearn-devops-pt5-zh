@@ -1,0 +1,1115 @@
+<html><head></head><body>
+<div class="calibre6">
+<h2 id="leanpub-auto-setting-up-a-production-cluster" class="calibre15">Setting Up A Production Cluster</h2>
+
+<p class="calibre3">We explored quite a few techniques, processes, and tools that can help us build a self-sufficient system applied to services. Docker Swarm provides self-healing, and we created our own system for self-adaptation. By now, we should be fairly confident with our services and the time has come to explore how to accomplish similar goals applied to infrastructure.</p>
+
+<p class="calibre3">The system should be capable of recreating failed nodes, of upgrading without downtime, and to scale servers depending on the fluctuating needs. We cannot explore those topics using clusters based on Docker Machine nodes running locally. The capacity of our laptops is somewhat limited so we cannot scale nodes to a greater number. Even if we could, the infrastructure we’ll use for production clusters is quite different. We’ll need an API that will allow our system to communicate with infrastructure. Moreover, we did not have an opportunity to explore persistent storage of the services we used thus far. Those few examples are only a fraction of what we’ll need, and we won’t enter into details just yet. For now, we’ll try to create a production-ready cluster that will allow us to continue on our path towards a self-sufficient system.</p>
+
+<p class="calibre3">The immediate goal is to transition from locally running Swarm cluster based on Docker machines into something more reliable. We’ll have to move into the cloud.</p>
+
+<p class="calibre3">There are too many hosting vendors we could choose from, and it would be impossible to explain the process for each one of them. Even if we would focus only on those that are very popular, we would still have at least ten vendors to go through. That would increase the scope of the book beyond manageable size so we’ll pick one hosting provider that we’ll use to demonstrate a setup of a production cluster. It had to be one and AWS is the most commonly used hosting vendor.</p>
+
+<p class="calibre3">Depending on your current choice of a vendor, you might be very happy or extremely displeased with that. If you prefer using <a href="https://azure.microsoft.com">Microsoft Azure</a>, you’ll see that you’ll be able to follow the same steps as those we’ll explore for AWS. The chances are that you prefer <a href="https://cloud.google.com/compute/">Google Compute Engine (GCE)</a>, <a href="https://www.digitalocean.com/">Digital Ocean</a>, <a href="https://www.openstack.org">OpenStack</a> running on-premise, or any other among thousands of solutions and vendors. I’ll do my best to explain the logic behind the setup we’ll do in AWS. Hopefully, you should be able to apply the same logic to your infrastructure. I’ll try to make it clear what you should do, and I’ll expect you to roll-up your sleeves and do it on your own. I’ll provide a blueprint, and you’ll do the work.</p>
+
+<p class="calibre3">You might be tempted to start translating the exercises that follow to your hosting solution. Don’t! If you do not have it already, please create an account on <a href="https://aws.amazon.com/">Amazon Web Services (AWS)</a> and follow the instructions as they are. By doing that, you should have a clear idea of what can be done and what is the path to take. Only after that, once you’re finished reading this book, you should try to translate the experience into your infrastructure. From my side, I’ll do my best to explain everything we’ll do in AWS in a way that the same principles can be translated to any other choice. Moreover, I’ll do my best to keep AWS costs to a minimum.</p>
+
+<aside class="tip">
+    <p class="calibre3">I strongly advise against using corporate AWS accounts. They are often enhanced with security restrictions that might prevent you from having a smooth experience. Use your private AWS account instead or create one if you don’t have it already. Later on, once you’re comfortable with the solution, you should not have much of a problem to adapt it to your corporate environment.</p>
+
+</aside>
+
+<p class="calibre3">That was more than enough talk. We’ll move into a hands-on part of this chapter and create a Docker Swarm cluster. Once it’s up-and-running, we’ll proceed with deployment of all the services we used so far. Finally, we’ll discuss which services might be missing and which modifications we should do to our stacks to make them production-ready. Let’s go!</p>
+
+<h3 id="leanpub-auto-creating-a-docker-for-aws-cluster" class="calibre20">Creating a Docker For AWS Cluster</h3>
+
+<p class="calibre3">In <a href="https://www.amazon.com/dp/1542468914">The DevOps 2.1 Toolkit: Docker Swarm</a>, I argued that the best way to create a Swarm cluster in AWS is with a combination of <a href="https://www.packer.io/">Packer</a> and <a href="https://www.terraform.io/">Terraform</a>. One of the alternatives was to use <a href="https://store.docker.com/editions/community/docker-ce-aws">Docker CE for AWS</a>. At that time <em class="calibre21">Docker for AWS</em> was too immature. Today, the situation is different. <em class="calibre21">Docker for AWS</em> provides a robust Docker Swarm cluster with most, if not all the services we would expect from it.</p>
+
+<p class="calibre3">We’ll create a <em class="calibre21">Docker for AWS</em> cluster and, while in progress, discuss some of its aspects.</p>
+
+<p class="calibre3">Before we start creating a cluster, we should choose a region. The only thing that truly matters is whether a region of your choice supports at least three availability zones. If there’s only one availability zone, we’ll risk downtime if it would become unavailable. With two availability zones, we’d lose Docker manager’s quorum if one zone would go down. Just as we should always run an odd number of Docker managers, we should spread our cluster into an odd number of availability zones. Three is a good number. It fits most of the scenarios.</p>
+
+<p class="calibre3">In case you’re new to AWS, an availability zone (AZ) is an isolated location inside a region. Each region is made up of one or more availability zones. Each AZ is isolated, but AZs in a region are connected through low-latency links. Isolation between AZs provides high-availability. A cluster spread across multiple AZs would continue operating even if a whole AZ goes down. When using AZs inside the same region, latency is low thus not affecting the performance. All in all, we should always run a cluster across multiple AZs within the same region.</p>
+
+<p class="calibre3">Let’s check whether your favorite AWS region has at least three availability zones. Please open <a href="https://console.aws.amazon.com/ec2/v2/home">EC2 screen</a> from the <em class="calibre21">AWS console</em>. You’ll see one of the availability zones selected in the top-right corner of the screen. If that’s not the location you’d like to use for your cluster, click on it to change it.</p>
+
+<p class="calibre3">Scroll down to the <em class="calibre21">Service Health</em> section. You’ll find <em class="calibre21">Availability Zone Status</em> inside it. If there are at least three zones listed, the region you selected is OK. Otherwise, please change the region and check one more time whether there are at least three availability zones.</p>
+
+
+<figure class="image1">
+  <img src="../images/00074.jpeg" alt="Figure 13-1: The list of availability zones supported by the US East region" class="calibre17"/>
+  <figcaption class="calibre18">Figure 13-1: The list of availability zones supported by the US East region</figcaption>
+</figure>
+
+
+<p class="calibre3">There’s one more prerequisite we need to fulfill before we create a cluster. We need to create an SSH key. Without it, we would not be able to access any of the nodes that form the cluster.</p>
+
+<p class="calibre3">Please go back to the <em class="calibre21">AWS console</em> and click the <em class="calibre21">Key Pairs</em> link from the left-hand menu. Click the <em class="calibre21">Create Key Pair</em> button, type <em class="calibre21">devops22</em> as the <em class="calibre21">Key pair name</em>, and, finally, click the <em class="calibre21">Create</em> button. The newly created SSH key will be downloaded to your laptop. Please copy it to the <em class="calibre21">docker-flow-monitor</em> directory. The project already has <code class="calibre19">/*.pem</code> entry in the <code class="calibre19">.gitignore</code> file so your key will not be accidentally committed to GitHub. Still, as an additional precaution, we should make sure that only you can read the contents of the file.</p>
+
+<aside class="information">
+    <p class="calibre3">All the commands from this chapter are available in the <a href="https://gist.github.com/vfarcic/5f87855e2a31b23af01eca9e3f8c2efe">13-production-cluster.sh</a> Gist.</p>
+
+</aside>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>chmod <code class="o">400</code> devops22.pem
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Now we are ready to create the cluster. Please open <em class="calibre21">https://store.docker.com/editions/community/docker-ce-aws</em> in your favorite browser and click the <em class="calibre21">Get Docker</em> button.</p>
+
+<p class="calibre3">You might be asked to log in to <em class="calibre21">AWS console</em>. The region should be set to the one you chose previously. If it isn’t, please change it by clicking the name of the current region (e.g., <em class="calibre21">N. Virginia</em>) button located in the top-right section of the screen.</p>
+
+<p class="calibre3">We can proceed once you’re logged in, and the desired region is selected. Please click the <em class="calibre21">Next</em> button located at the bottom of the screen. You will be presented with the <em class="calibre21">Specify Details</em> screen.</p>
+
+<p class="calibre3">Please type <em class="calibre21">devops22</em> as the <em class="calibre21">Stack name</em>.</p>
+
+<p class="calibre3">We’ll leave the number of managers set to three, but we’ll change the number of workers to <em class="calibre21">0</em>. For now, we will not need more nodes. We can always increase the number of workers later on if such a need arises. For now, we’ll go with a minimal setup.</p>
+
+<p class="calibre3">Please select <em class="calibre21">devops22</em> as the answer to <em class="calibre21">Which SSH key to use?</em>.</p>
+
+<p class="calibre3">We’ll do the opposite from the default values for the rest of the fields in the <em class="calibre21">Swarm Properties</em> section.</p>
+
+<p class="calibre3">We do want to <em class="calibre21">enable daily resource cleanup</em> so we’ll change it to <em class="calibre21">yes</em>. That way, our cluster will be nice and clean most of the time since Docker will prune it periodically.</p>
+
+<p class="calibre3">We will select <em class="calibre21">no</em> as the value of the <em class="calibre21">use CloudWatch for container logging</em> drop-box. CloudWatch is very limiting. There are much better and cheaper solutions for storing logs, and we’ll explore them soon.</p>
+
+<p class="calibre3">Finally, please select <em class="calibre21">yes</em> as the value of the <em class="calibre21">create EFS prerequisites for CloudStor</em> drop-box. The setup process will make sure that all the requirements for the usage of EFS are created and thus speed up the process of mounting network drives.</p>
+
+<p class="calibre3">We should select the type of instances. One option could be to use <em class="calibre21">t2.micro</em> which is one of the free tiers. However, in my experience, <em class="calibre21">t2.micro</em> is just too small. <em class="calibre21">1GB</em> memory and <em class="calibre21">1</em> virtual CPU (vCPU) is not enough for some of the services we’ll run. We’ll use <em class="calibre21">t2.small</em> instead. With <em class="calibre21">2GB</em> of memory and <em class="calibre21">1</em> vCPU, it is still very small and would not be suitable for “real” production usage. However, it should be enough for the exercises we’ll run throughout the rest of this chapter.</p>
+
+<p class="calibre3">Please select <em class="calibre21">t2.small</em> as both the <em class="calibre21">Swarm manager instance type</em> and <em class="calibre21">Agent worker instance type</em> values. Even though we’re not creating any workers, we might choose to add some later on so having the proper size set in advance might be a good idea. We might discover that we need bigger nodes later on. Still, any aspect of the cluster is easy to modify, so there’s no reason to aim for perfection from the start.</p>
+
+
+<figure class="image">
+  <img src="../images/00075.jpeg" alt="Figure 13-2: Docker For AWS Parameters screen" class="calibre17"/>
+  <figcaption class="calibre18">Figure 13-2: Docker For AWS Parameters screen</figcaption>
+</figure>
+
+
+<p class="calibre3">Please click the <em class="calibre21">Next</em> button. You’ll be presented with the <em class="calibre21">Options</em> screen. We won’t modify any of the available options so please click the <em class="calibre21">Next</em> button on this screen as well.</p>
+
+<p class="calibre3">We reached the last screen of the setup. It shows the summary of all the options we chose. Please go through the information and confirm that everything is set to the correct values. Once you’re done, click the <em class="calibre21">I acknowledge that AWS CloudFormation might create IAM resources</em> checkbox followed by the <em class="calibre21">Create</em> button.</p>
+
+<p class="calibre3">It’ll take around ten to fifteen minutes for the CloudFormation to finish creating all the resources. We can use that time to comment on a few of them. If you plan to transfer this knowledge to a different hosting solution, you’ll probably need to replicate the same types of resources and the processes behind them. The list of all the resources created by the template can be found by selecting the <em class="calibre21">devops22</em> stack and clicking the <em class="calibre21">Resources</em> tab. Please click the <em class="calibre21">Restore</em> icon from the bottom-right part of the page if you don’t see the tabs located at the bottom of the screen.</p>
+
+<p class="calibre3">We won’t comment on all the resources <em class="calibre21">Docker for AWS</em> template creates but only on the few that are crucial if you’d like to replicate a similar setup with a different vendor.</p>
+
+<p class="calibre3"><em class="calibre21">VPC</em> (short for <em class="calibre21">Virtual Private Cloud</em>) makes the system secured by closing all but a few externally accessible ports. The only port open by default is <em class="calibre21">22</em> required for SSH access. All others are locked down. Even the port <em class="calibre21">22</em> is not open directly but through a load balancer.</p>
+
+<p class="calibre3"><em class="calibre21">ELB</em> (short for <em class="calibre21">Elastic Load Balancer</em>) is sitting on top of the cluster. In the beginning, it forwards only SSH traffic. However, it is configured in a way that forwarding will be added to the ELB every time we create a service that publishes a port. As a result, any service with a published port will be accessible through <em class="calibre21">ELB</em> only. The load balancer itself cannot (in its current setting) forward requests based on their paths, domains, and other information from their headers. It does (a kind of) layer 4 load balancing that uses only port as the forwarding criteria. It does a similar job as the ingress network. That, in itself, is not very useful if all your services are routed through a layer 7 proxy like <a href="http://proxy.dockerflow.com/">Docker Flow Proxy</a>, and since it lacks proper routing, it cannot replace it. However, the more important feature ELB provides is load balancing across healthy nodes. It provides a DNS that we can use to setup our domain’s <em class="calibre21">C Name</em> entries. No matter whether a node fails or is replaced during upgrades, ELB will always forward requests to one of the healthy nodes.</p>
+
+<p class="calibre3"><em class="calibre21">EFS</em> (short for <em class="calibre21">Elastic File System</em>) will provide network drives we’ll use to persist stateful services that do not have replication capabilities. It can be replaced with <em class="calibre21">EBS</em> (short for <em class="calibre21">Elastic Block Storage</em>). Each has advantages and disadvantages. EFS volumes can be used across multiple availability zones thus allowing us to move services from one to another without any additional steps. However, EFS is slower than EBS so, if IO speed is of the essence, it might not be the best choice. EBS, on the other hand, is opposite. If is faster than EFS, but it cannot be used across multiple AZs. If a replica needs to be moved from one to another, a data snapshot needs to be created first and restored on the EBS volume created in a different AZ.</p>
+
+<p class="calibre3"><em class="calibre21">ASGs</em> (short for <em class="calibre21">Auto-Scaling Groups</em>) provide an effortless way to scale (or de-scale) nodes. It will be essential in our quest for self-healing system applied to infrastructure.</p>
+
+<p class="calibre3"><em class="calibre21">Overlay Network</em>, even though it is not unique to AWS, envelops all the nodes of the cluster and provides communication between services.</p>
+
+<p class="calibre3"><em class="calibre21">Dynamo DB</em> is used to store information about the primary manager. That information is changed if the node hosting the primary manager goes down and a different one is promoted. When a new node is added to the cluster, it uses information from Dynamo DB to find out the location of the primary manager and join itself to the cluster.</p>
+
+<p class="calibre3">The cluster, limited to the most significant resources, can be described through the <em class="calibre21">figure 13-3</em>.</p>
+
+
+<figure class="image1">
+  <img src="../images/00076.jpeg" alt="Figure 13-3: Simplified diagram with the key services created through the Docker For AWS template" class="calibre17"/>
+  <figcaption class="calibre18">Figure 13-3: Simplified diagram with the key services created through the Docker For AWS template</figcaption>
+</figure>
+
+
+<p class="calibre3">By this time, the cluster should be up and running and waiting for us to deploy the first stack. We can confirm that it is finished by checking the <em class="calibre21">Status</em> column of the <em class="calibre21">devops22</em> CloudFormation stack. We’re all set if the value is <em class="calibre21">CREATE_COMPLETE</em>. If it isn’t, please wait a few more minutes until the last round of resources is created.</p>
+
+<p class="calibre3">We’ll need to retrieve a few pieces of information before we proceed. We’ll need to know the DNS of the newly created cluster as well as the IP of one of the manager nodes.</p>
+
+<p class="calibre3">All the information we need is in the <em class="calibre21">Outputs</em> tab. Please go there and copy the value of the <em class="calibre21">DefaultDNSTarget</em> key. We’ll paste it into an environment variable. That will allow us to avoid coming back to this screen every time we need to use the DNS.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code><code class="nv">CLUSTER_DNS</code><code class="o">=[</code>...<code class="o">]</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Please change <code class="calibre19">[...]</code> with the actual DNS of your cluster.</p>
+
+<p class="calibre3">You should map your domain to that DNS in a “real” world situation. But, for the sake of simplicity, we’ll skip that part and use the DNS provided by AWS.</p>
+
+<p class="calibre3">The only thing left before we enter the cluster is to get the IP of one of the managers. Please click the link next to the <em class="calibre21">Managers</em> key. You will be presented with the <em class="calibre21">EC2 Instances</em> screen that lists all the manager nodes of the cluster. Select any of them and copy the value of the <em class="calibre21">IPv4 Public IP</em> key.</p>
+
+<p class="calibre3">Just as with DNS, we’ll set that value as an environment variable.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code><code class="nv">CLUSTER_IP</code><code class="o">=[</code>...<code class="o">]</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Please change <code class="calibre19">[...]</code> with the actual public IP of one of the manager nodes.</p>
+
+<p class="calibre3">The moment of truth has come. Does our cluster indeed work? Let’s check it out.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>ssh -i devops22.pem docker@<code class="nv">$CLUSTER_IP</code>
+<code class="lineno">2 </code>
+<code class="lineno">3 </code>docker node ls
+</pre></div>
+
+</figure>
+
+<p class="calibre3">We entered into one of the manager nodes and executed <code class="calibre19">docker node ls</code>. The output of the latter command is as follows (IDs are removed for brevity).</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>HOSTNAME                      STATUS AVAILABILITY MANAGER STATUS
+<code class="lineno">2 </code>ip-172-31-2-46.ec2.internal   Ready  Active       Reachable
+<code class="lineno">3 </code>ip-172-31-35-26.ec2.internal  Ready  Active       Leader
+<code class="lineno">4 </code>ip-172-31-19-176.ec2.internal Ready  Active       Reachable
+</pre></div>
+
+</figure>
+
+<p class="calibre3">As you can see, all three nodes are up and running and joined into a single Docker Swarm cluster. Even though this looks like a simple cluster, many things are going on in the background, and we’ll explore many of the cluster features later on. For now, we’ll concentrate on only a few observations.</p>
+
+<p class="calibre3">The nodes we’re running has an OS created by Docker and designed with only one goal. It runs containers, and nothing else. We cannot install packages directly. The benefits such an OS brings are related mainly to stability and performance. An OS designed with a specific goal is often more effective than general distributions capable of fulfilling all needs. Those often end up being fine at many things but not excellent with any. Docker’s OS is optimized for containers, and that makes it more stable. When there are no things we don’t use, there are fewer things that can cause trouble. In this case, the only thing we need is Docker Server (or Engine). Whatever else we might need must be deployed as a container. The truth is that we do not need much with Docker. A few things that we do need are already available.</p>
+
+<p class="calibre3">Let’s take a quick look at the containers running on this node.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>docker container ls -a
+</pre></div>
+
+</figure>
+
+<p class="calibre3">The output is as follows (IDs are removed for brevity).</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno"> 1 </code>IMAGE                                     COMMAND                CREATED        \
+<code class="lineno"> 2 </code>STATUS        PORTS                        NAMES
+<code class="lineno"> 3 </code>docker4x/l4controller-aws:17.06.0-ce-aws2 "loadbalancer run ..." 10 minutes ago \
+<code class="lineno"> 4 </code>Up 10 minutes                              l4controller-aws
+<code class="lineno"> 5 </code>docker4x/meta-aws:17.06.0-ce-aws2         "metaserver -iaas_..." 10 minutes ago \
+<code class="lineno"> 6 </code>Up 10 minutes 172.31.19.205:9024-&gt;8080/tcp meta-aws
+<code class="lineno"> 7 </code>docker4x/guide-aws:17.06.0-ce-aws2        "/entry.sh"            10 minutes ago \
+<code class="lineno"> 8 </code>Up 10 minutes                              guide-aws
+<code class="lineno"> 9 </code>docker4x/shell-aws:17.06.0-ce-aws2        "/entry.sh /usr/sb..." 10 minutes ago \
+<code class="lineno">10 </code>Up 10 minutes 0.0.0.0:22-&gt;22/tcp           shell-aws
+<code class="lineno">11 </code>docker4x/init-aws:17.06.1-ce-aws1         "/entry.sh"            10 minutes ago \
+<code class="lineno">12 </code>Exited (0) 10 minutes ago                  lucid_leakey
+</pre></div>
+
+</figure>
+
+<p class="calibre3">We’ll explore those containers only briefly so that we understand their high level purposes.</p>
+
+<p class="calibre3">The <em class="calibre21">l4controller-aws</em> container is in charge of ELB. It monitors services and updates load balancer whenever a service that publishes a port is created, updated, or removed. You’ll see the ELB integration in action soon. For now, the important part to note is that we do not need to worry what happens when a node goes down nor we need to update security groups when a new port needs to be opened. ELB and <em class="calibre21">l4controller-aws</em> containers are making sure those things are always up-to-date.</p>
+
+<p class="calibre3">The <em class="calibre21">meta-aws</em> container provides general server metadata to the rest of the swarm cluster. Its main purpose is to provide tokens for members to join a Swarm cluster.</p>
+
+<p class="calibre3">The <em class="calibre21">guide-aws</em> container is in charge of house keeping. It removes unused images, stopped containers, volumes, and so on. On top of those responsibilities, it updates DynamoDB with information about managers and a few other things.</p>
+
+<p class="calibre3">The <em class="calibre21">shell-aws</em> container provides Shell, FPT, SSH, and a few other essential tools. When we entered the node we’re in right now, we actually entered this container. We’re not running commands (i.g., <code class="calibre19">docker container ls</code>) from the OS but from inside this container. The OS is so specialized that it does not even have SSH.</p>
+
+<p class="calibre3">The <em class="calibre21">lucid_leakey</em> (your name might be different) is based on <em class="calibre21">docker4x/init-aws</em> might be the most interesting system container. It was run, did its job, and exited. It has only one purpose. It discovered the IP and the token of the primary manager and joined the node to the cluster. With that process in place, we can add more nodes whenever we need them knowing that they will join the cluster automatically. If a node fails, the auto-scaling group will create a new one which will, through this container, join the cluster.</p>
+
+<p class="calibre3">We did not explore all of the features of the cluster. We’ll postpone the discussion for the next chapter when we explore self-healing capabilities of the cluster and, later on, self-adaptation. Instead, we’ll proceed by deploying the services we used in the previous chapters. The immediate goal is to reach the same state as the one we left in the previous chapter. The only real difference, for now, will be that the services will run on a production-ready cluster.</p>
+
+<h3 id="leanpub-auto-deploying-services" class="calibre20">Deploying Services</h3>
+
+<p class="calibre3">We’ll start by deploying the stacks we used so far. We will not modify them in any form or way but deploy them as they are. Further on, we’ll explore what modifications we should add to those stacks to make them more production-ready.</p>
+
+<p class="calibre3">We’ll execute <a href="https://github.com/vfarcic/docker-flow-monitor/blob/master/scripts/aws-services.sh">scripts/aws-services.sh</a> script that contains all the commands we used thus far.</p>
+
+<p class="calibre3">Please replace <code class="calibre19">[...]</code> with the DNS of your cluster.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code><code class="nb">export</code> <code class="nv">CLUSTER_DNS</code><code class="o">=[</code>...<code class="o">]</code>
+<code class="lineno">2 </code>
+<code class="lineno">3 </code>curl -o aws-services.sh <code class="se">\</code>
+<code class="lineno">4 </code>    https://raw.githubusercontent.com/vfarcic/docker-flow-monitor/master/scripts<code class="se">\</code>
+<code class="lineno">5 </code>/aws-services.sh
+<code class="lineno">6 </code>
+<code class="lineno">7 </code>chmod +x aws-services.sh
+</pre></div>
+
+</figure>
+
+<p class="calibre3">The commands we executed created the environment variable <code class="calibre19">CLUSTER_DNS</code>, downloaded the script, and assigned it execute permissions.</p>
+
+<p class="calibre3">We won’t go into details of the script since it deploys the same stacks we used before. Feel free to explore it yourself.</p>
+
+<p class="calibre3">Now we can execute the script which will deploy the familiar stacks and services.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>./aws-services.sh
+<code class="lineno">2 </code>
+<code class="lineno">3 </code>docker stack ls
+</pre></div>
+
+</figure>
+
+<p class="calibre3">We executed the script and listed all the stacks we deployed with it. The output of the <code class="calibre19">docker stack ls</code> command is as follows.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>NAME                SERVICES
+<code class="lineno">2 </code>exporter            3
+<code class="lineno">3 </code>go-demo             2
+<code class="lineno">4 </code>jenkins             2
+<code class="lineno">5 </code>monitor             3
+<code class="lineno">6 </code>proxy               2
+</pre></div>
+
+</figure>
+
+<p class="calibre3">You should be familiar with all those stacks. At this moment, the services in our AWS cluster behave in the same way as when we deployed them to Docker Machine clusters. As you might have guessed, there are a few things we’re still missing before those services can be considered production-ready.</p>
+
+<p class="calibre3">The first problem we’ll tackle is security.</p>
+
+<h3 id="leanpub-auto-securing-services" class="calibre20">Securing Services</h3>
+
+<p class="calibre3">There’s not much reason to secure internal services that do not publish any ports. Such services are usually intended to be accessed by other services that are attached to the same internal network. For example, the <code class="calibre19">go-demo</code> stack deploys two services. One of them is the <code class="calibre19">db</code> service that can be accessed only by the other service from the stack (<code class="calibre19">main</code>). We accomplished that by having both services attached to the same network and by not publishing any ports.</p>
+
+<p class="calibre3">The main objective should be to secure communication between clients outside your cluster and services residing inside. We usually accomplish that by adding SSL certificates to a proxy and, potentially, disabling HTTP communication. <em class="calibre21">Docker Flow Proxy</em> makes that an easy task. If you haven’t set up your SSL, you might want to explore <a href="http://proxy.dockerflow.com/certs/">Configuring SSL Certificates</a> tutorial.</p>
+
+<p class="calibre3">There are quite a few ways to get certificates, but the one that sticks above the crowd is <a href="https://letsencrypt.org/">Let’s Encrypt</a>. It’s free and commonly used by a massive community. Two projects integrate <em class="calibre21">Let’s Encrypt</em> with <em class="calibre21">Docker Flow Proxy</em>. You can find them in GitHub repositories <a href="https://github.com/n1b0r/docker-flow-proxy-letsencrypt">n1b0r/docker-flow-proxy-letsencrypt</a> and <a href="https://github.com/hamburml/docker-flow-letsencrypt">hamburml/docker-flow-letsencrypt</a>. They use different approaches to obtain certificates and pass them to the proxy. I urge not to explore both before making a decision which one to use (if any).</p>
+
+<p class="calibre3">Unfortunately, we won’t be able to set up certificates since we do not have a valid domain. Let’s Encrypt would not allow us to use DNS name AWS gave us and I could not know in advance whether you have a domain name you could use for this exercise. So, we’ll skip the examples of how to set up SSL assuming that you’ll explore it on your own. Feel free to reach me on <a href="http://slack.devops20toolkit.com/">DevOps20</a> Slack channel if you have a question or you run into a problem.</p>
+
+<p class="calibre3">Encryption is only a part of what we need to do to secure our services. One of the obvious things we’re missing is authentication.</p>
+
+<p class="calibre3">Let us review the publicly available services we’re currently running inside our cluster and discuss the authentication strategies we might apply.</p>
+
+<p class="calibre3">We’ll start with Jenkins.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code><code class="nb">exit</code>
+<code class="lineno">2 </code>
+<code class="lineno">3 </code>open <code class="s">"http://</code><code class="nv">$CLUSTER_DNS</code><code class="s">/jenkins"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Jenkins service was created from a custom built image that already has an admin user set through Docker secrets. That was a great first step that allowed us to skip the manual setup and, at the same time, have a relatively secure initial experience. However, we need more. Potentially, every member of our organization should be able to access Jenkins. We could add them all as users of Jenkins’ internal registry, but that would prove to be too much work for anything but small teams.</p>
+
+<p class="calibre3">Fortunately, Jenkins allows authentication through almost any provider. All you have to do is install and configure one of the authentication plugins. <a href="https://plugins.jenkins.io/github-oauth">GitHub Authentication</a>, <a href="https://plugins.jenkins.io/google-login">Google Login</a>, <a href="https://plugins.jenkins.io/ldap">LDAP</a>, and <a href="https://plugins.jenkins.io/gitlab-oauth">Gitlab Authentication</a> are only a few among many other available solutions.</p>
+
+<p class="calibre3">We won’t go into details how to setup a “proper” authentication since there are too many of them and I cannot predict which one would suit your needs. In most cases, following the instructions on the plugin page should be more than enough to get you up and running in no time. For now, it is important that the image we’re running is secured by default with the user we defined through Docker secrets and that you can easily replace it with authentication through one of the plugins. The current setup allows any user to see the jobs, but only the administrator to create new ones, to build them, or to update them.</p>
+
+<p class="calibre3">Let’s move to Prometheus and explore how to secure it with authentication.</p>
+
+<p class="calibre3">While Jenkins that has both its internal credentials storage as well as the ability to connect to many third-party credential providers, Prometheus has neither. There is no internal authentication, nor it has a built-in ability to integrate with an external authentication service. All that does not mean that everything is lost. Prometheus holds metrics of your cluster and the services inside it. Metrics have labels, and they might keep confidential information. It needs to be protected, and the only option is to deny external access to the service or to authenticate requests before they reach it. The first option would entail VPN and black-listing Prometheus domain or some other method that would deny access to anyone but those inside the VPN. The alternative is to use authentication gateway or instruct the proxy to request authentication. We won’t go into a discussion of pros and cons of each method since it often depends on personal preferences, the company culture, and the existing infrastructure. Instead, we’ll roll with the simplest solution. We’ll instruct the proxy to authenticate requests to Prometheus.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>ssh -i devops22.pem docker@<code class="nv">$CLUSTER_IP</code>
+<code class="lineno">2 </code>
+<code class="lineno">3 </code>curl -o proxy.yml <code class="se">\</code>
+<code class="lineno">4 </code>    https://raw.githubusercontent.com/vfarcic/docker-flow-monitor/master/stacks/<code class="se">\</code>
+<code class="lineno">5 </code>docker-flow-proxy-aws.yml
+<code class="lineno">6 </code>
+<code class="lineno">7 </code>cat proxy.yml
+</pre></div>
+
+</figure>
+
+<p class="calibre3">We entered the cluster, downloaded a new proxy stack and displayed its content. The output of the  <code class="calibre19">cat</code> command, limited to relevant parts, is as follows.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno"> 1 </code>...
+<code class="lineno"> 2 </code>  proxy:
+<code class="lineno"> 3 </code>    ...
+<code class="lineno"> 4 </code>    secrets:
+<code class="lineno"> 5 </code>      - dfp_users_admin
+<code class="lineno"> 6 </code>    ...
+<code class="lineno"> 7 </code>
+<code class="lineno"> 8 </code>secrets:
+<code class="lineno"> 9 </code>  dfp_users_admin:
+<code class="lineno">10 </code>    external: true
+</pre></div>
+
+</figure>
+
+<p class="calibre3">We added Docker secret <code class="calibre19">dfp_users_admin</code>. We’ll use it to store username and password we’ll use later one with services that require authentication through the proxy.</p>
+
+<p class="calibre3">Now that we know that the stack requires a secret, we can create it and redeploy the services.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code><code class="nb">echo</code> <code class="s">"admin:admin"</code> <code class="calibre19">|</code> docker secret <code class="se">\</code>
+<code class="lineno">2 </code>    create dfp_users_admin -
+<code class="lineno">3 </code>
+<code class="lineno">4 </code>docker stack deploy -c proxy.yml <code class="se">\</code>
+<code class="lineno">5 </code>    proxy
+</pre></div>
+
+</figure>
+
+<p class="calibre3">We piped the value <code class="calibre19">admin:admin</code> to the command that created the <code class="calibre19">dfp_users_admin</code> secret and deployed the new definition of the stack. All that’s left now is to update the <em class="calibre21">monitor</em> service by adding a few labels that will tell the proxy that the service requires authentication using the credentials from the secret we created.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>curl -o monitor.yml <code class="se">\</code>
+<code class="lineno">2 </code>    https://raw.githubusercontent.com/vfarcic/docker-flow-monitor/master/stacks/<code class="se">\</code>
+<code class="lineno">3 </code>docker-flow-monitor-user.yml
+<code class="lineno">4 </code>
+<code class="lineno">5 </code>cat monitor.yml
+</pre></div>
+
+</figure>
+
+<p class="calibre3">We downloaded a new monitor stack and displayed its content. The output, limited to relevant parts, is as follows.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>...
+<code class="lineno">2 </code>  monitor:
+<code class="lineno">3 </code>    ...
+<code class="lineno">4 </code>    deploy:
+<code class="lineno">5 </code>      labels:
+<code class="lineno">6 </code>        - com.df.usersPassEncrypted=false
+<code class="lineno">7 </code>        - com.df.usersSecret=admin
+<code class="lineno">8 </code>        ...
+</pre></div>
+
+</figure>
+
+<p class="calibre3"><em class="calibre21">Docker Flow Proxy</em> uses a naming convention to resolve names of Docker secrets that contain users and passwords. The value of the <code class="calibre19">userSecret</code> parameter will be prepended with <code class="calibre19">dfp_users_</code> thus matching the name of the secret we created a moment ago. We used the <code class="calibre19">usersPassEncrypted</code> parameter to tell the proxy that the credentials are not encrypted. Please check <a href="http://proxy.dockerflow.com/usage/#http-mode-query-parameters">HTTP Mode Query Parameters</a> section of the documentation for more details and additional options.</p>
+
+<p class="calibre3">The monitor stack requires the DNS of our cluster so we’ll define it as environment variable <code class="calibre19">CLUSTER_DNS</code>. Please replace <code class="calibre19">[...]</code> with the <code class="calibre19">CLUSTER_DNS</code> value obtained from the variable defined locally.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code><code class="nb">exit</code>
+<code class="lineno">2 </code>
+<code class="lineno">3 </code><code class="nb">echo</code> <code class="nv">$CLUSTER_DNS</code>
+<code class="lineno">4 </code>
+<code class="lineno">5 </code>ssh -i devops22.pem docker@<code class="nv">$CLUSTER_IP</code>
+<code class="lineno">6 </code>
+<code class="lineno">7 </code><code class="nv">CLUSTER_DNS</code><code class="o">=[</code>...<code class="o">]</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">We exited the cluster so that we can output the value of the <code class="calibre19">CLUSTER_DNS</code> variable we created locally, entered back, and defined the same variable inside one of the nodes of the cluster. Those commands might seem like overkill but, in my case, they are easier than opening CloudFormation UI and looking for the outputs. You probably guessed by now that I prefer doing as much as possible from the command line.</p>
+
+<p class="calibre3">Now we can deploy the updated stack.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code><code class="nv">DOMAIN</code><code class="o">=</code><code class="nv">$CLUSTER_DNS</code> docker stack <code class="se">\</code>
+<code class="lineno">2 </code>    deploy -c monitor.yml monitor
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Before we check whether authentication is indeed applied, we should wait for a moment or two until all the services of the stack are up-and-running. You can check the status by executing <code class="calibre19">docker stack ps monitor</code>.</p>
+
+<p class="calibre3">All that’s left now is to open Prometheus and authenticate.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code><code class="nb">exit</code>
+<code class="lineno">2 </code>
+<code class="lineno">3 </code>open <code class="s">"http://</code><code class="nv">$CLUSTER_DNS</code><code class="s">/monitor"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">We exited the cluster and opened Prometheus in our default browser. This time we were asked to enter username and password before being redirected to the UI. Authentication works! While it might not be a perfect solution (nothing is), it is more secure than it was a moment ago when anyone could enter Prometheus.</p>
+
+<p class="calibre3">Now we can try to solve one more problem. Our cluster runs a few stateful services that might need to be persisted somewhere.</p>
+
+<h3 id="leanpub-auto-persisting-state" class="calibre20">Persisting State</h3>
+
+<p class="calibre3">What shall we do with the stateful services inside our cluster? If any of them fails and Swarm reschedules it, the state will be lost. Even if impossible happens and none of the replicas of the service ever fail, sooner or later we’ll have to upgrade the cluster. That means that existing nodes will be replaced with new images and Swarm will have to reschedule your services to the new nodes. In other words, services will fail or be rescheduled, and we might need to persist state when they are stateful.</p>
+
+<p class="calibre3">Let us go through each of the stateful services we’re currently running inside our cluster.</p>
+
+<p class="calibre3">The obvious case of stateful services is databases. We are running MongoDB. Should we persist its state? Many would answer positively to that question. I’ll argue against persisting data on disk. Instead, we should create a replica set with at least three MongoDBs. That way, data would be replicated across multiple instances, and a failure of one or even two of them would not mean a loss of data.</p>
+
+<p class="calibre3">Unfortunately, MongoDB is not a container-friendly database (almost none of the DBs are) so scaling Mongo service to a few replicas will not do the trick. We’d need to create three services and do some custom plumbing. It’s nothing too complicated, and yet it’s not what we’re used to with Docker Swarm services. We won’t go into details how to setup Mongo replica-set inside Docker services. I’ll leave that up to your Google-ing skills. The important note I tried to convey is that we do not always need to persist state. If stateful service can replicate state across different instances, there might not be a need to store that state on a network drive as well.</p>
+
+<p class="calibre3">Moving on…</p>
+
+<p class="calibre3"><em class="calibre21">Docker Flow Proxy</em> is also a stateful service. It uses HAProxy which uses file system for its configuration. Since we are changing that configuration whenever a service is created, updated, or removed, we can consider that configuration as its state. If it gets lost, <em class="calibre21">Docker Flow Proxy</em> would not be able to forward requests to all our public facing services.</p>
+
+<p class="calibre3">Fortunately, there’s no need  to persist proxy state either. <em class="calibre21">Docker Flow Swarm Listener</em> sends service notifications to all proxy replicas. On the other hand, when a new replica of the proxy is created, the first thing it does is to request all the info it needs from the listener. All in all, if we ignore possible bugs, all the replicas of the proxy should always be up-to-date and with identical configuration. In other words, there’s one less stateful service to worry.</p>
+
+<p class="calibre3">Moving on…</p>
+
+<p class="calibre3">Prometheus is also a stateful service. However, it cannot be scaled so its state cannot be replicated among its instances. It is a good example of a service that needs to persist its data on disk.</p>
+
+<p class="calibre3">Let’s open Prometheus flags screen and see the checkpoint interval.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>open <code class="s">"http://</code><code class="nv">$CLUSTER_DNS</code><code class="s">/monitor/flags"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">You’ll see a property called <code class="calibre19">storage.local.checkpoint-interval</code> set to <code class="calibre19">5m0s</code>. Prometheus will flush its state to a file every five minutes.</p>
+
+<p class="calibre3">By now, you should have a decent amount of data stored in Prometheus. We can confirm that by opening the graph screen.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>open <code class="s">"http://</code><code class="nv">$CLUSTER_DNS</code><code class="s">/monitor/graph"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Please type the query that follows into the <em class="calibre21">Expression</em> field.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>container_memory_usage_bytes{container_label_com_docker_swarm_service_name!=""}
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Click the <em class="calibre21">Execute</em> button followed with a switch to the <em class="calibre21">Graph</em> tab. You should see the memory usage of each container in the cluster. However, the reason we got here is not to admire metrics but to demonstrate state persistence.</p>
+
+<p class="calibre3">Let’s see what happens when we simulate a failure of the service.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>ssh -i devops22.pem docker@<code class="nv">$CLUSTER_IP</code>
+<code class="lineno">2 </code>
+<code class="lineno">3 </code>docker service scale <code class="nv">monitor_monitor</code><code class="o">=</code><code class="o">0</code>
+<code class="lineno">4 </code>
+<code class="lineno">5 </code>docker service scale <code class="nv">monitor_monitor</code><code class="o">=</code><code class="o">1</code>
+<code class="lineno">6 </code>
+<code class="lineno">7 </code><code class="nb">exit</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">We entered the cluster, scaled the service to zero replicas, scaled it back to one, and exited. That was probably the fastest way to simulate a failure.</p>
+
+<p class="calibre3">Let’s go back to the graph screen.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>open <code class="s">"http://</code><code class="nv">$CLUSTER_DNS</code><code class="s">/monitor/graph"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">If Prometheus does not load, you might need to wait for a few moments and refresh the screen.</p>
+
+<p class="calibre3">Repeat the execution of the same query like the one we used a short while ago.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>container_memory_usage_bytes{container_label_com_docker_swarm_service_name!=""}
+</pre></div>
+
+</figure>
+
+<p class="calibre3">You should notice that metrics are gone. You might have a minute or two of data. Those from before the failure simulation are gone.</p>
+
+<p class="calibre3">Let’s download a new version of the <code class="calibre19">monitor</code> stack and see how it solves our persistence problem.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>ssh -i devops22.pem docker@<code class="nv">$CLUSTER_IP</code>
+<code class="lineno">2 </code>
+<code class="lineno">3 </code>curl -o monitor.yml <code class="se">\</code>
+<code class="lineno">4 </code>    https://raw.githubusercontent.com/vfarcic/docker-flow-monitor/master/stacks/<code class="se">\</code>
+<code class="lineno">5 </code>docker-flow-monitor-aws.yml
+<code class="lineno">6 </code>
+<code class="lineno">7 </code>cat monitor.yml
+</pre></div>
+
+</figure>
+
+<p class="calibre3">We entered into the cluster and downloaded an updated version of the <code class="calibre19">monitor</code> stack. The output of the <code class="calibre19">cat</code> command, limited to relevant parts, is as follows.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno"> 1 </code>...
+<code class="lineno"> 2 </code>  monitor:
+<code class="lineno"> 3 </code>    image: vfarcic/docker-flow-monitor
+<code class="lineno"> 4 </code>    environment:
+<code class="lineno"> 5 </code>      - ARG_STORAGE_LOCAL_PATH=/data
+<code class="lineno"> 6 </code>      ...
+<code class="lineno"> 7 </code>    volumes:
+<code class="lineno"> 8 </code>      - prom:/data
+<code class="lineno"> 9 </code>      ...
+<code class="lineno">10 </code>
+<code class="lineno">11 </code>volumes:
+<code class="lineno">12 </code>  prom:
+<code class="lineno">13 </code>    driver: cloudstor:aws
+<code class="lineno">14 </code>    external: false
+</pre></div>
+
+</figure>
+
+<p class="calibre3">We specified the storage path using the environment variable <code class="calibre19">ARG_STORAGE_LOCAL_PATH</code>, mapped <code class="calibre19">prom</code> volume to the directory <code class="calibre19">/data</code>, and defined the volume with the driver <code class="calibre19">cloudstor:aws</code>.</p>
+
+<p class="calibre3">The <em class="calibre21">cloudstor</em> driver was developed by Docker specifically for usage in AWS and Azure. It will create a network drive (in this case EFS) and attach it to the service. Since the <code class="calibre19">prom</code> volume has <code class="calibre19">external</code> set to <code class="calibre19">false</code>, the volume will be created automatically when we deploy the stack. Otherwise, we’d need to execute <code class="calibre19">docker volume create</code> command first.</p>
+
+<p class="calibre3">Let’s deploy the new stack. Please make sure to replace <code class="calibre19">[...]</code> with the value of the <code class="calibre19">CLUSTER_DNS</code> variable defined locally (the second command).</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno"> 1 </code><code class="nb">exit</code>
+<code class="lineno"> 2 </code>
+<code class="lineno"> 3 </code><code class="nb">echo</code> <code class="nv">$CLUSTER_DNS</code>
+<code class="lineno"> 4 </code>
+<code class="lineno"> 5 </code>ssh -i devops22.pem docker@<code class="nv">$CLUSTER_IP</code>
+<code class="lineno"> 6 </code>
+<code class="lineno"> 7 </code><code class="nv">CLUSTER_DNS</code><code class="o">=[</code>...<code class="o">]</code>
+<code class="lineno"> 8 </code>
+<code class="lineno"> 9 </code><code class="nv">DOMAIN</code><code class="o">=</code><code class="nv">$CLUSTER_DNS</code> docker stack <code class="se">\</code>
+<code class="lineno">10 </code>    deploy -c monitor.yml monitor
+</pre></div>
+
+</figure>
+
+<p class="calibre3">We exited the cluster only to output the DNS, went back, created <code class="calibre19">CLUSTER_DNS</code> variable, and deployed the new stack.</p>
+
+<p class="calibre3">Now we should wait for a while so that Prometheus can accumulate some metrics. If we repeat the failure simulation right away, we would not be able to confirm whether data is persisted or not. Instead, you should grab a coffee and come back in ten minutes or more. That should be enough for a checkpoint or two to flush data to disk.</p>
+
+<p class="calibre3">Now, after a while, we can repeat the failure simulation steps and verify whether data is indeed persisted across failures.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>docker service scale <code class="nv">monitor_monitor</code><code class="o">=</code><code class="o">0</code>
+<code class="lineno">2 </code>
+<code class="lineno">3 </code>docker service scale <code class="nv">monitor_monitor</code><code class="o">=</code><code class="o">1</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">We changed the number of replicas to zero only to increase them to one a few moments later. As a result, Swarm created a new instance of the service.</p>
+
+<p class="calibre3">Let’s go back to the graph screen and confirm that the data survived the failure.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code><code class="nb">exit</code>
+<code class="lineno">2 </code>
+<code class="lineno">3 </code>open <code class="s">"http://</code><code class="nv">$CLUSTER_DNS</code><code class="s">/monitor/graph"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Please type the query that follows in the <em class="calibre21">Expression</em> field, click the <em class="calibre21">Execute</em> button, and switch to the <em class="calibre21">Graph</em> tab.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>container_memory_usage_bytes{container_label_com_docker_swarm_service_name!=""}
+</pre></div>
+
+</figure>
+
+<p class="calibre3">You should see that metrics go back in time longer then the duration of the newly scheduled replica. Data persistence works! Partly… Prometheus is an in-memory database. It keeps all the metrics in memory and periodically flushes them to disk. It is not designed to be transactional but fast. We might have lost some data that was scraped between the last checkpoint and the (simulated) failure of the service. However, that, in most cases, is not a real problem since metrics are supposed to show us tendencies, not every single transaction. If you compare the graphs from before and after the (simulated) crash, you’ll notice that they are, more or less, the same even though some data might be lost.</p>
+
+<p class="calibre3">We have one more service left to fix.</p>
+
+<p class="calibre3">Jenkins is also a stateful service. It stores its state as files. They are, in a way, its database, and we need to persist them.</p>
+
+<p class="calibre3">Let’s download a new Jenkins stack.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>ssh -i devops22.pem docker@<code class="nv">$CLUSTER_IP</code>
+<code class="lineno">2 </code>
+<code class="lineno">3 </code>curl -o jenkins.yml <code class="se">\</code>
+<code class="lineno">4 </code>    https://raw.githubusercontent.com/vfarcic/docker-flow-monitor/master/stacks/<code class="se">\</code>
+<code class="lineno">5 </code>jenkins-aws.yml
+<code class="lineno">6 </code>
+<code class="lineno">7 </code>cat jenkins.yml
+</pre></div>
+
+</figure>
+
+<p class="calibre3">The output of the <code class="calibre19">cat</code> command, limited to relevant parts, is as follows.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno"> 1 </code>...
+<code class="lineno"> 2 </code>  master:
+<code class="lineno"> 3 </code>    ...
+<code class="lineno"> 4 </code>    volumes:
+<code class="lineno"> 5 </code>      - master:/var/jenkins_home
+<code class="lineno"> 6 </code>    ...
+<code class="lineno"> 7 </code>
+<code class="lineno"> 8 </code>volumes:
+<code class="lineno"> 9 </code>  master:
+<code class="lineno">10 </code>    driver: cloudstor:aws
+<code class="lineno">11 </code>    external: false
+</pre></div>
+
+</figure>
+
+<p class="calibre3">By now, all the additions should be familiar. We defined a volume called <code class="calibre19">master</code> and mapped it to Jenkins home directory. Further down, we defined the <code class="calibre19">master</code> volume to use <code class="calibre19">cloudstor:aws</code> driver and set <code class="calibre19">external</code> to <code class="calibre19">false</code> so that <code class="calibre19">docekr stack deploy</code> command can take care of creating the volume.</p>
+
+<p class="calibre3">We’ll deploy the new stack before checking whether persistence works.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>docker stack deploy -c jenkins.yml <code class="se">\</code>
+<code class="lineno">2 </code>    jenkins
+<code class="lineno">3 </code>
+<code class="lineno">4 </code>docker stack ps jenkins
+</pre></div>
+
+</figure>
+
+<p class="calibre3">It will take a couple of minutes until the volume is created, the image is pulled, and Jenkins process inside the container is initialized. You’ll know that Jenkins is initialized when you see the message <code class="calibre19">INFO: Jenkins is fully up and running</code> in its logs. Use <code class="calibre19">docker service logs jenkins_master</code> command to see the output.</p>
+
+<p class="calibre3">Now that Jenkins is initialized and uses EFS to store its state, we should confirm that persistence indeed works. We’ll do that by creating a new job, shutting down Jenkins, letting Swarm reschedule a new replica, and, finally, checking that the newly created job is present.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code><code class="nb">exit</code>
+<code class="lineno">2 </code>
+<code class="lineno">3 </code>open <code class="s">"http://</code><code class="nv">$CLUSTER_DNS</code><code class="s">/jenkins/newJob"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">We exited the cluster and opened <em class="calibre21">New Job</em> screen. Please use <em class="calibre21">admin</em> and <em class="calibre21">username</em> and <em class="calibre21">password</em> if you’re asked to authenticate.</p>
+
+<p class="calibre3">Next, type <em class="calibre21">test</em> as the <em class="calibre21">item name</em>, select <em class="calibre21">Pipeline</em> as job type and click the <em class="calibre21">OK</em> button.</p>
+
+<p class="calibre3">Once inside the job configuration screen, please click the <em class="calibre21">Pipeline</em> tab. We are about to write a very complicated pipeline script. Are you ready?</p>
+
+<p class="calibre3">Please type the script that follows inside the <em class="calibre21">Pipeline Script</em> field and press the <em class="calibre21">Save</em> button.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code><code class="calibre19">echo</code> <code class="s">"This is a test"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Now that we created a mighty pipeline job, we can simulate Jenkins failure by sending it an <em class="calibre21">exit</em> command.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>open <code class="s">"http://</code><code class="nv">$CLUSTER_DNS</code><code class="s">/jenkins/exit"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">We exited the cluster and opened the <em class="calibre21">exit</em> screen. You’ll see a button saying <em class="calibre21">Try POSTing</em>. Click it. Jenkins will shut down, and Swarm will detect that as a failure and schedule a new replica of the service.</p>
+
+<p class="calibre3">Wait a few moments until Jenkins inside a new replica is initialized and open the home screen.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>open <code class="s">"http://</code><code class="nv">$CLUSTER_DNS</code><code class="s">/jenkins"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">As you can see, the newly created job is there. Persistence works!</p>
+
+<p class="calibre3">If you visit Jenkins nodes screen, you’ll notice that we are running only one agent labeled <code class="calibre19">prod</code>. That’s the agent we should use only to deploy a new release to production and, potentially, run production tests. We still need to setup agents we’ll use to run unit tests, build images, run integration tests, and so on. We’ll postpone that part for one of the next chapters since efficient usage of agents is related to self-adaptation applied to infrastructure. We are yet to reach that section.</p>
+
+<h3 id="leanpub-auto-alternatives-to-cloudstor-volume-driver" class="calibre20">Alternatives to CloudStor Volume Driver</h3>
+
+<p class="calibre3">If you’re not using <em class="calibre21">Docker For AWS</em> or <em class="calibre21">Azure</em>, using CloudStor might not be the best idea. Even though it can be made to work with AWS or Azure without the template we used to create the cluster, it is not well documented. For now, its goal is only to be used with AWS or Azure clusters made with Docker templates. For anything else, I’d recommend you choose one of the alternatives. My personal preference is <a href="http://rexray.readthedocs.io/">REX-Ray</a>.</p>
+
+<p class="calibre3">All in all, stick with <em class="calibre21">CloudStor</em> if you choose to create your Swarm cluster using <em class="calibre21">Docker For AWS</em> or <em class="calibre21">Azure</em> templates. It is well integrated and provides great out-of-the-box experience. For anything else use <em class="calibre21">REX-Ray</em> if it supports your hosting vendor. Otherwise, look for some other alternative. There are plenty others, and more is yet to come. The most important part of the story is to know when to persist the state and when to let replication do the work. When persistence is paramount, use any of the volume drivers that support your hosting vendor and fit your requirements.</p>
+
+<p class="calibre3">The only thing left before we can call this cluster production-ready is to set up centralized logging.</p>
+
+<h3 id="leanpub-auto-setting-up-centralized-logging" class="calibre20">Setting Up Centralized Logging</h3>
+
+<p class="calibre3">We choose not to integrate our cluster with CloudWatch. Actually, I chose not to use it, and you blindly followed my example. Therefore, I guess that an explanation is in order. It’s going to be a short one. I don’t like CloudWatch. I think it is a bad solution that is way behind the competition and, at the same time, it can become quite expensive when dealing with large quantities of data. More importantly, I believe that we should use services coming from hosting vendors only when they are essential or provide an actual benefit. Otherwise, we’d run a risk of entering the trap called <em class="calibre21">vendor locking</em>. Docker Swarm allows us to deploy services in the same way, no matter whether they are running in AWS or anywhere else. The only difference would be a volume driver we choose to plug in. Similarly, all the services we decided to deploy thus far can run anywhere. The only “lock-in” is with Docker Swarm but, unlike AWS, it is open source. If needed we can even fork it to our repository and build our own Docker Server. That is not to say that I would recommend forking Docker but rather that I am trying to make a clear distinction between being locked into an open source project and with a commercial product. Moreover, with relatively moderate changes, we could migrate our Swarm services to Kubernetes or even Mesos and Marathon. Again, that is not something I recommend but more of a statement that a choice to change the solution is not as time demanding as it might seem on the first look.</p>
+
+<p class="calibre3">I think I run astray from the main subject so let me summarize it. CloudWatch is bad, and it costs money. Many of the free alternatives are much better. If you read my previous books, you probably know that my preference for a logging solution is the ELK stack (ElasticSearch, LogStash, and Kibana). I used them for both logging and metrics but, since then, metrics solution was replaced with Prometheus. How about centralized logging? I think that ELK is still one of the best self-hosted solutions even though I’m not entirely convinced I like the new path Elastic is taking as a company. I’ll leave the discussion about their direction for later and, instead, we’ll dive right into setting up the ELK stack in our cluster.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>ssh -i devops22.pem docker@<code class="nv">$CLUSTER_IP</code>
+<code class="lineno">2 </code>
+<code class="lineno">3 </code>curl -o logging.yml <code class="se">\</code>
+<code class="lineno">4 </code>    https://raw.githubusercontent.com/vfarcic/docker-flow-monitor/master/stacks/<code class="se">\</code>
+<code class="lineno">5 </code>logging-aws.yml
+<code class="lineno">6 </code>
+<code class="lineno">7 </code>cat logging.yml
+</pre></div>
+
+</figure>
+
+<p class="calibre3">We went back to the cluster, downloaded the logging stack, and displayed its contents. The YML file defines the ELK (ElasticSearch, LogStash, and Kibana) stack as well as LogSpout. ElasticSearch is an in-memory database that will store our logs. LogSpout will be sending logs from all containers running inside the cluster to LogStash, which, in turn, will process them and send the output to ElasticSearch. Kibana will be used as UI to explore logs. That was all the details of the stack you’ll get. I’ll assume that you are already familiar with the services we’ll use. They were described in <a href="https://www.amazon.com/dp/1542468914">The DevOps 2.1 Toolkit: Docker Swarm</a>. If you did not read it, information could be easily found on the Internet. Google is your friend.</p>
+
+<p class="calibre3">The first service in the stack is <code class="calibre19">elasticsearch</code>. It is an in-memory database we’ll use to store logs. Its definition is as follows.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno"> 1 </code>  elasticsearch:
+<code class="lineno"> 2 </code>    image: docker.elastic.co/elasticsearch/elasticsearch:5.5.2
+<code class="lineno"> 3 </code>    environment:
+<code class="lineno"> 4 </code>      - xpack.security.enabled=false
+<code class="lineno"> 5 </code>    volumes:
+<code class="lineno"> 6 </code>      - es:/usr/share/elasticsearch/data
+<code class="lineno"> 7 </code>    networks:
+<code class="lineno"> 8 </code>      - default
+<code class="lineno"> 9 </code>    deploy:
+<code class="lineno">10 </code>      labels:
+<code class="lineno">11 </code>        - com.df.distribute=true
+<code class="lineno">12 </code>        - com.df.notify=true
+<code class="lineno">13 </code>        - com.df.port=80
+<code class="lineno">14 </code>        - com.df.alertName=mem_limit
+<code class="lineno">15 </code>        - com.df.alertIf=@service_mem_limit:0.8
+<code class="lineno">16 </code>        - com.df.alertFor=30s
+<code class="lineno">17 </code>      resources:
+<code class="lineno">18 </code>        reservations:
+<code class="lineno">19 </code>          memory: 3000M
+<code class="lineno">20 </code>        limits:
+<code class="lineno">21 </code>          memory: 3500M
+<code class="lineno">22 </code>      placement:
+<code class="lineno">23 </code>        constraints: [node.role == worker]
+<code class="lineno">24 </code>...
+<code class="lineno">25 </code>volumes:
+<code class="lineno">26 </code>  es:
+<code class="lineno">27 </code>    driver: cloudstor:aws
+<code class="lineno">28 </code>    external: false
+<code class="lineno">29 </code>...
+</pre></div>
+
+</figure>
+
+<p class="calibre3">There’s nothing special about the service. We used the environment variable <code class="calibre19">xpack.security.enabled</code> to disable X-Pack. It is a commercial product baked into ElasticSearch image. Since this book uses only open source services, we had to disable it. That does not mean that X-Pack is not useful. It is. Among other things, it provides authentication capabilities to ElasticSearch. I encourage you to explore it and make your own decision whether it’s worth the money.</p>
+
+<p class="calibre3">I could argue that there’s not much reason to secure ElasticSearch since we are not exposing any ports. Only services that are attached to the same network will be able to access it. That means that only people you trust to deploy services would have direct access to it.</p>
+
+<p class="calibre3">Usually, we’d run multiple ElasticSearch services and join them into a cluster (ElasticSearch calls replica set a cluster). Data would be replicated between multiple instances and would be thus preserved in case of a failure. However, we do not need multiple ElasticSearch services, nor do we have enough hardware to host them. Therefore, we’ll run only one ElasticSearch service and, since there will be no replication, we’ll store its state on a volume called <code class="calibre19">es</code>.</p>
+
+<p class="calibre3">The only other noteworthy part of the service definition is the placement defined as <code class="calibre19">constraints: [node.role == worker]</code>. Since ElasticSearch is very resource demanding, it might not be a wise idea to place it on a manager. Therefore, we defined that it should always run on one of the workers and reserved 3GB of memory. That should be enough to get us started. Later on, depending on a number of log entries you’re storing and the cleanup strategy, you might need to increase the memory allocated to it and scale it to multiple services.</p>
+
+<p class="calibre3">Let’s move to the next service.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno"> 1 </code>...
+<code class="lineno"> 2 </code>  logstash:
+<code class="lineno"> 3 </code>    image: docker.elastic.co/logstash/logstash:5.5.2
+<code class="lineno"> 4 </code>    networks:
+<code class="lineno"> 5 </code>      - default
+<code class="lineno"> 6 </code>    deploy:
+<code class="lineno"> 7 </code>      labels:
+<code class="lineno"> 8 </code>        - com.df.distribute=true
+<code class="lineno"> 9 </code>        - com.df.notify=true
+<code class="lineno">10 </code>        - com.df.port=80
+<code class="lineno">11 </code>        - com.df.alertName=mem_limit
+<code class="lineno">12 </code>        - com.df.alertIf=@service_mem_limit:0.8
+<code class="lineno">13 </code>        - com.df.alertFor=30s
+<code class="lineno">14 </code>      resources:
+<code class="lineno">15 </code>        reservations:
+<code class="lineno">16 </code>          memory: 600M
+<code class="lineno">17 </code>        limits:
+<code class="lineno">18 </code>          memory: 1000M
+<code class="lineno">19 </code>    configs:
+<code class="lineno">20 </code>      - logstash.conf
+<code class="lineno">21 </code>    environment:
+<code class="lineno">22 </code>      - LOGSPOUT=ignore
+<code class="lineno">23 </code>    command: logstash -f /logstash.conf
+<code class="lineno">24 </code>...
+<code class="lineno">25 </code>configs:
+<code class="lineno">26 </code>  logstash.conf:
+<code class="lineno">27 </code>    external: true
+</pre></div>
+
+</figure>
+
+<p class="calibre3">LogStash will accept logs using syslog format and protocol and forward them to ElasticSearch. You’ll see the configuration soon.</p>
+
+<p class="calibre3">The only interesting part about the service is that we’re injecting a Docker config. It works in almost the same way as secrets except that it is not encrypted at rest. Since it will not contain anything compromising, there’s no need to set it up as a secret. We did not specify config destination, so it will be available as file <code class="calibre19">/logstash.conf</code>. The command is set to reflect that.</p>
+
+<p class="calibre3">We’re halfway through. The next service in line is <code class="calibre19">kibana</code>.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno"> 1 </code>  kibana:
+<code class="lineno"> 2 </code>    image: docker.elastic.co/kibana/kibana:5.5.2
+<code class="lineno"> 3 </code>    networks:
+<code class="lineno"> 4 </code>      - default
+<code class="lineno"> 5 </code>      - proxy
+<code class="lineno"> 6 </code>    environment:
+<code class="lineno"> 7 </code>      - xpack.security.enabled=false
+<code class="lineno"> 8 </code>      - ELASTICSEARCH_URL=http://elasticsearch:9200
+<code class="lineno"> 9 </code>    deploy:
+<code class="lineno">10 </code>      labels:
+<code class="lineno">11 </code>        - com.df.notify=true
+<code class="lineno">12 </code>        - com.df.distribute=true
+<code class="lineno">13 </code>        - com.df.usersPassEncrypted=false
+<code class="lineno">14 </code>        - com.df.usersSecret=admin
+<code class="lineno">15 </code>        - com.df.servicePath=/app,/elasticsearch,/api,/ui,/bundles,/plugins,/sta\
+<code class="lineno">16 </code>tus,/es_admin
+<code class="lineno">17 </code>        - com.df.port=5601
+<code class="lineno">18 </code>        - com.df.alertName=mem_limit
+<code class="lineno">19 </code>        - com.df.alertIf=@service_mem_limit:0.8
+<code class="lineno">20 </code>        - com.df.alertFor=30s
+<code class="lineno">21 </code>      resources:
+<code class="lineno">22 </code>        reservations:
+<code class="lineno">23 </code>          memory: 600M
+<code class="lineno">24 </code>        limits:
+<code class="lineno">25 </code>          memory: 1000M
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Kibana will provide a UI that will allow us to filter and display logs. It can do many other things but logs are all we need for now. Unfortunately, Kibana is not proxy-friendly. Even though there are a few environment variables that can configure the base path, they do not truly work as expected. We had to specify multiple paths through the <code class="calibre19">com.df.servicePath</code>. They reflect all the combinations of requests Kibana makes. I’d recommend that you replace <code class="calibre19">com.df.servicePath</code> with <code class="calibre19">com.df.serviceDomain</code>. The value could be a subdomain (e.g., <code class="calibre19">kibana.acme.com</code>).</p>
+
+<p class="calibre3">The rest of the definition is pretty uneventful, so we’ll move on.</p>
+
+<p class="calibre3">We, finally, reached the last service of the stack.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno"> 1 </code>  logspout:
+<code class="lineno"> 2 </code>    image: gliderlabs/logspout:v3.2.2
+<code class="lineno"> 3 </code>    networks:
+<code class="lineno"> 4 </code>      - default
+<code class="lineno"> 5 </code>    environment:
+<code class="lineno"> 6 </code>      - SYSLOG_FORMAT=rfc3164
+<code class="lineno"> 7 </code>    volumes:
+<code class="lineno"> 8 </code>      - /var/run/docker.sock:/var/run/docker.sock
+<code class="lineno"> 9 </code>    command: syslog://logstash:51415
+<code class="lineno">10 </code>    deploy:
+<code class="lineno">11 </code>      mode: global
+<code class="lineno">12 </code>      labels:
+<code class="lineno">13 </code>        - com.df.notify=true
+<code class="lineno">14 </code>        - com.df.distribute=true
+<code class="lineno">15 </code>        - com.df.alertName=mem_limit
+<code class="lineno">16 </code>        - com.df.alertIf=@service_mem_limit:0.8
+<code class="lineno">17 </code>        - com.df.alertFor=30s
+<code class="lineno">18 </code>      resources:
+<code class="lineno">19 </code>        reservations:
+<code class="lineno">20 </code>          memory: 20M
+<code class="lineno">21 </code>        limits:
+<code class="lineno">22 </code>          memory: 30M
+</pre></div>
+
+</figure>
+
+<p class="calibre3">LogSpout will monitor Docker events and send all logs to ElasticSearch. We’re exposing Docker socket as a volume so that the service can communicate with Docker server. The command specifies <code class="calibre19">syslog</code> as protocol and <code class="calibre19">logstash</code> running on <code class="calibre19">51415</code> as the destination address. Since all the services of the stack are connected through the same <code class="calibre19">default</code> network, the name of the service (<code class="calibre19">logstash</code>) is all we need as address.</p>
+
+<p class="calibre3">The service will run in the <code class="calibre19">global</code> mode so that a replica is present on each node of the cluster.</p>
+
+<p class="calibre3">We need to create the <code class="calibre19">logstash.conf</code> config before we deploy the stack. The command is as follows.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno"> 1 </code><code class="nb">echo</code> <code class="s">'</code>
+<code class="lineno"> 2 </code><code class="s">input {</code>
+<code class="lineno"> 3 </code><code class="s">  syslog { port =&gt; 51415 }</code>
+<code class="lineno"> 4 </code><code class="s">}</code>
+<code class="lineno"> 5 </code>
+<code class="lineno"> 6 </code><code class="s">output {</code>
+<code class="lineno"> 7 </code><code class="s">  elasticsearch {</code>
+<code class="lineno"> 8 </code><code class="s">    hosts =&gt; ["elasticsearch:9200"]</code>
+<code class="lineno"> 9 </code><code class="s">  }</code>
+<code class="lineno">10 </code><code class="s">}</code>
+<code class="lineno">11 </code><code class="s">'</code> <code class="calibre19">|</code> docker config create logstash.conf -
+</pre></div>
+
+</figure>
+
+<p class="calibre3">We echoed a configuration and piped the output to the <code class="calibre19">docker config create</code> command. The configuration specifies <code class="calibre19">syslog</code> running on port <code class="calibre19">51415</code> as <code class="calibre19">input</code>. The output is ElasticSearch running on port <code class="calibre19">9200</code>. The address of the output is the name of the destination service (<code class="calibre19">elasticsearch</code>).</p>
+
+<p class="calibre3">Now we can deploy the stack.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>docker stack deploy -c logging.yml <code class="se">\</code>
+<code class="lineno">2 </code>    logging
+</pre></div>
+
+</figure>
+
+<p class="calibre3">A few of the images are big, and it will take a moment or two until all services are up-and-running. We’ll confirm the state of the stack by executing the command that follows.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>docker stack ps <code class="se">\</code>
+<code class="lineno">2 </code>    -f desired-state<code class="o">=</code>running logging
+</pre></div>
+
+</figure>
+
+<p class="calibre3">The output is as follows (IDs are removed for brevity).</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno"> 1 </code>NAME                    IMAGE                                               NODE\
+<code class="lineno"> 2 </code>                                        DESIRED STATE CURRENT STATE          ERR\
+<code class="lineno"> 3 </code>OR PORTS
+<code class="lineno"> 4 </code>logging_logspout...     gliderlabs/logspout:v3.2.2                          ip-1\
+<code class="lineno"> 5 </code>72-31-46-204.us-east-2.compute.internal Running       Running 3 minutes ago
+<code class="lineno"> 6 </code>logging_logspout...     gliderlabs/logspout:v3.2.2                          ip-1\
+<code class="lineno"> 7 </code>72-31-12-85.us-east-2.compute.internal  Running       Running 2 minutes ago
+<code class="lineno"> 8 </code>logging_logspout...     gliderlabs/logspout:v3.2.2                          ip-1\
+<code class="lineno"> 9 </code>72-31-31-76.us-east-2.compute.internal  Running       Running 3 minutes ago
+<code class="lineno">10 </code>logging_kibana.1        docker.elastic.co/kibana/kibana:5.5.2               ip-1\
+<code class="lineno">11 </code>72-31-46-204.us-east-2.compute.internal Running       Running 15 seconds ago
+<code class="lineno">12 </code>logging_logstash.1      docker.elastic.co/logstash/logstash:5.5.2           ip-1\
+<code class="lineno">13 </code>72-31-31-76.us-east-2.compute.internal  Running       Running 3 minutes ago
+<code class="lineno">14 </code>logging_elasticsearch.1 docker.elastic.co/elasticsearch/elasticsearch:5.5.2     \
+<code class="lineno">15 </code>                                        Running       Pending 3 minutes a
+</pre></div>
+
+</figure>
+
+<p class="calibre3">You’ll notice that <code class="calibre19">elasticsearch</code> in in <em class="calibre21">pending</em> state. Swarm cannot deploy it because none of the servers meet the requirements we set. We need at least 3GB of memory and a worker node. We should either change the constraint and reservations to fit out current cluster setup or add a worker as a new node. We’ll go with latter.</p>
+
+<p class="calibre3">As a side note, Kibana might fail after a while. It will try to connect to ElasticSearch for a few times and stop the process. Soon after, it will be rescheduled by Swarm, only to stop again. That will continue until we manage to run ElasticSearch.</p>
+
+<p class="calibre3">Please exit the cluster before we proceed.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code><code class="nb">exit</code>
+</pre></div>
+
+</figure>
+
+<h3 id="leanpub-auto-extending-the-capacity-of-the-cluster" class="calibre20">Extending The Capacity Of The Cluster</h3>
+
+<p class="calibre3">Among other resources, <em class="calibre21">Docker For AWS</em> template created two auto-scaling groups. One is used for masters and the other for workers. Those security groups have multiple purposes.</p>
+
+<p class="calibre3">If we choose to update the stack to, for example, change the size of the nodes or upgrade Docker server to a newer version, the template will temporarily increase the number of nodes by one and shut down one of the old ones. The replicas that were running on the old server will be moved to the new one. Once the new server is created, it will move to the next, and the next after that, all the way until all the nodes are replaced. The process is very similar to rolling updates we performed by Swarm when updating services. The same process is done whenever we decide to update any aspect of the <em class="calibre21">Docker For AWS</em> stack.</p>
+
+<p class="calibre3">Similarly, if one of the nodes fail health checks, the template will increase auto-scaling group by one so that a new node is created in its place and, once everything goes back to “normal” update the ASG back to its initial value.</p>
+
+<p class="calibre3">In all those cases, not only that new nodes will be created through auto-scaling groups, but they will also join the cluster as a manager or a worker depending on the type of the server that is being replaced.</p>
+
+<p class="calibre3">We will explore failure recovery in the chapter dedicated to self-healing applied to infrastructure. For now, we’ll limit the scope to an example how to update the CloudFormation stack that created our cluster. We even have a perfect use-case. Our ElasticSearch service needs a worker node, and it needs it to be bigger than those we use as managers. Let’s create it.</p>
+
+<p class="calibre3">We’ll start by opening CloudFormation home screen.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>open <code class="s">"https://us-east-2.console.aws.amazon.com/cloudformation/home"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Please select the <em class="calibre21">devops22</em> stack. Click the <em class="calibre21">Actions</em> drop-down list and select the <em class="calibre21">Update Stack</em> item. Click the <em class="calibre21">Next</em> button</p>
+
+<p class="calibre3">You will be presented with the same initial screen you saw while we were creating the <em class="calibre21">Docker For AWS</em> stack. The only difference is that the values are now populated with choices we made previously.</p>
+
+<p class="calibre3">We can change anything we want. Not only that the changes will be applied accordingly, but the process will use rolling updates to avoid downtime. Whether you will have downtime or not depends on the capabilities of your services. If needed, the process will change one node at the time. If you’re running multiple replicas of a service, the worst case scenario is that you will experience degraded performance for a short period. However, services that are not scalable like, for example, Prometheus, will experience downtime.</p>
+
+<p class="calibre3">When a node is destroyed, Swarm will move it to a newly created server. If the state of that service is on a network drive like EFS, it will continue working as if nothing happened. However, we must count the time between the service failure due to the destruction of the node and until it is up and running again. In most cases that should be only a couple of seconds. No matter how short the downtime is, it is still a period during which our non-scalable services are not operational. Be it as it may, not all services are scalable, and the process is the best we can do. If there is downtime, let it be as short as possible.</p>
+
+<p class="calibre3">In this case, we won’t make an update that will force the system to recreate nodes. Instead, we’ll only add a new worker node.</p>
+
+<p class="calibre3">Please scroll to the <em class="calibre21">Number of Swarm worker nodes?</em> field and change the value from <em class="calibre21">0</em> to <em class="calibre21">1</em>.</p>
+
+<p class="calibre3">Since we defined that ElasticSearch should reserve 3GB of memory, we should change worker instance type. Our managers are using <em class="calibre21">t2.small</em> that comes with 2GB. The smallest instance that fulfills our requirements is <em class="calibre21">t2.medium</em> that comes 4GB of allocated memory.</p>
+
+<p class="calibre3">Please change the value of the <em class="calibre21">Agent worker instance type?</em> drop-down list to <em class="calibre21">t2.medium</em>.</p>
+
+<p class="calibre3">We will not change any other aspect of the cluster, so all that’s left is to click the <em class="calibre21">Next</em> button twice, and select the <em class="calibre21">I acknowledge that AWS CloudFormation might create IAM resources.</em> checkbox.</p>
+
+<p class="calibre3">After a few moments, the <em class="calibre21">Preview your changes</em> section of the screen will be populated with the list of changes that will be applied to the cluster. Since this is a simple and non-destructive update, only a few resources related to auto-scaling groups will be updated.</p>
+
+
+<figure class="image">
+  <img src="../images/00077.jpeg" alt="Figure 13-4: Preview your changes screen from the Docker For AWS template" class="calibre17"/>
+  <figcaption class="calibre18">Figure 13-4: Preview your changes screen from the Docker For AWS template</figcaption>
+</figure>
+
+
+<p class="calibre3">Click the <em class="calibre21">Update</em> button and relax. It’ll take a minute or two until the new server is created and it joins the cluster.</p>
+
+<p class="calibre3">While waiting, we should explore a different method to accomplish the same result.</p>
+
+<p class="calibre3">Please open the <em class="calibre21">Auto-Scaling Groups Details</em> screen.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>open <code class="s">"https://console.aws.amazon.com/ec2/autoscaling/home?#AutoScalingGroups:vie\</code>
+<code class="lineno">2 </code><code class="s">w=details"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">You’ll be presented with the <em class="calibre21">Welcome to Auto Scaling</em> screen. Click the <em class="calibre21">Auto Scaling Groups: 2</em> link.</p>
+
+<p class="calibre3">Select the item with the name starting with <em class="calibre21">devops22-NodeAsg</em>, click the <em class="calibre21">Actions</em> drop-down list, and select the <em class="calibre21">Edit</em> item. We’re looking for the <em class="calibre21">Desired</em> field located in the <em class="calibre21">details</em> tab. It can be changed to any value, and the number of workers would increase (or decrease) accordingly. We could do the same with the auto-scaling group associated with manager nodes. Do not make any change. We’re almost finished with this chapter, and we already have more than enough nodes for the services we’re running.</p>
+
+<p class="calibre3">The knowledge that we can change the number of manager or worker nodes by changing the values in auto-scaling groups is essential. Later on, we’ll combine that with AWS API and Prometheus alerts to automate the process when certain conditions are met.</p>
+
+<p class="calibre3">The new worker node should be up-and-running by now unless you are a very fast reader. If that’s the case, go and grab a coffee.</p>
+
+<p class="calibre3">Let’s go back to the cluster and list the available nodes.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>ssh -i devops22.pem docker@<code class="nv">$CLUSTER_IP</code>
+<code class="lineno">2 </code>
+<code class="lineno">3 </code>docker node ls
+</pre></div>
+
+</figure>
+
+<p class="calibre3">The output is as follows (IDs are removed for brevity).</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>HOSTNAME                                    STATUS AVAILABILITY MANAGER STATUS
+<code class="lineno">2 </code>ip-172-31-2-119.us-east-2.compute.internal  Ready  Active
+<code class="lineno">3 </code>ip-172-31-32-225.us-east-2.compute.internal Ready  Active       Leader
+<code class="lineno">4 </code>ip-172-31-10-207.us-east-2.compute.internal Ready  Active       Reachable
+<code class="lineno">5 </code>ip-172-31-30-18.us-east-2.compute.internal  Ready  Active       Reachable
+</pre></div>
+
+</figure>
+
+<p class="calibre3">As you can see, a new node is added to the mix. Since its a worker, manager status is empty.</p>
+
+<p class="calibre3">Your first thought might be that it is a simple process. After all, all that AWS did was create a new VM. That is right from AWS point of view, but there are a few other things that happened in the background.</p>
+
+<p class="calibre3">During VM initialization, it contacted Dynamo DB to find out the address of the primary manager and the access token. Equipped with that info, it sent a request to that manager to join the cluster. From there on, the new node (in this case worked) is available as part of the Swarm cluster.</p>
+
+
+<figure class="image">
+  <img src="../images/00078.jpeg" alt="Figure 13-5: The process of increasing the number of worker nodes" class="calibre17"/>
+  <figcaption class="calibre18">Figure 13-5: The process of increasing the number of worker nodes</figcaption>
+</figure>
+
+
+<p class="calibre3">Let’s take a look at the <code class="calibre19">logging</code> stack and confirm that adding a new worker node accomplished the mission.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>docker stack ps <code class="se">\</code>
+<code class="lineno">2 </code>    -f desired-state<code class="o">=</code>running logging
+</pre></div>
+
+</figure>
+
+<p class="calibre3">The output is as follows (IDs are removed for brevity).</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno"> 1 </code>NAME                    IMAGE                                               NODE\
+<code class="lineno"> 2 </code>                                        DESIRED STATE CURRENT STATE            E\
+<code class="lineno"> 3 </code>RROR               PORTS
+<code class="lineno"> 4 </code>logging_logspout...     gliderlabs/logspout:v3.2.2                          ip-1\
+<code class="lineno"> 5 </code>72-31-30-18.us-east-2.compute.internal  Running       Running 4 minutes ago
+<code class="lineno"> 6 </code>logging_logspout...     gliderlabs/logspout:v3.2.2                          ip-1\
+<code class="lineno"> 7 </code>72-31-10-207.us-east-2.compute.internal Running       Running 4 minutes ago
+<code class="lineno"> 8 </code>logging_logspout...     gliderlabs/logspout:v3.2.2                          ip-1\
+<code class="lineno"> 9 </code>72-31-32-225.us-east-2.compute.internal Running       Running 4 minutes ago
+<code class="lineno">10 </code>logging_logspout...     gliderlabs/logspout:v3.2.2                          ip-1\
+<code class="lineno">11 </code>72-31-2-119.us-east-2.compute.internal  Running       Running 4 minutes ago
+<code class="lineno">12 </code>logging_elasticsearch.1 docker.elastic.co/elasticsearch/elasticsearch:5.5.2 ip-1\
+<code class="lineno">13 </code>72-31-2-119.us-east-2.compute.internal  Running       Running 3 seconds ago
+<code class="lineno">14 </code>logging_kibana.1        docker.elastic.co/kibana/kibana:5.5.2               ip-1\
+<code class="lineno">15 </code>72-31-30-18.us-east-2.compute.internal  Running       Running 28 seconds ago
+<code class="lineno">16 </code>logging_logstash.1      docker.elastic.co/logstash/logstash:5.5.2           ip-1\
+<code class="lineno">17 </code>72-31-10-207.us-east-2.compute.internal Running       Running 52 seconds
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Since <code class="calibre19">logspout</code> is a global service, a new replica was created in the new node. More importantly, <code class="calibre19">elasticsearch</code> changed its current state from pending to running. Swarm detected that a worker was added to the cluster and deployed a replica of the <code class="calibre19">elasticsearch</code> service.</p>
+
+<p class="calibre3">Our whole production setup is up and running. The only thing left to do is to confirm that Kibana is indeed working as expected and that logs are shipped to ElasticSearch.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code><code class="nb">exit</code>
+<code class="lineno">2 </code>
+<code class="lineno">3 </code>open <code class="s">"http://</code><code class="nv">$CLUSTER_DNS</code><code class="s">/app/kibana"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">We exited the cluster and opened Kibana in a browser. Since we defined the <code class="calibre19">com.df.usersSecret</code> label, <em class="calibre21">Docker Flow Proxy</em> will not allow access to it without authentication. Please use <em class="calibre21">admin</em> as both username and password.</p>
+
+<p class="calibre3">The first time you open Kibana, you’ll be presented with the <em class="calibre21">Configure an index pattern</em> screen. Select <em class="calibre21">@timestamp</em> as <em class="calibre21">Time Filter field name</em> and click the <em class="calibre21">Create</em> button. Kibana and the rest of the ELK stack are ready for use.</p>
+
+<h3 id="leanpub-auto-what-now-11" class="calibre20">What Now?</h3>
+
+<p class="calibre3">Our production cluster is up and running, and it already has most of the vertical services we’ll need. The next steps will build on top of that. We’ll explore <em class="calibre21">Docker For AWS</em> features that make it self-heal and, later on, discuss how we can make it self-adapt as well.</p>
+
+<p class="calibre3">We explored how to update our cluster through UI. That is useful as a way to learn what’s going on but not that much if we’re planning to automate the processes. Fortunately, everything that can be done through UI can be accomplished through AWS API. We’ll use it soon.</p>
+
+<p class="calibre3">Docker folks did a great job with <em class="calibre21">Docker For AWS</em> and <em class="calibre21">Azure</em>. The result is fantastic. It is a very simple, yet very powerful tool in our belt.</p>
+
+<p class="calibre3">I hope you’re hosting your Swarm cluster in AWS or Azure (both behave almost the same). If you’re not, it will be very useful to use <em class="calibre21">Docker For AWS</em> for a while. That, together with this chapter and those that follow, should give you inspiration how to create a cluster with your vendor of choice. Even though the resources will be different, the logic should be the same. The major difference is that you will have to roll your sleeves and replicate many of the features you already saw. More is yet to come so be prepared.</p>
+
+<p class="calibre3">I still recommend using Terraform for anything but a cluster running in AWS or Azure. It is the best tool for creating infrastructure resources. I wish Docker chose it as well instead of relying on the tools that are native to AWS and Azure. That would simplify the process of extending them to other vendors and foster contributions that would enable the same features elsewhere. On the other hand, providing a “native” experience like the one you saw in this chapter has its benefits.</p>
+
+<p class="calibre3">There’s nothing else left to say (until the next chapter).</p>
+
+<p class="calibre3">There’s no reason to pay for things you don’t use. We’ll destroy the cluster and take a break.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>open <code class="s">"https://console.aws.amazon.com/cloudformation"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Select the <em class="calibre21">devops22</em> stack, click the the <em class="calibre21">Actions</em> drop-down list, select the <em class="calibre21">Delete Stack</em> item, and click the <em class="calibre21">Yes, Delete</em> button. The cluster will be gone in a few minutes. Don’t worry. We’ll create a new one soon. Until then, you won’t be able to complain that I’m forcing you to make unnecessary expense.</p>
+
+
+
+</div>
+</body></html>

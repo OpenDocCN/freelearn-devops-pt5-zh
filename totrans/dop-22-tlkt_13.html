@@ -1,0 +1,1130 @@
+<html><head></head><body>
+<div class="calibre6">
+<h2 id="leanpub-auto-self-adaptation-applied-to-services" class="calibre15">Self-Adaptation Applied To Services</h2>
+
+<p class="calibre3">We saw how services could self-heal. It was relatively easy to set up a system that would make sure that the desired number of replicas of each service is (almost) always running. Docker Swarm does all the work. As long as there are enough available hardware resources, our services will (almost) always run the specified number of replicas. All we have to do is is specify <code class="calibre19">replicas: [NUMBER_OF_REPLICAS]</code> in the YAML file that defines our stack.</p>
+
+<p class="calibre3">The problem with self-healing is that it does not take into account changes that affect our systems. We’ll run the same number of replicas even if there is a huge spike in their memory utilization. The same applies if, for example, network traffic increases. Docker Swarm will not make sure that our system adapts to changed conditions. It will follow the blueprint blindly. While that is a vast improvement compared to how we operated the system in the past, it is, by no means, enough. We need the system both to self-heal and self-adapt.</p>
+
+<p class="calibre3">In this chapter, we’ll expand on the knowledge we obtained by now and start exploring ways we can make the system self-adapt. For now, we’ll limit ourselves to services and ignore that hardware needs to heal and adapt as well. That will come later.</p>
+
+<h3 id="leanpub-auto-choosing-the-tool-for-scaling" class="calibre20">Choosing The Tool For Scaling</h3>
+
+<p class="calibre3">We already adopted a few tools. We have metrics stored in Prometheus. We deployed Swarm Listener that propagates information to Prometheus. We have Alertmanager that receives notifications whenever a certain threshold is reached. While those tools allowed us to move forward towards our goals, they are not enough. Now we need to figure out what to do with those alerts. Receiving them in Slack is only the last resort. We need a tool that will be capable of receiving an alert, process the data that comes with it, apply certain logic, and decide what to do.</p>
+
+<p class="calibre3">In most cases, self-adaptation is all about scaling. Since we are limiting ourselves to services, the system, when it receives an alert, needs to be capable of deciding whether to scale up, or down, or do nothing. We need a tool that can accept remote requests, that is capable of running code that will determine what should be done, and that can interact with Docker.</p>
+
+<p class="calibre3">If you read <a href="https://www.amazon.com/dp/1542468914">The DevOps 2.1 Toolkit: Docker Swarm: Building, testing, deploying, and monitoring services inside Docker Swarm clusters</a>, you know that I suggested Jenkins for our continuous deployment processes. We can also use it as the tool that will perform actions that will result in self-adaptation. After all, the real power behind Jenkins is not for running (only) continuous integration/delivery/deployment pipelines but for running tasks of any kind. Its jobs can be triggered remotely from Alertmanager. It has a potent, yet simple scripting language through Pipeline DSL. If we expose Docker Socket in Jenkins agents, they can easily interact with Docker and execute any command available.</p>
+
+<p class="calibre3">Even if you prefer some other tool, the examples we’ll implement in Jenkins can easily be adapted to anything else as long as the before mentioned requirements are fulfilled.</p>
+
+<p class="calibre3">Let’s get going.</p>
+
+<h3 id="leanpub-auto-creating-the-cluster-and-deploying-services-4" class="calibre20">Creating The Cluster And Deploying Services</h3>
+
+<p class="calibre3">Just as in (almost) any other chapter, we’ll start the practical part by setting up a Swarm cluster and deploying the stacks that we used previously.</p>
+
+<aside class="information">
+    <p class="calibre3">All the commands from this chapter are available in the <a href="https://gist.github.com/vfarcic/4a7253f5aaff4c2b7a55170ebbb48cbd">09-self-adapting-services.sh</a> Gist.</p>
+
+</aside>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>chmod +x scripts/dm-swarm-09.sh
+<code class="lineno">2 </code>
+<code class="lineno">3 </code>./scripts/dm-swarm-09.sh
+<code class="lineno">4 </code>
+<code class="lineno">5 </code><code class="nb">eval</code> <code class="k">$(</code>docker-machine env swarm-1<code class="k">)</code>
+<code class="lineno">6 </code>
+<code class="lineno">7 </code>docker stack ls
+</pre></div>
+
+</figure>
+
+<p class="calibre3">We executed the <code class="calibre19">dm-swarm-09.sh</code> script which, in turn, created a Swarm cluster composed of Docker Machines, created the networks, and deployed the stacks. The last command listed all the stacks in the cluster. We are running <code class="calibre19">proxy</code>, <code class="calibre19">monitor</code>, <code class="calibre19">exporter</code>, and <code class="calibre19">go-demo</code> stacks. Those four comprise the whole toolkit we used by now.</p>
+
+<h3 id="leanpub-auto-preparing-the-system-for-alerts" class="calibre20">Preparing The System For Alerts</h3>
+
+<p class="calibre3">We’ll deploy the stack defined in <a href="https://github.com/vfarcic/docker-flow-monitor/blob/master/stacks/jenkins.yml">stacks/jenkins.yml</a>. The definition is as follows.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno"> 1 </code><code class="nn">version</code><code class="calibre19">:</code> <code class="s">'3.1'</code>
+<code class="lineno"> 2 </code>
+<code class="lineno"> 3 </code><code class="nn">services</code><code class="calibre19">:</code>
+<code class="lineno"> 4 </code>
+<code class="lineno"> 5 </code>  <code class="nn">master</code><code class="calibre19">:</code>
+<code class="lineno"> 6 </code>    <code class="nn">image</code><code class="calibre19">:</code> <code class="s">vfarcic</code><code class="o">/</code><code class="s">jenkins</code>
+<code class="lineno"> 7 </code>    <code class="nn">ports</code><code class="calibre19">:</code>
+<code class="lineno"> 8 </code>      <code class="o">-</code> <code class="o">50000</code><code class="s">:</code><code class="o">50000</code>
+<code class="lineno"> 9 </code>    <code class="nn">environment</code><code class="calibre19">:</code>
+<code class="lineno">10 </code>      <code class="o">-</code> <code class="nv">JENKINS_OPTS</code><code class="s">=</code><code class="s">"--prefix=/jenkins"</code>
+<code class="lineno">11 </code>    <code class="nn">networks</code><code class="calibre19">:</code>
+<code class="lineno">12 </code>      <code class="o">-</code> <code class="s">proxy</code>
+<code class="lineno">13 </code>      <code class="o">-</code> <code class="s">default</code>
+<code class="lineno">14 </code>    <code class="nn">deploy</code><code class="calibre19">:</code>
+<code class="lineno">15 </code>      <code class="nn">labels</code><code class="calibre19">:</code>
+<code class="lineno">16 </code>        <code class="o">-</code> <code class="s">com</code><code class="calibre19">.</code><code class="s">df</code><code class="calibre19">.</code><code class="s">notify</code><code class="o">=</code><code class="s">true</code>
+<code class="lineno">17 </code>        <code class="o">-</code> <code class="s">com</code><code class="calibre19">.</code><code class="s">df</code><code class="calibre19">.</code><code class="s">distribute</code><code class="o">=</code><code class="s">true</code>
+<code class="lineno">18 </code>        <code class="o">-</code> <code class="s">com</code><code class="calibre19">.</code><code class="s">df</code><code class="calibre19">.</code><code class="s">servicePath=/jenkins</code>
+<code class="lineno">19 </code>        <code class="o">-</code> <code class="s">com</code><code class="calibre19">.</code><code class="s">df</code><code class="calibre19">.</code><code class="s">port</code><code class="o">=</code><code class="o">8080</code>
+<code class="lineno">20 </code>    <code class="s">extra_hosts:</code>
+<code class="lineno">21 </code>      <code class="o">-</code> <code class="s">"${SLACK_HOST:-devops20.slack.com}:${SLACK_IP:-54.192.78.227}"</code>
+<code class="lineno">22 </code>    <code class="nn">secrets</code><code class="calibre19">:</code>
+<code class="lineno">23 </code>      <code class="o">-</code> <code class="s">jenkins</code><code class="o">-</code><code class="s">user</code>
+<code class="lineno">24 </code>      <code class="o">-</code> <code class="s">jenkins</code><code class="o">-</code><code class="s">pass</code>
+<code class="lineno">25 </code>
+<code class="lineno">26 </code>  <code class="nn">agent</code><code class="calibre19">:</code>
+<code class="lineno">27 </code>    <code class="nn">image</code><code class="calibre19">:</code> <code class="s">vfarcic</code><code class="o">/</code><code class="s">jenkins</code><code class="o">-</code><code class="s">swarm</code><code class="o">-</code><code class="s">agent</code>
+<code class="lineno">28 </code>    <code class="nn">environment</code><code class="calibre19">:</code>
+<code class="lineno">29 </code>      <code class="o">-</code> <code class="nv">USER_NAME_SECRET</code><code class="s">=/run</code><code class="o">/</code><code class="s">secrets/</code><code class="err">$</code><code class="calibre19">{</code><code class="nv">JENKINS_USER_SECRET</code><code class="calibre19">:-</code><code class="s">jenkins</code><code class="o">-</code><code class="s">user</code><code class="calibre19">}</code>
+<code class="lineno">30 </code>      <code class="o">-</code> <code class="nv">PASSWORD_SECRET</code><code class="s">=/run</code><code class="o">/</code><code class="s">secrets/</code><code class="err">$</code><code class="calibre19">{</code><code class="nv">JENKINS_PASS_SECRET</code><code class="calibre19">:-</code><code class="s">jenkins</code><code class="o">-</code><code class="s">pass</code><code class="calibre19">}</code>
+<code class="lineno">31 </code>      <code class="o">-</code> <code class="nv">COMMAND_OPTIONS</code><code class="s">=-master</code> <code class="nn">http</code><code class="calibre19">:</code><code class="o">//</code><code class="nn">master</code><code class="calibre19">:</code><code class="o">8080</code><code class="o">/</code><code class="s">jenkins</code> <code class="o">-</code><code class="s">labels</code> <code class="s">'prod'</code> <code class="o">-</code><code class="s">execu\</code>
+<code class="lineno">32 </code><code class="s">tors</code> <code class="o">4</code>
+<code class="lineno">33 </code>    <code class="nn">networks</code><code class="calibre19">:</code>
+<code class="lineno">34 </code>      <code class="o">-</code> <code class="s">default</code>
+<code class="lineno">35 </code>    <code class="nn">volumes</code><code class="calibre19">:</code>
+<code class="lineno">36 </code>      <code class="o">-</code> <code class="o">/</code><code class="s">var</code><code class="o">/</code><code class="s">run</code><code class="o">/</code><code class="s">docker</code><code class="calibre19">.</code><code class="nn">sock</code><code class="calibre19">:</code><code class="o">/</code><code class="s">var</code><code class="o">/</code><code class="s">run</code><code class="o">/</code><code class="s">docker</code><code class="calibre19">.</code><code class="s">sock</code>
+<code class="lineno">37 </code>    <code class="nn">secrets</code><code class="calibre19">:</code>
+<code class="lineno">38 </code>      <code class="o">-</code> <code class="s">jenkins</code><code class="o">-</code><code class="s">user</code>
+<code class="lineno">39 </code>      <code class="o">-</code> <code class="s">jenkins</code><code class="o">-</code><code class="s">pass</code>
+<code class="lineno">40 </code>    <code class="nn">deploy</code><code class="calibre19">:</code>
+<code class="lineno">41 </code>      <code class="nn">placement</code><code class="calibre19">:</code>
+<code class="lineno">42 </code>        <code class="nn">constraints</code><code class="calibre19">:</code> <code class="calibre19">[</code><code class="s">node</code><code class="calibre19">.</code><code class="s">role</code> <code class="o">==</code> <code class="s">manager</code><code class="calibre19">]</code>
+<code class="lineno">43 </code>
+<code class="lineno">44 </code><code class="nn">networks</code><code class="calibre19">:</code>
+<code class="lineno">45 </code>  <code class="nn">proxy</code><code class="calibre19">:</code>
+<code class="lineno">46 </code>    <code class="nn">external</code><code class="calibre19">:</code> <code class="s">true</code>
+<code class="lineno">47 </code>  <code class="nn">default</code><code class="calibre19">:</code>
+<code class="lineno">48 </code>    <code class="nn">external</code><code class="calibre19">:</code> <code class="s">false</code>
+<code class="lineno">49 </code>
+<code class="lineno">50 </code><code class="nn">secrets</code><code class="calibre19">:</code>
+<code class="lineno">51 </code>  <code class="s">jenkins</code><code class="o">-</code><code class="nn">user</code><code class="calibre19">:</code>
+<code class="lineno">52 </code>    <code class="nn">external</code><code class="calibre19">:</code> <code class="s">true</code>
+<code class="lineno">53 </code>  <code class="s">jenkins</code><code class="o">-</code><code class="nn">pass</code><code class="calibre19">:</code>
+<code class="lineno">54 </code>    <code class="nn">external</code><code class="calibre19">:</code> <code class="s">true</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">The stack contains two services. The first one is Jenkins master. We are running <code class="calibre19">vfarcic/jenkins</code> instead the <a href="https://hub.docker.com/_/jenkins/">official Jenkins image</a>. The <code class="calibre19">vfarcic/jenkins</code> image is already built with an administrative user and has all the plugins we’ll need. With it, we’ll be able to skip Jenkins’ setup process. I won’t go into more detail about the image. If you’re curious, please read the <a href="https://technologyconversations.com/2017/06/16/automating-jenkins-docker-setup/">Automating Jenkins Docker Setup</a> article.</p>
+
+<p class="calibre3">The <code class="calibre19">master</code> service from the stack publishes port <code class="calibre19">50000</code> so that other agents from this, or other clusters, can connect to it. If all the agents run inside the same cluster, there would be no need for this port. Instead, they would be attached to the same Overlay network. Since, in most cases, Jenkins agents tend to be spread across multiple clusters, having the port open is a must.</p>
+
+<p class="calibre3">Environment variable <code class="calibre19">JENKINS_OPTS</code> defines <code class="calibre19">/jenkins</code> as the prefix so that <a href="http://proxy.dockerflow.com/">Docker Flow Proxy</a> can distinguish requests meant for Jenkins from those that should be forwarded to the other services inside the cluster. The service will be attached to the <code class="calibre19">proxy</code> and <code class="calibre19">default</code> networks. The first one will be used for communication with <em class="calibre21">Docker Flow Proxy</em> while the second is meant to connect it to the agent. Labels are there to provide sufficient information to the proxy so that it can reconfigure itself.</p>
+
+<p class="calibre3">We had to add the Slack address as the extra host. Otherwise, Jenkins would not know the address of the <code class="calibre19">devops20.slack.com</code> domain. Finally, we specified two secrets (<code class="calibre19">jenkins-user</code> and <code class="calibre19">jenkins-pass</code>) that will define the credentials of the administrative user.</p>
+
+<p class="calibre3">The <code class="calibre19">agent</code> follows a similar logic. We’re using <code class="calibre19">vfarcic/jenkins-swarm-agent</code> image that contains Docker, Docker Compose, and <a href="https://wiki.jenkins.io/display/JENKINS/Swarm+Plugin">Jenkins Swarm Plugin</a>. The latter allows us to connect to the master automatically. The alternative would be to use the “traditional” approach of adding agents manually through Jenkins’ UI.</p>
+
+<p class="calibre3">Please note that the environment variable <code class="calibre19">COMMAND_OPTIONS</code> has the <code class="calibre19">-labels</code> argument set to <code class="calibre19">prod</code>. Since this agent will run on the production cluster, we need to identify it as such. Even though in this chapter we won’t use Jenkins for continuous deployment processes, it is important to label agents from the start so that, later on, we can add others that will serve a different purpose.</p>
+
+<p class="calibre3">Just as the <code class="calibre19">main</code> service, the agent uses <code class="calibre19">jenkins-user</code> and <code class="calibre19">jenkins-pass</code> secrets to provide credentials that will be used to connect to Jenkins master.</p>
+
+<p class="calibre3">Finally, we need the agent to communicate with one of the Docker managers, so we set the <code class="calibre19">node.role == manager</code> constraint. Without this constraint, agents would not be able to spin new services since only managers are allowed to perform such actions. Containers that form Jenkins agents have Docker socket mounted so that Docker commands executed inside them spin containers on one of the nodes, not inside the container. The later would produce Docker-in-Docker (DinD) which is, in most cases, not a good idea. If you do not want to take my word for granted, please read Jerome’s post <a href="http://jpetazzo.github.io/2015/09/03/do-not-use-docker-in-docker-for-ci/">Using Docker-in-Docker for your CI or testing environment? Think twice.</a></p>
+
+
+<figure class="image">
+  <img src="../images/00043.jpeg" alt="Figure 9-1: Jenkins agents connected to a master and Docker managers" class="calibre17"/>
+  <figcaption class="calibre18">Figure 9-1: Jenkins agents connected to a master and Docker managers</figcaption>
+</figure>
+
+
+<p class="calibre3">Now that we have a general idea about the services inside the <code class="calibre19">jenkins</code> stack, we can deploy it.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno"> 1 </code><code class="nb">echo</code> <code class="s">"admin"</code> <code class="calibre19">|</code> <code class="se">\</code>
+<code class="lineno"> 2 </code>    docker secret create jenkins-user -
+<code class="lineno"> 3 </code>
+<code class="lineno"> 4 </code><code class="nb">echo</code> <code class="s">"admin"</code> <code class="calibre19">|</code> <code class="se">\</code>
+<code class="lineno"> 5 </code>    docker secret create jenkins-pass -
+<code class="lineno"> 6 </code>
+<code class="lineno"> 7 </code><code class="nb">export</code> <code class="nv">SLACK_IP</code><code class="o">=</code><code class="k">$(</code>ping <code class="se">\</code>
+<code class="lineno"> 8 </code>    -c <code class="o">1</code> devops20.slack.com <code class="se">\</code>
+<code class="lineno"> 9 </code>    <code class="calibre19">|</code> awk -F<code class="s">'[()]'</code> <code class="s">'/PING/{print $2}'</code><code class="k">)</code>
+<code class="lineno">10 </code>
+<code class="lineno">11 </code>docker stack deploy <code class="se">\</code>
+<code class="lineno">12 </code>    -c stacks/jenkins.yml jenkins
+</pre></div>
+
+</figure>
+
+<p class="calibre3">We created the secrets and deployed the stack. The value of the environment variable <code class="calibre19">SLACK_IP</code> was obtained by pinging <code class="calibre19">devops20.slack.com</code> domain.</p>
+
+<p class="calibre3">All that is left, before we start using Jenkins, is a bit of patience. We need to wait until Docker pulls the images. Please execute <code class="calibre19">docker stack ps jenkins</code> to confirm that the services are running.</p>
+
+<p class="calibre3">Let’s open Jenkins UI in a browser.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>open <code class="s">"http://</code><code class="k">$(</code>docker-machine ip swarm-1<code class="k">)</code><code class="s">/jenkins"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">If Jenkins does not open, please wait a few moments and refresh the screen. The fact that Docker service is running does not mean that the process inside it is initialized. Jenkins needs ten to fifteen seconds (depending on hardware) to start.</p>
+
+<p class="calibre3">Once you see the Jenkins home screen, please click the <em class="calibre21">Log in</em> link located in the top-right corner of the screen, and use <em class="calibre21">admin</em> as both username and password. Click the <em class="calibre21">log in</em> button to authenticate.</p>
+
+<p class="calibre3">We should confirm that the agent was added to the master by observing the <em class="calibre21">computer</em> screen.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>open <code class="s">"http://</code><code class="k">$(</code>docker-machine ip swarm-1<code class="k">)</code><code class="s">/jenkins/computer"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">You should see two agents. The <em class="calibre21">master</em> agent is set up by default with each Jenkins instance. The second agent identified with a hash name was added through the <code class="calibre19">agent</code> service in the stack.</p>
+
+
+<figure class="image">
+  <img src="../images/00044.jpeg" alt="Figure 9-2: Jenkins agent automatically added to the master" class="calibre17"/>
+  <figcaption class="calibre18">Figure 9-2: Jenkins agent automatically added to the master</figcaption>
+</figure>
+
+
+<h3 id="leanpub-auto-creating-a-scaling-pipeline" class="calibre20">Creating A Scaling Pipeline</h3>
+
+<p class="calibre3">Now comes the exciting part. We’re about to start writing a Pipeline job that will serve as the base for the first self-adaptation script.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>open <code class="s">"http://</code><code class="k">$(</code>docker-machine ip swarm-1<code class="k">)</code><code class="s">/jenkins/newJob"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Once inside the <em class="calibre21">New Job</em> screen, please type <em class="calibre21">service-scale</em> as the item name. Select <em class="calibre21">Pipeline</em> as job type and click the <em class="calibre21">OK</em> button.</p>
+
+<p class="calibre3">Since Jenkins service we created comes with enabled authorization, we need an authentication mechanism for triggering builds. We could use the administrative <em class="calibre21">username</em> and <em class="calibre21">password</em>. A better option is to make a trigger that will be independent of any particular user. That can be accomplished with tokens.</p>
+
+<p class="calibre3">Please select the <em class="calibre21">Trigger builds remotely</em> checkbox from the <em class="calibre21">Build Trigger</em> section of the job configuration screen. Type <em class="calibre21">DevOps22</em> as the <em class="calibre21">Authentication Token</em>. We’ll use it to authenticate remote requests which will trigger a build of this job.</p>
+
+<p class="calibre3">Now we can start writing a Pipeline script. There are quite a few things that it should do so we’ll go step by step. The first thing we need is parameters.</p>
+
+<p class="calibre3">AS a minimum, we need to know which service should be scaled and how many replicas to add or remove. We’ll assume that if the number of replicas is positive, we should scale up. Similarly, if the value is negative, we should scale down.</p>
+
+<p class="calibre3">Please type the script that follows inside the <em class="calibre21">Pipeline Script</em> field.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno"> 1 </code><code class="calibre19">pipeline</code> <code class="o">{</code>
+<code class="lineno"> 2 </code>  <code class="calibre19">agent</code> <code class="o">{</code>
+<code class="lineno"> 3 </code>    <code class="calibre19">label</code> <code class="s">"prod"</code>
+<code class="lineno"> 4 </code>  <code class="o">}</code>
+<code class="lineno"> 5 </code>  <code class="calibre19">parameters</code> <code class="o">{</code>
+<code class="lineno"> 6 </code>    <code class="calibre19">string</code><code class="o">(</code>
+<code class="lineno"> 7 </code>      <code class="nl">name:</code> <code class="s">"service"</code><code class="o">,</code>
+<code class="lineno"> 8 </code>      <code class="nl">defaultValue:</code> <code class="s">""</code><code class="o">,</code>
+<code class="lineno"> 9 </code>      <code class="nl">description:</code> <code class="s">"The name of the service that should be scaled"</code>
+<code class="lineno">10 </code>    <code class="o">)</code>
+<code class="lineno">11 </code>    <code class="calibre19">string</code><code class="o">(</code>
+<code class="lineno">12 </code>      <code class="nl">name:</code> <code class="s">"scale"</code><code class="o">,</code>
+<code class="lineno">13 </code>      <code class="nl">defaultValue:</code> <code class="s">""</code><code class="o">,</code>
+<code class="lineno">14 </code>      <code class="nl">description:</code> <code class="s">"Number of replicas to add or remove."</code>
+<code class="lineno">15 </code>    <code class="o">)</code>
+<code class="lineno">16 </code>  <code class="o">}</code>
+<code class="lineno">17 </code>  <code class="calibre19">stages</code> <code class="o">{</code>
+<code class="lineno">18 </code>    <code class="calibre19">stage</code><code class="o">(</code><code class="s">"Scale"</code><code class="o">)</code> <code class="o">{</code>
+<code class="lineno">19 </code>      <code class="calibre19">steps</code> <code class="o">{</code>
+<code class="lineno">20 </code>        <code class="calibre19">echo</code> <code class="s">"Scaling $service by $scale"</code>
+<code class="lineno">21 </code>      <code class="o">}</code>
+<code class="lineno">22 </code>    <code class="o">}</code>
+<code class="lineno">23 </code>  <code class="o">}</code>
+<code class="lineno">24 </code><code class="o">}</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">If you do not like typing, feel free to copy and paste the contents of the <a href="https://gist.github.com/vfarcic/98778e9f414f1af1ab30cd07e39b015a">service-scale-1.groovy Gist</a>.</p>
+
+<p class="calibre3">Don’t forget to click the <em class="calibre21">Save</em> button.</p>
+
+<p class="calibre3">Since we’re trying to scale services running in production, we defined the agent as such.</p>
+
+<p class="calibre3">Next, we set the parameters <code class="calibre19">service</code> and <code class="calibre19">scale</code>.</p>
+
+<p class="calibre3">Finally, we have only one stage (<code class="calibre19">Scale</code>) with a single step that prints a message. Each pipeline has one or more stages, and each stage is a collection of steps. A step (in this case <code class="calibre19">echo</code>) is a task or logic that should be executed.</p>
+
+<p class="calibre3">Please note that we are using <a href="https://jenkins.io/doc/book/pipeline/syntax/#declarative-pipeline">Declarative</a> instead <a href="https://jenkins.io/doc/book/pipeline/syntax/#scripted-pipeline">Scripted</a> Pipeline syntax. Both have pros and cons. Declarative is a more opinionated and structured syntax while Scripted provides more freedom. The main reason we’re using Declarative flavor is that it has better support for the new <a href="https://jenkins.io/projects/blueocean/">Blue Ocean</a> UI. Moreover, I happen to know the Jenkins roadmap and Declarative Pipeline is at its center.</p>
+
+<p class="calibre3">The default Jenkins UI is not among the prettiest in town. It, kind of, hurts the eyes if you look at it for more than a couple of seconds. Since I do not want your health to deteriorate as a result of reading this book, we’ll switch to <em class="calibre21">Blue Ocean</em>. It is available as the alternative UI (soon to become the default) and we already have it installed as one of the plugins.</p>
+
+<p class="calibre3">Please click the <em class="calibre21">Open Blue Ocean</em> link located in the left-hand menu.</p>
+
+<p class="calibre3">And… Lo and behold… We just jumped through time from the 80s to the present tense (at least from the aesthetic perspective).</p>
+
+<p class="calibre3">Now we can see our simple pipeline script in action.</p>
+
+<p class="calibre3">Since we did not yet run this Pipeline, you will be presented with the <em class="calibre21">This job has not been run</em> message and the <em class="calibre21">Run</em> button. Please click it.</p>
+
+<p class="calibre3">The job will fail the first time we run it. You can consider it a bug that will, hopefully, be fixed shortly. It failed because it got confused with the parameters we specified. I’ll skip the debate about the reasons behind this bug since the workaround is straightforward. Just rerun it by pressing the <em class="calibre21">Run</em> button located in the top-left corner.</p>
+
+<p class="calibre3">You’ll be presented with a screen that contains the input parameters we specified in the script. Please type <em class="calibre21">go-demo_main</em> as <em class="calibre21">the name of the service that should be scaled</em> and <em class="calibre21">2</em> as the <em class="calibre21">number of replicas to add or remove</em>. Click the <em class="calibre21">Run</em> button.</p>
+
+<p class="calibre3">This time the Pipeline worked, and we can observe the result by clicking on the row of the last build which, in this case, should be <em class="calibre21">2</em>.</p>
+
+<p class="calibre3">We specified only one stage that contains a single step that prints the message. Please click the <em class="calibre21">Print Message</em> row to see the result. The output should be as follows.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>Scaling go-demo_main by 2
+</pre></div>
+
+</figure>
+
+
+<figure class="image">
+  <img src="../images/00045.jpeg" alt="Figure 9-3: Jenkins Pipeline with a simple Print Message step" class="calibre17"/>
+  <figcaption class="calibre18">Figure 9-3: Jenkins Pipeline with a simple Print Message step</figcaption>
+</figure>
+
+
+<p class="calibre3">Even though Blue Ocean UI is very pleasing, our goal is not to use it to execute builds. Instead, we should invoke it through an HTTP request. That way, we can be confident that Alertmanager will be capable of invoking it as well.</p>
+
+<p class="calibre3">Please execute the command that follows.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>curl -X POST <code class="s">"http://</code><code class="k">$(</code>docker-machine ip swarm-1<code class="k">)</code><code class="s">/jenkins/job/service-scale/buil\</code>
+<code class="lineno">2 </code><code class="s">dWithParameters?token=DevOps22&amp;service=go-demo_main&amp;scale=2"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">The request we sent is very straightforward. We invoked <code class="calibre19">buildWithParameters</code> endpoint of the job and passed the token and required inputs as query parameters.</p>
+
+<p class="calibre3">We received no response and can consider that no news is good news. The job was run, and we can confirm that through the UI.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>open <code class="s">"http://</code><code class="k">$(</code>docker-machine ip swarm-1<code class="k">)</code><code class="s">/jenkins/blue/organizations/jenkins/ser\</code>
+<code class="lineno">2 </code><code class="s">vice-scale/activity"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">You’ll see the list of builds (there should be three). While the <em class="calibre21">admin</em> user executed the first two through the UI, the last one was triggered remotely. We can see that by observing the <em class="calibre21">started by the remote host</em> message.</p>
+
+<p class="calibre3">Please click the row of the last build and observe that the <em class="calibre21">Print Message</em> is the same as when we executed the job through UI.</p>
+
+<p class="calibre3">Similarly, we can change the <code class="calibre19">scale</code> parameter to a negative value if we’d like to scale down.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>curl -X POST <code class="s">"http://</code><code class="k">$(</code>docker-machine ip swarm-1<code class="k">)</code><code class="s">/jenkins/job/service-scale/buil\</code>
+<code class="lineno">2 </code><code class="s">dWithParameters?token=DevOps22&amp;service=go-demo_main&amp;scale=-1"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">If you repeat the steps from before, the output of the <em class="calibre21">Print Message</em> should be <em class="calibre21">Scaling go-demo_main by -1</em>.</p>
+
+<p class="calibre3">The Pipeline we have does not do anything but accept parameters and print a message that confirms that parameters are passed correctly. As you probably guessed, we are missing the main ingredient.</p>
+
+<p class="calibre3">We need to tell Docker to scale the service. The problem is that Swarm does not accept relative scale values. We cannot instruct it to increase the number of replicas by two nor to decrease it by, let’s say, one. We can overcome this limitation by finding out the current number of replicas and adding or subtracting the value of the <code class="calibre19">scale</code> parameter.</p>
+
+<p class="calibre3">First things first. How can we find out the current number of replicas? The answer lies in the <code class="calibre19">docker service inspect</code> command.</p>
+
+<p class="calibre3">Let’s see the output Docker provides if we inspect the <code class="calibre19">go-demo_main</code> service.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>docker service inspect go-demo_main
+</pre></div>
+
+</figure>
+
+<p class="calibre3">The output is too long to be presented here. Instead, we’ll focus on the part that interests us. In particular, we need the <code class="calibre19">Replicas</code> value. The relevant part of the output is as follows.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno"> 1 </code>[
+<code class="lineno"> 2 </code>    {
+<code class="lineno"> 3 </code>        ...
+<code class="lineno"> 4 </code>        "Spec": {
+<code class="lineno"> 5 </code>            ...
+<code class="lineno"> 6 </code>            "Mode": {
+<code class="lineno"> 7 </code>                "Replicated": {
+<code class="lineno"> 8 </code>                    "Replicas": 3
+<code class="lineno"> 9 </code>                }
+<code class="lineno">10 </code>            },
+<code class="lineno">11 </code>            ...
+</pre></div>
+
+</figure>
+
+<p class="calibre3">As you can see, we got the information that the service runs three replicas.</p>
+
+<p class="calibre3">We can execute the same command from Jenkins pipeline, capture the output, and filter it in a way that only the value of the <code class="calibre19">Replicas</code> key is retrieved.</p>
+
+<p class="calibre3">In the spirit of brevity, we’ll go only through the <code class="calibre19">stages</code> section of the Pipeline. The whole scripts are available as Gist in case you want to copy and paste them in their entirety.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno"> 1 </code><code class="o">...</code>
+<code class="lineno"> 2 </code><code class="calibre19">stages</code> <code class="o">{</code>
+<code class="lineno"> 3 </code>  <code class="calibre19">stage</code><code class="o">(</code><code class="s">"Scale"</code><code class="o">)</code> <code class="o">{</code>
+<code class="lineno"> 4 </code>    <code class="calibre19">steps</code> <code class="o">{</code>
+<code class="lineno"> 5 </code>      <code class="calibre19">script</code> <code class="o">{</code>
+<code class="lineno"> 6 </code>          <code class="kt">def</code> <code class="calibre19">inspectOut</code> <code class="o">=</code> <code class="calibre19">sh</code> <code class="nl">script:</code> <code class="s">"docker service inspect $service"</code><code class="o">,</code>
+<code class="lineno"> 7 </code>                              <code class="nl">returnStdout:</code> <code class="k">true</code>
+<code class="lineno"> 8 </code>          <code class="kt">def</code> <code class="calibre19">inspectJson</code> <code class="o">=</code> <code class="calibre19">readJSON</code> <code class="nl">text:</code> <code class="calibre19">inspectOut</code><code class="o">.</code><code class="na">trim</code><code class="o">()</code>
+<code class="lineno"> 9 </code>          <code class="kt">def</code> <code class="calibre19">currentReplicas</code> <code class="o">=</code> <code class="calibre19">inspectJson</code><code class="o">[</code><code class="o">0</code><code class="o">].</code><code class="na">Spec</code><code class="o">.</code><code class="na">Mode</code><code class="o">.</code><code class="na">Replicated</code><code class="o">.</code><code class="na">Replicas</code>
+<code class="lineno">10 </code>          <code class="kt">def</code> <code class="calibre19">newReplicas</code> <code class="o">=</code> <code class="calibre19">currentReplicas</code> <code class="o">+</code> <code class="calibre19">scale</code><code class="o">.</code><code class="na">toInteger</code><code class="o">()</code>
+<code class="lineno">11 </code>          <code class="calibre19">echo</code> <code class="s">"We should scale from $currentReplicas to $newReplicas replicas"</code>
+<code class="lineno">12 </code>      <code class="o">}</code>
+<code class="lineno">13 </code>    <code class="o">}</code>
+<code class="lineno">14 </code>  <code class="o">}</code>
+<code class="lineno">15 </code><code class="o">}</code>
+<code class="lineno">16 </code><code class="o">...</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Due to Declarative Pipeline’s decision not to allow an easy way to declare variables, we coded everything as one <code class="calibre19">script</code> step.</p>
+
+<p class="calibre3">The script is executing <code class="calibre19">docker service inspect</code> as an <code class="calibre19">sh</code> step. The <code class="calibre19">returnStdout</code> argument is mandatory if we want to be able to capture the output of a command. Later on, we’re using the <code class="calibre19">readJSON</code> step that converts plain text to JSON map. The current number of replicas is retrieved by filtering JSON array. We limited the output to the first element and navigated through <code class="calibre19">Spec</code>, <code class="calibre19">Mode</code>, <code class="calibre19">Replicated</code>, and <code class="calibre19">Replicas</code> items. The result is stored in the variable <code class="calibre19">currentReplicas</code>.</p>
+
+<p class="calibre3">From there on, it is a simple math of subtracting the current number of replicas with the <code class="calibre19">scale</code> parameter. Since it is a string, we had to convert it to an integer.</p>
+
+<p class="calibre3">Finally, we are outputting the result using the <code class="calibre19">echo</code> step.</p>
+
+<p class="calibre3">The complete code can be found in the <a href="https://gist.github.com/vfarcic/77bc5baae1b19d13a7d048f27d03eaff">service-scale-2.groovy Gist</a>.</p>
+
+<p class="calibre3">Let’s open the <em class="calibre21">service-scale</em> configure screen and modify the script.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>open <code class="s">"http://</code><code class="k">$(</code>docker-machine ip swarm-1<code class="k">)</code><code class="s">/jenkins/job/service-scale/configure"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Feel free to replace the current script with the one from the <a href="https://gist.github.com/vfarcic/77bc5baae1b19d13a7d048f27d03eaff">service-scale-2.groovy Gist</a>. Personally, I learn better when I write code instead of copying and pasting snippets. No matter the choice, please click the <em class="calibre21">Apply</em> button once the Pipeline is updated.</p>
+
+<p class="calibre3">Let us repeat the build request and see the outcome.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>curl -X POST <code class="s">"http://</code><code class="k">$(</code>docker-machine ip swarm-1<code class="k">)</code><code class="s">/jenkins/job/service-scale/buil\</code>
+<code class="lineno">2 </code><code class="s">dWithParameters?token=DevOps22&amp;service=go-demo_main&amp;scale=2"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">We’ll go the the job activity screen and observe the result.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>open <code class="s">"http://</code><code class="k">$(</code>docker-machine ip swarm-1<code class="k">)</code><code class="s">/jenkins/blue/organizations/jenkins/ser\</code>
+<code class="lineno">2 </code><code class="s">vice-scale/activity"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Please click the row of the top-most (most recent) build followed with the click on the last (bottom) step with the <em class="calibre21">Print Message</em> label.</p>
+
+<p class="calibre3">The output should be as follows.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>We should scale from 3 to 5 replicas
+</pre></div>
+
+</figure>
+
+
+<figure class="image">
+  <img src="../images/00046.jpeg" alt="Figure 9-4: Jenkins Pipeline with a Print Message stating that we should scale to five replicas" class="calibre17"/>
+  <figcaption class="calibre18">Figure 9-4: Jenkins Pipeline with a Print Message stating that we should scale to five replicas</figcaption>
+</figure>
+
+
+<p class="calibre3">Let us confirm that de-scaling calculation works as well.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>curl -X POST <code class="s">"http://</code><code class="k">$(</code>docker-machine ip swarm-1<code class="k">)</code><code class="s">/jenkins/job/service-scale/buil\</code>
+<code class="lineno">2 </code><code class="s">dWithParameters?token=DevOps22&amp;service=go-demo_main&amp;scale=-1"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">If we open the details of the last build and expand the last step, the message should be as follows.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>We should scale from 3 to 2 replicas
+</pre></div>
+
+</figure>
+
+<p class="calibre3">We are still not performing scaling but, at this moment, we are capable of discovering the current number of replicas and performing a simple calculation that provides us with the number of replicas our system should have.</p>
+
+<p class="calibre3">Now we are ready to expand the script and truly scale the service.</p>
+
+<p class="calibre3">Equipped with the desired number of replicas stored in the variable <code class="calibre19">newReplicas</code>, all we have to do is execute <code class="calibre19">docker service scale</code> command. The updated Pipeline script, limited to the relevant parts, is as follows.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno"> 1 </code><code class="o">...</code>
+<code class="lineno"> 2 </code><code class="calibre19">script</code> <code class="o">{</code>
+<code class="lineno"> 3 </code>    <code class="kt">def</code> <code class="calibre19">inspectOut</code> <code class="o">=</code> <code class="calibre19">sh</code> <code class="nl">script:</code> <code class="s">"docker service inspect $service"</code><code class="o">,</code>
+<code class="lineno"> 4 </code>                        <code class="nl">returnStdout:</code> <code class="k">true</code>
+<code class="lineno"> 5 </code>    <code class="kt">def</code> <code class="calibre19">inspectJson</code> <code class="o">=</code> <code class="calibre19">readJSON</code> <code class="nl">text:</code> <code class="calibre19">inspectOut</code><code class="o">.</code><code class="na">trim</code><code class="o">()</code>
+<code class="lineno"> 6 </code>    <code class="kt">def</code> <code class="calibre19">currentReplicas</code> <code class="o">=</code> <code class="calibre19">inspectJson</code><code class="o">[</code><code class="o">0</code><code class="o">].</code><code class="na">Spec</code><code class="o">.</code><code class="na">Mode</code><code class="o">.</code><code class="na">Replicated</code><code class="o">.</code><code class="na">Replicas</code>
+<code class="lineno"> 7 </code>    <code class="kt">def</code> <code class="calibre19">newReplicas</code> <code class="o">=</code> <code class="calibre19">currentReplicas</code> <code class="o">+</code> <code class="calibre19">scale</code><code class="o">.</code><code class="na">toInteger</code><code class="o">()</code>
+<code class="lineno"> 8 </code>    <code class="calibre19">sh</code> <code class="s">"docker service scale $service=$newReplicas"</code>
+<code class="lineno"> 9 </code>    <code class="calibre19">echo</code> <code class="s">"$service was scaled from $currentReplicas to $newReplicas replicas"</code>
+<code class="lineno">10 </code><code class="o">}</code>
+<code class="lineno">11 </code><code class="o">...</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">The only addition is the <code class="calibre19">sh "docker service scale $service=$newReplicas"</code> line. It should be pretty obvious what it does so we’ll just go ahead and modify it in Jenkins.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>open <code class="s">"http://</code><code class="k">$(</code>docker-machine ip swarm-1<code class="k">)</code><code class="s">/jenkins/job/service-scale/configure"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Please update the current script or replace it with the <a href="https://gist.github.com/vfarcic/2b160b93c6cc08320be80d284eb03017">service-scale-3.groovy Gist</a>. When finished, please press the <em class="calibre21">Apply</em> button.</p>
+
+<p class="calibre3">Let us run the build one more time and observe the result.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>curl -X POST <code class="s">"http://</code><code class="k">$(</code>docker-machine ip swarm-1<code class="k">)</code><code class="s">/jenkins/job/service-scale/buil\</code>
+<code class="lineno">2 </code><code class="s">dWithParameters?token=DevOps22&amp;service=go-demo_main&amp;scale=2"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">This time, we do not need to open Jenkins UI to see the outcome. If everything went as planned, we should see that the <code class="calibre19">go-demo_main</code> service is scaled from three to five replicas.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>docker stack ps <code class="se">\</code>
+<code class="lineno">2 </code>    -f desired-state<code class="o">=</code>Running go-demo
+</pre></div>
+
+</figure>
+
+<p class="calibre3">We listed all the processes that belong to the <code class="calibre19">go-demo</code> stack. As a way to reduce noise from those that previously failed or were shut down, we used the filter that limited the output only to those with <code class="calibre19">Running</code> as the desired state.</p>
+
+<p class="calibre3">The output is as follows (IDs are removed for brevity).</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>NAME           IMAGE                  NODE    DESIRED STATE CURRENT STATE       \
+<code class="lineno">2 </code>  ERROR PORTS
+<code class="lineno">3 </code>go-demo_main.1 vfarcic/go-demo:latest swarm-1 Running       Running 2 hours ago
+<code class="lineno">4 </code>go-demo_db.1   mongo:latest           swarm-1 Running       Running 2 hours ago
+<code class="lineno">5 </code>go-demo_main.2 vfarcic/go-demo:latest swarm-3 Running       Running 2 hours ago
+<code class="lineno">6 </code>go-demo_main.3 vfarcic/go-demo:latest swarm-2 Running       Running 2 hours ago
+<code class="lineno">7 </code>go-demo_main.4 vfarcic/go-demo:latest swarm-2 Running       Running 2 minutes ago
+<code class="lineno">8 </code>go-demo_main.5 vfarcic/go-demo:latest swarm-1 Running       Running 2 minutes ago
+</pre></div>
+
+</figure>
+
+<p class="calibre3">As you can see, the number of <code class="calibre19">go-demo_main</code> replicas is now five. Two of them are running for only a few minutes.</p>
+
+<p class="calibre3">Since I am a paranoid person, I like testing at least a few combinations of any code or script I write. Let’s see whether it works if we choose to scale by a negative number.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>curl -X POST <code class="s">"http://</code><code class="k">$(</code>docker-machine ip swarm-1<code class="k">)</code><code class="s">/jenkins/job/service-scale/buil\</code>
+<code class="lineno">2 </code><code class="s">dWithParameters?token=DevOps22&amp;service=go-demo_main&amp;scale=-1"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">After a few moments, the number of replicas should scale down from five to four. Let’s double-check it.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>docker stack ps <code class="se">\</code>
+<code class="lineno">2 </code>    -f desired-state<code class="o">=</code>Running go-demo
+</pre></div>
+
+</figure>
+
+<p class="calibre3">The output is as follows (IDs are removed for brevity).</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>NAME           IMAGE                  NODE    DESIRED STATE CURRENT STATE       \
+<code class="lineno">2 </code>   ERROR PORTS
+<code class="lineno">3 </code>go-demo_main.1 vfarcic/go-demo:latest swarm-1 Running       Running 2 hours ago
+<code class="lineno">4 </code>go-demo_db.1   mongo:latest           swarm-1 Running       Running 2 hours ago
+<code class="lineno">5 </code>go-demo_main.2 vfarcic/go-demo:latest swarm-3 Running       Running 2 hours ago
+<code class="lineno">6 </code>go-demo_main.3 vfarcic/go-demo:latest swarm-2 Running       Running 2 hours ago
+<code class="lineno">7 </code>go-demo_main.4 vfarcic/go-demo:latest swarm-2 Running       Running 25 minutes a\
+<code class="lineno">8 </code>go
+</pre></div>
+
+</figure>
+
+<p class="calibre3">As you can see, the replica number five disappeared, proving that the script works in both directions. We can use it to scale or de-scale services.</p>
+
+<p class="calibre3">As a side note, don’t get alarmed if some other replica disappeared. There is no guarantee that, when we scale down by one replica, it will be the last one that is removed from the system. For example, replica number two could have been removed instead of the replica five. Indexes are not of importance. What matters is that only four replicas are running inside the cluster.</p>
+
+
+<figure class="image">
+  <img src="../images/00047.jpeg" alt="Figure 9-5: Manual scaling through Jenkins" class="calibre17"/>
+  <figcaption class="calibre18">Figure 9-5: Manual scaling through Jenkins</figcaption>
+</figure>
+
+
+<h3 id="leanpub-auto-preventing-the-scaling-disaster" class="calibre20">Preventing The Scaling Disaster</h3>
+
+<p class="calibre3">On the first look, the script we created works correctly. Doesn’t it?. I’ve seen similar scripts in other places, and there is only one thing I have to say. <strong class="calibre16">Do not run this pipeline in production!!!</strong> It is too dangerous. It can easily crash your entire cluster or make your service disappear. Can you guess why?</p>
+
+<p class="calibre3">Let us imagine the following situation. Prometheus detects that certain threshold is reached (e.g. memory utilization, response time, and so on) and send a notification to Alertmanager. It sends a build request to Jenkins which, in turn, scales the service by increasing the number of replicas by one. So far, so good.</p>
+
+<p class="calibre3">What happens if scaling does not resolve the problem? What if the threshold reached in Prometheus persists? After a while, the process will be repeated, and the service will be scaled up one more time. That might be correct. Maybe there was a significant increase in requests. Maybe that new feature convinced a huge number of  new users to start using our service. In such a situation, scaling twice is a legitimate operation. But, what if the second round of scaling did not produce results. What if the system continues scaling up until all the resources are used, and the nodes start failing one by one? The whole cluster could be destroyed.</p>
+
+<p class="calibre3">If you think that scenario is bad, let me tell you that it can get much worse. Let’s assume that there is a system in place that would create new nodes when resources are over certain threshold. In that scenario, scaling up indefinitely would result in infinite addition of new nodes. As a result, the bill from AWS could ruin your company. Fortunately, there is a limit to how many nodes an account can create. Still, the unlimited increase in the number of replicas together with the growth of nodes up to a limit would only produce a massive bill, and the cluster would still fail at the end.</p>
+
+<p class="calibre3">As you can imagine, neither of those scenarios is pretty.</p>
+
+<p class="calibre3">What happens if the system decides to de-scale? Maybe you set up a lower threshold for a memory limit or for response time. When that boundary is reached, the system should scale-down. Following the similar logic from the previous examples, scaling-down could continue until the number of replicas reaches zero. At that moment, the service is as good as if it would be removed from the system. As a result, we’d have downtime. The major difference is that we would not get a huge bill from our hosting vendor and only a part of the system would experience downtime. The rest of the services should work correctly unless they also start experiencing the same fate.</p>
+
+<aside class="tip">
+    <p class="calibre3">Automated scaling must be tamed with hard-coded lower and upper limits. Without them, we can experience unlimited scaling that will crash any cluster. Equally, de-scaling might result in a complete removal of a service from the cluster.</p>
+
+</aside>
+
+<p class="calibre3">What we need to do is set some limits. We should define what the minimum and the maximum number of replicas of a service is.</p>
+
+<p class="calibre3">However, the trick is not only to know what information should be defined but also where to put that information. Jenkins needs to know what are those limits and I can think of a few ways to provide that information.</p>
+
+<p class="calibre3">We could add two new input parameters to the <code class="calibre19">service-scale</code> Pipeline job. They could be <code class="calibre19">scaleMin</code> and <code class="calibre19">scaleMax</code>. The problem, in that case, is that Alertmanager would need to pass those parameters when sending requests to Jenkins. But, Alertmanager does not have that information. It would need to rely on Prometheus which could get it from the labels scraped from cAdvisor. However, that would assume that all alerts are generated with data that come from cAdvisor. That might not be the case.</p>
+
+<p class="calibre3">So, if neither Alertmanager nor Prometheus are the right places to define (or discover) the scaling limits of a service, the only option left is for Jenkins job to discover it directly from the service. Since Pipeline code has, through its agents, access to Docker Manager, it could, simply, request that information. That should be the optimum solution since it would follow the pattern we used before. We would continue specifying all the information related to a service inside the service itself. To be more precise, we could add a few additional labels and let Jenkins “discover them”.</p>
+
+<p class="calibre3">The <a href="https://github.com/vfarcic/docker-flow-monitor/blob/master/stacks/go-demo-scale.yml">stacks/go-demo-scale.yml</a> is a slightly modified version of the one we used by now. It defines two new labels.</p>
+
+<p class="calibre3">The relevant parts of the stack are as follows.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno"> 1 </code>version: '3'
+<code class="lineno"> 2 </code>
+<code class="lineno"> 3 </code>services:
+<code class="lineno"> 4 </code>
+<code class="lineno"> 5 </code>  main:
+<code class="lineno"> 6 </code>    image: vfarcic/go-demo
+<code class="lineno"> 7 </code>    ...
+<code class="lineno"> 8 </code>    deploy:
+<code class="lineno"> 9 </code>      ...
+<code class="lineno">10 </code>      labels:
+<code class="lineno">11 </code>        ...
+<code class="lineno">12 </code>        - com.df.scaleMin=2
+<code class="lineno">13 </code>        - com.df.scaleMax=4
+<code class="lineno">14 </code>      ...
+</pre></div>
+
+</figure>
+
+<p class="calibre3">We used the <code class="calibre19">com.df.scaleMin</code> and <code class="calibre19">com.df.scaleMax</code> labels to define that the minimum number of replicas is two and the maximum four.</p>
+
+<p class="calibre3">Let’s update the stack with the new definition.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>docker stack deploy <code class="se">\</code>
+<code class="lineno">2 </code>    -c stacks/go-demo-scale.yml <code class="se">\</code>
+<code class="lineno">3 </code>    go-demo
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Please note that the <code class="calibre19">go-demo-scale.yml</code> stack has the number of replicas set to three, so the deployment of the stack will remove any extra replicas we created previously.</p>
+
+<p class="calibre3">Let us update the Pipeline script. The new version is as follows.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno"> 1 </code><code class="o">...</code>
+<code class="lineno"> 2 </code><code class="calibre19">script</code> <code class="o">{</code>
+<code class="lineno"> 3 </code>  <code class="kt">def</code> <code class="calibre19">inspectOut</code> <code class="o">=</code> <code class="calibre19">sh</code> <code class="nl">script:</code> <code class="s">"docker service inspect $service"</code><code class="o">,</code>
+<code class="lineno"> 4 </code>                      <code class="nl">returnStdout:</code> <code class="k">true</code>
+<code class="lineno"> 5 </code>  <code class="kt">def</code> <code class="calibre19">inspectJson</code> <code class="o">=</code> <code class="calibre19">readJSON</code> <code class="nl">text:</code> <code class="calibre19">inspectOut</code><code class="o">.</code><code class="na">trim</code><code class="o">()</code>
+<code class="lineno"> 6 </code>  <code class="kt">def</code> <code class="calibre19">currentReplicas</code> <code class="o">=</code> <code class="calibre19">inspectJson</code><code class="o">[</code><code class="o">0</code><code class="o">].</code><code class="na">Spec</code><code class="o">.</code><code class="na">Mode</code><code class="o">.</code><code class="na">Replicated</code><code class="o">.</code><code class="na">Replicas</code>
+<code class="lineno"> 7 </code>  <code class="kt">def</code> <code class="calibre19">newReplicas</code> <code class="o">=</code> <code class="calibre19">currentReplicas</code> <code class="o">+</code> <code class="calibre19">scale</code><code class="o">.</code><code class="na">toInteger</code><code class="o">()</code>
+<code class="lineno"> 8 </code>  <code class="kt">def</code> <code class="calibre19">minReplicas</code> <code class="o">=</code> <code class="calibre19">inspectJson</code><code class="o">[</code><code class="o">0</code><code class="o">].</code><code class="na">Spec</code><code class="o">.</code><code class="na">Labels</code><code class="o">[</code><code class="s">"com.df.scaleMin"</code><code class="o">].</code><code class="na">toInteger</code><code class="o">()</code>
+<code class="lineno"> 9 </code>  <code class="kt">def</code> <code class="calibre19">maxReplicas</code> <code class="o">=</code> <code class="calibre19">inspectJson</code><code class="o">[</code><code class="o">0</code><code class="o">].</code><code class="na">Spec</code><code class="o">.</code><code class="na">Labels</code><code class="o">[</code><code class="s">"com.df.scaleMax"</code><code class="o">].</code><code class="na">toInteger</code><code class="o">()</code>
+<code class="lineno">10 </code>  <code class="k">if</code> <code class="o">(</code><code class="calibre19">newReplicas</code> <code class="o">&gt;</code> <code class="calibre19">maxReplicas</code><code class="o">)</code> <code class="o">{</code>
+<code class="lineno">11 </code>    <code class="calibre19">error</code> <code class="s">"$service is already scaled to the maximum number of $maxReplicas repl\</code>
+<code class="lineno">12 </code><code class="s">icas"</code>
+<code class="lineno">13 </code>  <code class="o">}</code> <code class="k">else</code> <code class="k">if</code> <code class="o">(</code><code class="calibre19">newReplicas</code> <code class="o">&lt;</code> <code class="calibre19">minReplicas</code><code class="o">)</code> <code class="o">{</code>
+<code class="lineno">14 </code>    <code class="calibre19">error</code> <code class="s">"$service is already descaled to the minimum number of $minReplicas re\</code>
+<code class="lineno">15 </code><code class="s">plicas"</code>
+<code class="lineno">16 </code>  <code class="o">}</code> <code class="k">else</code> <code class="o">{</code>
+<code class="lineno">17 </code>    <code class="calibre19">sh</code> <code class="s">"docker service scale $service=$newReplicas"</code>
+<code class="lineno">18 </code>    <code class="calibre19">echo</code> <code class="s">"$service was scaled from $currentReplicas to $newReplicas replicas"</code>
+<code class="lineno">19 </code>  <code class="o">}</code>
+<code class="lineno">20 </code><code class="o">}</code>
+<code class="lineno">21 </code><code class="o">...</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Let us go through the new additions to the script.</p>
+
+<p class="calibre3">We are extending the usage of JSON obtained through <code class="calibre19">docker service inspect</code> command. In addition to the number of replicas, we are retrieving the values of the labels <code class="calibre19">com.df.scaleMin</code> and <code class="calibre19">com.df.scaleMax</code>.</p>
+
+<p class="calibre3">Further on, we have a simple conditional. If the new number of replicas is more than the maximum allowed, throw an error. Similarly, if the number of replicas is less than the minimum allowed, throw an error as well. We are scaling the service only if neither of those conditions is met. The script is still relatively simple and straight forward.</p>
+
+<p class="calibre3">Let’s go back to the job configuration screen.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>open <code class="s">"http://</code><code class="k">$(</code>docker-machine ip swarm-1<code class="k">)</code><code class="s">/jenkins/job/service-scale/configure"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Please replace the current pipeline with the contents of the <a href="https://gist.github.com/vfarcic/fd15bcae2278d3a5ca223d67fe2f2e64">service-scale-4.groovy Gist</a> or edit it manually and test your ability to type while reading a book. Either way, press the <em class="calibre21">Apply</em> button when finished.</p>
+
+<p class="calibre3">Now we can test whether our scaling process can destroy the cluster.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>curl -X POST <code class="s">"http://</code><code class="k">$(</code>docker-machine ip swarm-1<code class="k">)</code><code class="s">/jenkins/job/service-scale/buil\</code>
+<code class="lineno">2 </code><code class="s">dWithParameters?token=DevOps22&amp;service=go-demo_main&amp;scale=1"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Let us open the job activity screen and check the result of the last build.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>open <code class="s">"http://</code><code class="k">$(</code>docker-machine ip swarm-1<code class="k">)</code><code class="s">/jenkins/blue/organizations/jenkins/ser\</code>
+<code class="lineno">2 </code><code class="s">vice-scale/activity"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">As before, please navigate to the details of the last build and expand the last step. The output should be as follows.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>go-demo_main was scaled from 3 to 4 replicas
+</pre></div>
+
+</figure>
+
+
+<figure class="image1">
+  <img src="../images/00048.jpeg" alt="Figure 9-6: Jenkins job scaled the service" class="calibre17"/>
+  <figcaption class="calibre18">Figure 9-6: Jenkins job scaled the service</figcaption>
+</figure>
+
+
+<p class="calibre3">We’ll confirm the same result by listing the running processes of the <code class="calibre19">go-demo</code> stack.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>docker stack ps <code class="se">\</code>
+<code class="lineno">2 </code>    -f desired-state<code class="o">=</code>Running go-demo
+</pre></div>
+
+</figure>
+
+<p class="calibre3">The output is as follows (IDs are removed for brevity).</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>NAME           IMAGE                  NODE    DESIRED STATE CURRENT STATE       \
+<code class="lineno">2 </code>      ERROR PORTS
+<code class="lineno">3 </code>go-demo_db.1   mongo:latest           swarm-1 Running       Running about an hou\
+<code class="lineno">4 </code>r ago
+<code class="lineno">5 </code>go-demo_main.1 vfarcic/go-demo:latest swarm-1 Running       Running 6 hours ago
+<code class="lineno">6 </code>go-demo_main.2 vfarcic/go-demo:latest swarm-3 Running       Running 6 hours ago
+<code class="lineno">7 </code>go-demo_main.3 vfarcic/go-demo:latest swarm-2 Running       Running 6 hours ago
+<code class="lineno">8 </code>go-demo_main.4 vfarcic/go-demo:latest swarm-2 Running       Running 16 seconds a\
+<code class="lineno">9 </code>go
+</pre></div>
+
+</figure>
+
+<p class="calibre3">As expected, the service scaled from three to four replicas.</p>
+
+<p class="calibre3">And now comes the moment of truth. Will our service continue scaling indefinitely or the limits will be respected? I know you know the answer, but I like being melodramatic every once in a while.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>curl -X POST <code class="s">"http://</code><code class="k">$(</code>docker-machine ip swarm-1<code class="k">)</code><code class="s">/jenkins/job/service-scale/buil\</code>
+<code class="lineno">2 </code><code class="s">dWithParameters?token=DevOps22&amp;service=go-demo_main&amp;scale=1"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">If everything worked as planned, the last build threw an error. Feel free to check it yourself. If there is a purpose in UIs, that’s to announce in red color that something failed.</p>
+
+<p class="calibre3">More importantly than the error message in Jenkins, we should confirm that the number of replicas is still four.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>docker stack ps <code class="se">\</code>
+<code class="lineno">2 </code>    -f desired-state<code class="o">=</code>Running go-demo
+</pre></div>
+
+</figure>
+
+<p class="calibre3">The output is as follows (IDs are removed for brevity).</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>NAME           IMAGE                  NODE    DESIRED STATE CURRENT STATE       \
+<code class="lineno">2 </code>      ERROR PORTS
+<code class="lineno">3 </code>go-demo_db.1   mongo:latest           swarm-1 Running       Running about an hou\
+<code class="lineno">4 </code>r ago
+<code class="lineno">5 </code>go-demo_main.1 vfarcic/go-demo:latest swarm-1 Running       Running 6 hours ago
+<code class="lineno">6 </code>go-demo_main.2 vfarcic/go-demo:latest swarm-3 Running       Running 6 hours ago
+<code class="lineno">7 </code>go-demo_main.3 vfarcic/go-demo:latest swarm-2 Running       Running 6 hours ago
+<code class="lineno">8 </code>go-demo_main.4 vfarcic/go-demo:latest swarm-2 Running       Running 17 minutes a\
+<code class="lineno">9 </code>go
+</pre></div>
+
+</figure>
+
+<p class="calibre3">I’ll skip the instructions for scaling down and observing that the lower limit is maintained. Feel free to play with it yourself, or just take my word for granted and trust me blindly. Either way, there is one more important thing missing.</p>
+
+<h3 id="leanpub-auto-notifying-humans-that-scaling-failed" class="calibre20">Notifying Humans That Scaling Failed</h3>
+
+<p class="calibre3">We made significant progress by creating upper and lower limit for scaling. From now on, the script will not exceed them. However, the fact that we will stay within those limit does not mean that the problem that initiated the procedure is gone. Whichever process decided that a service should be scaled probably did that based on some metrics. If, for example, the average response time was slow and the system failed to scale up, the problem will persist unless there is some dark magic involved. We can categorize this situation as “the body tried to self-adapt, it failed, it’s time to consult a doctor.” Since we live in the 21st century, we won’t call him but send him a Slack message.</p>
+
+<p class="calibre3">Before we proceed and modify the script one more time, we need to configure Slack in Jenkins.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>open <code class="s">"http://</code><code class="k">$(</code>docker-machine ip swarm-1<code class="k">)</code><code class="s">/jenkins/configure"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Once inside the <em class="calibre21">Configure System</em> screen, please scroll down to the <em class="calibre21">Global Slack Notifier Settings</em> section. Please enter <em class="calibre21">devops20</em> in the <em class="calibre21">Team Subdomain</em> field and <em class="calibre21">2Tg33eiyB0PfzxII2srTeMbd</em> in the <em class="calibre21">Integration Token</em> field.</p>
+
+<p class="calibre3">Now there is another bug or an undocumented feature. I guess it all depends on who you ask. We cannot test the connection before clicking the <em class="calibre21">Apply</em> button. There is an explanation for that, but we won’t go through it now. Once you applied the configuration, please click the <em class="calibre21">Test Connection</em> button. If everything worked as expected, you should see the <em class="calibre21">Success</em> message.</p>
+
+<p class="calibre3">At the same time, the <em class="calibre21">#df-monitor-tests</em> channel inside <a href="https://devops20.slack.com">DevOps20 team</a> should have received a message similar to <em class="calibre21">Slack/Jenkins plugin: you’re all set on http://192.168.99.100/jenkins/</em>.</p>
+
+<p class="calibre3">Feel free to change the subdomain and the token to match your own Slack channel. You’ll find the token in <em class="calibre21">Slack</em> &gt; <em class="calibre21">App &amp; Integrations</em> &gt; <em class="calibre21">Manage</em> &gt; <em class="calibre21">Jenkins CI</em> screen.</p>
+
+<p class="calibre3">All that’s left is to <em class="calibre21">Save</em> the changes to the config and update the Pipeline script. We’ll add <code class="calibre19">post</code> section.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno"> 1 </code><code class="o">...</code>
+<code class="lineno"> 2 </code><code class="calibre19">post</code> <code class="o">{</code>
+<code class="lineno"> 3 </code>  <code class="calibre19">failure</code> <code class="o">{</code>
+<code class="lineno"> 4 </code>    <code class="calibre19">slackSend</code><code class="o">(</code>
+<code class="lineno"> 5 </code>      <code class="nl">color:</code> <code class="s">"danger"</code><code class="o">,</code>
+<code class="lineno"> 6 </code>      <code class="nl">message:</code> <code class="s">"""$service could not be scaled.</code>
+<code class="lineno"> 7 </code><code class="s">Please check Jenkins logs for the job ${env.JOB_NAME} #${env.BUILD_NUMBER}</code>
+<code class="lineno"> 8 </code><code class="s">${env.RUN_DISPLAY_URL}"""</code>
+<code class="lineno"> 9 </code>    <code class="o">)</code>
+<code class="lineno">10 </code>  <code class="o">}</code>
+<code class="lineno">11 </code><code class="o">}</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Post sections in Declarative Pipeline are always executed no matter the outcome of the build steps. We can fine tune it by adding conditions. In our case, we specified that it should be executed only on <code class="calibre19">failure</code>. Inside it, we used the <code class="calibre19">slackSend</code> step from the <a href="https://jenkins.io/doc/pipeline/steps/slack/">Slack Notification Plugin</a>. There are quite a few arguments we could have specified but, in this case, we constrained ourselves to only two. We set the <code class="calibre19">color</code> to <code class="calibre19">danger</code> and the mandatory <code class="calibre19">message</code>. Please consult the plugin for more information if you’d like to fine-tune the behavior to your needs.</p>
+
+<p class="calibre3">Now we can open the job configuration page and apply the changes.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>open <code class="s">"http://</code><code class="k">$(</code>docker-machine ip swarm-1<code class="k">)</code><code class="s">/jenkins/job/service-scale/configure"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Please modify the script yourself or replace it with the <a href="https://gist.github.com/vfarcic/aeb332b2ab889a81377833f904148d10">service-scale-5.groovy Gist</a>. When finished, please press the <em class="calibre21">Apply</em> button.</p>
+
+<p class="calibre3">We can quickly confirm whether notifications to Slack work by sending a request that would scale way below the limit.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>curl -X POST <code class="s">"http://</code><code class="k">$(</code>docker-machine ip swarm-1<code class="k">)</code><code class="s">/jenkins/job/service-scale/buil\</code>
+<code class="lineno">2 </code><code class="s">dWithParameters?token=DevOps22&amp;service=go-demo_main&amp;scale=-123"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Please open the <em class="calibre21">#df-monitor-tests</em> channel in <a href="https://devops20.slack.com/">https://devops20.slack.com/</a> and confirm that the message was sent.</p>
+
+
+<figure class="image1">
+  <img src="../images/00049.jpeg" alt="Figure 9-7: Jenkins notification in Slack" class="calibre17"/>
+  <figcaption class="calibre18">Figure 9-7: Jenkins notification in Slack</figcaption>
+</figure>
+
+
+<p class="calibre3">Now that we have a Jenkins job that is in charge of scaling our services, we should make sure that the system can execute it when certain thresholds are met.</p>
+
+<h3 id="leanpub-auto-integrating-alertmanager-with-jenkins" class="calibre20">Integrating Alertmanager With Jenkins</h3>
+
+<p class="calibre3">At the moment, we are running Alertmanager configured in the previous chapter. It creates a Slack notification on all alerts. Let’s try to change it so that alerts trigger a remote invocation of the Jenkins job <code class="calibre19">service-scale</code>.</p>
+
+<p class="calibre3">Since Alertmanager configuration is stored as a Docker secret and they are immutable (we cannot update them), we need to remove the service and the secret and create them again.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>docker service rm monitor_alert-manager
+<code class="lineno">2 </code>
+<code class="lineno">3 </code>docker secret rm alert_manager_config
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Let us define a Slack config that will send build requests to the <em class="calibre21">service-scale</em> job. The command that creates the service with the configuration is as follows.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno"> 1 </code><code class="nb">echo</code> <code class="s">"route:</code>
+<code class="lineno"> 2 </code><code class="s">  group_by: [service]</code>
+<code class="lineno"> 3 </code><code class="s">  repeat_interval: 1h</code>
+<code class="lineno"> 4 </code><code class="s">  receiver: 'jenkins-go-demo_main'</code>
+<code class="lineno"> 5 </code>
+<code class="lineno"> 6 </code><code class="s">receivers:</code>
+<code class="lineno"> 7 </code><code class="s">  - name: 'jenkins-go-demo_main'</code>
+<code class="lineno"> 8 </code><code class="s">    webhook_configs:</code>
+<code class="lineno"> 9 </code><code class="s">      - send_resolved: false</code>
+<code class="lineno">10 </code><code class="s">        url: 'http://</code><code class="k">$(</code>docker-machine ip swarm-1<code class="k">)</code><code class="s">/jenkins/job/service-scale/buil\</code>
+<code class="lineno">11 </code><code class="s">dWithParameters?token=DevOps22&amp;service=go-demo_main&amp;scale=1'</code>
+<code class="lineno">12 </code><code class="s">"</code> <code class="calibre19">|</code> docker secret create alert_manager_config -
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Unlike the previous configuration, this time we’re using <a href="https://prometheus.io/docs/alerting/configuration/#&lt;webhook_config&gt;">webhook_config</a>. The URL is the same as the one we used before. If the alert is executed, it will send a <code class="calibre19">buildWithParameters</code> request that will build <code class="calibre19">service-scale</code> job with <code class="calibre19">go-demo_main</code> as the <code class="calibre19">service</code>.</p>
+
+<p class="calibre3">You’ll notice that the parameters of the request are hard-coded. This time we are not using templating to customize the config. The problem is that <code class="calibre19">url</code> cannot use templated fields. For good or bad, that is part of the design. Instead, it sends all the fields of the alert as payload and expects the endpoint to translate it for its own needs. That would be great except for the fact that Jenkins does not accept job input fields in any other but its own format. All in all, both Alertmanager and Prometheus expect the other to adapt. So, we’re in a bit of a trouble and have to specify an entry for each service. That is far from optimum.</p>
+
+<p class="calibre3">Later on, we might discuss alternatives to this approach. We might come to the conclusion that Alertmanager should be extended with <code class="calibre19">jenkins_config</code>. Maybe we’ll extend Alertmanager with our own custom code that reconfigures it using labels. It could be <code class="calibre19">Docker Flow Alertmanager</code>. We might choose a different tool altogether. We are engineers, and we should not accept limitations of other tools but extend them to suit our needs or build our own. Everything in this book is based on open source, and we should contribute back to the community.</p>
+
+<p class="calibre3">However, we will not do any of those. For now, we’ll just accept the limitation and move on. The important thing to note is that you’d need a receiver for every service that should be scaled. It’s not the best solution, but it should do until a better solution emerges.</p>
+
+<p class="calibre3">If you’re interested in a discussion about the decision not to allow templates in <code class="calibre19">url</code> fields, please explore the <a href="https://github.com/prometheus/alertmanager/issues/684">Alertmanager issue 684</a>.</p>
+
+<p class="calibre3">Since we removed the <code class="calibre19">monitor_alert-manager</code> service, we should redeploy the <code class="calibre19">monitor</code> stack. This time, we’ll use a slightly modified version of the stack. The only difference is that we’ll (temporarily) publish Alertmanager’s port 9093. That will allow us to test the configuration by sending HTTP requests to it.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code><code class="nv">DOMAIN</code><code class="o">=</code><code class="k">$(</code>docker-machine ip swarm-1<code class="k">)</code> <code class="se">\</code>
+<code class="lineno">2 </code>    docker stack deploy <code class="se">\</code>
+<code class="lineno">3 </code>    -c stacks/docker-flow-monitor-slack-9093.yml <code class="se">\</code>
+<code class="lineno">4 </code>    monitor
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Please wait a few moments until <code class="calibre19">monitor_alert-manager</code> service is up and running. You can check the status by listing processes of the <code class="calibre19">monitor</code> stack (e.g. <code class="calibre19">docker stack ps monitor</code>).</p>
+
+<p class="calibre3">Before we test the integration with Alertmanager, we should reset the number of replicas of <code class="calibre19">go-demo_main</code> service back to three.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>docker service scale go-demo_main<code class="o">=</code><code class="o">3</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Now that Alertmanager with the new configuration is running, we’ll send it a request that will help us validate that everything works as expected.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>curl -H <code class="s">"Content-Type: application/json"</code> <code class="se">\</code>
+<code class="lineno">2 </code>    -d <code class="s">'[{"labels":{"service":"it-does-not-matter"}}]'</code> <code class="se">\</code>
+<code class="lineno">3 </code>    <code class="k">$(</code>docker-machine ip swarm-1<code class="k">)</code>:9093/api/v1/alerts
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Please note that this time we did not specify <code class="calibre19">go-demo_main</code> as the service. Since all alerts are forwarded to the same Jenkins job and with the same parameters, it does not matter what we put in the request. We’ll fix that soon. For now, we should open Jenkins and see the activity of the <code class="calibre19">service-scale</code> job.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>open <code class="s">"http://</code><code class="k">$(</code>docker-machine ip swarm-1<code class="k">)</code><code class="s">/jenkins/blue/organizations/jenkins/ser\</code>
+<code class="lineno">2 </code><code class="s">vice-scale/activity"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Alertmanager sent a request to Jenkins which, in turn, run a new build of the <code class="calibre19">service-scale</code> job. As a result, <code class="calibre19">go-demo_main</code> service should be scaled from three to four replicas. Let us confirm that.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>docker service ps <code class="se">\</code>
+<code class="lineno">2 </code>    -f desired-state<code class="o">=</code>Running go-demo_main
+</pre></div>
+
+</figure>
+
+<p class="calibre3">The output is as follows (IDs are removed for brevity).</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>NAME           IMAGE                  NODE    DESIRED STATE CURRENT STATE       \
+<code class="lineno">2 </code>  ERROR PORTS
+<code class="lineno">3 </code>go-demo_main.1 vfarcic/go-demo:latest swarm-1 Running       Running 3 hours ago
+<code class="lineno">4 </code>go-demo_main.2 vfarcic/go-demo:latest swarm-2 Running       Running 3 hours ago
+<code class="lineno">5 </code>go-demo_main.3 vfarcic/go-demo:latest swarm-3 Running       Running 3 hours ago
+<code class="lineno">6 </code>go-demo_main.4 vfarcic/go-demo:latest swarm-1 Running       Running 3 minutes ago
+</pre></div>
+
+</figure>
+
+<p class="calibre3">As you can see from the output, the service is scaled to four replicas.</p>
+
+
+<figure class="image1">
+  <img src="../images/00050.jpeg" alt="Figure 9-8: Alertmanager triggering of a Jenkins job that results in scaling of a service" class="calibre17"/>
+  <figcaption class="calibre18">Figure 9-8: Alertmanager triggering of a Jenkins job that results in scaling of a service</figcaption>
+</figure>
+
+
+<p class="calibre3">Being able to send requests from Alertmanager to Jenkins works fine if all the alerts are the same. However, that is almost never the case. We should start distinguishing alerts. One easy improvement we can do is to create a default receiver. We can, for example, say that by default all alerts are sent to Slack and specify explicitly those that should be forwarded somewhere else.</p>
+
+<p class="calibre3">Let us remove the secret and the service and discuss the new configuration.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>docker service rm monitor_alert-manager
+<code class="lineno">2 </code>
+<code class="lineno">3 </code>docker secret rm alert_manager_config
+</pre></div>
+
+</figure>
+
+<p class="calibre3">The configuration that envelops both Slack and Jenkins as receivers is as follows.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno"> 1 </code><code class="nb">echo</code> <code class="s">"route:</code>
+<code class="lineno"> 2 </code><code class="s">  group_by: [service]</code>
+<code class="lineno"> 3 </code><code class="s">  repeat_interval: 1h</code>
+<code class="lineno"> 4 </code><code class="s">  receiver: 'slack'</code>
+<code class="lineno"> 5 </code><code class="s">  routes:</code>
+<code class="lineno"> 6 </code><code class="s">  - match:</code>
+<code class="lineno"> 7 </code><code class="s">      service: 'go-demo_main'</code>
+<code class="lineno"> 8 </code><code class="s">    receiver: 'jenkins-go-demo_main'</code>
+<code class="lineno"> 9 </code>
+<code class="lineno">10 </code><code class="s">receivers:</code>
+<code class="lineno">11 </code><code class="s">  - name: 'slack'</code>
+<code class="lineno">12 </code><code class="s">    slack_configs:</code>
+<code class="lineno">13 </code><code class="s">      - send_resolved: true</code>
+<code class="lineno">14 </code><code class="s">        title: '[{{ .Status | toUpper }}] {{ .GroupLabels.service }} service is \</code>
+<code class="lineno">15 </code><code class="s">in danger!'</code>
+<code class="lineno">16 </code><code class="s">        title_link: 'http://</code><code class="k">$(</code>docker-machine ip swarm-1<code class="k">)</code><code class="s">/monitor/alerts'</code>
+<code class="lineno">17 </code><code class="s">        text: '{{ .CommonAnnotations.summary}}'</code>
+<code class="lineno">18 </code><code class="s">        api_url: 'https://hooks.slack.com/services/T308SC7HD/B59ER97SS/S0KvvyStV\</code>
+<code class="lineno">19 </code><code class="s">nIt3ZWpIaLnqLCu'</code>
+<code class="lineno">20 </code><code class="s">  - name: 'jenkins-go-demo_main'</code>
+<code class="lineno">21 </code><code class="s">    webhook_configs:</code>
+<code class="lineno">22 </code><code class="s">      - send_resolved: false</code>
+<code class="lineno">23 </code><code class="s">        url: 'http://</code><code class="k">$(</code>docker-machine ip swarm-1<code class="k">)</code><code class="s">/jenkins/job/service-scale/buil\</code>
+<code class="lineno">24 </code><code class="s">dWithParameters?token=DevOps22&amp;service=go-demo_main&amp;scale=1'</code>
+<code class="lineno">25 </code><code class="s">"</code> <code class="calibre19">|</code> docker secret create alert_manager_config -
+</pre></div>
+
+</figure>
+
+<p class="calibre3">The <code class="calibre19">route</code> section defines <code class="calibre19">slack</code> as the receiver. Further down, the <code class="calibre19">routes</code> section uses <code class="calibre19">match</code> to filter alerts. We specified that any alert with the <code class="calibre19">service</code> label set to <code class="calibre19">go-demo_main</code> should be sent to the <code class="calibre19">jenkins-go-demo_main</code> receiver. In other words, every alert will be sent to Slack unless it matches one of the <code class="calibre19">routes</code>.</p>
+
+<p class="calibre3">The <code class="calibre19">receivers</code> section defines <code class="calibre19">slack</code> and <code class="calibre19">jenkins-go-demo_main</code> entries. They are the same as those we used in previous configurations.</p>
+
+<p class="calibre3">We should be able to test the whole system now. We should generate a situation that will create an alert in Prometheus, fire it to Alertmanager, and, depending on the alert type, see the result in Slack or Jenkins. But, first things should come first. We should create the new <code class="calibre19">monitor_alert-manager</code> service by redeploying the stack.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code><code class="nv">DOMAIN</code><code class="o">=</code><code class="k">$(</code>docker-machine ip swarm-1<code class="k">)</code> <code class="se">\</code>
+<code class="lineno">2 </code>    docker stack deploy <code class="se">\</code>
+<code class="lineno">3 </code>    -c stacks/docker-flow-monitor-slack.yml <code class="se">\</code>
+<code class="lineno">4 </code>    monitor
+</pre></div>
+
+</figure>
+
+<p class="calibre3">As before, please execute <code class="calibre19">docker stack ps monitor</code> to confirm that all the services in the stack are running.</p>
+
+<p class="calibre3">We’ll also revert the number of replicas of the <code class="calibre19">go-demo_main</code> service to three. Since we set the maximum to four, an intent to scale up would fail if we do not put it back to three.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>docker service scale go-demo_main<code class="o">=</code><code class="o">3</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Finally, we’ll simulate the “disaster” scenario by changing the <code class="calibre19">alertIf</code> conditions of our services. The first we’ll play with is <code class="calibre19">node-exporter</code> service from the <code class="calibre19">exporter</code> stack. We’ll set its node memory limit to one percent. That is certain to be lower than the actual usage.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>docker service update <code class="se">\</code>
+<code class="lineno">2 </code>    --label-add com.df.alertIf.1<code class="o">=</code>@node_mem_limit:0.01 <code class="se">\</code>
+<code class="lineno">3 </code>    exporter_node-exporter
+</pre></div>
+
+</figure>
+
+<p class="calibre3">If everything went as planned, the chain of the events is about to unfold. The first stop is Prometheus. Let’s open the alerts screen.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>open <code class="s">"http://</code><code class="k">$(</code>docker-machine ip swarm-1<code class="k">)</code><code class="s">/monitor/alerts"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">The <code class="calibre19">exporter_nodeexporter_mem_load</code> alert should change its status to pending (orange color) and then to firing (red). If it’s still green, please wait a few moments and refresh the screen.</p>
+
+<p class="calibre3">Prometheus fired the alert to Alertmanager. Since it does not match any of the <code class="calibre19">routes</code> (<code class="calibre19">service</code> is not <code class="calibre19">go-demo_main</code>), it falls into “default” category and will be forwarded to Slack. That is the logical flow of actions. Since we do not (yet) have a mechanism that scales nodes, the only reasonable action is to notify humans through Slack and let them solve this problem.</p>
+
+<p class="calibre3">Feel free to visit the <em class="calibre21">#df-monitor-tests</em> channel inside <a href="https://devops20.slack.com/">devops20.slack.com</a>. The message generated with the alert from your system should be waiting for you.</p>
+
+<p class="calibre3">Before we proceed, we’ll revert the <code class="calibre19">exporter_node-exporter</code> service to its original state.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>docker service update <code class="se">\</code>
+<code class="lineno">2 </code>    --label-add com.df.alertIf.1<code class="o">=</code>@node_mem_limit:0.8 <code class="se">\</code>
+<code class="lineno">3 </code>    exporter_node-exporter
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Soon, another message will appear in Slack stating that the problem with the <code class="calibre19">exporter_node-exporter</code> is resolved.</p>
+
+<p class="calibre3">Let’s see what happens when an alert is generated and matches one of the routes. We’ll simulate another “disaster”.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>docker service update <code class="se">\</code>
+<code class="lineno">2 </code>    --label-add com.df.alertIf<code class="o">=</code>@service_mem_limit:0.01 <code class="se">\</code>
+<code class="lineno">3 </code>    go-demo_main
+</pre></div>
+
+</figure>
+
+<p class="calibre3">You should know the drill by now. Wait until Prometheus fires the alert, wait a bit more, and, this time, confirm it by opening the <code class="calibre19">service-scale</code> activity screen in Jenkins.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>open <code class="s">"http://</code><code class="k">$(</code>docker-machine ip swarm-1<code class="k">)</code><code class="s">/jenkins/blue/organizations/jenkins/ser\</code>
+<code class="lineno">2 </code><code class="s">vice-scale/activity"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Alertmanager filtered the alert, deduced that it matches a specific <code class="calibre19">route</code> and sent it to the matching receiver. This time, that receiver was <code class="calibre19">webhook_config</code> that sends requests to build <code class="calibre19">service-scale</code> Jenkins job using <code class="calibre19">go-demo_main</code> as the input parameter.</p>
+
+<p class="calibre3">All in all, our service was scaled one more time, and we’ll confirm that by listing all the running processes of the service.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>docker service ps <code class="se">\</code>
+<code class="lineno">2 </code>    -f desired-state<code class="o">=</code>Running go-demo_main
+</pre></div>
+
+</figure>
+
+<p class="calibre3">The output is as follows (IDs are removed for brevity).</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>NAME           IMAGE                  NODE    DESIRED STATE CURRENT STATE       \
+<code class="lineno">2 </code>   ERROR PORTS
+<code class="lineno">3 </code>go-demo_main.1 vfarcic/go-demo:latest swarm-1 Running       Running 3 seconds ago
+<code class="lineno">4 </code>go-demo_main.2 vfarcic/go-demo:latest swarm-2 Running       Running 3 hours ago
+<code class="lineno">5 </code>go-demo_main.3 vfarcic/go-demo:latest swarm-3 Running       Running 3 hours ago
+<code class="lineno">6 </code>go-demo_main.4 vfarcic/go-demo:latest swarm-1 Running       Running 16 minutes a\
+<code class="lineno">7 </code>go
+</pre></div>
+
+</figure>
+
+<p class="calibre3">A new replica (with index <code class="calibre19">1</code>) was created three seconds ago. We averted the “disaster” that could be caused by an imaginary increase in traffic that resulted in the increase in memory usage of the service.</p>
+
+
+<figure class="image">
+  <img src="../images/00051.jpeg" alt="Figure 9-9: The full self-adaptive system applied to services" class="calibre17"/>
+  <figcaption class="calibre18">Figure 9-9: The full self-adaptive system applied to services</figcaption>
+</figure>
+
+
+<p class="calibre3">Unfortunately, we do not have a mechanism in place to scale down. The good news is that we will have it soon.</p>
+
+<h3 id="leanpub-auto-what-now-7" class="calibre20">What Now</h3>
+
+<p class="calibre3">We explored how we can add Jenkins to the mix and make it scale any service. We used relative scaling and made sure that there are some limits so that the service will always be within some boundaries.</p>
+
+<p class="calibre3">Jenkins, by itself, proved to be very flexible and allowed us to set up a reasonably bullet-proof scaling mechanism with only a few lines of Declarative Pipeline code. Unfortunately, we hit some limits when integrating Alertmanager with Jenkins. As a result, Alertmanager config is not as generic as we’d like it to be. We might revisit that subject later and apply some alternative strategy. We might want to extend it. The solution might be called <code class="calibre19">Docker Flow Alertmanager</code>. Or, we might choose to replace Jenkins with our own solution. Since I’m fond of names that start with <em class="calibre21">Docker Flow</em>, we might add <em class="calibre21">Scaler</em> to the mix. We might opt for something completely unexpected, or we might say that the current solution is good enough. Time will tell. For now, the important thing to note is that we made a very important step towards having a <em class="calibre21">Self-Adapting</em> system that works on Swarm’s out-of-the-box <em class="calibre21">Self-Healing</em> capabilities.</p>
+
+<p class="calibre3">There are still a few critical problems we need to work on. Our <em class="calibre21">Self-Adapting</em> system applied to services does not scale down. The reason is simple. We need more data. Using memory as a metric is very important but not very reliable. Having memory below some threshold hardly gives us enough reason to scale up, and it definitely does not provide a valid metric that would let us decide to scale down. We need something else, and I’ll leave you guessing what that is.</p>
+
+<p class="calibre3">Another major missing piece of the puzzle is hardware. We are yet to build a system that <em class="calibre21">Self-Heals</em> and <em class="calibre21">Self-Adapts</em> servers. For now, we were concentrated only on services.</p>
+
+<p class="calibre3">That was the longest chapter by now. You must be wasted. If you’re not, I am, and this is where we’ll make a break. As always, hardware needs to rest as much as we do so we’ll destroy the machines we created in this chapter and start the next one fresh.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>docker-machine rm -f swarm-1 swarm-2 swarm-3
+</pre></div>
+
+</figure>
+
+
+
+</div>
+</body></html>

@@ -1,0 +1,317 @@
+<html><head></head><body>
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Using Secrets to Hide Confidential Information</h1>
+                </header>
+            
+            <article>
+                
+<div class="packt_tip">We cannot treat all information equally. Sensitive data needs to be handled with additional care. Kubernetes provides an additional level of protection through Secrets.</div>
+<p>A Secret is a relatively small amount of sensitive data. Some of the typical candidates for Secrets would be passwords, tokens, and SSH keys.</p>
+<p>Kubernetes Secrets are very similar to ConfigMaps. If you compare the differences in the syntax, you'll notice that there are only a few (if any). Conceptually, both ConfigMaps and Secrets are, more or less, the same. If you are familiar with ConfigMaps, you should have no trouble applying that knowledge to Secrets.</p>
+<p>We already used Secrets without even knowing. Every Pod we created so far had a Secret mounted automatically by the system. We'll start by exploring auto-generated Secrets and proceed to produce some ourselves.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Creating a Cluster</h1>
+                </header>
+            
+            <article>
+                
+<p>We'll continue using Minikube, so the instructions for creating a cluster are still the same. They should be engraved in the back of your brain so we'll just execute them without any explanation.</p>
+<div class="packt_infobox">All the commands from this chapter are available in the <a href="https://gist.github.com/37b3ef7afeaf9237aeb2b9a8065b10c3"><kbd>10-secret.sh</kbd></a> (<a href="https://gist.github.com/vfarcic/37b3ef7afeaf9237aeb2b9a8065b10c3" target="_blank"><span class="URLPACKT">https://gist.github.com/vfarcic/37b3ef7afeaf9237aeb2b9a8065b10c3</span></a>) Gist.</div>
+<pre><strong>cd k8s-specs</strong>
+    
+<strong>git pull</strong>
+    
+<strong>minikube start --vm-driver=virtualbox</strong>
+    
+<strong>minikube addons enable ingress</strong>
+    
+<strong>kubectl config current-context</strong>  </pre>
+<p>We'll start by deploying an application without creating any user-defined Secret.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Exploring built-in Secrets</h1>
+                </header>
+            
+            <article>
+                
+<p>We'll create the same Jenkins objects we defined earlier:</p>
+<pre><strong>kubectl create \</strong>
+<strong>    -f secret/jenkins-unprotected.yml \</strong>
+<strong>    --record --save-config</strong>
+    
+<strong>kubectl rollout status deploy jenkins</strong>  </pre>
+<p>We created an Ingress, a Deployment, and a Service object. We also executed the <kbd>kubectl rollout status</kbd> command that will tell us when the deployment is finished.</p>
+<p>The <kbd>secret/jenkins-unprotected.yml</kbd> definition does not use any new feature so we won't waste time going through the YAML file. Instead, we'll open Jenkins UI in a browser.</p>
+<pre><strong>open "http://$(minikube ip)/jenkins"</strong>  </pre>
+<p>Upon closer inspection, you'll notice that there is no login button. Jenkins is currently unprotected. The image does allow the option to define an initial administrative username and password. If the files <kbd>/etc/secrets/jenkins-user</kbd> and <kbd>/etc/secrets/jenkins-pass</kbd> are present, the init script will read them, and use the content inside those files to define the username and the password. Since we're already familiar with ConfigMaps, we could use them to generate those files. However, since the user and the password should be better protected than other configuration entries, we'll switch to Secrets.</p>
+<p>If you're interested in details, please explore the <a href="https://github.com/vfarcic/docker-flow-stacks/blob/master/jenkins/Dockerfile"><kbd>jenkins/Dockerfile</kbd></a> (<a href="https://github.com/vfarcic/docker-flow-stacks/blob/master/jenkins/Dockerfile" target="_blank"><span class="URLPACKT">https://github.com/vfarcic/docker-flow-stacks/blob/master/jenkins/Dockerfile</span></a>) from the <a href="https://github.com/vfarcic/docker-flow-stacks"><kbd>vfarcic/docker-flow-stack</kbd></a> (<a href="https://github.com/vfarcic/docker-flow-stacks" target="_blank"><span class="URLPACKT">https://github.com/vfarcic/docker-flow-stacks</span></a>) repository. The important part is that it expects <kbd>/etc/secrets/jenkins-user</kbd> and <kbd>/etc/secrets/jenkins-pass</kbd> files. If we can provide them, in a relatively secure manner, our Jenkins will be (more) secured by default.</p>
+<p>We'll start by checking whether we already have some Secrets in the cluster:</p>
+<pre><strong>kubectl get secrets</strong>  </pre>
+<p>The output is as follows:</p>
+<pre><strong>NAME                TYPE                                DATA AGE</strong>
+<strong>default-token-l9fhk kubernetes.io/service-account-token 3    32m</strong>  </pre>
+<p>We did not create any Secret, and yet one is available in the system.</p>
+<p>The <kbd>default-token-l9fhk</kbd> Secret was created automatically by Kubernetes. It contains credentials that can be used to access the API. Moreover, Kubernetes automatically modifies the Pods to use this Secret. Unless we tweak Service Accounts, every Pod we create will have this Secret. Let's confirm that is indeed true.</p>
+<pre><strong>kubectl describe pods</strong>  </pre>
+<p>The output, limited to the relevant sections, is as follows:</p>
+<pre><strong>...</strong>
+<strong>    Mounts:</strong>
+<strong>      /var/jenkins_home from jenkins-home (rw)</strong>
+<strong>      /var/run/secrets/kubernetes.io/serviceaccount from default-<br/> token-l9fhk (ro)</strong>
+<strong>...</strong>
+<strong>Volumes:</strong>
+<strong>  jenkins-home:</strong>
+<strong>    Type:    EmptyDir (a temporary directory that shares a pod's <br/> lifetime)</strong>
+<strong>    Medium:</strong>
+<strong>  default-token-l9fhk:</strong>
+<strong>    Type:        Secret (a volume populated by a Secret)</strong>
+<strong>    SecretName:  default-token-l9fhk</strong>
+<strong>    Optional:    false</strong>
+<strong>...</strong>  </pre>
+<p>We can see that two volumes are mounted. The first one (<kbd>/var/jenkins_home</kbd>) was defined by us. It's the same mount volume we used in the previous chapter, and it is meant to preserve Jenkins' state by mounting its home directory.</p>
+<p>The second mount is the more interesting one. We can see that it references the auto-generated Secret <kbd>default-token-l9fhk</kbd> and that it mounts it as <kbd>/var/run/secrets/kubernetes.io/serviceaccount</kbd>. Let's take a look at that directory.</p>
+<pre><strong>POD_NAME=$(kubectl get pods \</strong>
+<strong>    -l service=jenkins,type=master \</strong>
+<strong>    -o jsonpath="{.items[*].metadata.name}")</strong>
+  
+<strong>kubectl exec -it $POD_NAME -- ls \</strong>
+<strong>    /var/run/secrets/kubernetes.io/serviceaccount</strong>  </pre>
+<p>The output is as follows:</p>
+<pre><strong>ca.crt  namespace  token</strong>  </pre>
+<p>By auto-mounting that Secret, we got three files. They are required if we'd like to access the API server from within the containers. <kbd>ca.crt</kbd> is the certificate, the <kbd>namespace</kbd> contains the namespace the Pod is running in, and the last one is the token we'd need to establish communication with the API.</p>
+<p>We won't go into examples that prove those files can be used to access the API server securely. Just remember that if you ever need to do that, Kubernetes has you covered through that auto-generated Secret.</p>
+<p>Let's get back to the task at hand. We want to make Jenkins more secure by providing it with an initial username and password.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Creating and mounting generic Secrets</h1>
+                </header>
+            
+            <article>
+                
+<p>The commands to create Secrets are almost the same as those we used to create ConfigMaps. We can, for example, generate Secrets based on literal values.</p>
+<pre><strong>kubectl create secret \</strong>
+<strong>    generic my-creds \</strong>
+<strong>    --from-literal=username=jdoe \</strong>
+<strong>    --from-literal=password=incognito</strong>  </pre>
+<p>The major difference is that we specified the type of the Secret as <kbd>generic</kbd>. It could also be <kbd>docker-registry</kbd> or <kbd>tls</kbd>. We won't explore those two, but only say that the former can be used to provide <kbd>kubelet</kbd> with credentials it needs to pull images from private registries. The latter is used for storing certificates. In this chapter, we'll focus on the <kbd>generic</kbd> type of secrets which happen to use the same syntax as ConfigMaps.</p>
+<p>Just as with ConfigMaps, generic Secrets can use <kbd>--from-env-file</kbd>, <kbd>--from-file</kbd>, and <kbd>--from-literal</kbd> as sources. They can be mounted as files, or transformed into environment variables. Since creating Secrets is so similar to creating ConfigMaps, we won't go into all the permutations we can do. I expect that you'll consult the ConfigMaps chapter if you have already forgotten the arguments we can use.</p>
+<p>For now, we created a Secret called <kbd>my-creds</kbd> which holds two literal values.</p>
+<p>Let's take a look at the Secrets we now have in the cluster:</p>
+<pre><strong>kubectl get secrets</strong></pre>
+<p>The output is as follows:</p>
+<pre><strong>NAME                TYPE                                DATA AGE</strong>
+<strong>default-token-n6fs4 kubernetes.io/service-account-token 3    33m</strong>
+<strong>my-creds            Opaque                              2    6s</strong>  </pre>
+<p>We can see that the newly created Secret is available and that it has two pieces of data.</p>
+<p>Let's see the <kbd>json</kbd> representation of the Secret and try to find out how to retrieve it.</p>
+<pre><strong>kubectl get secret my-creds -o json</strong>  </pre>
+<p>The output is as follows (<kbd>metadata</kbd> is removed for brevity):</p>
+<pre><strong>{</strong>
+<strong>    "apiVersion": "v1",</strong>
+<strong>    "data": {</strong>
+<strong>        "password": "aW5jb2duaXRv",</strong>
+<strong>        "username": "amRvZQ=="</strong>
+<strong>    },</strong>
+<strong>    "kind": "Secret",</strong>
+<strong>    "metadata": {</strong>
+<strong>        ...</strong>
+<strong>    },</strong>
+<strong>    "type": "Opaque"</strong>
+<strong>}</strong>  </pre>
+<p>We can see that the <kbd>data</kbd> field contains the <kbd>password</kbd> and the <kbd>username</kbd>. They coincide with the literal values we specified in the command that created the Secret.</p>
+<p>You'll notice that the values are "strange". They are encoded. If we'd like to see the original values we stored as secrets, we'll need to decode them:</p>
+<pre><strong>kubectl get secret my-creds \</strong>
+<strong>    -o jsonpath="{.data.username}" \</strong>
+<strong>    | base64 --decode</strong>  </pre>
+<p>We used <kbd>jsonpath</kbd> to filter the output so that only the <kbd>username</kbd> data is retrieved. Since the value is encoded, we piped the output to <kbd>base64</kbd> command that decoded it for us. The result is <kbd>jdoe</kbd>.</p>
+<p>Similarly, the command that will retrieve and decode the second Secret data is as follows:</p>
+<pre><strong>kubectl get secret my-creds \</strong>
+<strong>    -o jsonpath="{.data.password}" \</strong>
+<strong>    | base64 --decode</strong>  </pre>
+<p>The output is <kbd>incognito</kbd>:</p>
+<p>Let's see how we could mount the Secret we created:</p>
+<pre><strong>cat secret/jenkins.yml</strong>  </pre>
+<p>The output, limited to the relevant parts, is as follows:</p>
+<pre><strong>apiVersion: apps/v1beta2</strong>
+<strong>kind: Deployment</strong>
+<strong>metadata:</strong>
+<strong>  name: Jenkins</strong>
+<strong>spec:</strong>
+<strong>  ...</strong>
+<strong>  template:</strong>
+<strong>    ...</strong>
+<strong>    spec:</strong>
+<strong>      containers:</strong>
+<strong>      - name: Jenkins</strong>
+<strong>        image: vfarcic/Jenkins</strong>
+<strong>        env:</strong>
+ <strong>        - name: JENKINS_OPTS</strong>
+<strong>          value: --prefix=/Jenkins</strong>
+<strong>        volumeMounts:</strong>
+<strong>        - name: jenkins-home</strong>
+<strong>          mountPath: /var/jenkins_home</strong>
+<strong>        - name: jenkins-creds</strong>
+<strong>          mountPath: /run/secrets</strong>
+<strong>      volumes:</strong>
+<strong>      - name: jenkins-home</strong>
+<strong>        emptyDir: {}</strong>
+<strong>      - name: jenkins-creds</strong>
+<strong>        secret:</strong>
+<strong>          secretName: my-creds</strong>
+<strong>          defaultMode: 0444</strong>
+<strong>          items:</strong>
+<strong>          - key: username</strong>
+<strong>            path: jenkins-user</strong>
+<strong>          - key: password</strong>
+<strong>            path: jenkins-pass</strong>
+<strong>...</strong>  </pre>
+<p>We added <kbd>jenkins-creds</kbd> that mounts the <kbd>/etc/secrets</kbd> directory. The <kbd>jenkins-creds</kbd> Volume references the Secret named <kbd>my-creds</kbd>. Since we want the process inside the container to only read the Secret, we set the <kbd>defaultMode</kbd> to <kbd>0444</kbd>. That will give read permissions to everyone. Typically, we'd set it to <kbd>0400</kbd>, thus giving the read permissions only to the <kbd>root</kbd> user. However, since the Jenkins image uses the <kbd>jenkins</kbd> user, we gave read permissions to everyone instead of only to the <kbd>root</kbd> user.</p>
+<p>Finally, since the image expected files named <kbd>jenkins-user</kbd> and <kbd>jenkins-pass</kbd>, we made explicit paths. Otherwise, Kubernetes would create files <kbd>username</kbd> and <kbd>password</kbd>.</p>
+<p>Let's apply the new definition:</p>
+<pre><strong>kubectl apply -f secret/jenkins.yml</strong>
+    
+<strong>kubectl rollout status deploy jenkins</strong>  </pre>
+<p>We applied the definition and waited until the new objects were rolled out.</p>
+<p>Now we can check whether the correct files are indeed stored in the <kbd>/etc/secrets</kbd> directory:</p>
+<pre><strong>POD_NAME=$(kubectl get pods \</strong>
+<strong>    -l service=jenkins,type=master \</strong>
+<strong>    -o jsonpath="{.items[*].metadata.name}")</strong>
+    
+<strong>kubectl exec -it $POD_NAME \</strong>
+<strong>    -- ls /etc/secrets</strong>  </pre>
+<p>The output of the latter command is as follows:</p>
+<pre><strong>jenkins-pass  jenkins-user</strong>  </pre>
+<p>The files we need are indeed injected. To be on the safe side, we'll also check the content of one of them:</p>
+<pre><strong>kubectl exec -it $POD_NAME \</strong>
+<strong>    -- cat /etc/secrets/jenkins-user</strong>  </pre>
+<p>The output is <kbd>jdoe</kbd>, the username of our newly deployed Jenkins.</p>
+<p>Finally, let's confirm that the application is indeed secured.</p>
+<pre><strong>open "http://$(minikube ip)/jenkins"</strong>  </pre>
+<p>You'll see that, this time, the link to create new jobs is gone.</p>
+<p>Please use <kbd>jdoe</kbd> and <kbd>incognito</kbd> if you'd like to login to your newly deployed and (more) secured Jenkins.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Secrets compared to ConfigMaps</h1>
+                </header>
+            
+            <article>
+                
+<p>So far, Kubernetes Secrets do not seem to differ from ConfigMaps. From a functional perspective, they are, indeed, the same. Both allow us to inject some content. Both can use files, literal values, and files with environment variables as data sources. Both can output data into containers as files or as environment variables. Even the syntax for using Secrets is almost the same as the one used for ConfigMaps.</p>
+<p>The only significant difference between ConfigMaps and Secrets is that the latter creates files in a tmpfs. They are constructed as in-memory files, thus leaving no trace on the host's files system. That, in itself, is not enough to call Secrets secure, but it is a step towards it. We'd need to combine them with <em>Authorization Policies</em> to make the passwords, keys, tokens, and other never-to-be-seen-by-publicly types of data secure. Even then, we might want to turn our attention towards third-party Secret managers like HashiCorp Vault (<a href="https://www.vaultproject.io/" target="_blank"><span class="URLPACKT">https://www.vaultproject.io/</span></a>).</p>
+<div class="packt_tip">Secrets are almost the same as ConfigMaps. The main difference is that the secret files are created in tmpfs. Kubernetes secrets do not make your system secure. They are only a step towards such a system.</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Not so secretive Secrets</h1>
+                </header>
+            
+            <article>
+                
+<p>Almost everything Kubernetes needs is stored in etcd (<a href="https://github.com/coreos/etcd" target="_blank"><span class="URLPACKT">https://github.com/coreos/etcd</span></a>). That includes Secrets. The problem is that they are stored as plain text. Anyone with access to etcd has access to Kubernetes Secrets. We can limit the access to etcd, but that's not the end of our troubles. <em>etcd</em> stores data to disk as plain text. Restricting the access to etcd still leaves the Secrets vulnerable to who has access to the file system. That, in a way, diminishes the advantage of storing Secrets in containers in tmpfs. There's not much benefit of having them in tmpfs used by containers, if those same Secrets are stored on disk by etcd.</p>
+<p>Even after securing the access to etcd and making sure that unauthorized users do not have access to the file system partition used by etcd, we are still at risk. When multiple replicas of etcd are running, data is synchronized between them. By default, etcd communication between replicas is not secured. Anyone sniffing that communication could get a hold of our secrets.</p>
+<p>Kubernetes Secrets are a step in the right direction. It is, without a doubt, better to use Secrets than to expose confidential information as environment variables or other less secure methods. Still, Secrets can give us a false sense of security.</p>
+<p>We need to take additional precautions to protect ourselves. That might include, but is not limited to, the following actions:</p>
+<ul>
+<li>Secure the communication between etcd instances with SSL/TLS.</li>
+<li>Limit the access to etcd and wipe the disk or partitions that were used by it.</li>
+<li>Do not define Secrets in YAML files stored in a repository. Create Secrets through ad-hoc <kbd>kubectl create secret</kbd> commands. If possible, delete commands history afterward.</li>
+<li>Make sure that the applications using Secrets do not accidentally output them to logs or transmit them to other applications.</li>
+<li>Create policies that allow only trusted users to retrieve secrets. However, you should be aware that even with proper policies in place, any user with permissions to run a Pod could mount a Secret and read it.</li>
+</ul>
+<p>We did not yet explore etcd configuration, nor did we learn how to set up authorization policies. For now, just remember that Secrets are not as secured as one might think. At least, not those provided by Kubernetes community. I do encourage you to use them, as long as you're aware of their shortcomings.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">What now?</h1>
+                </header>
+            
+            <article>
+                
+<p>There isn't much left to say, so we'll enter into the destructive mode and eliminate the cluster we created:</p>
+<pre><strong>minikube delete</strong>  </pre>
+<div class="packt_infobox">If you'd like to know more about Secrets, please explore Secret v1 core (<a href="https://v1-9.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.9/#secret-v1-core" target="_blank"><span class="URLPACKT">https://v1-9.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.9/#secret-v1-core</span></a>) API documentation.</div>
+<div class="mce-root CDPAlignCenter CDPAlign"><img src="assets/a4078c60-a951-4aa5-8c6b-0cf6fd8939a9.png" style="width:55.92em;height:29.92em;"/></div>
+<div class="packt_figure packt_figref CDPAlignCenter CDPAlign">Figure 10-1: The components explored so far</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Kubernetes Secrets compared to Docker Swarm Secrets</h1>
+                </header>
+            
+            <article>
+                
+<p>Secrets are very similar to Kubernetes ConfigMaps and Docker Swarm configs. Everything we said for configurations applies to Secrets, with a few additional features.</p>
+<p>Both Kubernetes and Docker Swarm stores Secrets in tmpfs inside containers. From that aspect, they are equally secure. The significant difference is in the way Secrets are stored internally.</p>
+<p>Kubernetes stores Secrets in etcd. By default, they are exposed, and we need to take extra precautions to protect them. Docker Swarm secrets are, on the other hand, more secure by default. They are synchronized between managers using SSL/TLS, and they are encrypted at rest. I prefer "secured by default" approach behind Docker Swarm secrets. In Kubernetes, we need to take extra steps to reach a similar level of security as with Docker Swarm.</p>
+<p>On the other hand, Kubernetes integration with third-party solutions for secrets is much better. For example, plugging in HashiCorp Vault (<a href="https://www.vaultproject.io/" target="_blank"><span class="URLPACKT">https://www.vaultproject.io/</span></a>) into a Kubernetes workflow is much smoother than if we'd try to integrate it with Docker Swarm. Using Vault is a better solution than what Kubernetes and Swarm offer.</p>
+<p>Even though Kubernetes can be made more secure with Vault and similar products, for now, we are evaluating secrets management that comes with Kubernetes and Docker Swarm. If we exclude third-party solutions, Docker Swarm has a clear advantage over Kubernetes. Its secrets are more secure by default. Even after tweaking Kubernetes (especially etcd), Docker Swarm is still more secure. That does not mean that secrets management with both products does not have a lot to be desired. Both have their shortcomings. However, I must proclaim Docker Swarm as a winner in this round. Its secrets are more secretive.</p>
+
+
+            </article>
+
+            
+        </section>
+    </body></html>

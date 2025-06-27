@@ -1,0 +1,890 @@
+<html><head></head><body>
+<div class="calibre6">
+<h2 id="leanpub-auto-self-healing-applied-to-infrastructure" class="calibre15">Self-Healing Applied To Infrastructure</h2>
+
+<p class="calibre3">We already saw how Docker Swarm provides self-healing applied to services. If a replica of a service goes down, it will be rescheduled on one of the healthy nodes. Soon after, the desired number of replicas will be running inside the cluster. We combined that feature with volumes attached to network drives so that the state of the stateful services is persisted.</p>
+
+<p class="calibre3">The time has come to explore how to accomplish the same self-healing features applied to infrastructure. We already know how to create a cluster based on the <em class="calibre21">Docker For AWS</em> template or its equivalent in <em class="calibre21">Azure</em>. If you are not using one of those hosting vendors, we explored the essential features you should implement yourself.</p>
+
+<p class="calibre3">Before we move into infrastructure self-healing, we need to create the cluster we destroyed at the end of the previous chapter. We’ll use this opportunity to explore how to accomplish the same result without the usage of AWS UI.</p>
+
+<h3 id="leanpub-auto-automating-cluster-setup" class="calibre20">Automating Cluster Setup</h3>
+
+<p class="calibre3">The first thing we should do is get the AWS credentials.</p>
+
+<p class="calibre3">Please open the <a href="https://console.aws.amazon.com/ec2/">Amazon EC2 Console</a>, click on your name from the top-right menu, and select <em class="calibre21">My Security Credentials</em>. You will see the screen with different types of credentials. Expand the <em class="calibre21">Access Keys (Access Key ID and Secret Access Key)</em> section and click the <em class="calibre21">Create New Access Key</em> button. Expand the <em class="calibre21">Show Access Key</em> section to see the keys.</p>
+
+<p class="calibre3">You will not be able to view the keys later on, so this is the only chance you’ll have to <em class="calibre21">Download Key File</em>.</p>
+
+<p class="calibre3">We’ll put the keys as environment variables that will be used by the <a href="https://aws.amazon.com/cli/">AWS Command Line Interface (AWS CLI)</a>.</p>
+
+<p class="calibre3">Please replace <code class="calibre19">[...]</code> with your keys before executing the commands that follow.</p>
+
+<aside class="information">
+    <p class="calibre3">All the commands from this chapter are available in the <a href="https://gist.github.com/vfarcic/b27e0d4dcfa3af5eb2b58316aae13c53">14-self-healing-infra.sh</a> Gist.</p>
+
+</aside>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code><code class="nb">export</code> <code class="nv">AWS_ACCESS_KEY_ID</code><code class="o">=[</code>...<code class="o">]</code>
+<code class="lineno">2 </code>
+<code class="lineno">3 </code><code class="nb">export</code> <code class="nv">AWS_SECRET_ACCESS_KEY</code><code class="o">=[</code>...<code class="o">]</code>
+<code class="lineno">4 </code>
+<code class="lineno">5 </code><code class="nb">export</code> <code class="nv">AWS_DEFAULT_REGION</code><code class="o">=</code>us-east-1
+</pre></div>
+
+</figure>
+
+<p class="calibre3">You’re free to change the region to any that suits you as long as it has at least three availability zones.</p>
+
+<p class="calibre3">Before we proceed, please make sure that <a href="https://aws.amazon.com/cli/">AWS CLI</a> and <a href="https://stedolan.github.io/jq/download/">jq</a> are installed. We’ll use the <em class="calibre21">CLI</em> to communicate with AWS and <em class="calibre21">jq</em> to format and filter JSON output returned by the <em class="calibre21">CLI</em>.</p>
+
+
+<figure class="image">
+  <img src="../images/00079.jpeg" alt="Figure 14-1: AWS Command Line Interface screen" class="calibre17"/>
+  <figcaption class="calibre18">Figure 14-1: AWS Command Line Interface screen</figcaption>
+</figure>
+
+
+<p class="calibre3">Let’s take a look at the <em class="calibre21">Docker For AWS</em> template.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>curl https://editions-us-east-1.s3.amazonaws.com/aws/stable/Docker.tmpl <code class="se">\</code>
+<code class="lineno">2 </code>    <code class="calibre19">|</code> jq <code class="s">"."</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">The output is vast, and we won’t have time to go through the details of all the services it defines. Instead, we’ll focus on the parameters since they have to be specified during the execution of the template.</p>
+
+<p class="calibre3">Let’s take another look at the template but, this time, limited to the <code class="calibre19">.Metadata</code> section.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>curl https://editions-us-east-1.s3.amazonaws.com/aws/stable/Docker.tmpl <code class="se">\</code>
+<code class="lineno">2 </code>    <code class="calibre19">|</code> jq <code class="s">".Metadata"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">We output the template and used <code class="calibre19">jq</code> to filter the result. The output is as follows.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno"> 1 </code><code class="calibre19">{</code>
+<code class="lineno"> 2 </code>  <code class="k">"AWS::CloudFormation::Interface"</code><code class="calibre19">:</code> <code class="calibre19">{</code>
+<code class="lineno"> 3 </code>    <code class="k">"ParameterGroups"</code><code class="calibre19">:</code> <code class="calibre19">[</code>
+<code class="lineno"> 4 </code>      <code class="calibre19">{</code>
+<code class="lineno"> 5 </code>        <code class="k">"Label"</code><code class="calibre19">:</code> <code class="calibre19">{</code>
+<code class="lineno"> 6 </code>          <code class="k">"default"</code><code class="calibre19">:</code> <code class="s">"Swarm Size"</code>
+<code class="lineno"> 7 </code>        <code class="calibre19">},</code>
+<code class="lineno"> 8 </code>        <code class="k">"Parameters"</code><code class="calibre19">:</code> <code class="calibre19">[</code>
+<code class="lineno"> 9 </code>          <code class="s">"ManagerSize"</code><code class="calibre19">,</code>
+<code class="lineno">10 </code>          <code class="s">"ClusterSize"</code>
+<code class="lineno">11 </code>        <code class="calibre19">]</code>
+<code class="lineno">12 </code>      <code class="calibre19">},</code>
+<code class="lineno">13 </code>      <code class="calibre19">{</code>
+<code class="lineno">14 </code>        <code class="k">"Label"</code><code class="calibre19">:</code> <code class="calibre19">{</code>
+<code class="lineno">15 </code>          <code class="k">"default"</code><code class="calibre19">:</code> <code class="s">"Swarm Properties"</code>
+<code class="lineno">16 </code>        <code class="calibre19">},</code>
+<code class="lineno">17 </code>        <code class="k">"Parameters"</code><code class="calibre19">:</code> <code class="calibre19">[</code>
+<code class="lineno">18 </code>          <code class="s">"KeyName"</code><code class="calibre19">,</code>
+<code class="lineno">19 </code>          <code class="s">"EnableSystemPrune"</code><code class="calibre19">,</code>
+<code class="lineno">20 </code>          <code class="s">"EnableCloudWatchLogs"</code><code class="calibre19">,</code>
+<code class="lineno">21 </code>          <code class="s">"EnableCloudStorEfs"</code>
+<code class="lineno">22 </code>        <code class="calibre19">]</code>
+<code class="lineno">23 </code>      <code class="calibre19">},</code>
+<code class="lineno">24 </code>      <code class="calibre19">{</code>
+<code class="lineno">25 </code>        <code class="k">"Label"</code><code class="calibre19">:</code> <code class="calibre19">{</code>
+<code class="lineno">26 </code>          <code class="k">"default"</code><code class="calibre19">:</code> <code class="s">"Swarm Manager Properties"</code>
+<code class="lineno">27 </code>        <code class="calibre19">},</code>
+<code class="lineno">28 </code>        <code class="k">"Parameters"</code><code class="calibre19">:</code> <code class="calibre19">[</code>
+<code class="lineno">29 </code>          <code class="s">"ManagerInstanceType"</code><code class="calibre19">,</code>
+<code class="lineno">30 </code>          <code class="s">"ManagerDiskSize"</code><code class="calibre19">,</code>
+<code class="lineno">31 </code>          <code class="s">"ManagerDiskType"</code>
+<code class="lineno">32 </code>        <code class="calibre19">]</code>
+<code class="lineno">33 </code>      <code class="calibre19">},</code>
+<code class="lineno">34 </code>      <code class="calibre19">{</code>
+<code class="lineno">35 </code>        <code class="k">"Label"</code><code class="calibre19">:</code> <code class="calibre19">{</code>
+<code class="lineno">36 </code>          <code class="k">"default"</code><code class="calibre19">:</code> <code class="s">"Swarm Worker Properties"</code>
+<code class="lineno">37 </code>        <code class="calibre19">},</code>
+<code class="lineno">38 </code>        <code class="k">"Parameters"</code><code class="calibre19">:</code> <code class="calibre19">[</code>
+<code class="lineno">39 </code>          <code class="s">"InstanceType"</code><code class="calibre19">,</code>
+<code class="lineno">40 </code>          <code class="s">"WorkerDiskSize"</code><code class="calibre19">,</code>
+<code class="lineno">41 </code>          <code class="s">"WorkerDiskType"</code>
+<code class="lineno">42 </code>        <code class="calibre19">]</code>
+<code class="lineno">43 </code>      <code class="calibre19">}</code>
+<code class="lineno">44 </code>    <code class="calibre19">],</code>
+<code class="lineno">45 </code>    <code class="k">"ParameterLabels"</code><code class="calibre19">:</code> <code class="calibre19">{</code>
+<code class="lineno">46 </code>      <code class="k">"ClusterSize"</code><code class="calibre19">:</code> <code class="calibre19">{</code>
+<code class="lineno">47 </code>        <code class="k">"default"</code><code class="calibre19">:</code> <code class="s">"Number of Swarm worker nodes?"</code>
+<code class="lineno">48 </code>      <code class="calibre19">},</code>
+<code class="lineno">49 </code>      <code class="k">"EnableCloudStorEfs"</code><code class="calibre19">:</code> <code class="calibre19">{</code>
+<code class="lineno">50 </code>        <code class="k">"default"</code><code class="calibre19">:</code> <code class="s">"Create EFS prerequsities for CloudStor?"</code>
+<code class="lineno">51 </code>      <code class="calibre19">},</code>
+<code class="lineno">52 </code>      <code class="k">"EnableCloudWatchLogs"</code><code class="calibre19">:</code> <code class="calibre19">{</code>
+<code class="lineno">53 </code>        <code class="k">"default"</code><code class="calibre19">:</code> <code class="s">"Use Cloudwatch for container logging?"</code>
+<code class="lineno">54 </code>      <code class="calibre19">},</code>
+<code class="lineno">55 </code>      <code class="k">"EnableSystemPrune"</code><code class="calibre19">:</code> <code class="calibre19">{</code>
+<code class="lineno">56 </code>        <code class="k">"default"</code><code class="calibre19">:</code> <code class="s">"Enable daily resource cleanup?"</code>
+<code class="lineno">57 </code>      <code class="calibre19">},</code>
+<code class="lineno">58 </code>      <code class="k">"InstanceType"</code><code class="calibre19">:</code> <code class="calibre19">{</code>
+<code class="lineno">59 </code>        <code class="k">"default"</code><code class="calibre19">:</code> <code class="s">"Agent worker instance type?"</code>
+<code class="lineno">60 </code>      <code class="calibre19">},</code>
+<code class="lineno">61 </code>      <code class="k">"KeyName"</code><code class="calibre19">:</code> <code class="calibre19">{</code>
+<code class="lineno">62 </code>        <code class="k">"default"</code><code class="calibre19">:</code> <code class="s">"Which SSH key to use?"</code>
+<code class="lineno">63 </code>      <code class="calibre19">},</code>
+<code class="lineno">64 </code>      <code class="k">"ManagerDiskSize"</code><code class="calibre19">:</code> <code class="calibre19">{</code>
+<code class="lineno">65 </code>        <code class="k">"default"</code><code class="calibre19">:</code> <code class="s">"Manager ephemeral storage volume size?"</code>
+<code class="lineno">66 </code>      <code class="calibre19">},</code>
+<code class="lineno">67 </code>      <code class="k">"ManagerDiskType"</code><code class="calibre19">:</code> <code class="calibre19">{</code>
+<code class="lineno">68 </code>        <code class="k">"default"</code><code class="calibre19">:</code> <code class="s">"Manager ephemeral storage volume type"</code>
+<code class="lineno">69 </code>      <code class="calibre19">},</code>
+<code class="lineno">70 </code>      <code class="k">"ManagerInstanceType"</code><code class="calibre19">:</code> <code class="calibre19">{</code>
+<code class="lineno">71 </code>        <code class="k">"default"</code><code class="calibre19">:</code> <code class="s">"Swarm manager instance type?"</code>
+<code class="lineno">72 </code>      <code class="calibre19">},</code>
+<code class="lineno">73 </code>      <code class="k">"ManagerSize"</code><code class="calibre19">:</code> <code class="calibre19">{</code>
+<code class="lineno">74 </code>        <code class="k">"default"</code><code class="calibre19">:</code> <code class="s">"Number of Swarm managers?"</code>
+<code class="lineno">75 </code>      <code class="calibre19">},</code>
+<code class="lineno">76 </code>      <code class="k">"WorkerDiskSize"</code><code class="calibre19">:</code> <code class="calibre19">{</code>
+<code class="lineno">77 </code>        <code class="k">"default"</code><code class="calibre19">:</code> <code class="s">"Worker ephemeral storage volume size?"</code>
+<code class="lineno">78 </code>      <code class="calibre19">},</code>
+<code class="lineno">79 </code>      <code class="k">"WorkerDiskType"</code><code class="calibre19">:</code> <code class="calibre19">{</code>
+<code class="lineno">80 </code>        <code class="k">"default"</code><code class="calibre19">:</code> <code class="s">"Worker ephemeral storage volume type"</code>
+<code class="lineno">81 </code>      <code class="calibre19">}</code>
+<code class="lineno">82 </code>    <code class="calibre19">}</code>
+<code class="lineno">83 </code>  <code class="calibre19">}</code>
+<code class="lineno">84 </code><code class="calibre19">}</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">You should be familiar with those parameters. They are the same as those you saw when you created the cluster through AWS UI.</p>
+
+<p class="calibre3">Now we are ready to create a cluster.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno"> 1 </code>aws cloudformation create-stack <code class="se">\</code>
+<code class="lineno"> 2 </code>    --template-url https://editions-us-east-1.s3.amazonaws.com/aws/stable/Docker<code class="se">\</code>
+<code class="lineno"> 3 </code>.tmpl <code class="se">\</code>
+<code class="lineno"> 4 </code>    --capabilities CAPABILITY_IAM <code class="se">\</code>
+<code class="lineno"> 5 </code>    --stack-name devops22 <code class="se">\</code>
+<code class="lineno"> 6 </code>    --parameters <code class="se">\</code>
+<code class="lineno"> 7 </code>    <code class="nv">ParameterKey</code><code class="o">=</code>ManagerSize,ParameterValue<code class="o">=</code><code class="o">3</code> <code class="se">\</code>
+<code class="lineno"> 8 </code>    <code class="nv">ParameterKey</code><code class="o">=</code>ClusterSize,ParameterValue<code class="o">=</code><code class="o">0</code> <code class="se">\</code>
+<code class="lineno"> 9 </code>    <code class="nv">ParameterKey</code><code class="o">=</code>KeyName,ParameterValue<code class="o">=</code>devops22 <code class="se">\</code>
+<code class="lineno">10 </code>    <code class="nv">ParameterKey</code><code class="o">=</code>EnableSystemPrune,ParameterValue<code class="o">=</code>yes <code class="se">\</code>
+<code class="lineno">11 </code>    <code class="nv">ParameterKey</code><code class="o">=</code>EnableCloudWatchLogs,ParameterValue<code class="o">=</code>no <code class="se">\</code>
+<code class="lineno">12 </code>    <code class="nv">ParameterKey</code><code class="o">=</code>EnableCloudStorEfs,ParameterValue<code class="o">=</code>yes <code class="se">\</code>
+<code class="lineno">13 </code>    <code class="nv">ParameterKey</code><code class="o">=</code>ManagerInstanceType,ParameterValue<code class="o">=</code>t2.micro <code class="se">\</code>
+<code class="lineno">14 </code>    <code class="nv">ParameterKey</code><code class="o">=</code>InstanceType,ParameterValue<code class="o">=</code>t2.micro
+</pre></div>
+
+</figure>
+
+<p class="calibre3">We named the stack <code class="calibre19">devops22</code> and used the parameters to set the number of managers (<code class="calibre19">3</code>) and workers (<code class="calibre19">0</code>) and SSH key (<code class="calibre19">devops22</code>). We enabled prune and EFS, and disabled <em class="calibre21">CloudWatch</em>. This time we used <code class="calibre19">t2.micro</code> instances. We won’t deploy many services so 1 vCPU and 1GB of memory should be more than enough. At the same time, <code class="calibre19">t2.micro</code> is <em class="calibre21">free tier eligible</em> making it a perfect instance type for the exercises in this chapter.</p>
+
+<p class="calibre3">We can use <code class="calibre19">aws cloudformation</code> command to list the resources defined in the stack and see their current status.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>aws cloudformation describe-stack-resources <code class="se">\</code>
+<code class="lineno">2 </code>    --stack-name devops22 <code class="calibre19">|</code> jq <code class="s">"."</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">The output is too big to be listed here so we’ll move on. Our immediate goal is to find out the status of the stack and confirm that it was created successfully before we SSH into it. We can describe a stack through the <code class="calibre19">aws cloudformation describe-stacks</code> command.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>aws cloudformation describe-stacks <code class="se">\</code>
+<code class="lineno">2 </code>    --stack-name devops22 <code class="calibre19">|</code> jq <code class="s">"."</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">We retrieved the description of the <code class="calibre19">devops22</code> stack. The output is as follows.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno"> 1 </code><code class="calibre19">{</code>
+<code class="lineno"> 2 </code>  <code class="k">"Stacks"</code><code class="calibre19">:</code> <code class="calibre19">[</code>
+<code class="lineno"> 3 </code>    <code class="calibre19">{</code>
+<code class="lineno"> 4 </code>      <code class="k">"StackId"</code><code class="calibre19">:</code> <code class="s">"arn:aws:cloudformation:us-east-2:036548781187:stack/devops22/b\</code>
+<code class="lineno"> 5 </code><code class="s">f859420-99f1-11e7-92af-50a68a26e835"</code><code class="calibre19">,</code>
+<code class="lineno"> 6 </code>      <code class="k">"Description"</code><code class="calibre19">:</code> <code class="s">"Docker CE for AWS 17.06.1-ce (17.06.1-ce-aws1)"</code><code class="calibre19">,</code>
+<code class="lineno"> 7 </code>      <code class="k">"Parameters"</code><code class="calibre19">:</code> <code class="calibre19">[</code>
+<code class="lineno"> 8 </code>        <code class="calibre19">{</code>
+<code class="lineno"> 9 </code>          <code class="k">"ParameterValue"</code><code class="calibre19">:</code> <code class="s">"yes"</code><code class="calibre19">,</code>
+<code class="lineno">10 </code>          <code class="k">"ParameterKey"</code><code class="calibre19">:</code> <code class="s">"EnableCloudStorEfs"</code>
+<code class="lineno">11 </code>        <code class="calibre19">},</code>
+<code class="lineno">12 </code>        <code class="calibre19">{</code>
+<code class="lineno">13 </code>          <code class="k">"ParameterValue"</code><code class="calibre19">:</code> <code class="s">"devops22"</code><code class="calibre19">,</code>
+<code class="lineno">14 </code>          <code class="k">"ParameterKey"</code><code class="calibre19">:</code> <code class="s">"KeyName"</code>
+<code class="lineno">15 </code>        <code class="calibre19">},</code>
+<code class="lineno">16 </code>        <code class="calibre19">{</code>
+<code class="lineno">17 </code>          <code class="k">"ParameterValue"</code><code class="calibre19">:</code> <code class="s">"t2.micro"</code><code class="calibre19">,</code>
+<code class="lineno">18 </code>          <code class="k">"ParameterKey"</code><code class="calibre19">:</code> <code class="s">"ManagerInstanceType"</code>
+<code class="lineno">19 </code>        <code class="calibre19">},</code>
+<code class="lineno">20 </code>        <code class="calibre19">{</code>
+<code class="lineno">21 </code>          <code class="k">"ParameterValue"</code><code class="calibre19">:</code> <code class="s">"0"</code><code class="calibre19">,</code>
+<code class="lineno">22 </code>          <code class="k">"ParameterKey"</code><code class="calibre19">:</code> <code class="s">"ClusterSize"</code>
+<code class="lineno">23 </code>        <code class="calibre19">},</code>
+<code class="lineno">24 </code>        <code class="calibre19">{</code>
+<code class="lineno">25 </code>          <code class="k">"ParameterValue"</code><code class="calibre19">:</code> <code class="s">"standard"</code><code class="calibre19">,</code>
+<code class="lineno">26 </code>          <code class="k">"ParameterKey"</code><code class="calibre19">:</code> <code class="s">"ManagerDiskType"</code>
+<code class="lineno">27 </code>        <code class="calibre19">},</code>
+<code class="lineno">28 </code>        <code class="calibre19">{</code>
+<code class="lineno">29 </code>          <code class="k">"ParameterValue"</code><code class="calibre19">:</code> <code class="s">"20"</code><code class="calibre19">,</code>
+<code class="lineno">30 </code>          <code class="k">"ParameterKey"</code><code class="calibre19">:</code> <code class="s">"WorkerDiskSize"</code>
+<code class="lineno">31 </code>        <code class="calibre19">},</code>
+<code class="lineno">32 </code>        <code class="calibre19">{</code>
+<code class="lineno">33 </code>          <code class="k">"ParameterValue"</code><code class="calibre19">:</code> <code class="s">"20"</code><code class="calibre19">,</code>
+<code class="lineno">34 </code>          <code class="k">"ParameterKey"</code><code class="calibre19">:</code> <code class="s">"ManagerDiskSize"</code>
+<code class="lineno">35 </code>        <code class="calibre19">},</code>
+<code class="lineno">36 </code>        <code class="calibre19">{</code>
+<code class="lineno">37 </code>          <code class="k">"ParameterValue"</code><code class="calibre19">:</code> <code class="s">"standard"</code><code class="calibre19">,</code>
+<code class="lineno">38 </code>          <code class="k">"ParameterKey"</code><code class="calibre19">:</code> <code class="s">"WorkerDiskType"</code>
+<code class="lineno">39 </code>        <code class="calibre19">},</code>
+<code class="lineno">40 </code>        <code class="calibre19">{</code>
+<code class="lineno">41 </code>          <code class="k">"ParameterValue"</code><code class="calibre19">:</code> <code class="s">"yes"</code><code class="calibre19">,</code>
+<code class="lineno">42 </code>          <code class="k">"ParameterKey"</code><code class="calibre19">:</code> <code class="s">"EnableSystemPrune"</code>
+<code class="lineno">43 </code>        <code class="calibre19">},</code>
+<code class="lineno">44 </code>        <code class="calibre19">{</code>
+<code class="lineno">45 </code>          <code class="k">"ParameterValue"</code><code class="calibre19">:</code> <code class="s">"no"</code><code class="calibre19">,</code>
+<code class="lineno">46 </code>          <code class="k">"ParameterKey"</code><code class="calibre19">:</code> <code class="s">"EnableCloudWatchLogs"</code>
+<code class="lineno">47 </code>        <code class="calibre19">},</code>
+<code class="lineno">48 </code>        <code class="calibre19">{</code>
+<code class="lineno">49 </code>          <code class="k">"ParameterValue"</code><code class="calibre19">:</code> <code class="s">"t2.small"</code><code class="calibre19">,</code>
+<code class="lineno">50 </code>          <code class="k">"ParameterKey"</code><code class="calibre19">:</code> <code class="s">"InstanceType"</code>
+<code class="lineno">51 </code>        <code class="calibre19">},</code>
+<code class="lineno">52 </code>        <code class="calibre19">{</code>
+<code class="lineno">53 </code>          <code class="k">"ParameterValue"</code><code class="calibre19">:</code> <code class="s">"3"</code><code class="calibre19">,</code>
+<code class="lineno">54 </code>          <code class="k">"ParameterKey"</code><code class="calibre19">:</code> <code class="s">"ManagerSize"</code>
+<code class="lineno">55 </code>        <code class="calibre19">}</code>
+<code class="lineno">56 </code>      <code class="calibre19">],</code>
+<code class="lineno">57 </code>      <code class="k">"Tags"</code><code class="calibre19">:</code> <code class="calibre19">[],</code>
+<code class="lineno">58 </code>      <code class="k">"CreationTime"</code><code class="calibre19">:</code> <code class="s">"2017-09-15T08:47:10.306Z"</code><code class="calibre19">,</code>
+<code class="lineno">59 </code>      <code class="k">"Capabilities"</code><code class="calibre19">:</code> <code class="calibre19">[</code>
+<code class="lineno">60 </code>        <code class="s">"CAPABILITY_IAM"</code>
+<code class="lineno">61 </code>      <code class="calibre19">],</code>
+<code class="lineno">62 </code>      <code class="k">"StackName"</code><code class="calibre19">:</code> <code class="s">"devops22"</code><code class="calibre19">,</code>
+<code class="lineno">63 </code>      <code class="k">"NotificationARNs"</code><code class="calibre19">:</code> <code class="calibre19">[],</code>
+<code class="lineno">64 </code>      <code class="k">"StackStatus"</code><code class="calibre19">:</code> <code class="s">"CREATE_IN_PROGRESS"</code><code class="calibre19">,</code>
+<code class="lineno">65 </code>      <code class="k">"DisableRollback"</code><code class="calibre19">:</code> <code class="k">false</code>
+<code class="lineno">66 </code>    <code class="calibre19">}</code>
+<code class="lineno">67 </code>  <code class="calibre19">]</code>
+<code class="lineno">68 </code><code class="calibre19">}</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Most of the description reflects the parameters we used to create the stack. The value we’re interested in is <code class="calibre19">StackStatus</code>. In my case, it is set to <code class="calibre19">CREATE_IN_PROGRESS</code> meaning that the cluster is still not ready. We should wait for a while and query the status again. This time, we’ll use <code class="calibre19">jq</code> to limit the output only to the <code class="calibre19">StackStatus</code> field.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>aws cloudformation describe-stacks <code class="se">\</code>
+<code class="lineno">2 </code>    --stack-name devops22 <code class="calibre19">|</code> <code class="se">\</code>
+<code class="lineno">3 </code>    jq -r <code class="s">".Stacks[0].StackStatus"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">If the output of the command is <code class="calibre19">CREATE_COMPLETE</code>, the cluster is created, and we can move on. Otherwise, please wait for a bit more and recheck the status. It should take around ten minutes to create the whole stack.</p>
+
+<p class="calibre3">Now that the cluster is created, we need to get the DNS and the IP of one of the masters.</p>
+
+<p class="calibre3">Cluster DNS is available through the <code class="calibre19">Outputs</code> section of the stack description.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>aws cloudformation describe-stacks <code class="se">\</code>
+<code class="lineno">2 </code>    --stack-name devops22 <code class="calibre19">|</code> <code class="se">\</code>
+<code class="lineno">3 </code>    jq -r <code class="s">".Stacks[0].Outputs"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">The output is as follows.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno"> 1 </code>[
+<code class="lineno"> 2 </code>  {
+<code class="lineno"> 3 </code>    "Description": "Use this name to update your DNS records",
+<code class="lineno"> 4 </code>    "OutputKey": "DefaultDNSTarget",
+<code class="lineno"> 5 </code>    "OutputValue": "devops22-ExternalL-EEU3J540N4S0-1231273358.us-east-2.elb.ama\
+<code class="lineno"> 6 </code>zonaws.com"
+<code class="lineno"> 7 </code>  },
+<code class="lineno"> 8 </code>  {
+<code class="lineno"> 9 </code>    "Description": "Availabilty Zones Comment",
+<code class="lineno">10 </code>    "OutputKey": "ZoneAvailabilityComment",
+<code class="lineno">11 </code>    "OutputValue": "This region has at least 3 Availability Zones (AZ). This is \
+<code class="lineno">12 </code>ideal to ensure a fully functional Swarm in case you lose an AZ."
+<code class="lineno">13 </code>  },
+<code class="lineno">14 </code>  {
+<code class="lineno">15 </code>    "Description": "You can see the manager nodes associated with this cluster h\
+<code class="lineno">16 </code>ere. Follow the instructions here: https://docs.docker.com/docker-for-aws/deploy\
+<code class="lineno">17 </code>/",
+<code class="lineno">18 </code>    "OutputKey": "Managers",
+<code class="lineno">19 </code>    "OutputValue": "https://us-east-2.console.aws.amazon.com/ec2/v2/home?region=\
+<code class="lineno">20 </code>us-east-2#Instances:tag:aws:autoscaling:groupName=devops22-ManagerAsg-RA4ECZRYJ3\
+<code class="lineno">21 </code>7C;sort=desc:dnsName"
+<code class="lineno">22 </code>  },
+<code class="lineno">23 </code>  {
+<code class="lineno">24 </code>    "Description": "Use this as the VPC for configuring Private Hosted Zones",
+<code class="lineno">25 </code>    "OutputKey": "VPCID",
+<code class="lineno">26 </code>    "OutputValue": "vpc-99311ff0"
+<code class="lineno">27 </code>  },
+<code class="lineno">28 </code>  {
+<code class="lineno">29 </code>    "Description": "SecurityGroup ID of NodeVpcSG",
+<code class="lineno">30 </code>    "OutputKey": "NodeSecurityGroupID",
+<code class="lineno">31 </code>    "OutputValue": "sg-0d852c65"
+<code class="lineno">32 </code>  },
+<code class="lineno">33 </code>  {
+<code class="lineno">34 </code>    "Description": "Use this zone ID to update your DNS records",
+<code class="lineno">35 </code>    "OutputKey": "ELBDNSZoneID",
+<code class="lineno">36 </code>    "OutputValue": "Z3AADJGX6KTTL2"
+<code class="lineno">37 </code>  },
+<code class="lineno">38 </code>  {
+<code class="lineno">39 </code>    "Description": "SecurityGroup ID of ManagerVpcSG",
+<code class="lineno">40 </code>    "OutputKey": "ManagerSecurityGroupID",
+<code class="lineno">41 </code>    "OutputValue": "sg-4c832a24"
+<code class="lineno">42 </code>  },
+<code class="lineno">43 </code>  {
+<code class="lineno">44 </code>    "Description": "SecurityGroup ID of SwarmWideSG",
+<code class="lineno">45 </code>    "OutputKey": "SwarmWideSecurityGroupID",
+<code class="lineno">46 </code>    "OutputValue": "sg-aa852cc2"
+<code class="lineno">47 </code>  }
+<code class="lineno">48 </code>]
+</pre></div>
+
+</figure>
+
+<p class="calibre3">What we need is the <code class="calibre19">DefaultDNSTarget</code> value. We’ll have to refine our <code class="calibre19">jq</code> filters a bit more.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>aws cloudformation describe-stacks <code class="se">\</code>
+<code class="lineno">2 </code>    --stack-name devops22 <code class="calibre19">|</code> <code class="se">\</code>
+<code class="lineno">3 </code>    jq -r <code class="s">".Stacks[0].Outputs[] | \</code>
+<code class="lineno">4 </code><code class="s">    select(.OutputKey==\"DefaultDNSTarget\")\</code>
+<code class="lineno">5 </code><code class="s">    .OutputValue"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">We used jq’s <code class="calibre19">select</code> statement to retrieve only the section with <code class="calibre19">OutputKey</code> set to  <code class="calibre19">DefaultDNSTarget</code> and retrieved the <code class="calibre19">OutputValue</code>.</p>
+
+<p class="calibre3">The output should be similar to the one that follows.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>devops22-ExternalL-EEU3J540N4S0-1231273358.us-east-2.elb.amazonaws.com
+</pre></div>
+
+</figure>
+
+<p class="calibre3">We should store the output of the previous command as an environment variable so that we can have it at hand if we need to open one of the services in a browser or, even better, to set it as the address of our domain.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code><code class="nv">CLUSTER_DNS</code><code class="o">=</code><code class="k">$(</code>aws cloudformation <code class="se">\</code>
+<code class="lineno">2 </code>    describe-stacks <code class="se">\</code>
+<code class="lineno">3 </code>    --stack-name devops22 <code class="calibre19">|</code> <code class="se">\</code>
+<code class="lineno">4 </code>    jq -r <code class="s">".Stacks[0].Outputs[] | \</code>
+<code class="lineno">5 </code><code class="s">    select(.OutputKey==\"DefaultDNSTarget\")\</code>
+<code class="lineno">6 </code><code class="s">    .OutputValue"</code><code class="k">)</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Even though we will not need the DNS in this chapter, it’s good to know how to retrieve it. We’ll need it later on in the chapters that follow.</p>
+
+<p class="calibre3">The only thing left is to get the public IP of one of the managers. We can use <code class="calibre19">aws ec2 describe-instances</code> command to list all the EC2 instances running in the region.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>aws ec2 describe-instances <code class="calibre19">|</code> jq -r <code class="s">"."</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">The output is too big to be presented in a book.</p>
+
+<p class="calibre3">You should see three instances if the cluster we just created is the only one running in your region. Otherwise, there might be others. Since we do not want to risk retrieving anything but managers that belong to the <code class="calibre19">devops22</code> stack, we’ll refine the command to the one that follows.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>aws ec2 describe-instances <code class="calibre19">|</code> <code class="se">\</code>
+<code class="lineno">2 </code>    jq -r <code class="s">".Reservations[].Instances[] \</code>
+<code class="lineno">3 </code><code class="s">    | select(.SecurityGroups[].GroupName \</code>
+<code class="lineno">4 </code><code class="s">    | contains(\"devops22-ManagerVpcSG\"))\</code>
+<code class="lineno">5 </code><code class="s">    .PublicIpAddress"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">We used <code class="calibre19">jq</code> to filter the output and limit the results only to the instances attached to the security group with the name that starts with <code class="calibre19">devops22-ManagerVpcSG</code>. Further on, we retrieved the <code class="calibre19">PublicIpAddress</code> values.</p>
+
+<p class="calibre3">The output is as follows.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>52.14.246.52
+<code class="lineno">2 </code>13.59.130.67
+<code class="lineno">3 </code>13.59.132.147
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Those three IPs belong to the three managers that for the cluster.</p>
+
+<p class="calibre3">We’ll use the previous command to set the environment variable <code class="calibre19">CLUSTER_IP</code>.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code><code class="nv">CLUSTER_IP</code><code class="o">=</code><code class="k">$(</code>aws ec2 describe-instances <code class="se">\</code>
+<code class="lineno">2 </code>    <code class="calibre19">|</code> jq -r <code class="s">".Reservations[] \</code>
+<code class="lineno">3 </code><code class="s">    .Instances[] \</code>
+<code class="lineno">4 </code><code class="s">    | select(.SecurityGroups[].GroupName \</code>
+<code class="lineno">5 </code><code class="s">    | contains(\"devops22-ManagerVpcSG\"))\</code>
+<code class="lineno">6 </code><code class="s">    .PublicIpAddress"</code> <code class="se">\</code>
+<code class="lineno">7 </code>    <code class="calibre19">|</code> tail -n <code class="o">1</code><code class="k">)</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Since we needed only one of the IPs, we piped the result of the <code class="calibre19">describe-instances</code> command to <code class="calibre19">tail</code> which limited the output to a single line.</p>
+
+<p class="calibre3">Now that we have both the DNS and the IP of one of the managers, we can enter the cluster and confirm that all the nodes joined it.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>ssh -i devops22.pem docker@<code class="nv">$CLUSTER_IP</code>
+<code class="lineno">2 </code>
+<code class="lineno">3 </code>docker node ls
+</pre></div>
+
+</figure>
+
+<p class="calibre3">The output of the <code class="calibre19">node ls</code> command is as follows (IDs are removed for brevity).</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>HOSTNAME                                    STATUS AVAILABILITY MANAGER STATUS
+<code class="lineno">2 </code>ip-172-31-21-57.us-east-2.compute.internal  Ready  Active       Reachable
+<code class="lineno">3 </code>ip-172-31-44-182.us-east-2.compute.internal Ready  Active       Reachable
+<code class="lineno">4 </code>ip-172-31-15-30.us-east-2.compute.internal  Ready  Active       Leader
+</pre></div>
+
+</figure>
+
+<p class="calibre3">As expected, all three nodes joined the cluster, and we can explore self-healing applied to infrastructure through AWS services created with the <em class="calibre21">Docker For AWS</em> template.</p>
+
+<h3 id="leanpub-auto-exploring-fault-tolerance" class="calibre20">Exploring Fault Tolerance</h3>
+
+<p class="calibre3">Since we are exploring self-healing (not self-adaptation), there’s no need to deploy all the stacks we used thus far. A single service will be enough to explore what happens when a node goes down. Our cluster, formed out of <code class="calibre19">t2.micro</code> instances, would not support much more anyways.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>docker service create --name <code class="nb">test</code> <code class="se">\</code>
+<code class="lineno">2 </code>    --replicas <code class="o">10</code> alpine sleep <code class="o">1000000</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">We created a service with ten replicas. Let’s confirm that they are spread across the three nodes of the cluster.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>docker service ps <code class="nb">test</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">The output is as follows (IDs are removed for brevity).</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno"> 1 </code>NAME    IMAGE         NODE                                        DESIRED STATE \
+<code class="lineno"> 2 </code>CURRENT STATE          ERROR PORTS
+<code class="lineno"> 3 </code>test.1  alpine:latest ip-172-31-44-182.us-east-2.compute.internal Running       \
+<code class="lineno"> 4 </code>Running 12 seconds ago
+<code class="lineno"> 5 </code>test.2  alpine:latest ip-172-31-15-30.us-east-2.compute.internal  Running       \
+<code class="lineno"> 6 </code>Running 12 seconds ago
+<code class="lineno"> 7 </code>test.3  alpine:latest ip-172-31-21-57.us-east-2.compute.internal  Running       \
+<code class="lineno"> 8 </code>Running 12 seconds ago
+<code class="lineno"> 9 </code>test.4  alpine:latest ip-172-31-44-182.us-east-2.compute.internal Running       \
+<code class="lineno">10 </code>Running 12 seconds ago
+<code class="lineno">11 </code>test.5  alpine:latest ip-172-31-15-30.us-east-2.compute.internal  Running       \
+<code class="lineno">12 </code>Running 12 seconds ago
+<code class="lineno">13 </code>test.6  alpine:latest ip-172-31-21-57.us-east-2.compute.internal  Running       \
+<code class="lineno">14 </code>Running 12 seconds ago
+<code class="lineno">15 </code>test.7  alpine:latest ip-172-31-15-30.us-east-2.compute.internal  Running       \
+<code class="lineno">16 </code>Running 12 seconds ago
+<code class="lineno">17 </code>test.8  alpine:latest ip-172-31-21-57.us-east-2.compute.internal  Running       \
+<code class="lineno">18 </code>Running 12 seconds ago
+<code class="lineno">19 </code>test.9  alpine:latest ip-172-31-15-30.us-east-2.compute.internal  Running       \
+<code class="lineno">20 </code>Running 12 seconds ago
+<code class="lineno">21 </code>test.10 alpine:latest ip-172-31-44-182.us-east-2.compute.internal Running       \
+<code class="lineno">22 </code>Running 12 seconds ago
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Let’s exit the cluster before we move onto a discussion how to simulate a failure of a node.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code><code class="nb">exit</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">We’ll simulate failure of an instance by terminating it. We’ll do that by executing <code class="calibre19">aws ec2 terminate-instances</code> command that requires <code class="calibre19">--instance-ids</code> argument. So, the first line of business is to figure out how to find ID of one of the nodes.</p>
+
+<p class="calibre3">We already saw that we could use <code class="calibre19">aws ec2 describe-instances</code> command to get information about the instances of the cluster. This time we’ll output <code class="calibre19">InstanceId</code> of all the nodes that belong to the security group used by managers.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>aws ec2 describe-instances <code class="se">\</code>
+<code class="lineno">2 </code>    <code class="calibre19">|</code> jq -r <code class="s">".Reservations[] \</code>
+<code class="lineno">3 </code><code class="s">    .Instances[] \</code>
+<code class="lineno">4 </code><code class="s">    | select(.SecurityGroups[].GroupName \</code>
+<code class="lineno">5 </code><code class="s">    | contains(\"devops22-ManagerVpcSG\"))\</code>
+<code class="lineno">6 </code><code class="s">    .InstanceId"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">The output is as follows.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>i-091ad925d0243f7ab
+<code class="lineno">2 </code>i-0e850f3073ec25acd
+<code class="lineno">3 </code>i-05b25bc6fb6730ce1
+</pre></div>
+
+</figure>
+
+<p class="calibre3">We’ll repeat the same command, limit the output to only one row, and store the result as an environment variable.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code><code class="nv">INSTANCE_ID</code><code class="o">=</code><code class="k">$(</code>aws ec2 describe-instances <code class="se">\</code>
+<code class="lineno">2 </code>    <code class="calibre19">|</code> jq -r <code class="s">".Reservations[] \</code>
+<code class="lineno">3 </code><code class="s">    .Instances[] \</code>
+<code class="lineno">4 </code><code class="s">    | select(.SecurityGroups[].GroupName \</code>
+<code class="lineno">5 </code><code class="s">    | contains(\"devops22-ManagerVpcSG\"))\</code>
+<code class="lineno">6 </code><code class="s">    .InstanceId"</code> <code class="se">\</code>
+<code class="lineno">7 </code>    <code class="calibre19">|</code> tail -n <code class="o">1</code><code class="k">)</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Now that we have the ID, we can terminate the instance associated with it.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>aws ec2 terminate-instances <code class="se">\</code>
+<code class="lineno">2 </code>    --instance-ids <code class="nv">$INSTANCE_ID</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">The output is as follows.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno"> 1 </code>{
+<code class="lineno"> 2 </code>    "TerminatingInstances": [
+<code class="lineno"> 3 </code>        {
+<code class="lineno"> 4 </code>            "InstanceId": "i-0fa78489dca8125e8",
+<code class="lineno"> 5 </code>            "CurrentState": {
+<code class="lineno"> 6 </code>                "Code": 32,
+<code class="lineno"> 7 </code>                "Name": "shutting-down"
+<code class="lineno"> 8 </code>            },
+<code class="lineno"> 9 </code>            "PreviousState": {
+<code class="lineno">10 </code>                "Code": 16,
+<code class="lineno">11 </code>                "Name": "running"
+<code class="lineno">12 </code>            }
+<code class="lineno">13 </code>        }
+<code class="lineno">14 </code>    ]
+<code class="lineno">15 </code>}
+</pre></div>
+
+</figure>
+
+<p class="calibre3">We can see that the previous state is <code class="calibre19">running</code> and that it changed to <code class="calibre19">shutting-down</code>.</p>
+
+<p class="calibre3">Let’s see the state of the instances that form the cluster.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>aws ec2 describe-instances <code class="se">\</code>
+<code class="lineno">2 </code>    <code class="calibre19">|</code> jq -r <code class="s">".Reservations[] \</code>
+<code class="lineno">3 </code><code class="s">    .Instances[] \</code>
+<code class="lineno">4 </code><code class="s">    | select(.SecurityGroups[].GroupName \</code>
+<code class="lineno">5 </code><code class="s">    | contains(\"devops22-ManagerVpcSG\"))\</code>
+<code class="lineno">6 </code><code class="s">    .State.Name"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">We retrieved statuses of all the manager instances attached to the security group with a name starting with <code class="calibre19">devops22-ManagerVpcSG</code>. The output is as follows.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>running
+<code class="lineno">2 </code>running
+</pre></div>
+
+</figure>
+
+<p class="calibre3">There are two manager instances in the cluster, and both are <code class="calibre19">running</code>. The node was indeed removed, and we are one server short from the desired setup. Let’s wait for a moment or two and take another look at the manager instances.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>aws ec2 describe-instances <code class="se">\</code>
+<code class="lineno">2 </code>    <code class="calibre19">|</code> jq -r <code class="s">".Reservations[] \</code>
+<code class="lineno">3 </code><code class="s">    .Instances[] \</code>
+<code class="lineno">4 </code><code class="s">    | select(.SecurityGroups[].GroupName \</code>
+<code class="lineno">5 </code><code class="s">    | contains(\"devops22-ManagerVpcSG\"))\</code>
+<code class="lineno">6 </code><code class="s">    .State.Name"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">This time the output is different.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>pending
+<code class="lineno">2 </code>running
+<code class="lineno">3 </code>running
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Besides the two running managers, the third was added and is currently pending. The auto-scaling group associated with the managers detected that one node is missing and started creating a new VM that will restore the cluster to the desired state. The new node is still not ready, so we’ll need to wait for a while longer.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>aws ec2 describe-instances <code class="se">\</code>
+<code class="lineno">2 </code>    <code class="calibre19">|</code> jq -r <code class="s">".Reservations[] \</code>
+<code class="lineno">3 </code><code class="s">    .Instances[] \</code>
+<code class="lineno">4 </code><code class="s">    | select(.SecurityGroups[].GroupName \</code>
+<code class="lineno">5 </code><code class="s">    | contains(\"devops22-ManagerVpcSG\"))\</code>
+<code class="lineno">6 </code><code class="s">    .State.Name"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">The output is as follows.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>running
+<code class="lineno">2 </code>running
+<code class="lineno">3 </code>running
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Auto-scaling group’s desired state was restored, and the cluster is operating at its full capacity.</p>
+
+<p class="calibre3">We cannot be certain whether the node we destroyed is different than the one we were entering before. Therefore, we should retrieve IP of one of the nodes one more time, and place it in the environment variable <code class="calibre19">CLUSTER_IP</code>.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code><code class="nv">CLUSTER_IP</code><code class="o">=</code><code class="k">$(</code>aws ec2 describe-instances <code class="se">\</code>
+<code class="lineno">2 </code>    <code class="calibre19">|</code> jq -r <code class="s">".Reservations[] \</code>
+<code class="lineno">3 </code><code class="s">    .Instances[] \</code>
+<code class="lineno">4 </code><code class="s">    | select(.SecurityGroups[].GroupName \</code>
+<code class="lineno">5 </code><code class="s">    | contains(\"devops22-ManagerVpcSG\"))\</code>
+<code class="lineno">6 </code><code class="s">    .PublicIpAddress"</code> <code class="se">\</code>
+<code class="lineno">7 </code>    <code class="calibre19">|</code> tail -n <code class="o">1</code><code class="k">)</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Even though we know that the new node was created automatically, we should still confirm that it also joined the cluster as a Swarm manager.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>ssh -i devops22.pem docker@<code class="nv">$CLUSTER_IP</code>
+<code class="lineno">2 </code>
+<code class="lineno">3 </code>docker node ls
+</pre></div>
+
+</figure>
+
+<p class="calibre3">We entered into one of the managers and listed all the nodes. The output is as follows (IDs are removed for brevity).</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>HOSTNAME                                    STATUS AVAILABILITY MANAGER STATUS
+<code class="lineno">2 </code>ip-172-31-21-57.us-east-2.compute.internal  Down   Active       Unreachable
+<code class="lineno">3 </code>ip-172-31-44-182.us-east-2.compute.internal Ready  Active       Reachable
+<code class="lineno">4 </code>ip-172-31-15-30.us-east-2.compute.internal  Ready  Active       Leader
+</pre></div>
+
+</figure>
+
+<p class="calibre3">If the output of the <code class="calibre19">node ls</code> command is <code class="calibre19">Error response from daemon: This node is not a swarm manager...</code>, it means that you entered the node that was just created and it did not yet join the cluster. If that’s the case, all you have to do is wait for a while longer and try it again. I’ll assume that you entered to one of the “old” nodes.</p>
+
+<p class="calibre3">The new node is not there. We can see only the three nodes that were initially created. One of them is <code class="calibre19">unreachable</code>.</p>
+
+<p class="calibre3">Does that mean that the system does not work? Is self-healing working only partially and we need to join the new node manually? Should we create a script that will join new nodes to the cluster? The answer to all those questions is <em class="calibre21">no</em>. We were too impatient.</p>
+
+<p class="calibre3">Even though AWS reported that the new node is running, it still requires a bit more time until it is fully initialized. Once that is finished, and the VM is fully operational, Docker’s system containers will run and automatically join the node to the cluster.</p>
+
+<p class="calibre3">Let’s wait for a few moments and list the nodes one more time.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>docker node ls
+</pre></div>
+
+</figure>
+
+<p class="calibre3">The output is as follows.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>HOSTNAME                                    STATUS AVAILABILITY MANAGER STATUS
+<code class="lineno">2 </code>ip-172-31-26-141.us-east-2.compute.internal Ready  Active       Reachable
+<code class="lineno">3 </code>ip-172-31-21-57.us-east-2.compute.internal  Down   Active       Unreachable
+<code class="lineno">4 </code>ip-172-31-44-182.us-east-2.compute.internal Ready  Active       Reachable
+<code class="lineno">5 </code>ip-172-31-15-30.us-east-2.compute.internal  Ready  Active       Leader
+</pre></div>
+
+</figure>
+
+<p class="calibre3">The new node joined the cluster. Now we have four nodes, with one of them <code class="calibre19">unreachable</code>. Swarm cannot know that we destroyed the node. All it does know is that one manager is not reachable. That might be due to many reasons besides destruction.</p>
+
+<p class="calibre3">The unreachable node will be removed from the list after a while.</p>
+
+<p class="calibre3">Let’s see what happened to the replicas of the <code class="calibre19">test</code> service.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>docker service ps <code class="nb">test</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">The output is as follows (IDs are removed for brevity).</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno"> 1 </code>NAME       IMAGE         NODE                                        DESIRED STA\
+<code class="lineno"> 2 </code>TE CURRENT STATE          ERROR PORTS
+<code class="lineno"> 3 </code>test.1     alpine:latest ip-172-31-44-182.us-east-2.compute.internal Running    \
+<code class="lineno"> 4 </code>   Running 10 minutes ago
+<code class="lineno"> 5 </code>test.2     alpine:latest ip-172-31-15-30.us-east-2.compute.internal  Running    \
+<code class="lineno"> 6 </code>   Running 10 minutes ago
+<code class="lineno"> 7 </code>test.3     alpine:latest ip-172-31-15-30.us-east-2.compute.internal  Running    \
+<code class="lineno"> 8 </code>   Running 4 minutes ago
+<code class="lineno"> 9 </code> \_ test.3 alpine:latest ip-172-31-21-57.us-east-2.compute.internal  Shutdown   \
+<code class="lineno">10 </code>   Running 4 minutes ago
+<code class="lineno">11 </code>test.4     alpine:latest ip-172-31-44-182.us-east-2.compute.internal Running    \
+<code class="lineno">12 </code>   Running 10 minutes ago
+<code class="lineno">13 </code>test.5     alpine:latest ip-172-31-15-30.us-east-2.compute.internal  Running    \
+<code class="lineno">14 </code>   Running 10 minutes ago
+<code class="lineno">15 </code>test.6     alpine:latest ip-172-31-44-182.us-east-2.compute.internal Running    \
+<code class="lineno">16 </code>   Running 4 minutes ago
+<code class="lineno">17 </code> \_ test.6 alpine:latest ip-172-31-21-57.us-east-2.compute.internal  Shutdown   \
+<code class="lineno">18 </code>   Running 4 minutes ago
+<code class="lineno">19 </code>test.7     alpine:latest ip-172-31-15-30.us-east-2.compute.internal  Running    \
+<code class="lineno">20 </code>   Running 10 minutes ago
+<code class="lineno">21 </code>test.8     alpine:latest ip-172-31-44-182.us-east-2.compute.internal Running    \
+<code class="lineno">22 </code>   Running 4 minutes ago
+<code class="lineno">23 </code> \_ test.8 alpine:latest ip-172-31-21-57.us-east-2.compute.internal  Shutdown   \
+<code class="lineno">24 </code>   Running 4 minutes ago
+<code class="lineno">25 </code>test.9     alpine:latest ip-172-31-15-30.us-east-2.compute.internal  Running    \
+<code class="lineno">26 </code>   Running 10 minutes ago
+<code class="lineno">27 </code>test.10    alpine:latest ip-172-31-44-182.us-east-2.compute.internal Running    \
+<code class="lineno">28 </code>   Running 10 minutes ago
+</pre></div>
+
+</figure>
+
+<p class="calibre3">When Swarm detected that one of the nodes is unreachable, it rescheduled replicas that were running there to the nodes that were healthy at the time. It did not wait for the new node to join the cluster.</p>
+
+<p class="calibre3">Swarm cannot know whether we (or auto-scaling groups, or any other process) will restore the infrastructure to the desired state. What if we removed the node purposefully and had no intention to add a new one in its place? Even if Swarm would be confident that a new node will be added to the cluster, it would still not make sense to wait for it. Creating a new node is a costly operation. It takes too much time. Therefore, as soon as Swarm detected that some of the replicas are not running (those from the failed node), it rescheduled them to the other two nodes. As a result, the third node is currently empty. It will start getting replicas the next time we deploy something or update one of the existing services. Let’s try it out.</p>
+
+<p class="calibre3">We’ll update our test service.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>docker service update <code class="se">\</code>
+<code class="lineno">2 </code>    --env-add <code class="s">"FOO=BAR"</code> <code class="nb">test</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Before we take a look at the service processes (or tasks), we should give Swarm a bit of time to perform rolling update to all the replicas. After a moment or two, we can execute <code class="calibre19">docker service ps</code> and discuss the result</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>docker service ps <code class="se">\</code>
+<code class="lineno">2 </code>    -f desired-state<code class="o">=</code>running <code class="nb">test</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">The output is as follows (IDs are removed for brevity).</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno"> 1 </code>NAME    IMAGE         NODE                                        DESIRED STATE \
+<code class="lineno"> 2 </code>CURRENT STATE              ERROR PORTS
+<code class="lineno"> 3 </code>test.1  alpine:latest ip-172-31-44-182.us-east-2.compute.internal Running       \
+<code class="lineno"> 4 </code>Running about a minute ago
+<code class="lineno"> 5 </code>test.2  alpine:latest ip-172-31-15-30.us-east-2.compute.internal  Running       \
+<code class="lineno"> 6 </code>Running 32 seconds ago
+<code class="lineno"> 7 </code>test.3  alpine:latest ip-172-31-15-30.us-east-2.compute.internal  Running       \
+<code class="lineno"> 8 </code>Running about a minute ago
+<code class="lineno"> 9 </code>test.4  alpine:latest ip-172-31-26-141.us-east-2.compute.internal Running       \
+<code class="lineno">10 </code>Running about a minute ago
+<code class="lineno">11 </code>test.5  alpine:latest ip-172-31-26-141.us-east-2.compute.internal Running       \
+<code class="lineno">12 </code>Running about a minute ago
+<code class="lineno">13 </code>test.6  alpine:latest ip-172-31-44-182.us-east-2.compute.internal Running       \
+<code class="lineno">14 </code>Running 55 seconds ago
+<code class="lineno">15 </code>test.7  alpine:latest ip-172-31-26-141.us-east-2.compute.internal Running       \
+<code class="lineno">16 </code>Running 20 seconds ago
+<code class="lineno">17 </code>test.8  alpine:latest ip-172-31-26-141.us-east-2.compute.internal Running       \
+<code class="lineno">18 </code>Running about a minute ago
+<code class="lineno">19 </code>test.9  alpine:latest ip-172-31-15-30.us-east-2.compute.internal  Running       \
+<code class="lineno">20 </code>Running 43 seconds ago
+<code class="lineno">21 </code>test.10 alpine:latest ip-172-31-44-182.us-east-2.compute.internal Running       \
+<code class="lineno">22 </code>Running 8 seconds ago
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Since containers are immutable, any update of a service always results in a rolling update process that replaces all the replicas. You’ll notice that, this time, they are spread across all the nodes of the cluster, including the new one.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code><code class="nb">exit</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Self-healing applied to infrastructure works! We closed the circle. Swarm makes sure that our services are (almost) always in the desired state. With <em class="calibre21">Docker For AWS</em>, we accomplished a similar behavior with nodes.</p>
+
+<aside class="tip">
+    <p class="calibre3"><em class="calibre21">Docker For AWS</em> will be able to recuperate from almost any failure as long as over 50% of managers are up-and-running. If we’re running three managers and two of them fail at the same time, the cluster will not be able to reestablish the desired state.</p>
+
+</aside>
+
+<p class="calibre3">The reason why over 50% of managers must be operational at any given moment lies in the Raft protocol that synchronizes data. Every piece of information is propagated to all the managers. An action is performed only if the majority agrees. That way we can guarantee data integrity. There is no majority if half or more members are absent.</p>
+
+<p class="calibre3">You might be compelled to create clusters with five managers as a way to decrease chances of a complete cluster meltdown if two managers fail at the same time. In some cases that is a good strategy. However, the chances that two managers running in separate availability zones will go down at the same time are very slim. Don’t take this advice as a commandment. You should experiment with both approaches and make your own decision. I tend to run all my clusters smaller than ten nodes with three managers. When they are bigger, five is a good number.</p>
+
+<p class="calibre3">You might go even further and opt for seven managers. The more, the better. Right? Wrong! Data synchronization between managers is a costly operation. The more managers, the more time is required until a consensus is reached. Seven managers often produce more overhead than benefit.</p>
+
+<h3 id="leanpub-auto-what-now-12" class="calibre20">What Now?</h3>
+
+<p class="calibre3">We proved that self-healing works not only with services but also with infrastructure. We are getting close to having a self-sufficient system. The only thing missing is to find out a way to add self-adaptation applied to infrastructure. If we accomplish that, we’ll be able to leave our system alone. We can go on vacation knowing that it will be operational without us. We could even go to one of those exotic places that still do not have the Internet. Wouldn’t that be great?</p>
+
+<p class="calibre3">Even though we are one step closer to our goal, we are still not there yet. We’ll take another break before moving on.</p>
+
+<p class="calibre3">We’ll continue the practice from previous chapters. We’ll destroy the cluster and save us from unnecessary cost.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>aws cloudformation delete-stack <code class="se">\</code>
+<code class="lineno">2 </code>    --stack-name devops22
+<code class="lineno">3 </code>
+<code class="lineno">4 </code>aws cloudformation describe-stacks <code class="se">\</code>
+<code class="lineno">5 </code>    --stack-name devops22 <code class="calibre19">|</code> <code class="se">\</code>
+<code class="lineno">6 </code>    jq -r <code class="s">".Stacks[0].StackStatus"</code>
+</pre></div>
+
+</figure>
+
+<p class="calibre3">The output of the <code class="calibre19">describe-stacks</code> command is as follows.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>DELETE_IN_PROGRESS
+</pre></div>
+
+</figure>
+
+<p class="calibre3">Cluster will be removed soon.</p>
+
+<p class="calibre3">Feel free to repeat the command if you don’t trust the system and want to see it through. You’ll know that the cluster is fully removed when you see the error output that follows.</p>
+
+<figure class="code">
+<div class="highlight"><pre class="calibre24"><code class="calibre19"/><code class="lineno">1 </code>An error occurred (ValidationError) when calling the DescribeStacks operation: S\
+<code class="lineno">2 </code>tack with id devops22 does not exist
+</pre></div>
+
+</figure>
+
+
+
+</div>
+</body></html>

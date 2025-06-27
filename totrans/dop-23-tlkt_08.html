@@ -1,0 +1,634 @@
+<html><head></head><body>
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Using Volumes to Access Host&amp;#x27;s File System</h1>
+                </header>
+            
+            <article>
+                
+<div class="packt_tip">Having a system without a state is impossible. Even though there is a tendency to develop stateless applications, we still need to deal with the state. There are databases and other stateful third-party applications. No matter what we do, we need to make sure that the state is preserved no matter what happens to containers, Pods, or even whole nodes.</div>
+<p>Most of the time, stateful applications store their state on disk. That leaves us with a problem. If a container crashes, <kbd>kubelet</kbd> will restart it. The problem is that it will create a new container based on the same image. All data accumulated inside a container that crashed will be lost.</p>
+<p>Kubernetes volumes solve the need to preserve the state across container crashes. In essence, volumes are references to files and directories made accessible to containers that form a Pod. The significant difference between different types of Kubernetes volumes is in the way these files and directories are created.</p>
+<p>While the primary use-case for volumes is the preservation of state, there are quite a few others. For example, we might use volumes to access Docker's socket running on a host. Or we might use them to access configuration residing in a file on the host file system.</p>
+<div class="packt_tip">We can describe Volumes as a way to access a file system that might be running on the same host or somewhere else. No matter where that file system is, it is external to the containers that mount volumes. There can be many reasons why someone might mount a Volume, with state preservation being only one of them.</div>
+<p>There are over twenty-five volume types supported by Kubernetes. It would take us too much time to go through all of them. Besides, even if we'd like to do that, many volume types are specific to a hosting vendor. For example, <kbd>awsElasticBlockStore</kbd> works only with AWS, <kbd>azureDisk</kbd> and <kbd>azureFile</kbd> work only with Azure, and so on and so forth. We'll limit our exploration to volume types that can be used within Minikube. You should be able to extrapolate that knowledge to volume types applicable to your hosting vendor of choice.</p>
+<p>Let's get down to it.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Creating a cluster</h1>
+                </header>
+            
+            <article>
+                
+<p>This time, we'll have an additional action we'll execute in preparation to create a Minikube cluster.</p>
+<div class="packt_infobox">All the commands from this chapter are available in the <a href="https://gist.github.com/5acafb64c0124a1965f6d371dd0dedd1"><kbd>08-volume.sh</kbd></a> (<a href="https://gist.github.com/vfarcic/5acafb64c0124a1965f6d371dd0dedd1" target="_blank"><span class="URLPACKT">https://gist.github.com/vfarcic/5acafb64c0124a1965f6d371dd0dedd1</span></a>) Gist.</div>
+<pre><strong>cd k8s-specs 
+ 
+git pull 
+ 
+cp volume/prometheus-conf.yml \  
+    ~/.minikube/files</strong> </pre>
+<p>We'll need the file inside the soon-to-be-created Minikube VM. When it starts, it will copy all the files from <kbd>~/.minikube/files</kbd> on your host, into the <kbd>/files</kbd> directory in the VM.</p>
+<div class="packt_tip">Depending on your operating system, the <kbd>~/.minikube/files</kbd> directory might be somewhere else. If that's the case, please adapt the preceding command.</div>
+<p>Now that the files are copied to the shared directory, we can repeat the same process we did quite a few times before. Please note that we've added the step from the last chapter that enables the ingress addon.</p>
+<pre><strong>minikube start --vm-driver=virtualbox</strong>
+    
+<strong>minikube addons enable ingress</strong>
+    
+<strong>kubectl config current-context</strong></pre>
+<p>Now that the Minikube cluster is up-and-running, we can explore the first volume type.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Accessing host's resources through hostPath volumes</h1>
+                </header>
+            
+            <article>
+                
+<p>Sooner or later, we'll have to build our images. A simple solution would be to execute the <kbd>docker image build</kbd> command directly from a server. However, that might cause problems. Building images on a single host means that there is an uneven resource utilization and that there is a single point of failure. Wouldn't it be better if we could build images anywhere inside a Kubernetes cluster?</p>
+<p>Instead of executing the <kbd>docker image build</kbd> command, we could create a Pod based on the <kbd>docker</kbd> image. Kubernetes will make sure that the Pod is scheduled somewhere inside the cluster, thus distributing resource usage much better.</p>
+<p>Let's start with an elementary example. If we can list the images, we'll prove that running <span class="VerbatimChar">docker</span> commands inside containers works. Since, from Kubernetes' point of view, Pods are the smallest entity, that's what we'll run.</p>
+<pre><strong>kubectl run docker \</strong>
+<strong>    --image=docker:17.11 \</strong>
+    <strong>--restart=Never \</strong>
+    <strong>docker image ls</strong>
+    
+<strong>kubectl get pods --show-all</strong>  </pre>
+<p>We created a Pod named <kbd>docker</kbd> and based it on the official <kbd>docker</kbd> image. Since we want to execute a one-shot command, we specified that it should <kbd>Never</kbd> restart. Finally, the container command is <kbd>docker image ls</kbd>. The second command lists all the Pods in the cluster (including failed ones).</p>
+<p>The output of the latter command is as follows:</p>
+<pre><strong>NAME   READY STATUS RESTARTS AGE</strong>
+<strong>docker 0/1   Error  0        1m</strong>  </pre>
+<p>The output should show that the status is <kbd>Error</kbd>, thus indicating that there is a problem with the container we're running. If, in your case, the status is not yet <kbd>Error</kbd>, Kubernetes is probably still pulling the image. In that case, please wait a few moments, and re-execute the <kbd>kubectl get pods</kbd> command.</p>
+<p>Let's take a look at the logs of the container:</p>
+<pre><strong>kubectl logs docker</strong>  </pre>
+<p>The output is as follows:</p>
+<pre><strong>Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?</strong>  </pre>
+<p>Docker consists of two main pieces. There is a client, and there is a server. When we executed <kbd>docker image ls</kbd>, we invoked the client who tried to communicate with the server through its API. The problem is that Docker server is not running in that container. What we should do is tell the client (inside a container) to use Docker server that is already running on the host (Minikube VM).</p>
+<p>By default, the client sends instructions to the server through the socket located in <kbd>/var/run/docker.sock</kbd>. We can accomplish our goal if we mount that file from the host into a container.</p>
+<p>Before we try to enable communication between a Docker client in a container and Docker server on a host, we'll delete the Pod we created a few moments ago:</p>
+<pre><strong>kubectl delete pod docker</strong>  </pre>
+<p>Let's take a look at the Pod definition stored in <kbd>volume/docker.yml</kbd>:</p>
+<pre><strong>cat volume/docker.yml</strong></pre>
+<p>The output is as follows:</p>
+<pre>apiVersion: v1 
+kind: Pod 
+metadata: 
+  name: docker 
+spec: 
+  containers: 
+  - name: docker 
+    image: docker:17.11 
+    command: ["sleep"] 
+    args: ["100000"] 
+    volumeMounts: 
+    - mountPath: /var/run/docker.sock 
+      name: docker-socket</pre>
+<pre>  volumes: 
+  - name: docker-socket 
+    hostPath: 
+      path: /var/run/docker.sock 
+      type: Socket </pre>
+<p>Part of the definition closely mimics the <kbd>kubectl run</kbd> command we executed earlier. The only significant difference is in the <kbd>volumeMounts</kbd> and <kbd>volumes</kbd> sections.</p>
+<p>The <kbd>volumeMounts</kbd> field is relatively straightforward and is the same no matter which type of volume we're using. In this section, we're specifying the <kbd>mountPath</kbd> and the <span class="VerbatimChar">name</span> of the volume. The former is the path we expect to mount inside this container. You'll notice that we are not specifying the type of the volume nor any other specifics inside the <kbd>VolumeMounts</kbd> section. Instead, we simply have a reference to a volume called <kbd>docker-socket</kbd>.</p>
+<p>The volume configuration specific to each type is defined in the <kbd>volumes</kbd> section. In this case, we're using the <kbd>hostPath</kbd> volume type.</p>
+<p><kbd>hostPath</kbd> allows us to mount a file or a directory from a host to Pods and, through them, to containers. Before we discuss the usefulness of this type, we'll have a short discussion about use-cases when this is not a good choice.</p>
+<div class="packt_tip">Do not use <kbd>hostPath</kbd> to store a state of an application. Since it mounts a file or a directory from a host into a Pod, it is not fault-tolerant. If the server fails, Kubernetes will schedule the Pod to a healthy node, and the state will be lost.</div>
+<p>For our use case, <kbd>hostPath</kbd> works just fine. We're not using it to preserve state, but to gain access to Docker server running on the same host as the Pod.</p>
+<p>The <kbd>hostPath</kbd> type has only two fields. The <kbd>path</kbd> represents the file or a directory we want to mount from the host. Since we want to mount a socket, we set the <kbd>type</kbd> accordingly. There are other types we could use.</p>
+<p>The <kbd>Directory</kbd> type will mount a directory from the host. It must exist on the given path. If it doesn't, we might switch to <kbd>DirectoryOrCreate</kbd> type which serves the same purpose. The difference is that <kbd>DirectoryOrCreate</kbd> will create the directory if it does not exist on the host.</p>
+<p>The <kbd>File</kbd> and <kbd>FileOrCreate</kbd> are similar to their <kbd>Directory</kbd> equivalents. The only difference is that this time we'd mount a file, instead of a directory.</p>
+<p>The other supported types are <kbd>Socket</kbd>, <kbd>CharDevice</kbd>, and <kbd>BlockDevice</kbd>. They should be self-explanatory. If you don't know what character or block devices are, you probably don't need those types.</p>
+<p>Last, but not least, we changed the command and the arguments to <kbd>sleep 100000</kbd>. That will give us more freedom since we'll be able to create the Pod, enter inside its only container, and experiment with different commands.</p>
+<p>Let's create the Pod and check whether, this time, we can execute Docker commands from inside the container it'll create:</p>
+<pre><strong>kubectl create \</strong>
+<strong>    -f volume/docker.yml</strong></pre>
+<p>Since the image is already pulled, starting the Pod should be almost instant.</p>
+<p>Let's see whether we can retrieve the list of Docker images:</p>
+<pre><strong>kubectl exec -it docker \</strong>
+<strong>    -- docker image ls \</strong>
+<strong>    --format "{{.Repository}}"</strong> </pre>
+<p>We executed <kbd>docker image ls</kbd> command and shortened the output by limiting its formatting only to <kbd>Repository</kbd>. The output is as follows:</p>
+<pre><strong>Docker</strong>
+<strong>gcr.io/google_containers/nginx-ingress-controller</strong>
+<strong>gcr.io/google_containers/k8s-dns-sidecar-amd64</strong>
+<strong>gcr.io/google_containers/k8s-dns-kube-dns-amd64</strong>
+<strong>gcr.io/google_containers/k8s-dns-dnsmasq-nanny-amd64</strong>
+<strong>gcr.io/google_containers/kubernetes-dashboard-amd64</strong>
+<strong>gcr.io/google_containers/kubernetes-dashboard-amd64</strong>
+<strong>gcr.io/google-containers/kube-addon-manager</strong>
+<strong>gcr.io/google_containers/defaultbackend</strong>   <strong>
+<span class="VerbatimChar">gcr.io/google_containers/pause-amd64</span></strong></pre>
+<p>Even though we executed the <kbd>docker</kbd> command inside a container, the output clearly shows the images from the host. We proved that mounting the Docker socket (<kbd>/var/run/docker.sock</kbd>) as a volume allows communication between Docker client inside the container, and Docker server running on the host.</p>
+<div class="packt_figure CDPAlignCenter CDPAlign"><img src="assets/0aebfc58-7258-4d6c-8549-dc9d52ccbda9.png" style="width:26.17em;height:11.25em;"/></div>
+<div class="packt_figref CDPAlignCenter CDPAlign">Figure 8-1: HostPath mounted inside a container</div>
+<p>Let's enter the container and see whether we can build a Docker image.</p>
+<pre><strong>kubectl exec -it docker sh</strong></pre>
+<p>To build an image, we need a <kbd>Dockerfile</kbd> as well as an application's source code. We'll continue using <kbd>go-demo-2</kbd> as the example, so our first action will be to clone the repository:</p>
+<pre><strong>apk add -U git</strong>
+    
+<strong>git clone \ </strong>
+    <strong>https://github.com/vfarcic/go-demo-2.git
+    </strong>
+<strong>cd go-demo-2</strong>  </pre>
+<p>We used <kbd>apk add</kbd> to install <kbd>git</kbd>. <kbd>docker</kbd> and many other images use <kbd>alpine</kbd> as the base. If you're not familiar with <kbd>alpine</kbd>, it is a very slim and efficient base image, and I strongly recommend that you use it when building your own. Images like <kbd>debian</kbd>, <kbd>centos</kbd>, <kbd>ubuntu</kbd>, <kbd>redhat</kbd>, and similar base images are often a terrible choice made because of a misunderstanding of how containers work.</p>
+<p><kbd>alpine</kbd> uses <kbd>apk</kbd> package management, so we invoked it to install <kbd>git</kbd>. Next, we cloned the <kbd>vfarcic/go-demo-2</kbd> repository, and, finally, we entered into the <kbd>go-demo-2</kbd> directory:</p>
+<p>Let's take a quick look at the <kbd>Dockerfile</kbd>:</p>
+<pre><strong>cat Dockerfile</strong>  </pre>
+<p>The output is as follows:</p>
+<pre><strong>FROM golang:1.9 AS build 
+ADD . /src 
+WORKDIR /src 
+RUN go get -d -v -t 
+RUN go test --cover -v ./... --run UnitTest 
+RUN go build -v -o go-demo 
+ 
+ 
+FROM alpine:3.4 
+MAINTAINER      Viktor Farcic viktor@farcic.com 
+ 
+RUN mkdir /lib64 &amp;amp;&amp;amp; ln -s /lib/libc.musl-x86_64.so.1 /lib64/ld-linux-x86-64.so.2 
+ 
+EXPOSE 8080 
+ENV DB db 
+CMD ["go-demo"] 
+HEALTHCHECK --interval=10s CMD wget -qO- localhost:8080/demo/hello 
+ 
+COPY --from=build /src/go-demo /usr/local/bin/go-demo 
+RUN chmod +x /usr/local/bin/go-demo</strong> </pre>
+<p>Since this book is dedicated to Kubernetes, we won't go into details behind this Dockerfile, but only comment that it uses Docker's multi-stage builds. The first stage downloads the dependencies, it runs unit tests, and it builds the binary. The second stage starts over. It builds a fresh image with the <kbd>go-demo</kbd> binary copied from the previous stage.</p>
+<div class="packt_infobox">I sincerely hope you're proficient with Docker and there's no need to explain image building further. If that's not the case, you might want to explore the official documentation or one of my previous books. This one is focused only on Kubernetes.</div>
+<p>Let's test whether building an image indeed works.</p>
+<pre><strong>docker image build \ 
+    -t vfarcic/go-demo-2:beta . 
+ 
+docker image ls \ 
+    --format "{{.Repository}}"</strong> </pre>
+<p>We executed the <kbd>docker image build</kbd> command, followed by <kbd>docker image ls</kbd>. The output of the latter command is as follows:</p>
+<pre><strong>vfarcic/go-demo-2</strong>
+<strong>&lt;none&gt;</strong>
+<strong>golang</strong>
+<strong>docker</strong>
+<strong>alpine</strong>
+<strong>gcr.io/google_containers/nginx-ingress-controller</strong>
+<strong>gcr.io/google_containers/k8s-dns-sidecar-amd64</strong>
+<strong>gcr.io/google_containers/k8s-dns-kube-dns-amd64</strong>
+<strong>gcr.io/google_containers/k8s-dns-dnsmasq-nanny-amd64</strong>
+<strong>gcr.io/google_containers/kubernetes-dashboard-amd64</strong>
+<strong>gcr.io/google_containers/kubernetes-dashboard-amd64</strong>
+<strong>gcr.io/google-containers/kube-addon-manager</strong>
+<strong>gcr.io/google_containers/defaultbackend</strong>
+<strong>gcr.io/google_containers/pause-amd64</strong>  </pre>
+<p>If we compare this with the previous <kbd>docker image ls</kbd> output, we'll notice that, this time, a few new images are listed. The <kbd>golang</kbd> and <kbd>alpine</kbd> images are used as a basis for each of the build stages. The <kbd>vfarcic/go-demo-2</kbd> is the result of our build. Finally, <kbd>&lt;none&gt;</kbd> is only a left-over of the process and it can be safely removed.</p>
+<pre><strong>docker system prune -f 
+ 
+docker image ls \  
+    --format "{{.Repository}}"</strong> </pre>
+<p>The <kbd>docker system prune</kbd> command removes all unused resources. At least, all those created and unused by Docker. We confirmed that by executing <kbd>docker image ls</kbd> again. This time, we can see the <kbd>&lt;none&gt;</kbd> image is gone.</p>
+<p>We'll destroy the <kbd>docker</kbd> Pod and explore other usages of the <kbd>hostPath</kbd> volume type:</p>
+<pre><strong>Exit</strong>
+    
+<strong>kubectl delete \</strong>
+    <strong>-f volume/docker.yml</strong>
+  </pre>
+<div class="packt_tip"><kbd>hostPath</kbd> is a great solution for accessing host resources like <kbd>/var/run/docker.sock</kbd>, <kbd>/dev/cgroups</kbd>, and others. That is, as long as the resource we're trying to reach is on the same node as the Pod.</div>
+<p>Let's see whether we can find other use-cases for <kbd>hostPath</kbd>.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Using hostPath volume type to inject configuration files</h1>
+                </header>
+            
+            <article>
+                
+<p>We are about to deploy <span class="Link">Prometheus (</span><a href="https://prometheus.io/" target="_blank">https://prometheus.io/</a>) for the first time (in this book). We won't go into details behind the application except to say that it's fantastic and that you should consider it for your monitoring and alerting needs. At the risk of disappointing you, I will have to say that Prometheus is not in the scope of this chapter, and probably not even the book. We're using it only to demonstrate a few Kubernetes concepts. We're not trying to learn how to operate it.</p>
+<p>Let's take a look the application's definition:</p>
+<pre><strong>cat volume/prometheus.yml</strong>  </pre>
+<p>The output is as follows:</p>
+<pre>apiVersion: extensions/v1beta1 
+kind: Ingress 
+metadata: 
+  name: Prometheus 
+  annotations: <br/>    ingress.kubernetes.io/ssl-redirect: "false"<br/>    nginx.ingress.kubernetes.io/ssl-redirect: "false" 
+spec: 
+  rules: 
+  - http: 
+      paths: 
+      - path: /Prometheus 
+        backend: 
+          serviceName: Prometheus 
+          servicePort: 9090 
+ 
+--- 
+ 
+apiVersion: apps/v1beta2 
+kind: Deployment 
+metadata: 
+  name: Prometheus 
+spec: 
+  selector: 
+    matchLabels: 
+      type: monitor 
+      service: Prometheus 
+  strategy: 
+    type: Recreate 
+  template: 
+    metadata: 
+      labels: 
+        type: monitor 
+        service: Prometheus 
+    spec: 
+      containers: 
+      - name: Prometheus 
+        image: prom/prometheus:v2.0.0 
+        command: 
+        - /bin/Prometheus 
+        args: 
+        - "--config.file=/etc/prometheus/prometheus.yml" 
+        - "--storage.tsdb.path=/prometheus" 
+        - "--web.console.libraries=/usr/share" 
+        - "--web.external-url=http://192.168.99.100/prometheus" 
+ 
+--- 
+ 
+apiVersion: v1 
+kind: Service 
+metadata: 
+  name: Prometheus 
+spec: 
+  ports: 
+  - port: 9090 
+  selector: 
+    type: monitor 
+    service: Prometheus </pre>
+<p>There's nothing genuinely new in that YAML file. It defines an Ingress, a deployment, and a service. There is, however, one thing we might need to change. Prometheus needs a full <kbd>external-url</kbd> if we want to change the base path. At the moment, it's set to the IP of my Minikube VM. In your case, that IP might be different. We'll fix that by adding a bit of <span class="VerbatimChar">sed</span> "magic" that will make sure the IP matches that of your Minikube VM.</p>
+<pre><strong>cat volume/prometheus.yml | sed -e \  
+    "s/192.168.99.100/$(minikube ip)/g" \  
+    | kubectl create -f - \ 
+    --record --save-config 
+ 
+kubectl rollout status deploy prometheus</strong> </pre>
+<p>We output the contents of the <kbd>volume/prometheus.yml</kbd> file, we used <kbd>sed</kbd> to replace the hard-coded IP with the actual value of your Minikube instance, and we passed the result to <kbd>kubectl create</kbd>. Please note that, this time, the <kbd>create</kbd> command has dash (<kbd>-</kbd>) instead of the path to the file. That's an indication that <kbd>stdin</kbd> should be used instead.</p>
+<p>Once we created the application, we used the <kbd>kubectl rollout status</kbd> command to confirm that the deployment finished.</p>
+<p>Now we can open Prometheus in a browser.</p>
+<pre>open "http://$(minikube ip)/prometheus"  </pre>
+<p>At first glance, the application seems to be running correctly. However, since the targets are the crucial part of the application, we should check them as well. For those not familiar with Prometheus, it pulls data from targets (external data sources) and, by default, comes with only one target pre-configured: Prometheus itself. Prometheus will always pull data from this target unless we configure it otherwise.</p>
+<p>Let's take a look at its targets.</p>
+<pre>open "http://$(minikube ip)/prometheus/targets"  </pre>
+<p>There's something wrong. The default target is not reachable. Before we start panicking, we should take a closer look at its configuration.</p>
+<pre>open "http://$(minikube ip)/prometheus/config"  </pre>
+<p>The problem is with the <kbd>metrics_path</kbd> field. By default, it is set to <kbd>/metrics</kbd>. However, since we changed the base path to <kbd>/prometheus</kbd>, the field should have <kbd>/prometheus/metrics</kbd> as the value.</p>
+<p>Long story short, we must change Prometheus configuration.</p>
+<p>We could, for example, enter the container, update the configuration file, and send the reload request to Prometheus. That would be a terrible solution since it would last only until the next time we update the application, or until the container fails, and Kubernetes decides to reschedule it.</p>
+<p>Let's explore alternative solutions. We could, for example, use <kbd>hostPath</kbd> volume for this as well. If we can guarantee that the correct configuration file is inside the VM, the Pod could attach it to the <kbd>prometheus</kbd> container. Let's try it out.</p>
+<pre><strong>cat volume/prometheus-host-path.yml</strong></pre>
+<p>The output, limited to relevant parts, is as follows:</p>
+<pre>apiVersion: apps/v1beta2 
+kind: Deployment 
+metadata: 
+  name: Prometheus 
+spec: 
+  selector: 
+    ... 
+    spec: 
+      containers: 
+        ... 
+        volumeMounts: 
+        - mountPath: /etc/prometheus/prometheus.yml 
+          name: prom-conf 
+      volumes: 
+      - name: prom-conf 
+        hostPath: 
+          path: /files/prometheus-conf.yml 
+          type: File 
+... </pre>
+<p>The only significant difference, when compared with the previous definition, is in the added <kbd>volumeMounts</kbd> and <kbd>volumes</kbd> fields. We're using the same schema as before, except that, this time, the <kbd>type</kbd> is set to <kbd>File</kbd>. Once we <span class="VerbatimChar">apply</span> this Deployment, the file <kbd>/files/prometheus-conf.yml</kbd> on the host will be available as <kbd>/etc/prometheus/prometheus.yml</kbd> inside the container.</p>
+<p>If you recall, we copied one file to the <kbd>~/.minikube/files</kbd> directory, and Minikube copied it to the <kbd>/files</kbd> directory inside the VM.</p>
+<div class="packt_tip">In some cases, files might end up being copied to the VM's root (<kbd>/</kbd>), instead of to <kbd>/files</kbd>. If this has happened to you, please enter the VM (<kbd>minikube ssh</kbd>), and move the files to <kbd>/files</kbd>, by executing the commands that follow (only if the <kbd>/files</kbd> directory does not exist or is empty).</div>
+<pre><strong>minikube ssh</strong>
+    
+<strong>sudo mkdir /files</strong>
+    
+<strong>sudo mv /prometheus-conf.yml  /files/</strong>
+    
+<strong>exit</strong>  </pre>
+<p>The time has come to take a look at the content of the file.</p>
+<pre><strong>minikube ssh sudo chmod +rw \ 
+    /files/prometheus-conf.yml 
+ 
+minikube ssh cat \  
+    /files/prometheus-conf.yml</strong> </pre>
+<p>We changed the permissions of the file and displayed its content.</p>
+<p>The output is as follows:</p>
+<pre>global: 
+  scrape_interval:     15s 
+ 
+scrape_configs: 
+  - job_name: Prometheus 
+    metrics_path: /prometheus/metrics 
+    static_configs: 
+      - targets: 
+        - localhost:9090 </pre>
+<p>This configuration is almost identical to what Prometheus uses by default. The only difference is in the <kbd>metrics_path</kbd>, which is now pointing to <kbd>/prometheus/metrics</kbd>.</p>
+<p>Let's see whether Prometheus with the new configuration works as expected:</p>
+<pre><strong>cat volume/prometheus-host-path.yml \ </strong>
+<strong>    | sed -e \</strong>
+<strong>    "s/192.168.99.100/$(minikube ip)/g" \</strong>
+<strong>    | kubectl apply -f -</strong>
+    
+<strong>kubectl rollout status deploy Prometheus</strong>
+    
+<strong>open <span class="MsoHyperlink">http://$(minikube ip)/prometheus/targets</span></strong>  </pre>
+<p>We applied the new definition (after the <kbd>sed</kbd> "magic"), we waited until the <kbd>rollout</kbd> finished, and we then opened the Prometheus targets in a browser. This time, with the updated configuration, Prometheus is successfully pulling data from the only target currently configured:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/68682aff-9d59-427a-bbbb-d42877a9cd8a.png" style="width:61.08em;height:9.75em;"/></p>
+<div class="packt_figref CDPAlignCenter CDPAlign">Figure 8-2: Prometheus targets screen</div>
+<p>The next logical step would be to configure Prometheus with additional targets. Specifically, you may want to configure it to fetch metrics that are already made available through the Kubernetes API. We, however, will <em>NOT</em> be doing this. First of all, this chapter is not about monitoring and alerting. The second, and the more important reason, is that using the <kbd>hostPath</kbd> volume type to provide configuration is <em>NOT</em> a good idea.</p>
+<div class="packt_tip">A <kbd>hostPath</kbd> volume maps a directory from a host to where the Pod is running. Using it to "inject" configuration files into containers would mean that we'd have to make sure that the file is present on every node of the cluster.</div>
+<p>Working with Minikube can be potentially misleading. The fact that we're running a single-node cluster means that every Pod we run will be scheduled on one node. Copying a configuration file to that single node, as we did in our example, ensures that it can be mounted in any Pod. However, the moment we add more nodes to the cluster, we'd experience side effects. We'd need to make sure that each node in our cluster has the same file we wish to mount, as we would not be able to predict where individual Pods would be scheduled. This would introduce far too much unnecessary work and added complexity.</p>
+<p>An alternative solution would be to mount an NFS drive to all the nodes and store the file there. That would provide the guarantee that the file will be available on all the nodes, as long as we do <em>NOT</em> forget to mount NFS on each.</p>
+<p>Another solution could be to create a custom Prometheus image. It could be based on the official image, with a single <kbd>COPY</kbd> instruction that would add the configuration. The advantage of that solution is that the image would be entirely immutable. Its state would not be polluted with unnecessary volume mounts. Anyone could run that image and expect the same result. That is my preferred solution. However, in some cases, you might want to deploy the same application with a slightly different configuration. Should we, in those cases, fall back to mounting an NFS drive on each node and continue using <kbd>hostPath</kbd>?</p>
+<p>Even though mounting an NFS drive would solve some of the problems, it is still not a great solution. In order to mount a file from NFS, we need to use the <a href="https://kubernetes.io/docs/concepts/storage/volumes/#nfs"><kbd>nfs</kbd></a> (<a href="https://kubernetes.io/docs/concepts/storage/volumes/#nfs" target="_blank"><span class="URLPACKT">https://kubernetes.io/docs/concepts/storage/volumes/#nfs</span></a>) volume type instead of <kbd>hostPath</kbd>. Even then it would be a sub-optimal solution. A much better approach would be to use <kbd>configMap</kbd>. We'll explore it in the next chapter.</p>
+<div class="packt_tip">Do use <kbd>hostPath</kbd> to mount host resources like <kbd>/var/run/docker.sock</kbd> and <kbd>/dev/cgroups</kbd>. Do not use it to inject configuration files or store the state of an application.</div>
+<p>We'll move onto a more exotic volume type. But, before that, we'll remove the Pod we're currently running:</p>
+<pre><strong>kubectl delete \  
+    -f volume/prometheus-host-path.yml</strong> </pre>
+<p class="mce-root"/>
+<p class="mce-root"/>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Using gitRepo to mount a Git repository</h1>
+                </header>
+            
+            <article>
+                
+<p>The <kbd>gitRepo</kbd> volume type is probably not going to be on your list of top three volume types. Or, maybe it will. It all depends on your use cases. I like it since it demonstrates how a concept of a volume can be extended to a new and innovative solution.</p>
+<p>Let's see it in action through the <kbd>volume/github.yml</kbd> definition:</p>
+<pre><strong>cat volume/github.yml</strong></pre>
+<p>The output is as follows:</p>
+<pre>apiVersion: v1 
+kind: Pod 
+metadata: 
+  name: github 
+spec: 
+  containers: 
+  - name: github 
+    image: docker:17.11 
+    command: ["sleep"] 
+    args: ["100000"] 
+    volumeMounts: 
+    - mountPath: /var/run/docker.sock 
+      name: docker-socket 
+    - mountPath: /src 
+      name: github 
+  volumes: 
+  - name: docker-socket 
+    hostPath: 
+      path: /var/run/docker.sock 
+      type: Socket 
+  - name: github 
+    gitRepo: 
+      repository: https://github.com/vfarcic/go-demo-2.git 
+      directory: . </pre>
+<p>This Pod definition is very similar to <kbd>volume/docker.yml</kbd>. The only significant difference is that we added the second <kbd>volumeMount</kbd>. It will mount the directory <kbd>/src</kbd> inside the container, and will use the volume named <kbd>github</kbd>. The volume definition is straightforward. The <kbd>gitRepo</kbd> type defines the Git <kbd>repository</kbd> and the <kbd>directory</kbd>. If we skipped the latter, we'd get the repository mounted as <kbd>/src/go-demo-2</kbd>.</p>
+<p>The <kbd>gitRepo</kbd> volume type allows a third field which we haven't used. We could have set a specific <kbd>revision</kbd> of the repository. But, for demo purposes, the <kbd>HEAD</kbd> should do.</p>
+<p class="mce-root"/>
+<p>Let's create the Pod.</p>
+<pre><strong>kubectl create \  
+    -f volume/github.yml</strong> </pre>
+<p>Now that we created the Pod, we'll enter its only container, and check whether <kbd>gitRepo</kbd> indeed works as expected:</p>
+<pre><strong>kubectl exec -it github sh 
+ 
+cd /src 
+ 
+ls -l</strong> </pre>
+<p>We entered into the container of the Pod, switched to the <kbd>/src</kbd> directory, and listed all the files and directories inside it. That proved that <kbd>gitRepo</kbd> mounted a volume with the contents of the <kbd>vfarcic/go-demo-2</kbd> GitHub repository.</p>
+<div class="packt_figure CDPAlignCenter CDPAlign"><img src="assets/edf5c060-dfc3-4ff6-9a70-ae0bdcddfff9.png" style="width:28.08em;height:12.17em;"/></div>
+<div class="packt_figref CDPAlignCenter CDPAlign">Figure 8-3: GitHub repository mounted inside a container</div>
+<p>Since the Pod container is based on the <kbd>docker</kbd> image, and the socket is mounted as well, we should be able to build the image using the source code provided by the <kbd>gitRepo</kbd> volume:</p>
+<pre><strong>docker image build \  
+    -t vfarcic/go-demo-2:beta .</strong> </pre>
+<p>This time, the build should be very fast since we already have the same image on the host, and the source code did not change in the meantime. You should see a <kbd>Using cache</kbd> notification for each layer of the image we're building.</p>
+<p>Since we now proved the point, let's get out of the container and remove the Pod:</p>
+<pre><strong>Exit 
+ 
+kubectl delete \  
+    -f volume/github.yml</strong> </pre>
+<p><kbd>gitRepo</kbd> is a nifty little addition to the volume types. It does not save us a lot of work, nor does it provide something truly exceptional. We could accomplish the same result by using an image with <kbd>git</kbd> and execute a simple <kbd>git clone</kbd> command. Still, the volume type might come in handy on a few occasions. The more we have defined in YAML files, the less we depend on ad-hoc commands. That way, we can aim towards fully documented processes.</p>
+<div class="packt_tip">The <kbd>gitRepo</kbd> volume type helps us move <kbd>git</kbd> commands (for example, <kbd>git clone</kbd>) into the YAML definition. It also removes the need for the <kbd>git</kbd> binary inside containers. While <kbd>gitRepo</kbd> might not always be the best option, it is indeed something worth considering.</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Persisting state through the emptyDir volume type</h1>
+                </header>
+            
+            <article>
+                
+<p>This time we'll deploy Jenkins and see what challenges we will face.</p>
+<p>Let's take a look at the <kbd>volume/jenkins.yml</kbd> definition:</p>
+<pre><strong>cat volume/jenkins.yml</strong>  </pre>
+<p>The output is as follows:</p>
+<pre>apiVersion: extensions/v1beta1 
+kind: Ingress 
+metadata: 
+  name: Jenkins 
+  annotations: <br/>    ingress.kubernetes.io/ssl-redirect: "false"<br/>    nginx.ingress.kubernetes.io/ssl-redirect: "false" 
+spec: 
+  rules: 
+  - http: 
+      paths: 
+      - path: /Jenkins 
+        backend: 
+          serviceName: Jenkins 
+          servicePort: 8080 
+ 
+--- 
+ 
+apiVersion: apps/v1beta2 
+kind: Deployment 
+metadata: 
+  name: Jenkins 
+spec: 
+  selector: 
+    matchLabels: 
+      type: master 
+      service: Jenkins 
+  strategy: 
+    type: Recreate 
+  template: 
+    metadata: 
+      labels: 
+        type: master 
+        service: Jenkins 
+    spec: 
+      containers: 
+      - name: Jenkins 
+        image: vfarcic/Jenkins 
+        env: 
+        - name: JENKINS_OPTS 
+          value: --prefix=/jenkins 
+ 
+--- 
+ 
+apiVersion: v1 
+kind: Service 
+metadata: 
+  name: Jenkins 
+spec: 
+  ports: 
+  - port: 8080 
+  selector: 
+    type: master 
+    service: jenkins </pre>
+<p>There's nothing special in that YAML file. It defines an Ingress with <kbd>/jenkins</kbd> path, a Deployment, and a Service. We won't waste time with it. Instead, we'll move on and create the objects.</p>
+<pre>kubectl create \  
+    -f volume/jenkins.yml \  
+    --record --save-config 
+ 
+kubectl rollout status deploy jenkins </pre>
+<p>We created the objects and waited until the processes finished. Now we can open Jenkins in our browser of choice:</p>
+<pre>open "http://$(minikube ip)/jenkins" </pre>
+<p>Jenkins UI opened, thus confirming that the application is deployed correctly. Jenkins' primary function is to execute jobs, so it's only fair to create one:</p>
+<pre>open "http://$(minikube ip)/jenkins/newJob" </pre>
+<p>Please type <kbd>test</kbd> in the <span class="packt_screen">item name</span> field, select <kbd>Pipeline</kbd> as the type, and click the <span class="packt_screen">OK</span> button.</p>
+<p>There's no need to make the Pipeline do any specific set of tasks. For now, you should be fine if you just <span class="packt_screen">Save</span> the job.</p>
+<p>Let's explore what happens if the main process inside the Jenkins container dies:</p>
+<pre>POD_NAME=$(kubectl get pods \  
+    -l service=jenkins,type=master \  
+    -o jsonpath="{.items[*].metadata.name}") 
+ 
+kubectl exec -it $POD_NAME kill 1 </pre>
+<p>We retrieved the name of the Pod, and we used it to execute <kbd>kill 1</kbd> inside its only container. The result is a simulation of a failure. Soon afterward, Kubernetes detected the failure and recreated the container. Let's double-check all that.</p>
+<pre><strong>kubectl get pods</strong> </pre>
+<p>The output is as follows:</p>
+<pre><strong>NAME                     READY STATUS  RESTARTS AGE</strong>
+<strong>jenkins-76d59945d8-zcz8m 1/1   Running 1        12m</strong></pre>
+<p>We can see that a container is running. Since we killed the main process and, with it, the first container, the number of restarts was increased to one.</p>
+<p>Let's go back to Jenkins UI and check what happened to the job. I'm sure you already know the answer, but we'll double check it anyways.</p>
+<pre>open "http://$(minikube ip)/jenkins" </pre>
+<p>As expected, the job we created is gone. When Kubernetes recreated the failed container, it created a new one from the same image. Everything we generated inside the running container is no more. We reset to the initial state:</p>
+<p>Let's take a look at a slightly updated YAML definition:</p>
+<pre><strong>cat volume/jenkins-empty-dir.yml</strong>  </pre>
+<p>The output, limited to the relevant parts, is as follows:</p>
+<pre>... 
+kind: Deployment 
+... 
+spec: 
+  ... 
+  template: 
+    ... 
+    spec: 
+      containers: 
+        ... 
+        volumeMounts: 
+        - mountPath: /var/jenkins_home 
+          name: jenkins-home 
+      volumes: 
+      - emptyDir: {} 
+        name: jenkins-home 
+... </pre>
+<p>We added a mount that references the <kbd>jenkins-home</kbd> volume. The volume type is, this time, <kbd>emptyDir</kbd>. We'll discuss the new volume type soon. But, before we dive into explanations, we'll try to experience its effects:</p>
+<pre>kubectl apply \  
+    -f volume/jenkins-empty-dir.yml 
+ 
+kubectl rollout status deploy jenkins </pre>
+<p>We applied the new definition and waited until the rollout finished.</p>
+<p>Now we can open the <span class="packt_screen">New Job</span> Jenkins screen and repeat the same process we followed before:</p>
+<pre>open "http://$(minikube ip)/jenkins/newJob" </pre>
+<p>Please type <kbd>test</kbd> in the <span class="packt_screen">item name</span> field, select <kbd>Pipeline</kbd> as the type, click the <span class="packt_screen">OK</span> button, and finish by clicking the <span class="packt_screen">Save</span> button.</p>
+<p>Now we'll kill the container and see what happens:</p>
+<pre>POD_NAME=$(kubectl get pods \  
+    -l service=jenkins,type=master \  
+    -o jsonpath="{.items[*].metadata.name}") 
+ 
+kubectl exec -it $POD_NAME kill 1 
+ 
+kubectl get pods </pre>
+<p>The output should show that there is a container running or, in other words, that Kubernetes detected the failure and created a new container.</p>
+<p>Finally, let's open Jenkins' Home screen one more time:</p>
+<pre>open "http://$(minikube ip)/jenkins" </pre>
+<p>This time, the <kbd>test</kbd> job is there. The state of the application was preserved even when the container failed, and Kubernetes created a new one:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="assets/4a0c9a7f-e811-421a-86bb-60a6de474730.png"/></div>
+<div class="packt_figref CDPAlignCenter CDPAlign">Figure 8-4: Jenkins with preserved state</div>
+<p class="mce-root"/>
+<p>Now let's talk about the <kbd>emptyDir</kbd> volume. It is considerably different from those we explored thus far.</p>
+<div class="packt_tip">An <span class="VerbatimChar">emptyDir</span> Volume is created when a Pod is assigned to a node. It will exist for as long as the Pod continues running on that server.</div>
+<p>What that means is that <kbd>emptyDir</kbd> can survive container failures. When a container crashes, a Pod is not removed from the node. Instead, Kubernetes will recreate the failed container inside the same Pod and, thus, preserve the <kbd>emptyDir</kbd> Volume. All in all, this volume type is only partially fault-tolerant.</p>
+<p>If <kbd>emptyDir</kbd> is not entirely fault-tolerant, you might be wondering why we are discussing it in the first place.</p>
+<p>The <kbd>emptyDir</kbd> volume type is closest we can get to fault-tolerant volumes without using a network drive. Since we do not have any, we had to resort to <kbd>emptyDir</kbd> as the-closest-we-can-get-to-fault-tolerant-persistence type of Volume.</p>
+<p>As you start deploying third-party applications, you'll discover that many of them come with the recommended YAML definition. If you pay closer attention, you'll notice that many are using <kbd>emptyDir</kbd> volume type. It's not that <kbd>emptyDir</kbd> is the best choice, but that it all depends on your needs, your hosting provider, your infrastructure, and quite a few other things. There is no one-size-fits-all type of persistent and fault-tolerant volume type. On the other hand, <kbd>emptyDir</kbd> always works. Since it has no external dependencies, it is safe to put it as an example, with the assumption that people will change to whichever type fits them better.</p>
+<div class="packt_tip">There is an unwritten assumption that <kbd>emptyDir</kbd> is used for testing purposes, and will be changed to something else before it reaches production.</div>
+<p>As long as we're using Minikube to create a Kubernetes cluster, we'll use <kbd>emptyDir</kbd> as a solution for persistent volumes. Do not despair. Later on, once we move into a "more serious" cluster setup, we'll explore better options for persisting state. For now, you have a taste. The full (and persistent) meal is coming later.</p>
+<p class="mce-root"/>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">What now?</h1>
+                </header>
+            
+            <article>
+                
+<p>With the exception of <kbd>emptyDir</kbd>, our choice of volume type demonstrated in this chapter was not simply based on the ability to use them in a Minikube cluster. Each of these three volume types will be an essential piece in the chapters that follow. We'll use <kbd>hostPath</kbd> to access Docker server from inside containers. The <kbd>gitRepo</kbd> volume type will be very significant once we start designing a continuous deployment pipeline. The <kbd>emptyDir</kbd> type will be required as long as we're using Minikube. Until we have a better solution for creating a Kubernetes cluster, <kbd>emptyDir</kbd> will continue to be used in our Minikube examples.</p>
+<p>We have only scratched the surface with volumes. There are at least two more that we should explore inside Minikube, and one (or more) when we change to a different solution for creating a cluster. The volumes that we'll explore throughout the rest of the book are long enough subjects to deserve a separate chapter or, as we already mentioned, require that we get rid of Minikube. For now, we'll just destroy the cluster and take a break.</p>
+<pre><strong>minikube delete</strong>  </pre>
+<div class="packt_infobox">If you'd like to know more about Volumes, please explore Volume v1 core (<a href="https://v1-9.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.9/#volume-v1-core" target="_blank"><span class="URLPACKT">https://v1-9.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.9/#volume-v1-core</span></a>) API documentation.</div>
+<p class="mce-root"/>
+<p>The next chapter is dedicated to the <kbd>configMap</kbd> volume type. It will, hopefully, solve a few problems and provide better solutions to some use-cases than those we employed in this chapter. ConfigMaps deserve a full chapter, so they're getting one.</p>
+<div class="packt_figure CDPAlignCenter CDPAlign"><img src="assets/b1ad4db4-979a-48a2-9166-a07d83085772.png"/></div>
+<div class="packt_figref CDPAlignCenter CDPAlign">Figure 8-5: The components explored so far</div>
+
+
+            </article>
+
+            
+        </section>
+    </body></html>

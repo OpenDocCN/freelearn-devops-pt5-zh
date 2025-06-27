@@ -1,0 +1,496 @@
+<html><head></head><body>
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Deploying Simple Applications in OpenShift</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">Application deployment is the most important and frequently used feature of OpenShift, as that's what it was built for. All OpenShift users deal with application deployment from Docker images. If there is a well-known application and its image is already available on Docker Hub or any other registries, OpenShift users can deploy it in a simple and reproducible way. In this chapter, we will be working on the deployment of several simple applications from existing Docker images. </p>
+<p class="calibre2">After completing this chapter, you will have learned about the following:</p>
+<ul class="calibre9">
+<li class="calibre10">Manual application deployment images, including manual Pod and Service object creation from a YAML file</li>
+<li class="calibre10">How to make use of the <kbd class="calibre12">oc new-app</kbd> utility to deploy applications from existing Docker images</li>
+<li class="calibre10">Exposing applications via routes</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Technical requirements</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">This chapter doesn't have strict environmental restrictions; any OpenShift installations and development environments are supported: MinitShift, <kbd class="calibre12">oc cluster up</kbd>, or standard production-ready deployment based on Ansible. It is up to you which flavor you use. However, this chapter is based on the <kbd class="calibre12">oc cluster up</kbd> running within vagrant. The following <kbd class="calibre12">Vagrantfile</kbd> can be used to deploy the lab:</p>
+<pre class="calibre18"><strong class="calibre1">$ cat Vagrantfile</strong><br class="title-page-name"/>Vagrant.configure(2) do |config| <br class="title-page-name"/>  config.vm.define "openshift" do |conf| <br class="title-page-name"/>    conf.vm.box = "centos/7" <br class="title-page-name"/>    conf.vm.network "private_network", ip: "172.24.0.11" <br class="title-page-name"/>    conf.vm.hostname = 'openshift.example.com' <br class="title-page-name"/>    conf.vm.network "forwarded_port", guest: 80, host: 980<br class="title-page-name"/>    conf.vm.network "forwarded_port", guest: 443, host: 9443<br class="title-page-name"/>    conf.vm.network "forwarded_port", guest: 8080, host: 8080<br class="title-page-name"/>    conf.vm.network "forwarded_port", guest: 8443, host: 8443<br class="title-page-name"/>    conf.vm.provider "virtualbox" do |v| <br class="title-page-name"/>      v.memory = 4096 <br class="title-page-name"/>      v.cpus = 2 <br class="title-page-name"/>    end<br class="title-page-name"/>    conf.vm.provision "shell", inline: $lab_main <br class="title-page-name"/>  end <br class="title-page-name"/>end<br class="title-page-name"/>$lab_main = &lt;&lt;SCRIPT<br class="title-page-name"/>cat &lt;&lt;EOF &gt;&gt; /etc/hosts<br class="title-page-name"/>172.24.0.11 openshift.example.com openshift<br class="title-page-name"/>172.24.0.12 storage.example.com storage nfs<br class="title-page-name"/>EOF<br class="title-page-name"/>systemctl disable firewalld<br class="title-page-name"/>systemctl stop firewalld<br class="title-page-name"/>yum update -y<br class="title-page-name"/>yum install -y epel-release<br class="title-page-name"/>yum install -y docker<br class="title-page-name"/>cat &lt;&lt; EOF &gt;/etc/docker/daemon.json<br class="title-page-name"/>{<br class="title-page-name"/>   "insecure-registries": [<br class="title-page-name"/>     "172.30.0.0/16"<br class="title-page-name"/>   ]<br class="title-page-name"/>}<br class="title-page-name"/>EOF<br class="title-page-name"/>systemctl restart docker<br class="title-page-name"/>systemctl enable docker<br class="title-page-name"/>yum -y install centos-release-openshift-origin39<br class="title-page-name"/>yum -y install origin-clients<br class="title-page-name"/>oc cluster up<br class="title-page-name"/>SCRIPT</pre>
+<p class="calibre2">The environment can be deployed as follows:</p>
+<pre class="calibre18"><strong class="calibre1">$ vagrant up</strong></pre>
+<p class="calibre2">Once the previously listed vagrant machine is deployed, you may connect to it as follows:</p>
+<pre class="calibre18"><strong class="calibre1">$ vagrant ssh</strong></pre>
+<p class="calibre2">Finally, log in as a <kbd class="calibre12">developer</kbd> user in order to be able to run most commands:</p>
+<pre class="calibre18"><strong class="calibre1">$ oc login -u developer</strong><br class="title-page-name"/>Server [https://localhost:8443]:<br class="title-page-name"/>The server uses a certificate signed by an unknown authority.<br class="title-page-name"/>You can bypass the certificate check, but any data you send to the server could be intercepted by others.<br class="title-page-name"/>Use insecure connections? (y/n): <strong class="calibre1">y</strong><br class="title-page-name"/><br class="title-page-name"/>Authentication required for https://localhost:8443 (openshift)<br class="title-page-name"/>Username: <strong class="calibre1">developer</strong><br class="title-page-name"/>Password: <strong class="calibre1">&lt;ANY PASSWORD&gt;</strong><br class="title-page-name"/>Login successful.<br class="title-page-name"/><br class="title-page-name"/>You have one project on this server: "myproject"<br class="title-page-name"/><br class="title-page-name"/>Using project "myproject".<br class="title-page-name"/>Welcome! See 'oc help' to get started.</pre>
+<div class="packt_infobox">We can use any password</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Manual application deployment</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">Among other methods, OpenShift allows for deploying applications directly from existing Docker images. Imagine that your development team has an in-house process of building Docker images from their applications—this way, you can deploy applications in an OpenShift environment by using these images without any modification, which greatly simplifies migration to OpenShift. It takes several steps to create all required OpenShift entities.</p>
+<p class="calibre2">First, you have to create a pod, which runs a container deployed from the application's Docker image. Once the pod is up and running, you may need to create a service to have a persistent IP address and internal DNS record associated with it. The service allows your application to be accessible via a consistent <strong class="calibre4">address:port</strong> pair internally inside OpenShift. This may be enough for internal applications that don't require external accesses, like databases or key/value storage.</p>
+<p class="calibre2"><span class="calibre11">If your application has to be available from the outside, you need to</span> <kbd class="calibre12">expose</kbd> <span class="calibre11">it to make it available from an external network, like the internet. This process can be achieved by creating an OpenShift route.</span></p>
+<p class="calibre2">In short, the process looks like this:</p>
+<ol class="calibre13">
+<li value="1" class="calibre10">Create a pod</li>
+<li value="2" class="calibre10">Create a service by exposing the pod</li>
+<li value="3" class="calibre10">Create a route by exposing the service</li>
+</ol>
+<p class="calibre2">In this chapter, we will be working with a simple httpd Docker container to demonstrate the application deployment process. We have chosen httpd because it is simple enough and it still allows us to focus on the main goal—the demonstration of OpenShift-related tasks.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Creating a pod</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">The <kbd class="calibre12">httpd</kbd> Docker image is available on Docker Hub. You may want to confirm this by running the following command:</p>
+<pre class="calibre18"><strong class="calibre1">$ sudo docker search httpd</strong><br class="title-page-name"/>INDEX NAME DESCRIPTION STARS OFFICIAL AUTOMATED<br class="title-page-name"/>docker.io docker.io/httpd The Apache HTTP Server Project 1719 [OK]<br class="title-page-name"/>&lt;OMITTED&gt;</pre>
+<p class="calibre2">According to the image documentation (<a href="https://docs.docker.com/samples/library/httpd/" class="calibre8">https://docs.docker.com/samples/library/httpd/</a>), it listens on TCP port <kbd class="calibre12">80</kbd>. We cannot simply use this container, because it binds to a privileged port. The default security policy in <span class="calibre11">OpenShift</span> doesn't allow applications to bind on ports below 1024. To avoid problems, OpenShift comes with an image stream named <kbd class="calibre12">httpd</kbd> which points to an OpenShift-ready <kbd class="calibre12">httpd</kbd> image build. For example, in our version of OpenShift, the <kbd class="calibre12">httpd</kbd> image stream points to the <kbd class="calibre12">docker.io/centos/httpd-24-centos7</kbd> Docker container. You may want to verify that by running the following command:</p>
+<pre class="calibre18"><strong class="calibre1">$ oc get is -n openshift | egrep "^NAME | ^httpd"</strong><br class="title-page-name"/>NAME DOCKER REPO TAGS UPDATED<br class="title-page-name"/>httpd 172.30.1.1:5000/openshift/httpd latest,2.4 3 hours ago<br class="title-page-name"/><br class="title-page-name"/><br class="title-page-name"/><strong class="calibre1">$ oc describe is httpd -n openshift | grep "tagged from"</strong><br class="title-page-name"/>  tagged from centos/httpd-24-centos7:latest</pre>
+<p class="calibre2">Each time we want to deploy a pod using an <kbd class="calibre12">httpd</kbd> image, we need to use <kbd class="calibre12">centos/httpd-24-centos7</kbd> instead. </p>
+<p class="calibre2">Let's create a separate project for the lab as follows:</p>
+<pre class="calibre18"><strong class="calibre1">$ oc new-project simpleappication</strong><br class="title-page-name"/>Now using project "simpleappication" on server "https://localhost:8443".<br class="title-page-name"/>&lt;OMITTED&gt;</pre>
+<p class="calibre2">The simple <kbd class="calibre12">httpd</kbd> pod can be deployed manually from its definition:</p>
+<pre class="calibre18"><strong class="calibre1">$ cat &lt;&lt;EOF &gt; </strong><strong class="calibre1">pod_httpd.yml</strong><br class="title-page-name"/>apiVersion: v1<br class="title-page-name"/>kind: Pod<br class="title-page-name"/>metadata:<br class="title-page-name"/>  name: httpd<br class="title-page-name"/>  labels:<br class="title-page-name"/>    name: httpd<br class="title-page-name"/>spec:<br class="title-page-name"/>  containers:<br class="title-page-name"/>    - name: httpd<br class="title-page-name"/>      image: centos/httpd-24-centos7<br class="title-page-name"/>      ports:<br class="title-page-name"/>        - name: web<br class="title-page-name"/>          containerPort: 8080<br class="title-page-name"/>EOF</pre>
+<div class="packt_infobox"><kbd class="calibre26">centos/httpd-24-centos7</kbd> binds on port <kbd class="calibre26">8080</kbd>, which allows for running the container inside OpenShift without tuning its default security policy.</div>
+<p class="calibre2">Once the file is created, we can create a pod by running <kbd class="calibre12">oc create</kbd>:</p>
+<pre class="calibre18"><strong class="calibre1">$ oc create -f pod_httpd.yml</strong><br class="title-page-name"/>pod "httpd" created</pre>
+<p class="calibre2">OpenShift needs some time to download the Docker image and deploy the pod. Once everything is finished, you should be able to have the <kbd class="calibre12">httpd</kbd> pod in the <kbd class="calibre12">Running</kbd> state:</p>
+<pre class="calibre18"><strong class="calibre1">$ oc get pod</strong><br class="title-page-name"/>NAME READY STATUS RESTARTS AGE<br class="title-page-name"/>httpd 1/1 Running 0 2m</pre>
+<p class="calibre2">This pod provides the same functionality as a more complex <span class="calibre11">application would</span> (default <kbd class="calibre12">httpd</kbd> webpage). We may want to verify that, as shown as follows.</p>
+<p class="calibre2">First, get the pod's internal IP address:</p>
+<pre class="calibre18"><strong class="calibre1">$ oc describe pod httpd | grep IP:</strong><br class="title-page-name"/>IP: 172.17.0.2</pre>
+<p class="calibre2">And then use curl to query the IP from the output above:</p>
+<pre class="calibre18"><strong class="calibre1">$ curl -s http://172.17.0.2:8080 | head -n 4</strong><br class="title-page-name"/>&lt;!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd"&gt;<br class="title-page-name"/>&lt;html  xml:lang="en"&gt;<br class="title-page-name"/> &lt;head&gt;</pre>
+<div class="packt_infobox">Note: This is the beginning of the default Apache welcome page. You may want to replace it for the production installation. This can be achieved by mounting a persistent volume at <kbd class="calibre26">/var/www/html</kbd>. For demo purposes, this output indicates that the application itself works and is accessible.</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Creating a service</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">The service may be created in two different ways:</p>
+<ul class="calibre9">
+<li class="calibre10">Using<span> </span><kbd class="calibre12">oc expose</kbd></li>
+<li class="calibre10">From the YAML/JSON definition</li>
+</ul>
+<p class="calibre2">We will describe both methods. You don't have to use both.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Creating a service using oc expose</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">You can create a pod using <kbd class="calibre12">oc expose</kbd> in the following way:</p>
+<pre class="calibre18"><strong class="calibre1">$ oc get pod</strong><br class="title-page-name"/>NAME READY STATUS RESTARTS AGE<br class="title-page-name"/>httpd 1/1 Running 0 13m<br class="title-page-name"/><br class="title-page-name"/><strong class="calibre1">$ oc expose pod httpd --name httpd</strong><br class="title-page-name"/>service "httpd" exposed<br class="title-page-name"/><br class="title-page-name"/><strong class="calibre1">$ oc get svc</strong><br class="title-page-name"/>NAME CLUSTER-IP EXTERNAL-IP PORT(S) AGE<br class="title-page-name"/>httpd 172.30.128.131 &lt;none&gt; 8080/TCP 3s</pre>
+<p class="calibre2">The preceding command creates a service by exposing the pod, using <kbd class="calibre12">name=httpd</kbd> as a selector. You may define a custom service name via the <kbd class="calibre12">--name</kbd> option.</p>
+<p class="calibre2">The same <kbd class="calibre12">httpd</kbd> application will be available from the service IP address, which is <kbd class="calibre12">172.30.128.131</kbd> in our case, but your output from the previous command most likely will be different:</p>
+<pre class="calibre18"><strong class="calibre1">$ curl -s http://172.30.128.131:8080 | head -n4</strong><br class="title-page-name"/>&lt;!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd"&gt;<br class="title-page-name"/><br class="title-page-name"/>&lt;html  xml:lang="en"&gt;<br class="title-page-name"/>  &lt;head&gt;</pre>
+<p class="calibre2">Let's delete the service to recreate it using another method, as shown in the following subsection:</p>
+<pre class="calibre18"><strong class="calibre1">$ oc delete svc/httpd</strong><br class="title-page-name"/>service "httpd" deleted</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Creating a service from a YAML definition</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">The following YAML file allows you to define a <kbd class="calibre12">Service</kbd> OpenShift object:</p>
+<pre class="calibre18"><strong class="calibre1">$ cat &lt;&lt;EOF &gt; svc-httpd.yml</strong><br class="title-page-name"/>apiVersion: v1<br class="title-page-name"/>kind: Service<br class="title-page-name"/>metadata:<br class="title-page-name"/>  labels:<br class="title-page-name"/>    name: httpd<br class="title-page-name"/>  name: httpd<br class="title-page-name"/>spec:<br class="title-page-name"/>  ports:<br class="title-page-name"/>  - port: 8080<br class="title-page-name"/>    protocol: TCP<br class="title-page-name"/>    targetPort: 8080<br class="title-page-name"/>  selector:<br class="title-page-name"/>    name: httpd<br class="title-page-name"/>EOF</pre>
+<p class="calibre2">Once the file is in place, you can create the service by running the following command:</p>
+<pre class="calibre18"><strong class="calibre1">$ oc create -f svc-httpd.yml</strong><br class="title-page-name"/>service "httpd" created<br class="title-page-name"/><br class="title-page-name"/><strong class="calibre1">$ oc get svc</strong><br class="title-page-name"/>NAME CLUSTER-IP EXTERNAL-IP PORT(S) AGE<br class="title-page-name"/>httpd 172.30.112.133 &lt;none&gt; 8080/TCP 2s</pre>
+<p class="calibre2">The service shows the same output as previously described:</p>
+<pre class="calibre18"><strong class="calibre1">$ curl -s http://172.30.112.133:8080 | head -n 4</strong><br class="title-page-name"/>&lt;!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd"&gt;<br class="title-page-name"/><br class="title-page-name"/>&lt;html  xml:lang="en"&gt;<br class="title-page-name"/>  &lt;head&gt;</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Creating a route</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">The service allows an application to be accessible internally via a consistent address:port pair. To be able to access it from outside of the cluster, we need to make sure that an OpenShift <kbd class="calibre12">Route</kbd> is created. Once the route is created, OpenShift will expose the service to the outside world using the cluster's router, implemented via an HAProxy Docker container by default.</p>
+<p class="calibre2">Like services, routes can be created in two ways:</p>
+<ul class="calibre9">
+<li class="calibre10">Using <kbd class="calibre12">oc expose</kbd></li>
+<li class="calibre10">From the YAML/JSON definition</li>
+</ul>
+<p class="calibre2">This section shows both methods, but it is enough to use only one.</p>
+<p class="calibre2">We assume that previously, you created a service named <kbd class="calibre12">httpd</kbd>. </p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Creating a route by using oc expose</h1>
+                
+            
+            <article>
+                
+<p class="calibre2"><span class="calibre11">You can create a route using <kbd class="calibre12">oc expose</kbd> in the following way:</span></p>
+<pre class="calibre18"><strong class="calibre1">$ oc expose svc httpd</strong><br class="title-page-name"/>route "httpd" exposed<strong class="calibre1"><br class="title-page-name"/></strong><br class="title-page-name"/><strong class="calibre1">$ oc get route</strong><br class="title-page-name"/>NAME HOST/PORT PATH SERVICES PORT TERMINATION WILDCARD<br class="title-page-name"/>httpd httpd-simpleappication.127.0.0.1.nip.io httpd 8080 None<strong class="calibre1"><br class="title-page-name"/></strong><br class="title-page-name"/><strong class="calibre1">$ curl -s http://httpd-simpleappication.127.0.0.1.nip.io | head -n 4</strong><br class="title-page-name"/>&lt;!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd"&gt;</pre>
+<p class="calibre2"/>
+<p class="calibre2"/>
+<pre class="calibre18">&lt;html  xml:lang="en"&gt;<br class="title-page-name"/>  &lt;head&gt;<strong class="calibre1"><br class="title-page-name"/><br class="title-page-name"/>$ oc delete route httpd<br class="title-page-name"/></strong>route "httpd" deleted</pre>
+<div class="packt_infobox">The <kbd class="calibre26">127.0.0.1.nip.io</kbd> DNS zone is used by default by the <kbd class="calibre26">oc cluster up</kbd> method. </div>
+<p class="calibre2">You may want to create a route with an alternate URL, using the <kbd class="calibre12">--hostname</kbd> option:</p>
+<pre class="calibre18"><strong class="calibre1">$ oc expose svc httpd --name httpd1 --hostname httpd.example.com</strong><br class="title-page-name"/>route "httpd1" exposed<strong class="calibre1"><br class="title-page-name"/></strong><br class="title-page-name"/><strong class="calibre1">$ oc get route</strong><br class="title-page-name"/>NAME HOST/PORT PATH SERVICES PORT TERMINATION WILDCARD<br class="title-page-name"/>httpd httpd-simpleappication.127.0.0.1.nip.io httpd 8080 None<br class="title-page-name"/>httpd1 httpd.example.com httpd 8080 None<strong class="calibre1"> </strong><br class="title-page-name"/><strong class="calibre1"><br class="title-page-name"/>$ sudo bash -c  'echo "127.0.0.1 httpd.example.com" &gt;&gt;/etc/hosts'</strong><br class="title-page-name"/><strong class="calibre1"><br class="title-page-name"/>$ curl -s http://httpd.example.com | head -n 4</strong><br class="title-page-name"/>&lt;!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd"&gt;<br class="title-page-name"/><br class="title-page-name"/>&lt;html  xml:lang="en"&gt;<br class="title-page-name"/>  &lt;head&gt;</pre>
+<p class="calibre2">OpenShift allows for creating multiple routes per single application.</p>
+<div class="packt_infobox">If you are using an alternate name, make sure that the DNS record points to the IP of the OpenShift node that hosts the router pod.</div>
+<p class="calibre2">Once the route is created, you may access your application using this external route.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Creating a route from a YAML definition</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">Let's create an alternate route for our application named <kbd class="calibre12">httpd2</kbd>. The route will have the <kbd class="calibre12">myhttpd.example.com</kbd> URL:</p>
+<pre class="calibre18"><strong class="calibre1">$ cat &lt;&lt;EOF &gt; route-httpd2.yml</strong><br class="title-page-name"/>apiVersion: v1<br class="title-page-name"/>kind: Route<br class="title-page-name"/>metadata:<br class="title-page-name"/> labels:<br class="title-page-name"/> name: httpd2<br class="title-page-name"/> name: httpd2<br class="title-page-name"/>spec:<br class="title-page-name"/> host: myhttpd.example.com<br class="title-page-name"/> port:<br class="title-page-name"/> targetPort: 8080<br class="title-page-name"/> to:<br class="title-page-name"/> kind: Service<br class="title-page-name"/> name: httpd<br class="title-page-name"/> weight: 100<br class="title-page-name"/>EOF</pre>
+<p class="calibre2">The route may be created by <kbd class="calibre12">oc create</kbd>:</p>
+<pre class="calibre18"><strong class="calibre1">$ oc create -f </strong><strong class="calibre1">route-httpd2.yml<br class="title-page-name"/></strong>route "httpd2" created<strong class="calibre1"><br class="title-page-name"/>$ oc get route</strong><br class="title-page-name"/>NAME HOST/PORT PATH SERVICES PORT TERMINATION WILDCARD<br class="title-page-name"/>httpd httpd-simpleappication.127.0.0.1.nip.io httpd 8080 None<br class="title-page-name"/>httpd1 httpd.example.com httpd 8080 None<br class="title-page-name"/>httpd2 myhttpd.example.com httpd 8080 None</pre>
+<p class="calibre2">You may see that the new route has been added successfully. Now, if there is a corresponding DNS record, you will be able to access your application using that alternate route.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Using oc new-app</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">The<span class="calibre11"> </span><kbd class="calibre12">oc</kbd><span class="calibre11"> </span>utility allows you to deploy a simple application in a user-friendly way. Generally, you just need to pass one or more options to the<span class="calibre11"> </span><kbd class="calibre12">oc new-app</kbd><span class="calibre11"> </span>command, which will then create all required resources, including pod(s) and service(s), for your application. Additionally, that command creates<span class="calibre11"> </span><kbd class="calibre12">ReplicationController</kbd><span class="calibre11"> </span>and<span class="calibre11"> </span><kbd class="calibre12">DeploymentConfig</kbd><span class="calibre11"> </span>API objects that control how your application is being deployed.</p>
+<p class="calibre2"/>
+<p class="calibre2"/>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">The oc new-app command</h1>
+                
+            
+            <article>
+                
+<p class="calibre2"><span class="calibre11">So,</span> <kbd class="calibre12">oc new-app</kbd> <span class="calibre11">creates the following resources during application deployment from an existing Docker image:</span></p>
+<table border="1" class="calibre22">
+<tbody class="calibre23">
+<tr class="calibre24">
+<td class="calibre25"><strong class="calibre1">Resource</strong></td>
+<td class="calibre25"><strong class="calibre1">Abbreviation</strong></td>
+<td class="calibre25"><strong class="calibre1">Description</strong></td>
+</tr>
+<tr class="calibre24">
+<td class="calibre25">Pod</td>
+<td class="calibre25">pod</td>
+<td class="calibre25">Pod representing your container</td>
+</tr>
+<tr class="calibre24">
+<td class="calibre25">Service</td>
+<td class="calibre25">svc</td>
+<td class="calibre25">Service containing an internal application endpoint</td>
+</tr>
+<tr class="calibre24">
+<td class="calibre25">ReplicationController</td>
+<td class="calibre25">rc</td>
+<td class="calibre25">A replication controller is an OpenShift object that controls the number of replicas for an application</td>
+</tr>
+<tr class="calibre24">
+<td class="calibre25">DeploymentConfig</td>
+<td class="calibre25">dc</td>
+<td class="calibre25">Deployment configuration is a definition of your deployment</td>
+</tr>
+</tbody>
+</table>
+<p class="calibre2"> </p>
+<p class="calibre2"><span class="calibre11"><kbd class="calibre12">oc new-app</kbd> is a very simple utility, yet it's powerful enough to satisfy most</span> simple<span class="calibre11"> deployments.</span></p>
+<div class="packt_infobox"><kbd class="calibre26">oc new-app</kbd> doesn't create a route when deploying an application from its Docker image!</div>
+<p class="calibre2">The functionality provided by <kbd class="calibre12">oc new-app</kbd> is also exposed via a web console which is what developers usually are inclined to use. </p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Using oc new-app with default options</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">Let's delete the resources created previously:</p>
+<pre class="calibre18"><strong class="calibre1">$ oc delete all --all</strong><br class="title-page-name"/>route "httpd" deleted<br class="title-page-name"/>route "httpd1" deleted<br class="title-page-name"/>route "httpd2" deleted<br class="title-page-name"/>pod "httpd" deleted<br class="title-page-name"/>service "httpd" deleted</pre>
+<div class="packt_tip">Another method to delete everything is to delete the project and create it again.</div>
+<p class="calibre2">Recently, we showed that OpenShift comes with an image stream that contains the path to the OpenShift-ready <kbd class="calibre12">httpd</kbd> image. The <kbd class="calibre12">oc new-app</kbd> utility uses Docker images referenced by image streams by default.</p>
+<p class="calibre2">Here is an example of creating a basic <kbd class="calibre12">httpd</kbd> application:</p>
+<pre class="calibre18"><strong class="calibre1">$ oc new-app httpd</strong><br class="title-page-name"/>--&gt; Found image cc641a9 (5 days old) in image stream "openshift/httpd" under tag "2.4" for "httpd"<br class="title-page-name"/><br class="title-page-name"/>    Apache httpd 2.4<br class="title-page-name"/>    ----------------<br class="title-page-name"/>    Apache httpd 2.4 available as container, is a powerful, efficient, and extensible web server. Apache supports a variety of features, many implemented as compiled modules which extend the core functionality. These can range from server-side programming language support to authentication schemes. Virtual hosting allows one Apache installation to serve many different Web sites.<br class="title-page-name"/><br class="title-page-name"/>    Tags: builder, httpd, httpd24<br class="title-page-name"/><br class="title-page-name"/>    * This image will be deployed in deployment config "httpd"<br class="title-page-name"/>    * Ports 8080/tcp, 8443/tcp will be load balanced by service "httpd"<br class="title-page-name"/>      * Other containers can access this service through the hostname "httpd"<br class="title-page-name"/><br class="title-page-name"/>--&gt; Creating resources ...<br class="title-page-name"/>    deploymentconfig "httpd" created<br class="title-page-name"/>    service "httpd" created<br class="title-page-name"/>--&gt; Success<br class="title-page-name"/>    Application is not exposed. You can expose services to the outside world by executing one or more of the commands below:<br class="title-page-name"/>     'oc expose svc/httpd'<br class="title-page-name"/>    Run 'oc status' to view your app.</pre>
+<p class="calibre2">The deployment process takes some time. Once everything is ready, you can check that all resources have been created:</p>
+<pre class="calibre18"><strong class="calibre1">$ oc get all</strong><br class="title-page-name"/>NAME REVISION DESIRED CURRENT TRIGGERED BY<br class="title-page-name"/>deploymentconfigs/httpd 1 1 1 config,image(httpd:2.4)<br class="title-page-name"/><br class="title-page-name"/>NAME READY STATUS RESTARTS AGE<br class="title-page-name"/>po/httpd-1-n7st4 1/1 Running 0 31s<br class="title-page-name"/><br class="title-page-name"/>NAME DESIRED CURRENT READY AGE<br class="title-page-name"/>rc/httpd-1 1 1 1 32s<br class="title-page-name"/><br class="title-page-name"/>NAME CLUSTER-IP EXTERNAL-IP PORT(S) AGE<br class="title-page-name"/>svc/httpd 172.30.222.179 &lt;none&gt; 8080/TCP,8443/TCP 33s</pre>
+<p class="calibre2"/>
+<p class="calibre2"/>
+<p class="calibre2">Let's make sure that the proper image has been used:</p>
+<pre class="calibre18"><strong class="calibre1">$ oc describe pod httpd-1-n7st4 | grep Image:</strong><br class="title-page-name"/>    Image: centos/httpd-24-centos7@sha256:6da9085c5e7963efaae3929895b9730d7e76e937a7a0109a23015622f3e7156b</pre>
+<p class="calibre2">What is left is to expose the service to make the application externally <span class="calibre11">available</span>:</p>
+<pre class="calibre18"><strong class="calibre1">$ oc expose svc httpd</strong><br class="title-page-name"/>route "httpd" exposed<br class="title-page-name"/><br class="title-page-name"/><strong class="calibre1">$ curl -s http://httpd-simpleappication.127.0.0.1.nip.io | head -n 4</strong><br class="title-page-name"/>&lt;!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd"&gt;<br class="title-page-name"/><br class="title-page-name"/>&lt;html  xml:lang="en"&gt;<br class="title-page-name"/>  &lt;head&gt;</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Advanced deployment</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">The <kbd class="calibre12">oc new-app</kbd> command takes a number of parameters, allowing you to modify the deployment process according to your needs. For example, you may need to modify names, specify environment variables, and so on.</p>
+<p class="calibre2">Advanced options can always be displayed by using the built-in help function, which can be displayed by <kbd class="calibre12">oc new-app --help</kbd>:</p>
+<pre class="calibre18"><strong class="calibre1">$ oc new-app --help</strong><br class="title-page-name"/>Create a new application by specifying source code, templates, and/or images<br class="title-page-name"/><br class="title-page-name"/>...<br class="title-page-name"/>&lt;OMITTED&gt;<br class="title-page-name"/>...<br class="title-page-name"/><br class="title-page-name"/>If you provide source code, a new build will be automatically triggered. You can use 'oc status' to<br class="title-page-name"/>check the progress.<br class="title-page-name"/><br class="title-page-name"/>Usage:<br class="title-page-name"/>  oc new-app (IMAGE | IMAGESTREAM | TEMPLATE | PATH | URL ...) [options]<br class="title-page-name"/><br class="title-page-name"/>Examples:<br class="title-page-name"/>  # List all local templates and image streams that can be used to create an app<br class="title-page-name"/>  oc new-app --list<br class="title-page-name"/><br class="title-page-name"/>  # Create an application based on the source code in the current git repository (with a public<br class="title-page-name"/>remote)<br class="title-page-name"/>  # and a Docker image<br class="title-page-name"/>  oc new-app . --docker-image=repo/langimage<br class="title-page-name"/>...<br class="title-page-name"/>&lt;OMITTED&gt;<br class="title-page-name"/>...</pre>
+<div class="packt_infobox">We are going to work with <kbd class="calibre26">oc new-app</kbd> <span>a lot </span>in the following chapters. You don't have to learn all options right now. </div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Deploying MariaDB</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">In this section, we will deploy a database container with additional configuration options. The container requires a number of parameters to be passed to <kbd class="calibre12">oc new-app</kbd>. Let's create a simple <kbd class="calibre12">mariadb</kbd> container as shown here.</p>
+<p class="calibre2">First delete objects created previously:</p>
+<pre class="calibre18"><strong class="calibre1">$ oc delete all --all<br class="title-page-name"/></strong>...<br class="title-page-name"/>&lt;OUTPUT OMITTED&gt;<br class="title-page-name"/>...</pre>
+<p class="calibre2">Now we want to create a database container where the database user named <kbd class="calibre12">openshift</kbd> is allowed to connect to the database named <kbd class="calibre12">openshift</kbd>. For simplicity reasons, we will use <kbd class="calibre12">openshift</kbd> as the database password. The following example, shows how to start a MariaDB container:</p>
+<pre class="calibre18"><strong class="calibre1">$ oc new-app -e MYSQL_USER=openshift -e MYSQL_PASSWORD=openshift \<br class="title-page-name"/>-e MYSQL_DATABASE=openshift mariadb<br class="title-page-name"/></strong><br class="title-page-name"/>--&gt; Found image 1b0e3a6 (5 days old) in image stream "openshift/mariadb" under tag "10.2" for "mariadb"<br class="title-page-name"/><br class="title-page-name"/>...<br class="title-page-name"/>&lt;OUTPUT OMITTED&gt;<br class="title-page-name"/>...<br class="title-page-name"/><br class="title-page-name"/>    Run 'oc status' to view your app.</pre>
+<p class="calibre2">Verify mariadb is up and running:</p>
+<pre class="calibre18"><strong class="calibre1">$ oc get all</strong><br class="title-page-name"/>NAME REVISION DESIRED CURRENT TRIGGERED BY<br class="title-page-name"/>deploymentconfigs/mariadb 1 1 1 config,image(mariadb:10.1)<br class="title-page-name"/><br class="title-page-name"/>NAME READY STATUS RESTARTS AGE<br class="title-page-name"/>po/mariadb-1-54h6x 1/1 Running 0 2m<br class="title-page-name"/><br class="title-page-name"/>NAME DESIRED CURRENT READY AGE<br class="title-page-name"/>rc/mariadb-1 1 1 1 2m<br class="title-page-name"/><br class="title-page-name"/>NAME CLUSTER-IP EXTERNAL-IP PORT(S) AGE<br class="title-page-name"/>svc/mariadb 172.30.233.119 &lt;none&gt; 3306/TCP 2m</pre>
+<p class="calibre2">Now you can access the database using container name, "po/mariadb-1-54h6x" in our case.</p>
+<p class="calibre2">Now login to the container using 'oc exec':</p>
+<pre class="calibre18"><strong class="calibre1">$ oc exec -it mariadb-1-54h6x /bin/bash</strong><br class="title-page-name"/>bash-4.2$<strong class="calibre1"> <br class="title-page-name"/></strong></pre>
+<p class="calibre2">Connect to mariadb database and verify that database named 'openshift' is created and you have access to it running 'show dababases' command.</p>
+<pre class="calibre18"><strong class="calibre1">$ mysql -uopenshift -popenshift -h127.0.0.1 openshift</strong><br class="title-page-name"/>...<br class="title-page-name"/>&lt;OUTPUT OMITTED&gt;<br class="title-page-name"/>...<br class="title-page-name"/><br class="title-page-name"/>MariaDB [openshift]&gt;<strong class="calibre1"> show databases;</strong><br class="title-page-name"/>+--------------------+<br class="title-page-name"/>| Database |<br class="title-page-name"/>+--------------------+<br class="title-page-name"/>| information_schema |<br class="title-page-name"/>| openshift |<br class="title-page-name"/>| test |<br class="title-page-name"/>+--------------------+<br class="title-page-name"/>3 rows in set (0.00 sec)</pre>
+<p class="calibre2"><span class="calibre11">The previous output shows that the database service is up and running and ready to be used from the application side. We are going to work more on this topic in the following chapters.<br class="calibre5"/></span></p>
+<p class="calibre2">You can exit database and get ready for the next chapter.</p>
+<pre class="calibre18">MariaDB [openshift]&gt; <strong class="calibre1">exit</strong><br class="title-page-name"/>Bye<br class="title-page-name"/>bash-4.2$ <strong class="calibre1">exit</strong><br class="title-page-name"/>exit<br class="title-page-name"/>[vagrant@openshift ~]</pre>
+<p class="calibre2">Clear out your lab environment.</p>
+<pre class="calibre18">$ <strong class="calibre1">oc delete all --all</strong><br class="title-page-name"/>deploymentconfig "mariadb" deleted<br class="title-page-name"/>imagestream "mariadb" deleted<br class="title-page-name"/>pod "mariadb-1-9qcsp" deleted<br class="title-page-name"/>service "mariadb" deleted<br class="title-page-name"/><br class="title-page-name"/>$ <strong class="calibre1">oc delete project simpleappication</strong><br class="title-page-name"/>project "simpleappication" deleted<br class="title-page-name"/><br class="title-page-name"/>$ <strong class="calibre1">oc project myproject</strong><br class="title-page-name"/>Now using project "myproject" on server "https://localhost:8443".</pre>
+<p class="calibre2">If you are going to continue with the following chapter, you can leave your OpenShift cluster up, otherwise you can shutdown or delete vagrant VM.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Summary</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">In this chapter, we showed you h<span class="calibre11">ow to deploy a number of simple applications from their Docker images, </span>how to create a pod manually, and h<span class="calibre11">ow to c</span>reate a service manually. We went through the process of <span class="calibre11">c</span>reating a service, and how to create a route manually, as well as <span class="calibre11">how to c</span>reate a route using <kbd class="calibre12">oc expose</kbd>. F<span class="calibre11">inally, we showed you how to u</span>se the <kbd class="calibre12">oc new-app</kbd> command to deploy an application from its Docker image.</p>
+<p class="calibre2">In the next chapter, we will be working on deployment of multi-tier application using OpenShift templates.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Questions</h1>
+                
+            
+            <article>
+                
+<ol class="calibre13">
+<li value="1" class="calibre10">Which of the following OpenShift entities is not created automatically by <kbd class="calibre12">oc new-app</kbd>?
+<ol class="calibre14">
+<li value="1" class="calibre10">Pod</li>
+<li value="2" class="calibre10">Route</li>
+<li value="3" class="calibre10">Replication controller</li>
+<li value="4" class="calibre10">Deployment config</li>
+<li value="5" class="calibre10">Service</li>
+</ol>
+</li>
+<li value="2" class="calibre10">Which of the following entities should be created in order to make an application available externally in a minimal configuration (choose three)?
+<ol class="calibre14">
+<li value="1" class="calibre10">Pod</li>
+<li value="2" class="calibre10">Service</li>
+<li value="3" class="calibre10">Route</li>
+<li value="4" class="calibre10">Replication controller</li>
+<li value="5" class="calibre10">Deployment config</li>
+<li value="6" class="calibre10">Image stream</li>
+</ol>
+</li>
+<li value="3" class="calibre10">Which command creates a route with the custom URL <kbd class="calibre12">myservice.example.com</kbd><span>?</span>
+<ol class="calibre14">
+<li value="1" class="calibre10">oc expose svc httpd</li>
+<li value="2" class="calibre10">oc expose svc httpd --host <span>myservice.example.com</span></li>
+<li value="3" class="calibre10">oc expose svc httpd --hostname myservice.example.com</li>
+<li value="4" class="calibre10">oc create svc httpd --hostname <span>myservice.example.com</span></li>
+</ol>
+</li>
+<li value="4" class="calibre10">Which commands display all OpenShift routes (choose two)?
+<ol class="calibre14">
+<li value="1" class="calibre10">oc get all</li>
+<li value="2" class="calibre10">oc get pod</li>
+<li value="3" class="calibre10">oc get application</li>
+<li value="4" class="calibre10">oc get route</li>
+<li value="5" class="calibre10">docker ps</li>
+<li value="6" class="calibre10">ip route</li>
+</ol>
+</li>
+</ol>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Further reading</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">We gave you a basic knowledge of application deployment in OpenShift. The following links are useful if you want to read more:</p>
+<ul class="calibre9">
+<li class="calibre10"><strong class="calibre1">Pods and Services</strong>:<a href="https://docs.openshift.org/latest/architecture/core_concepts/pods_and_services.html" class="calibre8"> https://docs.openshift.org/latest/architecture/core_concepts/pods_and_services.html</a></li>
+<li class="calibre10"><strong class="calibre1">Creating applications from images</strong>: <a href="https://docs.openshift.org/latest/dev_guide/application_lifecycle/new_app.html#specifying-an-image" class="calibre8">https://docs.openshift.org/latest/dev_guide/application_lifecycle/new_app.html#specifying-an-image</a></li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    </body></html>

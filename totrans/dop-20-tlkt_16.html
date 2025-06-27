@@ -1,0 +1,812 @@
+<html><head></head><body><div class="chapter" title="Chapter&#xA0;16.&#xA0;Centralized Logging and Monitoring"><div class="titlepage"><div><div><h1 class="title"><a id="ch16"/>Chapter 16. Centralized Logging and Monitoring</h1></div></div></div><div class="blockquote"><table border="0" cellpadding="0" cellspacing="0" class="blockquote" summary="Block quote" width="100%"><tr><td valign="top"> </td><td valign="top"><p><span class="emphasis"><em>I have so much chaos in my life, it's become normal. You become used to it. You have just to relax, calm down, take a deep breath and try to see how you can make things work rather than complain about how they're wrong.</em></span></p></td><td valign="top"> </td></tr><tr><td valign="top"> </td><td align="right" colspan="2" style="text-align: center" valign="top">--<span class="attribution"><span class="emphasis"><em>Tom Welling</em></span></span></td></tr></table></div><p>Our exploration of DevOps practices and tools led us towards clustering and scaling. As a result, we developed a system that allows us to deploy services to a cluster, in an easy and efficient way. The result is an ever increasing number of containers running on a cluster consisting of, potentially, many servers. Monitoring one server is easy. Monitoring many services on a single server poses some difficulties. Monitoring many services on many servers requires a whole new way of thinking and a new set of tools. As you start embracing microservices, containers, and clusters, the number of deployed containers will begin increasing rapidly. The same holds true for servers that form the cluster. We cannot, anymore, log into a node and look at logs. There are too many logs to look at. On top of that, they are distributed among many servers. While yesterday we had two instances of a service deployed on a single server, tomorrow we might have eight instances deployed to six servers. The same holds true for monitoring. Old tools, like Nagios, are not designed to handle constant changes in running servers and services. We already used Consul that provides a different, not to say new, approach to managing near real-time monitoring and reaction when thresholds are reached. However, that is not enough. Real-time information is valuable to detect that something is wrong, but it does not give us information why the failure happened. We can know that a service is not responding, but we cannot know why.</p><p>We need historical information about our system. That information can be in the form of logs, hardware utilization, health checking, and many other things. The need to store historical data is not new and has been in use for a long time. However, the direction that information travels changed over time. While, in the past, most solutions were based on a centralized data collectors, today, due to very dynamic nature of services and servers, we tend to have data collectors decentralized.</p><p>What we need for cluster logging and monitoring is a combination of decentralized data collectors that are sending information to a centralized parsing service and data storage. There are plenty of products specially designed to fulfill this requirement, ranging from on-premise to cloud solutions, and everything in between. FluentD, Loggly, GrayLog, Splunk, and DataDog are only a few of the solutions we can employ. I chose to show you the concepts through the ELK stack (ElasticSearch, LogStash, and Kibana). The stack has the advantage <a class="indexterm" id="id763"/>of being free, well documented, efficient, and widely used. ElasticSearch <a class="indexterm" id="id764"/>established itself as one of the best databases for real-time search and analytics. It is distributed, scalable, highly available, and provides a sophisticated API. LogStash allows us to centralize data processing. It can be <a class="indexterm" id="id765"/>easily extended to custom data formats and offers a lot of plugins that can suit almost any need. Finally, Kibana is an analytics and visualization platform with<a class="indexterm" id="id766"/> intuitive interface sitting on top of ElasticSearch. The fact that we'll use the ELK stack does not mean that it is better than the other solutions. It all depends on specific use cases and particular needs. I'll walk you through the principles of centralized logging and monitoring using the ELK stack. Once those principles are understood, you should have no problem applying them to a different stack if you choose to do so.</p><p>We switched the order of things and chose the tools before discussing the need for centralized logging. Let's remedy that.</p><div class="section" title="The Need for Centralized Logging"><div class="titlepage"><div><div><h1 class="title"><a id="ch16lvl1sec44"/>The Need for Centralized Logging</h1></div></div></div><p>In most cases, log messages are written to files. That is not to say that files are the only, nor the most <a class="indexterm" id="id767"/>efficient way of storing logs. However, since most teams are using file-based logs in one form or another, for the time being, I'll assume that is your case as well.</p><p>If we are lucky, there is one log file per a service or application. However, more often than not, there are multiple files into which our services are outputting information. Most of the time, we do not care much what is written in logs. When things are working well, there is not much need to spend valuable time browsing through logs. A log is not a novel we read to pass the time, nor it is a technical book we spend time with as a way to improve our knowledge. Logs are there to provide valuable info when something, somewhere, went wrong.</p><p>The situation seems to be simple. We write information to logs that we ignore most of the time, and when something goes wrong, we consult them and find the cause of the problem in no time. At least, that's what many are hoping for. The reality is far more complicated than that. In all but most trivial systems, the debugging process is much more complex. Applications and services are, almost always, interconnected, and it is often not easy to know which one caused the problem. While it might manifest in one application, investigation often shows that the cause is in another. For example, a service might have failed to instantiate. After some time spent browsing its logs, we might discover that the cause is in the database. The service could not connect to it and failed to launch. We got the symptom, but not the cause. We need to switch to the database log to find it out. With this simple example, we already got to the point where looking at one log is not enough.</p><p>With distributed <a class="indexterm" id="id768"/>services running on a cluster, the situation complicates exponentially. Which instance of the service is failing? Which server is it running on? What are the upstream services that initiated the request? What is the memory and hard disk usage in the node where the culprit resides? As you might have guessed, finding, gathering, and filtering the information needed for the successful discovery of the cause is often very complicated. The bigger the system, the harder it gets. Even with monolithic applications, things can easily get out of hand. If (micro)services approach is adopted, those problems are multiplied. Centralized logging is a must for all but simplest and smallest systems. Instead, many of us, when things go wrong, start running from one server to another, jumping from one file to the other. Like a chicken with its head cut off - running around with no direction. We tend to accept the chaos logging creates, and consider it part of our profession.</p><p>What do we look for in centralized logging? As it happens, many things, but the most important are as follows:</p><div class="itemizedlist"><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">A way to parse data and send them to a central database in near real-time.</li><li class="listitem" style="list-style-type: disc">The capacity of the database to handle near real-time data querying and analytics.</li><li class="listitem" style="list-style-type: disc">A visual representation of the data through filtered tables, dashboards, and so on.</li></ul></div><p>We already choose the tools that will be able to fulfill all those requirements (and more). The ELK stack (LogStash, ElasticSearch, and Kibana) can do all that. As in the case of all other tools we explored, this stack can easily be extended to satisfy the particular needs we'll set in front of us.</p><p>Now that we have a vague idea what we want to accomplish, and have the tools to do that, let us explore a few of the logging strategies we can use. We'll start with the most commonly used scenario and, slowly, move towards more complicated and more efficient ways to define our logging strategy.</p><p>Without further ado, let's create the environments we'll use to experiment with centralized logging and, later on, monitoring. We'll create three nodes. You should already be familiar with the <code class="literal">cd</code> and <code class="literal">prod</code> VMs. The first one will be used mainly for provisioning while the second will act as a production server. We'll introduce a new one called <code class="literal">logging</code>. It will be an imitation of a production server aimed at running all the logging and monitoring tools. Ideally, instead of a single production server (<code class="literal">prod</code>), we would run examples against the, let's say, Swarm cluster. That would allow us to see the benefits in a more production-like setting. However, since the previous few chapters already stretched limits<a class="indexterm" id="id769"/> of what could be run on a single laptop, I did not want to risk it and opted for a single VM. That being said, all the examples are equally applicable to one, ten, hundred, or thousand servers. You should have no problem extending them to you entire cluster:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>vagrant up cd prod logging</strong></span>
+<span class="strong"><strong>vagrant </strong></span>
+<span class="strong"><strong>ssh cd</strong></span>
+</pre></div></div></div>
+<div class="section" title="Sending Log Entries to ElasticSearch"><div class="titlepage"><div><div><h1 class="title"><a id="ch16lvl1sec45"/>Sending Log Entries to ElasticSearch</h1></div></div></div><p>We'll start by <a class="indexterm" id="id770"/>provisioning the <code class="literal">logging</code> server with <a class="indexterm" id="id771"/>the ELK stack (ElasticSearch, LogStash, and Kibana). We'll continue using Ansible for provisioning since it converted itself into our favorite configuration management tool.</p><p>Let's run the elk.yml playbook and explore it while it's executing:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>ansible-playbook /vagrant/ansible/elk.yml \</strong></span>
+<span class="strong"><strong>    -i /vagrant/ansible/hosts/prod \</strong></span>
+<span class="strong"><strong>    --extra-vars "logstash_config=file.conf"</strong></span>
+</pre></div><p>The definition of the playbook is as follows:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>- hosts: logging</strong></span>
+<span class="strong"><strong>  remote_user: vagrant</strong></span>
+<span class="strong"><strong>  serial: 1</strong></span>
+<span class="strong"><strong>  roles:</strong></span>
+<span class="strong"><strong>    - common</strong></span>
+<span class="strong"><strong>    - docker</strong></span>
+<span class="strong"><strong>    - elasticsearch</strong></span>
+<span class="strong"><strong>    - logstash</strong></span>
+<span class="strong"><strong>    - kibana</strong></span>
+</pre></div><p>We used the <code class="literal">common</code> and the <code class="literal">docker</code> roles many times before, so we'll skip them, and jump straight into <code class="literal">elasticsearch</code> tasks defined in the <code class="literal">roles/elasticsearch/tasks</code>
+<code class="literal">/main.yml</code> file:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>- name: Container is running</strong></span>
+<span class="strong"><strong>  docker:</strong></span>
+<span class="strong"><strong>    name: elasticsearch</strong></span>
+<span class="strong"><strong>    image: elasticsearch</strong></span>
+<span class="strong"><strong>    state: running</strong></span>
+<span class="strong"><strong>    ports:</strong></span>
+<span class="strong"><strong>      - 9200:9200</strong></span>
+<span class="strong"><strong>    volumes:</strong></span>
+<span class="strong"><strong>      /data/elasticsearch:/usr/share/elasticsearch/data</strong></span>
+<span class="strong"><strong>  tags: [elasticsearch]</strong></span>
+</pre></div><p>Thanks to<a class="indexterm" id="id772"/> Docker, all we have to do is run the official <code class="literal">elasticsearch</code> image. It exposes its API through the port <code class="literal">9200</code> and defines a single <a class="indexterm" id="id773"/>volume we'll use to persist data in the host.</p><p>The next in line is the <code class="literal">logstash</code> role. The tasks set in the <code class="literal">roles/logstash/tas</code>
+<code class="literal">ks/main.yml</code> file are as follows:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>- name: Directory is present</strong></span>
+<span class="strong"><strong>  file:</strong></span>
+<span class="strong"><strong>    path: "{{ item.path }}"</strong></span>
+<span class="strong"><strong>    recurse: yes</strong></span>
+<span class="strong"><strong>    state: directory</strong></span>
+<span class="strong"><strong>    mode: "{{ item.mode }}"</strong></span>
+<span class="strong"><strong>  with_items: directories</strong></span>
+<span class="strong"><strong>  tags: [logstash]</strong></span>
+
+<span class="strong"><strong>- name: File is copied</strong></span>
+<span class="strong"><strong>  copy:</strong></span>
+<span class="strong"><strong>    src: "{{ item.src }}"</strong></span>
+<span class="strong"><strong>    dest: "{{ item.dest }}"</strong></span>
+<span class="strong"><strong>  with_items: files</strong></span>
+<span class="strong"><strong>  tags: [logstash]</strong></span>
+
+<span class="strong"><strong>- name: Container is running</strong></span>
+<span class="strong"><strong>  docker:</strong></span>
+<span class="strong"><strong>    name: logstash</strong></span>
+<span class="strong"><strong>    image: logstash</strong></span>
+<span class="strong"><strong>    state: running</strong></span>
+<span class="strong"><strong>    expose:</strong></span>
+<span class="strong"><strong>      - 5044</strong></span>
+<span class="strong"><strong>      - 25826</strong></span>
+<span class="strong"><strong>      - 25826/udp</strong></span>
+<span class="strong"><strong>      - 25827</strong></span>
+<span class="strong"><strong>      - 25827/udp</strong></span>
+<span class="strong"><strong>    ports:</strong></span>
+<span class="strong"><strong>      - 5044:5044</strong></span>
+<span class="strong"><strong>      - 5044:5044/udp</strong></span>
+<span class="strong"><strong>      - 25826:25826</strong></span>
+<span class="strong"><strong>      - 25826:25826/udp</strong></span>
+<span class="strong"><strong>      - 25827:25827</strong></span>
+<span class="strong"><strong>      - 25827:25827/udp</strong></span>
+<span class="strong"><strong>    volumes:</strong></span>
+<span class="strong"><strong>      - /data/logstash/conf:/conf</strong></span>
+<span class="strong"><strong>      - /data/logstash/logs:/logs</strong></span>
+<span class="strong"><strong>    links:</strong></span>
+<span class="strong"><strong>      - elasticsearch:db</strong></span>
+<span class="strong"><strong>    command: logstash -f /conf/{{ logstash_config }}</strong></span>
+<span class="strong"><strong>  tags: [logstash]</strong></span>
+</pre></div><p>While a big<a class="indexterm" id="id774"/> more numerous than the <code class="literal">elasticsearch</code> tasks, these are still pretty straightforward. The tasks create a directory, copy few<a class="indexterm" id="id775"/> configuration files we'll use throughout this chapter, and run the official logstash image. Since we'll experiment with quite a few scenarios, different ports need to be exposed and defined. The role exposes two volumes. The first one will hold configuration files while we'll use the second as a directory to place some logs. Finally, the task creates the link to the <code class="literal">elasticsearch</code> container and specifies that the <code class="literal">command</code> should start <code class="literal">logstash</code> with the configuration file defined as the variable. The command we used to run the playbook contained the <code class="literal">logstash_config</code> variable set to <code class="literal">file.conf</code>. Let us take a quick look at it:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>input {</strong></span>
+<span class="strong"><strong>  file {</strong></span>
+<span class="strong"><strong>    path =&gt; "/logs/**/*"</strong></span>
+<span class="strong"><strong>  }</strong></span>
+<span class="strong"><strong>}</strong></span>
+
+<span class="strong"><strong>output {</strong></span>
+<span class="strong"><strong>  stdout {</strong></span>
+<span class="strong"><strong>    codec =&gt; rubydebug</strong></span>
+<span class="strong"><strong>  }</strong></span>
+<span class="strong"><strong>  elasticsearch {</strong></span>
+<span class="strong"><strong>    hosts =&gt; db</strong></span>
+<span class="strong"><strong>  }</strong></span>
+<span class="strong"><strong>}</strong></span>
+</pre></div><p>LogStash configurations consist of three main sections: <code class="literal">input</code>, <code class="literal">output</code>, and <code class="literal">filters</code>. We'll skip <code class="literal">filter</code>, for now, and focus on the other two.</p><p>The <code class="literal">input</code> section defines one or more log sources. In this case, we defined that input should be handled through the file plugin, with the <code class="literal">path</code> set to <code class="literal">/logs/**/*</code>. One asterisk means any file or directory while two consecutive ones mean any file in any directory or subdirectory. The <code class="literal">/logs/**/*</code> value can be described as any file in the <code class="literal">/logs/</code> directory or any of its subdirectories. Bear in mind that, even though we specified only one input, there can, and often are, multiple inputs. For more information on all the supported input plugins, please consult the official input plugins page.</p><p>The <code class="literal">output</code> section defines the destination of log entries collected through the input. In this case, we set two. The first one<a class="indexterm" id="id776"/> is using the stdout output plugin that will print everything to standard output using <code class="literal">rubydebug</code> codec. Please note that we are using <code class="literal">stdout</code> only for demonstration purposes so that we can quickly see the result. In a production <a class="indexterm" id="id777"/>setting, you should probably remove it for <a class="indexterm" id="id778"/>performance reasons. The second output is more interesting. It uses the ElasticSearch output plugin to send all the log entries to the database. Please note that the <code class="literal">hosts</code> variable is set to <code class="literal">db</code>. Since we linked the <code class="literal">logstash</code> and <code class="literal">elasticsearch</code> containers, Docker created the <code class="literal">db</code> entry in the <code class="literal">/etc/hosts</code> file. For <a class="indexterm" id="id779"/>more information on all supported output plugins, please consult the <a class="ulink" href="https://www.elastic.co/guide/en/logstash/current/output-plugins.html">https://www.elastic.co/guide/en/logstash/current/output-plugins.html</a> page.</p><p>This configuration file is probably one of the simplest we could start with. Before we see it in action, let us go through the last element in the stack. Kibana will provide user interface we can use to interact with ElasticSearch. The tasks of the kibana role are defined in the <code class="literal">roles/kibana/tasks/main.yml</code> file. It contains backup restoration tasks that we'll skip, for now, and concentrate only on the part that runs the container:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>- name: Container is running</strong></span>
+<span class="strong"><strong>  docker:</strong></span>
+<span class="strong"><strong>    image: kibana</strong></span>
+<span class="strong"><strong>    name: kibana</strong></span>
+<span class="strong"><strong>    links:</strong></span>
+<span class="strong"><strong>      - elasticsearch:elasticsearch</strong></span>
+<span class="strong"><strong>    ports:</strong></span>
+<span class="strong"><strong>      - 5601:5601</strong></span>
+<span class="strong"><strong>  tags: [kibana]</strong></span>
+</pre></div><p>Just like the rest of the ELK stack, Kibana has the official Docker image. All we have to do is link the container to <code class="literal">elasticsearch</code>, and expose the port <code class="literal">6501</code> that we'll use to access the UI. We'll see Kibana in action soon.</p><p>Before we simulate some log entries, we'll need to enter the <code class="literal">logging</code> node where the ELK stack is running:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>exit</strong></span>
+
+<span class="strong"><strong>vagrant ssh logging</strong></span>
+</pre></div><p>Since the <code class="literal">/data/logstash/logs</code> volume is shared with the container, and LogStash is monitoring any file inside it, we can create a log with a single entry:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>echo "my first log entry" \</strong></span>
+<span class="strong"><strong>    &gt;/data/logstash/logs/my.log</strong></span>
+</pre></div><p>Let us take a look at LogStash output and see what happened:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>docker logs logstash</strong></span>
+</pre></div><p>Please note that it might take a few seconds until the first log entry is processed, so, if the <code class="literal">docker logs</code> command did not return anything, please re-execute it. All new entries to the same file will be processed much faster:</p><p>The output is as follows:</p><div class="informalexample"><pre class="programlisting">{
+       "message" =&gt; "my first log entry",
+      "@version" =&gt; "1",
+    "@timestamp" =&gt; "2016-02-01T18:01:04.044Z",
+          "host" =&gt; "logging",
+          "path" =&gt; "/logs/my.log"
+}</pre></div><p>As you can<a class="indexterm" id="id780"/> see, LogStash processed our <code class="literal">my first log entry</code> and added a few additional pieces of information. We got the timestamp, host<a class="indexterm" id="id781"/> name, and the path of the log file:</p><p>Let's add a few more entries:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>echo "my second log entry" \</strong></span>
+<span class="strong"><strong>    &gt;&gt;/data/logstash/logs/my.log</strong></span>
+
+<span class="strong"><strong>echo "my third log entry" \</strong></span>
+<span class="strong"><strong>    &gt;&gt;/data/logstash/logs/my.log</strong></span>
+
+<span class="strong"><strong>docker logs logstash</strong></span>
+</pre></div><p>The output of the <code class="literal">docker logs</code> command is as follows:</p><div class="informalexample"><pre class="programlisting">{
+       "message" =&gt; "my first log entry",
+      "@version" =&gt; "1",
+    "@timestamp" =&gt; "2016-02-01T18:01:04.044Z",
+          "host" =&gt; "logging",
+          "path" =&gt; "/logs/my.log"
+}
+{
+       "message" =&gt; "my second log entry",
+      "@version" =&gt; "1",
+    "@timestamp" =&gt; "2016-02-01T18:02:06.141Z",
+          "host" =&gt; "logging",
+          "path" =&gt; "/logs/my.log"
+}
+{
+       "message" =&gt; "my third log entry",
+      "@version" =&gt; "1",
+    "@timestamp" =&gt; "2016-02-01T18:02:06.150Z",
+          "host" =&gt; "logging",
+          "path" =&gt; "/logs/my.log"
+}</pre></div><p>As expected, all three log entries were processed by LogStash, and the time has come to visualize them<a class="indexterm" id="id782"/> through Kibana. Please open <code class="literal">http://</code>
+<code class="literal">10.100.198.202:5601/</code> from a browser. Since this is the first time we run Kibana, it will <a class="indexterm" id="id783"/>ask us to configure an index pattern. Luckily, it already figured out what the index format is (<code class="literal">logstash-*</code>), as well as which field contains timestamps (<code class="literal">@timestamp</code>). Please click the <span class="strong"><strong>Create</strong></span> button, followed with <span class="strong"><strong>Discover</strong></span> located in the top menu:</p><div class="mediaobject"><img alt="Sending Log Entries to ElasticSearch" src="graphics/B05848_16_01.jpg"/><div class="caption"><p>Figure 16-01 – Kibana Discover screen with a few log entries</p></div></div><p>By default, the <span class="strong"><strong>Discover</strong></span> screen displays all the entries generated in ElasticSearch during the last fifteen minutes. We'll explore functions this screen offers later on when we produce more logs. For now, please click the arrow on the left-most column of one of the log entries. You'll see all the fields LogStash generated and sent to ElasticSearch. At the moment, since we are not using any filters, those fields are limited to the <span class="emphasis"><em>message</em></span> representing the whole log entry, and a few generic fields LogStash generated.</p><p>The example we used was trivial, and it did not even look like a log entry. Let us increase the complexity of our logs. We'll use a few entries I prepared. The sample log is located in the <code class="literal">/tmp/apache.log</code> file, and it contains a few log entries following the Apache format. Its <a class="indexterm" id="id784"/>content is as follows:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>127.0.0.1 - - [11/Dec/2015:00:01:45 -0800] "GET /2016/01/11/the-devops-2-0-toolkit/ HTTP/1.1" 200 3891 "http://technologyconversations.com" "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.9; rv:25.0) Gecko/20100101 Firefox/25.0"</strong></span>
+<span class="strong"><strong>127.0.0.1 - - [11/Dec/2015:00:01:57 -0800] "GET /2016/01/18/clustering-and-scaling-services/ HTTP/1.1" 200 3891 "http://technologyconversations.com" "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.9; rv:25.0) Gecko/20100101 Firefox/25.0"</strong></span>
+<span class="strong"><strong>127.0.0.1 - - [11/Dec/2015:00:01:59 -0800] "GET /2016/01/26/self-healing-systems/ HTTP/1.1" 200 3891 "http://technologyconversations.com" "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.9; rv:25.0) Gecko/20100101 Firefox/25.0"</strong></span>
+</pre></div><p>Since LogStash is<a class="indexterm" id="id785"/> expecting log files in the <code class="literal">/data/logstash/logs/</code> directory, let us copy the sample:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>cat /tmp/apache.log \</strong></span>
+<span class="strong"><strong>    &gt;&gt;/data/logstash/logs/apache.log</strong></span>
+</pre></div><p>Let us take a look the output LogStash generated:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>docker logs logstash</strong></span>
+</pre></div><p>LogStash might need a few seconds to detect that there is a new file to monitor. If the <code class="literal">docker logs</code> output does not display anything new, please repeat the command. The output should be similar to the following:</p><div class="informalexample"><pre class="programlisting">{
+       "message" =&gt; "127.0.0.1 - - [11/Dec/2015:00:01:45 -0800] \"GET /2016/01/11/the-devops-2-0-toolkit/ HTTP/1.1\" 200 3891 \"http://technologyconversations.com\" \"Mozilla/5.0 (Macintosh; Intel Mac OS X 10.9; rv:25.0) Gecko/20100101 Firefox/25.0\"",
+      "@version" =&gt; "1",
+    "@timestamp" =&gt; "2016-02-01T19:06:21.940Z",
+          "host" =&gt; "logging",
+          "path" =&gt; "/logs/apache.log"
+}
+{
+       "message" =&gt; "127.0.0.1 - - [11/Dec/2015:00:01:57 -0800] \"GET /2016/01/18/clustering-and-scaling-services/ HTTP/1.1\" 200 3891 \"http://technologyconversations.com\" \"Mozilla/5.0 (Macintosh; Intel Mac OS X 10.9; rv:25.0) Gecko/20100101 Firefox/25.0\"",
+      "@version" =&gt; "1",
+    "@timestamp" =&gt; "2016-02-01T19:06:21.949Z",
+          "host" =&gt; "logging",
+          "path" =&gt; "/logs/apache.log"
+}
+{
+       "message" =&gt; "127.0.0.1 - - [11/Dec/2015:00:01:59 -0800] \"GET /2016/01/26/self-healing-systems/ HTTP/1.1\" 200 3891 \"http://technologyconversations.com\" \"Mozilla/5.0 (Macintosh; Intel Mac OS X 10.9; rv:25.0) Gecko/20100101 Firefox/25.0\"",
+      "@version" =&gt; "1",
+    "@timestamp" =&gt; "2016-02-01T19:06:21.949Z",
+          "host" =&gt; "logging",
+          "path" =&gt; "/logs/apache.log"
+}</pre></div><p>The same data can be observed from Kibana running on <code class="literal">http://10.100.198.202:5601/</code>.</p><p>We just started, and we already accomplished a vast improvement. When something fails on a server, we <a class="indexterm" id="id786"/>do not need to know which service failed, nor<a class="indexterm" id="id787"/> where its logs are. We can get all the log entries from that server from a single place. Anyone, be it a developer, tester, operator, or any other role, can open Kibana running on that node, and inspect all the logs from all services and applications.</p><p>The last examples of the Apache log were more production-like than the first one we used. However, the entries are still stored as one big message. While ElasticSearch is capable of searching almost anything, in almost any format, we should help it a bit and try to split this log into multiple fields.</p><div class="section" title="Parsing Log Entries"><div class="titlepage"><div><div><h2 class="title"><a id="ch16lvl2sec93"/>Parsing Log Entries</h2></div></div></div><p>We mentioned <a class="indexterm" id="id788"/>earlier that LogStash configurations consist of three main sections: <code class="literal">input</code>, <code class="literal">output</code>, and <code class="literal">filters</code>. The previous examples used only <code class="literal">input</code> and <code class="literal">output</code>, and the time has come to get introduced to the third section. I already prepared an example configuration that can be found in the <code class="literal">roles/logstash/files/file-with-filters.conf</code> file. Its content is as follows:</p><div class="informalexample"><pre class="programlisting">input {
+  file {
+    path =&gt; "/logs/**/*"
+  }
+}
+
+filter {
+  grok {
+    match =&gt; { "message" =&gt; "%{COMBINEDAPACHELOG}" }
+  }
+  date {
+    match =&gt; [ "timestamp" , "dd/MMM/yyyy:HH:mm:ss Z" ]
+  }
+}
+
+output {
+  stdout {
+    codec =&gt; rubydebug
+  }
+  elasticsearch {
+    hosts =&gt; db
+  }
+}</pre></div><p>The <code class="literal">input</code> and <code class="literal">output</code> sections are the same as before. The difference is the addition of the <code class="literal">filter</code>. Just <a class="indexterm" id="id789"/>like the other two, we can use one or more of the plugins. In this case, we specified that the grok filter plugin should be used. If for no other reason, the official description of the plugin should compel you to at least try it out.</p><p>Grok<a class="indexterm" id="id790"/> is currently the best way in logstash to parse <span class="strong"><strong>crappy unstructured log data</strong></span> into something structured and queryable.</p><p>Grok sits on top of regular expressions, and LogStash already comes with quite a few patterns. They can be <a class="indexterm" id="id791"/>found in the <a class="ulink" href="https://github.com/logstash-plugins/logstash-patterns-core/blob/master/patterns/grok-patterns">https://github.com/logstash-plugins/logstash-patterns-core/blob/master/patterns/grok-patterns</a> repository. In our case, since the log we used matches Apache format that is already included, all the had to do is tell LogStash to parse the <code class="literal">message</code> using the <code class="literal">COMBINEDAPACHELOG</code> pattern. Later on, we'll see how we can combine different patterns but, for now, <code class="literal">COMBINEDAPACHELOG</code> should do.</p><p>The second filter we'll be using is defined through the date plugin. It will transform the timestamp from log entries into LogStash format.</p><p>Please explore filter plugins in more details. Chances are you'll find one, or more, that suit your needs.</p><p>Let's replace the <code class="literal">file.conf</code> with the<code class="literal"> file-with-filters.conf</code> file, restart LogStash, and see how it behaves:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>sudo cp /data/logstash/conf/file-with-filters.conf \</strong></span>
+<span class="strong"><strong>    /data/logstash/conf/file.conf</strong></span>
+
+<span class="strong"><strong>docker restart logstash</strong></span>
+</pre></div><p>With the new LogStash configuration, we can add a few more Apache log entries:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>cat /tmp/apache2.log \</strong></span>
+<span class="strong"><strong>    &gt;&gt;/data/logstash/logs/apache.log</strong></span>
+
+<span class="strong"><strong>docker logs logstash</strong></span>
+</pre></div><p>The <code class="literal">docker logs</code> output of the last entry is as follows:</p><div class="informalexample"><pre class="programlisting">{
+        "message" =&gt; "127.0.0.1 - - [12/Dec/2015:00:01:59 -0800] \"GET /api/v1/books/_id/5 HTTP/1.1\" 200 3891 \"http://cadenza/xampp/navi.php\" \"Mozilla/5.0 (Macintosh; Intel Mac OS X 10.9; rv:25.0) Gecko/20100101 Firefox/25.0\"",
+       "@version" =&gt; "1",
+     "@timestamp" =&gt; "2015-12-12T08:01:59.000Z",
+           "host" =&gt; "logging",
+           "path" =&gt; "/logs/apache.log",
+       "clientip" =&gt; "127.0.0.1",
+          "ident" =&gt; "-",
+           "auth" =&gt; "-",
+      "timestamp" =&gt; "12/Dec/2015:00:01:59 -0800",
+           "verb" =&gt; "GET",
+        "request" =&gt; "/api/v1/books/_id/5",
+    "httpversion" =&gt; "1.1",
+       "response" =&gt; "200",
+          "bytes" =&gt; "3891",
+       "referrer" =&gt; "\"http://cadenza/xampp/navi.php\"",
+          "agent" =&gt; "\"Mozilla/5.0 (Macintosh; Intel Mac OS X 10.9; rv:25.0) Gecko/20100101 Firefox/25.0\""
+}</pre></div><p>As you can<a class="indexterm" id="id792"/> see, the message is still there in its entirety. In addition, this time we got quite a few additional fields. The <code class="literal">clientip</code>, <code class="literal">verb</code>, <code class="literal">referrer</code>, <code class="literal">agent</code>, and other data, are all properly separated. This will allow us to filter logs much more efficiently.</p><p>Let's open Kibana running on the address <code class="literal">http://10.100.198.202:5601/</code>. One of the things you'll notice is that Kibana claims that no results are found even though we just parsed three log entries. The reason behind that is in the second filter that transformed the log timestamp to the LogStash format. Since, by default, Kibana displays last 15 minutes of logs, and log entries were made during December 2015, they are indeed older than 15 minutes. Click on the <span class="strong"><strong>Last 15 minutes</strong></span> button located in the top-right corner of the screen, select <span class="strong"><strong>Absolute</strong></span> and pick the range starting from December 1st to December 31th, 2015. That should give us all logs made during December 2015.</p><p>Click the <span class="strong"><strong>Go</strong></span> button and observe that the three logs we just sent to ElasticSearch, through LogStash, are displayed on the screen. You'll notice that many new fields are available in the right-hand menu. We'll use them later when we explore Kibana filters. For now, the important thing to note is that this time we parsed the log entries before sending them to ElasticSearch.</p><p>By employing LogStash filters, we improved the data that is stored in ElasticSearch. The solution relies on the whole ELK stack being installed on the same server where logs are, and we can see all the logs we decided to tail from a single interface (Kibana). The problem is that the solution is limited to a single server. If, for example, we'd have ten servers, we'd need to install ten ELK stacks. That would introduce quite a significant overhead on resources. ElasticSearch is memory hungry, and LogStash can grab more CPU than what<a class="indexterm" id="id793"/> we would be willing to part from. Of equal importance is that, while what we have by now is an improvement, it is far from ideal. We would still need to know which server produced a problem and, potentially, go from one Kibana to another, when trying to cross-reference different services and applications involved:</p><div class="mediaobject"><img alt="Parsing Log Entries" src="graphics/B05848_16_02.jpg"/><div class="caption"><p>Figure 16-02 – ELK stack running on a single server</p></div></div><p>Before I introduce you to the concept of decentralized logs and centralized logs parsing, let us remove the LogStash instance and go back to the <code class="literal">cd</code> node:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>docker rm -f lo</strong></span>
+<span class="strong"><strong>gstash</strong></span>
+
+<span class="strong"><strong>exit</strong></span>
+
+<span class="strong"><strong>vagrant ssh cd</strong></span>
+</pre></div></div><div class="section" title="Sending Log Entries to a Central LogStash Instance"><div class="titlepage"><div><div><h2 class="title"><a id="ch16lvl2sec94"/>Sending Log Entries to a Central LogStash Instance</h2></div></div></div><p>What we<a class="indexterm" id="id794"/> did by now is helpful, but it still <a class="indexterm" id="id795"/>does not solve the problem of having all logs in one place. At the moment, we have all logs from a single server in a single location. How can we change that?</p><p>One simple solution would be to install LogStash on each server, and configure it to send entries to a remote ElasticSearch. At least, that's how most companies I worked with solved it. Should we do the same? The answer is no; we shouldn't. The problem lies in LogStash itself. While it is an excellent solution for collecting, parsing, and outputting logs, it uses too many resources. Having LogStash installed on each and every server would result in a huge waste. Instead, we'll use Filebeat.</p><p>Filebeat<a class="indexterm" id="id796"/> is a lightweight shipper for log files and represents the next-generation of LogStash Forwarder. Just like LogStash, it tails log files. The difference is that it is optimized for just tailing and sending logs. It will not do any parsing. Another difference is that it is written in Go. Those two things alone make it much more resource efficient with such a small footprint that we can safely run it on all servers without noticing a significant increase in memory and CPU consumption.</p><p>Before we see Filebeat in action, we need to change the <code class="literal">input</code> section of our LogStash configuration. The new configuration is located in the <code class="literal">roles/logstash/files/beats.conf</code> file and its content is as follows:</p><div class="informalexample"><pre class="programlisting">input {
+  beats {
+    port =&gt; 5044
+  }
+}
+
+output {
+  stdout {
+    codec =&gt; rubydebug
+  }
+  elasticsearch {
+    hosts =&gt; db
+  }
+}</pre></div><p>As you can see, the only difference is in the input section. It uses the beats plugin that is set to listen to the port <code class="literal">5044</code>. With this configuration, we can run a single LogStash instance, and have all the other servers send their logs to this port.</p><p>Let's deploy LogStash with these settings:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>ansible-playbook /vagrant/ansible/elk.yml \</strong></span>
+<span class="strong"><strong>    -i /vagrant/ansible/hosts/prod \</strong></span>
+<span class="strong"><strong>    --extra-vars "logstash_config=beats.conf"</strong></span>
+</pre></div><p>LogStash is now running inside the <code class="literal">logging</code> server and listening for beats packets on port <code class="literal">5044</code>. Before we proceed and deploy Filebeat on, let's say, the <code class="literal">prod</code> node, let us take a quick look at the <code class="literal">prod3.yml</code> playbook:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>- hosts: prod</strong></span>
+<span class="strong"><strong>  remote_user: vagrant</strong></span>
+<span class="strong"><strong>  serial: 1</strong></span>
+<span class="strong"><strong>  roles:</strong></span>
+<span class="strong"><strong>    - common</strong></span>
+<span class="strong"><strong>    - docker</strong></span>
+<span class="strong"><strong>    - docker-compose</strong></span>
+<span class="strong"><strong>    - consul</strong></span>
+<span class="strong"><strong>    - registrator</strong></span>
+<span class="strong"><strong>    - consul-template</strong></span>
+<span class="strong"><strong>    - nginx</strong></span>
+<span class="strong"><strong>    - file</strong></span>
+</pre></div><p> new addition is the <code class="literal">roles/filebe</code>
+<code class="literal">at</code> role. Its tasks, defined in the <code class="literal">roles/filebeat/tasks/main.yml</code> file, are<a class="indexterm" id="id797"/> as follows:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>- name: Download the package</strong></span>
+<span class="strong"><strong>  get_url:</strong></span>
+<span class="strong"><strong>    url: https://download.elastic.co/beats/filebeat/filebeat_1.0.1_amd64.deb</strong></span>
+<span class="strong"><strong>    dest: /tmp/filebeat.deb</strong></span>
+<span class="strong"><strong>  tags: [filebeat]</strong></span>
+
+<span class="strong"><strong>- name: Install the package</strong></span>
+<span class="strong"><strong>  apt:</strong></span>
+<span class="strong"><strong>    deb: /tmp/filebeat.deb</strong></span>
+<span class="strong"><strong>  tags: [filebeat]</strong></span>
+
+<span class="strong"><strong>- name: Configuration is present</strong></span>
+<span class="strong"><strong>  template:</strong></span>
+<span class="strong"><strong>    src: filebeat.yml</strong></span>
+<span class="strong"><strong>    dest: /etc/filebeat/filebeat.yml</strong></span>
+<span class="strong"><strong>  tags: [filebeat]</strong></span>
+
+<span class="strong"><strong>- name: Service is started</strong></span>
+<span class="strong"><strong>  service:</strong></span>
+<span class="strong"><strong>    name: filebeat</strong></span>
+<span class="strong"><strong>    state: started</strong></span>
+<span class="strong"><strong>  tags: [filebeat]</strong></span>
+</pre></div><p>The tasks will download the package, install it, copy the configuration, and, finally, run the service. The only thing worth looking at is the <code class="literal">r</code>
+<code class="literal">oles/filebeat/templates/filebeat.yml</code> configuration file:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>filebeat:</strong></span>
+<span class="strong"><strong>  prospectors:</strong></span>
+<span class="strong"><strong>    -</strong></span>
+<span class="strong"><strong>      paths:</strong></span>
+<span class="strong"><strong>        - "/var/log/**/*.log"</strong></span>
+
+<span class="strong"><strong>output:</strong></span>
+<span class="strong"><strong>  logstash:</strong></span>
+<span class="strong"><strong>      hosts: ["{{ elk_ip }}:5044"]</strong></span>
+</pre></div><p>The <span class="emphasis"><em>filebeat</em></span> section specifies a list of prospectors which are used to locate and process log files. Each prospector item begins with a dash (<code class="literal">-</code>) and specifies prospector-specific configuration options, including the list of paths that are crawled to locate log files. In our case, we're<a class="indexterm" id="id798"/> having only one path set<a class="indexterm" id="id799"/> to <code class="literal">/var/log/**/*.log</code>. When started, Filebeat will look for all files ending in <code class="literal">.log located in the /var/log/*</code> directory, or any of its subdirectories. Since that happens to be the location where most of Ubuntu logs are located, we'll have quite a lot of log entries to process.</p><p>The <span class="emphasis"><em>output</em></span> section is used to send log entries to various destinations. In our case, we specified LogStash as the only output. Since the current LogStash configuration does not have any filtering, we could have set ElasticSearch as output, and the result would be the same, but with less overhead. However, since it is very likely that we'll add some filters in the future, the output is set to logstash.</p><p>Please note that filters are a blessing and a curse at the same time. They allow us to split log entries into easier-to-manage fields. On the other hand, if log formats differ too much, you might spend an eternity writing parsers. Whether you should use filters, or depend on ElasticSearch filtering capabilities without specialized fields, is entirely up to you. I tend to go both ways. If log contains an important piece of information (as you will see in one of the following examples), filtering logs is a must. If log entries are generic messages without analytical value, I skip filtering altogether. With a bit of practice, you'll establish your rules.</p><p>For more<a class="indexterm" id="id800"/> information about configuration options, please consult the <a class="ulink" href="https://www.elastic.co/guide/en/beats/filebeat/current/filebeat-configuration-details.html">https://www.elastic.co/guide/en/beats/filebeat/current/filebeat-configuration-details.html</a> page.</p><p>Let's run the playbook and see Filebeat in action.</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>ansible-playbook /vagrant/ansible/prod3.yml \</strong></span>
+<span class="strong"><strong>    -i /vagrant/ansible/hosts/prod</strong></span>
+</pre></div><p>Now that Filebeat is running in the <code class="literal">prod</code> node, we can take a look at logs generated by LogStash running on the <code class="literal">logging</code> server.</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>docker -H tcp://logging:2375 \</strong></span>
+<span class="strong"><strong>    logs logstash</strong></span>
+</pre></div><p>The last <a class="indexterm" id="id801"/>few lines of the <code class="literal">docker logs</code> command <a class="indexterm" id="id802"/>are as follows:</p><div class="informalexample"><pre class="programlisting">...
+{
+       "message" =&gt; "ttyS0 stop/pre-start, process 1301",
+      "@version" =&gt; "1",
+    "@timestamp" =&gt; "2016-02-02T14:50:45.557Z",
+          "beat" =&gt; {
+        "hostname" =&gt; "prod",
+            "name" =&gt; "prod"
+    },
+         "count" =&gt; 1,
+        "fields" =&gt; nil,
+    "input_type" =&gt; "log",
+        "offset" =&gt; 0,
+        "source" =&gt; "/var/log/upstart/ttyS0.log",
+          "type" =&gt; "log",
+          "host" =&gt; "prod"
+}</pre></div><p>FileBeats sent all the log entries from the <code class="literal">/var/log/</code> directory in the <code class="literal">prod</code> node to LogStash running in the <code class="literal">logging</code> server. It did that without breaking a sweat and, as a result, we got over 350 log entries stored in ElasticSearch. OK, 350 log entries is not something to brag about, but, it there were 350000, it would still do it effortlessly.</p><p>Let's confirm that logs reached Kibana. Please open <code class="literal">http://10.100.198.202:5601/</code>. If you see no entries, it means that more than fifteen minutes passed, and you should increase the time by clicking the <span class="strong"><strong>time selector</strong></span> button in the top-right corner of the screen.</p><div class="note" style="" title="Note"><div class="inner"><h3 class="title"><a id="note13"/>Note</h3><p>Please note that every time a new field type is added to ElasticSearch index, we should recreate the pattern. We can do that by navigating to the <span class="strong"><strong>Settings</strong></span> screen and clicking the <span class="strong"><strong>Create</strong></span> button.</p></div></div><p>We, again, improved the solution quite a bit. There is a central place where logs are parsed (LogStash), stored (ElasticSearch), and explored (Kibana). We can plug in any number of servers with Filebeat running on each of them. It will tail logs and send them to LogStash:</p><div class="mediaobject"><img alt="Sending Log Entries to a Central LogStash Instance" src="graphics/B05848_16_03.jpg"/><div class="caption"><p>Figure 16-03 – ELK stack running on a single server with Filebeat distributed to the whole cluster</p></div></div><p>Let's up the<a class="indexterm" id="id803"/> ante a bit and apply what we<a class="indexterm" id="id804"/> learned to Docker containers. Since we'll change the LogStash configuration, let us end this section by removing the running instance:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>docker -H </strong></span>
+<span class="strong"><strong>tcp://logging:2375 \</strong></span>
+<span class="strong"><strong>    rm -f logstash</strong></span>
+</pre></div></div><div class="section" title="Sending Docker Log Entries to a Central LogStash Instance"><div class="titlepage"><div><div><h2 class="title"><a id="ch16lvl2sec95"/>Sending Docker Log Entries to a Central LogStash Instance</h2></div></div></div><p>Since we are<a class="indexterm" id="id805"/> using containers, we <a class="indexterm" id="id806"/>can run them with volume sharing the directory where the service is writing its logs. Shall we do that? The answer is no and, at this time, you probably think that I am continuously leading you from one wrong solution to another. What I'm really trying to do is to build the solution step by step and, at the same time, show you different paths that you might choose to take. My preferred solution does not necessarily have to be adopted by you. The more choices you have, the more informed decisions you'll make.</p><p>Let's go back to the subject of writing logs to a file and shipping them to LogStash. My, strongly subjective, opinion is that all logs, no matter the way we package our services, should be sent to standard output or error (<code class="literal">stdout</code> or <code class="literal">stderr</code>). There are many practical reasons for this opinion which, be it as it may, I won't elaborate. I already received quite a few emails from people stating that my views and practices are too radical (most of them got a response saying that the century changed more than fifteen years ago). I'll just try to avoid another war on the logging subject in general terms, and skip to reasons for not writing logs to files when services are deployed inside containers. Two of them stick from the crowd. First of all, the less we use volumes, the less are containers dependent on the host they're running on, and easier it is to move them around (either in the case of a failure or for scaling purposes). The second reason is that Docker's logging drivers expect logs to be sent to <code class="literal">stdout</code> and <code class="literal">stderr</code>. By not writing logs to files, we avoid coupling with a server or particular logging technology.</p><p>If you are about to send me a hate email stating that log files are a grace from heaven, please note that I am referring to their output destination when generated inside containers (even though I was applying the rule before I started using them).</p><p>What is the alternative to exposing container directory with logs as a volume? Docker introduced logging driver feature in its version 1.6. While it passed mostly unnoticed, it is a very cool capability and was a huge step toward creating a comprehensive approach to logging in Docker environments. Since then, besides the default <code class="literal">json-file</code> driver, we got <code class="literal">syslog</code>, <code class="literal">journald</code>, <code class="literal">gelf</code>, <code class="literal">fluentd</code>, <code class="literal">splunk</code>, and <code class="literal">awslogs</code>. By the time you read this book, new ones might have arrived as well.</p><p>Now that we decided to use Docker's logging drivers, the question arises which one to choose. The GELF driver writes messages in <span class="emphasis"><em>Greylog Extended Log Format</em></span> supported by LogStash. If all we need is to store logs generated by our containers, this is a good option. On the other hand, if we want not only logs generated by services running inside containers but also from the rest of the system, we might opt for <code class="literal">JournalD</code> or <code class="literal">syslog</code>. In such a case, we'd get truly (almost) complete information about everything that happens, not only inside containers but on the whole OS level. The latter option (<code class="literal">JournalD</code> or <code class="literal">syslog</code>) is preferable when there is a substantial available memory for ElasticSearch (more logs equals more memory consumption), and that is the one we'll explore deeper. Do not get scared by ElasticSearch's need for a lot of memory. With clever cleanups of old data, this can be easily mitigated. We'll skip the debate whether <code class="literal">JournalD</code> is a better or worse solution than <code class="literal">syslog</code>, and use the latter. It does not matter which one is your preference <a class="indexterm" id="id807"/>since the same set of <a class="indexterm" id="id808"/>principles applies to both.</p><p>This time, we'll use the <code class="literal">roles/logstash/files/syslog.conf</code> file as LogStash configuration. Let's go through its sections one by one:</p><div class="informalexample"><pre class="programlisting">input {
+  syslog {
+    type =&gt; syslog
+    port =&gt; 25826
+  }
+}</pre></div><p>The <code class="literal">input</code> section should be self-explanatory. We're using the <code class="literal">syslog plugin</code> with two settings. The first one adds a type field to all events handled by this input. It will help us distinguish logs coming from <code class="literal">syslog</code>, from those we're generating through other methods. The <code class="literal">port</code> setting states that LogStash should listen on <code class="literal">25826</code> for syslog events.</p><p>The filter section of the config file is a bit more complicated. I decided to use it mostly as a way to showcase a fraction of what can be done through filters:</p><div class="informalexample"><pre class="programlisting">filter {
+  if "docker/" in [program] {
+    mutate {
+      add_field =&gt; {
+        "container_id" =&gt; "%{program}"
+      }
+    }
+    mutate {
+      gsub =&gt; [
+        "container_id", "docker/", ""
+      ]
+    }
+    mutate {
+      update =&gt; [
+        "program", "docker"
+      ]
+    }
+  }
+  if [container_id] == "nginx" {
+    grok {
+      match =&gt; [ "message" , "%{COMBINEDAPACHELOG} %{HOSTPORT:upstream_address} %{NOTSPACE:upstream_response_time}"]
+    }
+    mutate {
+      convert =&gt; ["upstream_response_time", "float"]
+    }
+  }
+}</pre></div><p>It starts with an <code class="literal">if</code> statement. Docker will send logs to syslog with a value of the <code class="literal">program</code> field set in the <code class="literal">docker/[CONTAINER_ID]</code> format. We are leveraging that fact to distinguish<a class="indexterm" id="id809"/> log entries coming<a class="indexterm" id="id810"/> from Docker, from those generated through some other means. Inside the <code class="literal">if</code> statement, we are performing a few mutations. The first one is the addition of a new field called <code class="literal">container_id</code> that, for now, has the same value as the <code class="literal">program</code> field. The second mutation is the removal of the <code class="literal">docker/</code> part of that value so that we are left with only container ID. Finally, we change the value of the <code class="literal">program</code> field to <code class="literal">docker</code>.</p><p>Variables, and their values, before and after mutations, are as follows:</p><div class="informaltable"><table border="1"><colgroup><col style="text-align: left"/><col style="text-align: left"/><col style="text-align: left"/></colgroup><thead><tr><th style="text-align: left" valign="bottom">
+<p>Variable name</p>
+</th><th style="text-align: left" valign="bottom">
+<p>Value before</p>
+</th><th style="text-align: left" valign="bottom">
+<p>Value after</p>
+</th></tr></thead><tbody><tr><td style="text-align: left" valign="top">
+<p>
+<code class="literal">program</code>
+</p>
+</td><td style="text-align: left" valign="top">
+<p>
+<code class="literal">docker/[CONTAINER_ID]</code>
+</p>
+</td><td style="text-align: left" valign="top">
+<p>
+<code class="literal">docker</code>
+</p>
+</td></tr><tr><td style="text-align: left" valign="top">
+<p>
+<code class="literal">container_id</code>
+</p>
+</td><td style="text-align: left" valign="top">
+<p>
+<code class="literal">/</code>
+</p>
+</td><td style="text-align: left" valign="top">
+<p>
+<code class="literal">[CONTAINER_ID]</code>
+</p>
+</td></tr></tbody></table></div><p>The second conditional starts by checking whether the <code class="literal">container_id</code> is set to <code class="literal">nginx</code>. If it is, it parses the message using the <code class="literal">COMBINEDAPACHELOG</code> pattern that we already saw in action and adds to it two new fields called <code class="literal">upstream_address</code> and <code class="literal">upstream_response_time</code>. Both of those fields also use predefined grok patterns <code class="literal">HOSTPORT</code> and <code class="literal">NOTSPACE</code>. If you'd like to dive deeper, and take a closer look at those patterns, please<a class="indexterm" id="id811"/> consult the <a class="ulink" href="https://github.com/logstash-plugins/logstash-patterns-core/blob/master/patterns/grok-patterns">https://github.com/logstash-plugins/logstash-patterns-core/blob/master/patterns/grok-patterns</a> repository. If you are familiar with regular expressions, this should be easy to understand (if there is such a thing as easy with RegEx).</p><p>Otherwise, you might want to rely on declared names to find the expression you need (at least until you learn regular expressions). The truth is that RegEx is a very powerful language for parsing text but, at the same time, very hard to master:</p><p>My wife claimed that my hair went gray at approximately the same time I worked on a project that required quite a lot of regular expressions. That is one of the few things we agreed on.</p><p>Finally, the mutation inside <code class="literal">nginx</code> conditional transforms <code class="literal">upstream_response_time</code> field from <code class="literal">string</code> (default) to <code class="literal">float</code>. We'll use this information later on, and will need it to be a number.</p><p>The third and the last section of the configuration file is <code class="literal">output</code>:</p><div class="informalexample"><pre class="programlisting">output {
+  stdout {
+    codec =&gt; rubydebug
+  }
+  elasticsearch {
+    hosts =&gt; db
+  }
+}</pre></div><p>It is the<a class="indexterm" id="id812"/> same as the previous <a class="indexterm" id="id813"/>ones. We're sending filtered log entries to standard output and ElasticSearch.</p><p>Now that we understand the configuration file, or, at least, pretend that we do, we can deploy LogStash one more time through the Ansible playbook <code class="literal">elk.</code>
+<code class="literal">yml</code>:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>ansible-playbook /vagrant/ansible/elk.yml \</strong></span>
+<span class="strong"><strong>    -i /vagrant/ansible/hosts/prod \</strong></span>
+<span class="strong"><strong>    --extra-vars "logstash_config=syslog.conf"</strong></span>
+</pre></div><p>Now we have LogStash up and running, and configured to use <code class="literal">syslog</code> as input. Let's remove the currently running <code class="literal">nginx</code> instance and run it again with Docker log driver set to <code class="literal">syslog</code>. While at it, we'll also provision the <code class="literal">prod</code> node with <code class="literal">syslog</code>. The <code class="literal">prod4.yml</code> playbook that we'll use is as follows:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>- hosts: prod</strong></span>
+<span class="strong"><strong>  remote_user: vagrant</strong></span>
+<span class="strong"><strong>  serial: 1</strong></span>
+<span class="strong"><strong>  vars:</strong></span>
+<span class="strong"><strong>    - log_to_syslog: yes</strong></span>
+<span class="strong"><strong>  roles:</strong></span>
+<span class="strong"><strong>    - common</strong></span>
+<span class="strong"><strong>    - docker</strong></span>
+<span class="strong"><strong>    - docker-compose</strong></span>
+<span class="strong"><strong>    - consul</strong></span>
+<span class="strong"><strong>    - registrator</strong></span>
+<span class="strong"><strong>    - consul-template</strong></span>
+<span class="strong"><strong>    - nginx</strong></span>
+<span class="strong"><strong>    - rsyslog</strong></span>
+</pre></div><p>As you can see, this playbook is similar to the others we used for provisioning the <code class="literal">prod</code> server. The difference is in the <code class="literal">log_to_syslog</code> variable, and the addition of the <code class="literal">rsyslog</code> role.</p><p>The relevant part of the <code class="literal">nginx</code> tasks defined in the <code class="literal">roles/nginx/tasks/main.</code>
+<code class="literal">yml</code> file is as follows:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>- name: Container is running</strong></span>
+<span class="strong"><strong>  docker:</strong></span>
+<span class="strong"><strong>    image: nginx</strong></span>
+<span class="strong"><strong>    name: nginx</strong></span>
+<span class="strong"><strong>    state: running</strong></span>
+<span class="strong"><strong>    ports: "{{ ports }}"</strong></span>
+<span class="strong"><strong>    volumes: "{{ volumes }}"</strong></span>
+<span class="strong"><strong>    log_driver: syslog</strong></span>
+<span class="strong"><strong>    log_opt:</strong></span>
+<span class="strong"><strong>      syslog-tag: nginx</strong></span>
+<span class="strong"><strong>  when: log_to_syslog is defined</strong></span>
+<span class="strong"><strong>  tags: [nginx]</strong></span>
+</pre></div><p>The <a class="indexterm" id="id814"/>difference is in the addition <a class="indexterm" id="id815"/>of <code class="literal">log_driver</code> and <code class="literal">log_opt</code> declarations. The first one sets Docker log driver to <code class="literal">syslog</code>. The <code class="literal">log_opt</code> can be used to specify additional logging options, which depend on a driver. In this case, we are specifying the <code class="literal">tag</code>. Without it, Docker would use container ID to identify logs sent to syslog. That was, when we query ElasticSearch, it will be much easier to find <code class="literal">nginx</code> entries.</p><p>The <code class="literal">rsyslog</code> tasks defined in the <code class="literal">roles/rsyslog/tasks/mai</code>
+<code class="literal">n.yml</code> file are as follows:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>- name: Packages are present</strong></span>
+<span class="strong"><strong>  apt:</strong></span>
+<span class="strong"><strong>    name: "{{ item }}"</strong></span>
+<span class="strong"><strong>    state: latest</strong></span>
+<span class="strong"><strong>    install_recommends: no</strong></span>
+<span class="strong"><strong>  with_items:</strong></span>
+<span class="strong"><strong>    - rsyslog</strong></span>
+<span class="strong"><strong>    - logrotate</strong></span>
+<span class="strong"><strong>  tags: [rsyslog]</strong></span>
+
+<span class="strong"><strong>- name: Config file is present</strong></span>
+<span class="strong"><strong>  template:</strong></span>
+<span class="strong"><strong>    src: 10-logstash.conf</strong></span>
+<span class="strong"><strong>    dest: /etc/rsyslog.d/10-logstash.conf</strong></span>
+<span class="strong"><strong>  register: config_result</strong></span>
+<span class="strong"><strong>  tags: [rsyslog]</strong></span>
+
+<span class="strong"><strong>- name: Service is restarted</strong></span>
+<span class="strong"><strong>  shell: service rsyslog restart</strong></span>
+<span class="strong"><strong>  when: config_result.changed</strong></span>
+<span class="strong"><strong>  tags: [rsyslog]</strong></span>
+</pre></div><p>It will make sure that <code class="literal">rsyslog</code> and <code class="literal">logrotate</code> packages are installed, copy the <code class="literal">10-logstash.conf</code> configuration file, and restart the service. The <code class="literal">roles/rsyslog/templates/10-logstash</code>
+<code class="literal">.conf</code> template is as follows:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>*.* @@{{ elk_ip }}:25826</strong></span>
+</pre></div><p>Please note that the file is an Ansible's template and that <code class="literal">{{ elk_ip }}</code> will be replaced with the IP. The configuration is dead simple. Everything sent to syslog will be re-sent to the LogStash running on the specified IP and port.</p><p>Now<a class="indexterm" id="id816"/> we're ready to remove<a class="indexterm" id="id817"/> the currently running <code class="literal">nginx</code> container and run the playbook:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>docker -H tcp://prod:2375 \</strong></span>
+<span class="strong"><strong>    rm -f nginx</strong></span>
+
+<span class="strong"><strong>ansible-playbook /vagrant/ansible/prod4.yml \</strong></span>
+<span class="strong"><strong>    -i /vagrant/ansible/hosts/prod</strong></span>
+</pre></div><p>Let's see what was sent to LogStash:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>docker -H tcp://logging:2375 \</strong></span>
+<span class="strong"><strong>    logs logstash</strong></span>
+</pre></div><p>You should see the syslog entries generated by the system. One of them might look as follows:</p><div class="informalexample"><pre class="programlisting">{
+           "message" =&gt; "[55784.504413] docker0: port 3(veth4024c56) entered forwarding state\n",
+          "@version" =&gt; "1",
+        "@timestamp" =&gt; "2016-02-02T21:58:23.000Z",
+              "type" =&gt; "syslog",
+              "host" =&gt; "10.100.198.201",
+          "priority" =&gt; 6,
+         "timestamp" =&gt; "Feb  2 21:58:23",
+         "logsource" =&gt; "prod",
+           "program" =&gt; "kernel",
+          "severity" =&gt; 6,
+          "facility" =&gt; 0,
+    "facility_label" =&gt; "kernel",
+    "severity_label" =&gt; "Informational"
+}</pre></div><p>We can also explore the same data through Kibana running on <code class="literal">http://10.100.198.20</code>
+<code class="literal">2:5601/</code>.</p><p>Let's see what happens when we deploy our services packed into containers. First we'll enter the <code class="literal">prod</code> node from which we'll run the <code class="literal">books-ms</code> service:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>exit</strong></span>
+
+<span class="strong"><strong>vagrant ssh prod</strong></span>
+
+<span class="strong"><strong>git clone https://github.com/vfarcic/books-ms.git</strong></span>
+
+<span class="strong"><strong>cd books-ms</strong></span>
+</pre></div><p>Before we deploy the <code class="literal">books-ms</code> service, let us take a quick look at the <code class="literal">docker-compose-logg</code>
+<code class="literal">ing.yml</code> file:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>app:</strong></span>
+<span class="strong"><strong>  image: 10.100.198.200:5000/books-ms</strong></span>
+<span class="strong"><strong>  ports:</strong></span>
+<span class="strong"><strong>    - 8080</strong></span>
+<span class="strong"><strong>  links:</strong></span>
+<span class="strong"><strong>    - db:db</strong></span>
+<span class="strong"><strong>  environment:</strong></span>
+<span class="strong"><strong>    - SERVICE_NAME=books-ms</strong></span>
+<span class="strong"><strong>  log_driver: syslog</strong></span>
+<span class="strong"><strong>  log_opt:</strong></span>
+<span class="strong"><strong>    syslog-tag: books-ms</strong></span>
+
+<span class="strong"><strong>db:</strong></span>
+<span class="strong"><strong>  image: mongo</strong></span>
+<span class="strong"><strong>  log_driver: syslog</strong></span>
+<span class="strong"><strong>  log_opt:</strong></span>
+<span class="strong"><strong>    syslog-tag: books-ms</strong></span>
+</pre></div><p>As you<a class="indexterm" id="id818"/> can see, it follows the same<a class="indexterm" id="id819"/> logic as the one we used to provision <code class="literal">nginx</code> with Ansible. The only difference is that, in this case, it is Docker Compose configuration. It contains the same <code class="literal">log_driver</code> and <code class="literal">log_opt</code> keys.</p><p>Now that we understand the changes we had to add to the Docker Compose configuration, we can deploy the service:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>docker-compose -p books-ms \</strong></span>
+<span class="strong"><strong>    -f docker-compose-logging.yml \</strong></span>
+<span class="strong"><strong>    up -d app</strong></span>
+</pre></div><p>Let's double check that it is indeed running by listing and filtering Docker processes:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>docker ps --filter name=booksms</strong></span>
+</pre></div><p>Now that the service is up and running, with the <code class="literal">syslog</code> logging driver, we should verify that log entries were indeed sent to LogStash:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>docker -H tcp://logging:2375 \</strong></span>
+<span class="strong"><strong>    logs logstash</strong></span>
+</pre></div><p>Part of the output is as follows:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>{</strong></span>
+<span class="strong"><strong>           "message" =&gt; "[INFO] [02/03/2016 13:28:35.869] [routingSystem-akka.actor.default-dispatcher-5] [akka://routingSystem/user/IO-HTTP/listener-0] Bound to /0.0.0.0:8080\n",</strong></span>
+<span class="strong"><strong>          "@version" =&gt; "1",</strong></span>
+<span class="strong"><strong>        "@timestamp" =&gt; "2016-02-03T13:28:35.000Z",</strong></span>
+<span class="strong"><strong>              "type" =&gt; "syslog",</strong></span>
+<span class="strong"><strong>              "host" =&gt; "10.100.198.201",</strong></span>
+<span class="strong"><strong>          "priority" =&gt; 30,</strong></span>
+<span class="strong"><strong>         "timestamp" =&gt; "Feb  3 13:28:35",</strong></span>
+<span class="strong"><strong>         "logsource" =&gt; "prod",</strong></span>
+<span class="strong"><strong>           "program" =&gt; "docker",</strong></span>
+<span class="strong"><strong>               "pid" =&gt; "11677",</strong></span>
+<span class="strong"><strong>          "severity" =&gt; 6,</strong></span>
+<span class="strong"><strong>          "facility" =&gt; 3,</strong></span>
+<span class="strong"><strong>    "facility_label" =&gt; "system",</strong></span>
+<span class="strong"><strong>    "severity_label" =&gt; "Informational",</strong></span>
+<span class="strong"><strong>      "container_id" =&gt; "books-ms"</strong></span>
+<span class="strong"><strong>}</strong></span>
+</pre></div><p>Service logs<a class="indexterm" id="id820"/> are indeed sent to <a class="indexterm" id="id821"/>LogStash. Please notice that LogStash filters did what we told them to do. The <code class="literal">program</code> field was transformed from <code class="literal">docker/books-ms</code> to <code class="literal">docker</code>, and a new field called <code class="literal">container_id</code> was created. Since we defined <code class="literal">message</code> parsing only when <code class="literal">container_id</code> is <code class="literal">nginx</code>, it stayed intact.</p><p>Let us confirm that <code class="literal">message</code> parsing is indeed working correctly for log entries coming from <code class="literal">nginx</code>. We'll need to make a few requests to the proxy, so we'll start by configuring it properly:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>cp nginx-includes.conf \</strong></span>
+<span class="strong"><strong>    /data/nginx/includes/books-ms.conf</strong></span>
+
+<span class="strong"><strong>consul-template \</strong></span>
+<span class="strong"><strong>    -consul localhost:8500 \</strong></span>
+<span class="strong"><strong>    -template "nginx-upstreams.ctmpl:\</strong></span>
+<span class="strong"><strong>/data/nginx/upstreams/books-ms.conf:\</strong></span>
+<span class="strong"><strong>docker kill -s HUP nginx" \</strong></span>
+<span class="strong"><strong>    -once</strong></span>
+</pre></div><p>You already used <code class="literal">nginx</code> configurations and Consul Template, so there is no need for an explanation of those commands.</p><p>Now<a class="indexterm" id="id822"/> that the service is running, is integrated, and is sending logs to LogStash, let us generate a few <code class="literal">nginx</code> log entries by making a few requests:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>curl -I localhost/api/v1/books</strong></span>
+
+<span class="strong"><strong>curl -H 'Content-Type: application/json' -X PUT -d \</strong></span>
+<span class="strong"><strong>    "{\"_id\": 1,</strong></span>
+<span class="strong"><strong>    \"title\": \"My First Book\",</strong></span>
+<span class="strong"><strong>    \"author\": \"John Doe\",</strong></span>
+<span class="strong"><strong>    \"description\": \"Not a very good book\"}" \</strong></span>
+<span class="strong"><strong>    localhost/api/v1/books | jq '.'</strong></span>
+
+<span class="strong"><strong>curl http://prod/api/v1/books | jq '.'</strong></span>
+</pre></div><p>Let's see what did LogStash receives this time:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>docker -H tcp://logging:2375 \</strong></span>
+<span class="strong"><strong>    logs logstash</strong></span>
+</pre></div><p>Part <a class="indexterm" id="id823"/>of the output of the <code class="literal">docker logs</code> command is as follows:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>{</strong></span>
+<span class="strong"><strong>                   "message" =&gt; "172.17.0.1 - - [03/Feb/2016:13:37:12 +0000] \"GET /api/v1/books HTTP/1.1\" 200 269 \"-\" \"curl/7.35.0\" 10.100.198.201:32768 0.091 \n",</strong></span>
+<span class="strong"><strong>                  "@version" =&gt; "1",</strong></span>
+<span class="strong"><strong>                "@timestamp" =&gt; "2016-02-03T13:37:12.000Z",</strong></span>
+<span class="strong"><strong>                      "type" =&gt; "syslog",</strong></span>
+<span class="strong"><strong>                      "host" =&gt; "10.100.198.201",</strong></span>
+<span class="strong"><strong>                  "priority" =&gt; 30,</strong></span>
+<span class="strong"><strong>                 "timestamp" =&gt; [</strong></span>
+<span class="strong"><strong>        [0] "Feb  3 13:37:12",</strong></span>
+<span class="strong"><strong>        [1] "03/Feb/2016:13:37:12 +0000"</strong></span>
+<span class="strong"><strong>    ],</strong></span>
+<span class="strong"><strong>                 "logsource" =&gt; "prod",</strong></span>
+<span class="strong"><strong>                   "program" =&gt; "docker",</strong></span>
+<span class="strong"><strong>                       "pid" =&gt; "11677",</strong></span>
+<span class="strong"><strong>                  "severity" =&gt; 6,</strong></span>
+<span class="strong"><strong>                  "facility" =&gt; 3,</strong></span>
+<span class="strong"><strong>            "facility_label" =&gt; "system",</strong></span>
+<span class="strong"><strong>            "severity_label" =&gt; "Informational",</strong></span>
+<span class="strong"><strong>              "container_id" =&gt; "nginx",</strong></span>
+<span class="strong"><strong>                  "clientip" =&gt; "172.17.0.1",</strong></span>
+<span class="strong"><strong>                     "ident" =&gt; "-",</strong></span>
+<span class="strong"><strong>                      "auth" =&gt; "-",</strong></span>
+<span class="strong"><strong>                      "verb" =&gt; "GET",</strong></span>
+<span class="strong"><strong>                   "request" =&gt; "/api/v1/books",</strong></span>
+<span class="strong"><strong>               "httpversion" =&gt; "1.1",</strong></span>
+<span class="strong"><strong>                  "response" =&gt; "200",</strong></span>
+<span class="strong"><strong>                     "bytes" =&gt; "269",</strong></span>
+<span class="strong"><strong>                  "referrer" =&gt; "\"-\"",</strong></span>
+<span class="strong"><strong>                     "agent" =&gt; "\"curl/7.35.0\"",</strong></span>
+<span class="strong"><strong>          "upstream_address" =&gt; "10.100.198.201:32768",</strong></span>
+<span class="strong"><strong>    "upstream_response_time" =&gt; 0.091</strong></span>
+<span class="strong"><strong>}</strong></span>
+</pre></div><p>This time, not only that we stored logs coming from containers, but we also parsed them. The main reason for parsing <code class="literal">nginx</code> logs lies in the <code class="literal">upstream_response_time</code> field. Can you guess why? While you think about possible usages of that field, let us take a closer look at a few of the features of the <span class="emphasis"><em>Discover</em></span> screen in Kibana.</p><p>We <a class="indexterm" id="id824"/>generated quite enough <a class="indexterm" id="id825"/>logs, so we might, just as well, want to start using Kibana filters. Please open <code class="literal">http://10.10</code>
+<code class="literal">0.198.202:5601/</code>. Please change the time to, let's say, 24 hours, by clicking the top-right button. That will give us plenty of time to play with the few logs we created. Before we jump into filtering, please go to the <span class="strong"><strong>Settings</strong></span> screen, and click <span class="strong"><strong>Create</strong></span>. That will refresh our index pattern with new fields. When finished, please return to the <span class="strong"><strong>Discover</strong></span> screen.</p><p>Let us begin with the left-hand menu. It contains all the available fields, found in all logs that match given period. Clicking on any of those fields provides us with the list of values it holds. For example, <code class="literal">container_id</code> contains <code class="literal">books-ms</code> and <code class="literal">nginx</code>. Next to those values are icons with the magnifying glass. The one with the plus sign can be used to filter only entries that contain that value. Similarly, the icon with the minus sign can be used to exclude records. Click the icon with the plus sign next to <code class="literal">nginx</code>. As you can see, only log entries coming from <code class="literal">nginx</code> are displayed. The result of applied filters is located in the horizontal bar above. Hovering over one of the filters (in this case <code class="literal">container_id: "nginx"</code>), allows us to use additional options to enable, disable, pin, unpin, invert, toggle, and remove that filter:</p><div class="mediaobject"><img alt="Sending Docker Log Entries to a Central LogStash Instance" src="graphics/B05848_16_04.jpg"/><div class="caption"><p>Figure 16-04 – Kibana Discover screen with log entries filtered by container_id nginx</p></div></div><p>At the<a class="indexterm" id="id826"/> top of the main frame is<a class="indexterm" id="id827"/> a graph with the number of logs distributed over the specified period. Below it is a table with log entries. By default, it shows the <code class="literal">Time</code> and the <code class="literal">*_source*</code> columns. Please click the arrow icon on the left side of one of the rows. It expands the row to display all the fields available in that log entry. They are a combination of data generated by LogStash and those we parsed through its configuration. Each field has the same icons as those we found in the left-hand menu.</p><p>Through them, we can <span class="emphasis"><em>filter for value or filter out value</em></span>. The third button, represented by an icon that looks like a single row table with two columns, can be used to <span class="emphasis"><em>toggle that column in table</em></span>. Since default columns are not very useful, not to say boring, please toggle <code class="literal">logsource</code>, <code class="literal">request</code>, <code class="literal">verb</code>, <code class="literal">upstream_address</code>, and <code class="literal">upstream_response_time</code>. Click, again, the arrow, to hide the fields. We just got ourselves a nice table that shows some of the most important pieces of information coming from <code class="literal">nginx</code>. We can see that the server where requests are made (<code class="literal">logsource</code>), the address of requests (<code class="literal">request</code>), the type of requests (<code class="literal">verb</code>), how much it took to receive responses (<code class="literal">upstream_response_time</code>), and where were the requests proxied to (<code class="literal">upstream_address</code>). If you think the <span class="emphasis"><em>search</em></span> you created is useful, you can save it by clicking the <span class="strong"><strong>Save Search</strong></span> button located in the top-right part of the screen.</p><p>Next to it is the <span class="strong"><strong>Load Saved Search</strong></span> button:</p><div class="mediaobject"><img alt="Sending Docker Log Entries to a Central LogStash Instance" src="graphics/B05848_16_05.jpg"/><div class="caption"><p>Figure 16-05 – Kibana Discover screen with log entries filtered by container_id nginx and custom columns</p></div></div><p>We'll <a class="indexterm" id="id828"/>explore <span class="strong"><strong>Visualize</strong></span> and <span class="strong"><strong>Dashboard</strong></span> screens a bit later.</p><p>Let's <a class="indexterm" id="id829"/>us summarize the flow we have at this moment:</p><div class="itemizedlist"><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">Containers are deployed with Docker's logging driver set to <code class="literal">syslog</code>. With such a configuration, Docker redirects everything that is sent to standard output, or error (<code class="literal">stdout</code>/<code class="literal">stderr</code>), to <code class="literal">syslog</code>.</li><li class="listitem" style="list-style-type: disc">All the log entries, be it from containers or processes deployed through other methods, are redirected from syslog to LogStash.</li><li class="listitem" style="list-style-type: disc">LogStash receives syslog events, applies filters and transformations, and re-sends them to ElasticSearch.</li><li class="listitem" style="list-style-type: disc">Everybody is happy, because finding specific log entries is a breeze, and life, during office hours, is a bit easier to cope with.</li></ul></div><div class="mediaobject"><img alt="Sending Docker Log Entries to a Central LogStash Instance" src="graphics/B05848_16_06.jpg"/><div class="caption"><p>Figure 16-06 – ELK stack running on a single server with containers logging to syslog</p></div></div></div></div>
+<div class="section" title="Self-Healing Based on Software Data"><div class="titlepage"><div><div><h1 class="title"><a id="ch16lvl1sec46"/>Self-Healing Based on Software Data</h1></div></div></div><p>Let us put the <a class="indexterm" id="id830"/>response time we are logging through <code class="literal">nginx</code> to a good use. Since data is stored in ElasticSearch, we might do a few quick examples of using its API. We can, for instance, retrieve all entries stored inside the <code class="literal">logstash</code> index:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>curl 'http://logging:9200/logstash-*/_search' \</strong></span>
+<span class="strong"><strong>    | jq '.'</strong></span>
+</pre></div><p>Elastic search returned the first ten entries (default page size), together with some additional information, like the total number of records. There's not much use in retrieving all the entries, so let us try to narrow it down. We can, for example, request all records that have <code class="literal">nginx</code> as <code class="literal">container_id</code> value:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>curl 'http://logging:9200/logstash-*/_search?q=container_id:nginx' \</strong></span>
+<span class="strong"><strong>    | jq '.'</strong></span>
+</pre></div><p>The results are the same three entries we observed from LogStash logs. Again, there's not much use of them. If this were a production system, we would get thousands upon thousands of results (distributed among multiple pages).</p><p>This time, let <a class="indexterm" id="id831"/>us try something truly useful. We'll analyze data and, for example, retrieve the average response time from <code class="literal">nginx</code> logs:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>curl 'http://logging:9200/logstash-*/_search?q=container_id:nginx' \</strong></span>
+<span class="strong"><strong>    -d '{</strong></span>
+<span class="strong"><strong>  "size": 0,</strong></span>
+<span class="strong"><strong>  "aggs": {</strong></span>
+<span class="strong"><strong>    "average_response_time": {</strong></span>
+<span class="strong"><strong>      "avg": {</strong></span>
+<span class="strong"><strong>        "field": "upstream_response_time"</strong></span>
+<span class="strong"><strong>      }</strong></span>
+<span class="strong"><strong>    }</strong></span>
+<span class="strong"><strong>  }</strong></span>
+<span class="strong"><strong>}' | jq '.'</strong></span>
+</pre></div><p>The output of the last command is as follows:</p><div class="informalexample"><pre class="programlisting">{
+  "aggregations": {
+    "average_response_time": {
+      "value": 0.20166666666666666
+    }
+  },
+  "hits": {
+    "hits": [],
+    "max_score": 0,
+    "total": 3
+  },
+  "_shards": {
+    "failed": 0,
+    "successful": 10,
+    "total": 10
+  },
+  "timed_out": false,
+  "took": 26
+}</pre></div><p>With something like that request, we can extend our self-healing system and, for example, retrieve average response time of a service during last hour. If responses were, on average, slow, we could scale the service. Similarly, if responses were fast, we can descale it.</p><p>Let's filter the results so that only those made by <code class="literal">nginx</code>, with a request to <code class="literal">/api/v1/books</code> (the address of our service), and created during the last hour, are retrieved. Once data is filtered, we'll aggregate all the results and get the average value of the <code class="literal">upstream_response_time</code> field.</p><p>The chances are that more than one hour passed since you sent a request to the service through <code class="literal">nginx</code>. If that's the case, the resulting value would be <code class="literal">null</code> since there are no records that <a class="indexterm" id="id832"/>would match the filter we are about to make. We can easily fix that, by making, let's say, a hundred new requests:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>for i in {1..100}; do</strong></span>
+<span class="strong"><strong>  curl http://prod/api/v1/books | jq '.'</strong></span>
+<span class="strong"><strong>done</strong></span>
+</pre></div><p>Now that we have recent data, we can ask ElasticSearch to give us the average response time:</p><div class="informalexample"><pre class="programlisting">curl 'http://logging:9200/logstash-*/_search' \
+    -d '{
+  "size": 0,
+  "aggs": { "last_hour": {
+    "filter": {
+      "bool": { "must": [ {
+        "query": { "match": {
+          "container_id": {
+            "query": "nginx",
+            "type": "phrase"
+          }
+        } }
+      }, {
+        "query": { "match": {
+          "request": {
+            "query": "/api/v1/books",
+            "type": "phrase"
+          }
+        } }
+      }, {
+        "range": { "@timestamp": {
+          "gte": "now-1h",
+          "lte": "now"
+        } }
+      } ] }
+    },
+    "aggs": {
+      "average_response_time": {
+        "avg": {
+          "field": "upstream_response_time"
+        }
+      }
+    }
+  } }
+}' | jq '.'</pre></div><p>The ElasticSearch API and the Lucene engine used in the background are so vast that it would require a whole book to describe it, so the explanation is out of the scope of this book. You can<a class="indexterm" id="id833"/> find <a class="indexterm" id="id834"/>detailed information in the <a class="ulink" href="https://www.elastic.co/guide/en/elasticsearch/reference/current/docs.html">https://www.elastic.co/guide/en/elasticsearch/reference/current/docs.html</a> page.</p><p>The <a class="indexterm" id="id835"/>output of the request will vary from one case to another. My result was as follows:</p><div class="informalexample"><pre class="programlisting">{
+  "aggregations": {
+    "last_hour": {
+      "average_response_time": {
+        "value": 0.005744897959183675
+      },
+      "doc_count": 98
+    }
+  },
+  "hits": {
+    "hits": [],
+    "max_score": 0,
+    "total": 413
+  },
+  "_shards": {
+    "failed": 0,
+    "successful": 10,
+    "total": 10
+  },
+  "timed_out": false,
+  "took": 11
+}</pre></div><p>We can now take this response time and, depending on the rules we set, scale, descale, or do nothing. Right now we have all the elements to extend our self-healing system. We have the process that stores response times in ElasticSearch and the API to analyze data. We can create one more Consul watch that will, periodically, query the API and, if an action is needed, send a request to Jenkins to prevent the disease from spreading. I'll leave that to you, as a few exercises.</p><div class="note" style="" title="Note"><div class="inner"><h3 class="title"><a id="note14"/>Note</h3><p>
+<span class="strong"><strong>Exercise: Scaling the service if response time is too long</strong></span>
+</p><p>Create a new Consul watch that will use the ElasticSearch request we created, and invoke a Jenkins job that will scale the service if the average response time is too long. Similarly, descale the service if the response time is too short, and more than two instances are running (less than two poses a downtime risk).</p></div></div><p>Without <a class="indexterm" id="id836"/>introducing more complexity, we can try other types of future predictions. We can, for example, predict the future by observing the previous day.</p><div class="note" style="" title="Note"><div class="inner"><h3 class="title"><a id="note15"/>Note</h3><p>
+<span class="strong"><strong>Exercise: Predict the future by observing the past</strong></span>
+</p><p>Repeat the process from the previous exercise with the different analysis.</p><p>
+<span class="strong"><strong>Variables:</strong></span>
+</p><div class="itemizedlist"><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">T: The current time</li><li class="listitem" style="list-style-type: disc">AVG1: Average traffic between T and T+1h of the previous day.</li><li class="listitem" style="list-style-type: disc">AVG2: Average traffic between T+1h and T+2h of the previous day.</li></ul></div><p>
+<span class="strong"><strong>The task:</strong></span>
+</p><div class="itemizedlist"><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">Calculate the increase (or the decrease) of the traffic between <code class="literal">AVG1</code> and <code class="literal">AVG2</code>.</li><li class="listitem" style="list-style-type: disc">Decide whether to scale, de-scale, or do nothing.</li></ul></div></div></div><p>We do not need to base our analysis only on the previous day. We can also evaluate the same day of the preceding week, of the past month, or even of the last year. Do we have an increase in traffic every first day of the month? What happened on Christmas day last year? Do people visit our store less after summer vacations? The beauty is not only that we have the data to answer those questions, but we can incorporate the analysis into the system and run it periodically.</p><p>Bear in mind that some of the analysis are better of running as Consul watches, while the others belong to Jenkins. Tasks that should be run periodically with the same frequency are good use cases for Consul. While they can run as easily from Jenkins, Consul is more lightweight, and will use fewer resources. Examples would be every hour or every 5 minutes. On the other hand, Consul does not have a proper scheduler. If you'd like to run analysis at specific moments in time, Jenkins with its cron-like scheduler is a better fit. Examples would be each day at midnight, each first day of a month, two weeks before Christmas, and so on. You should evaluate both tools for each given case, and choose the one that fits better. An alternative would be to run all such analysis from Jenkins and benefit from having everything in one place. Then again, you might opt for an entirely different set of tools. I'll leave the choice to you. The importance lies in understanding the process and the goals we want to accomplish.</p><p>Please note that I provided one example that can be used as a self-healing process. Response times analysis does not have to be the only thing we do. Look at the data you can collect, decide what is useful, and what isn't, and make other types of data crunching. Collect<a class="indexterm" id="id837"/> everything you need, but not more. Do not fall into the trap of storing all you can think of, without using it. That is a waste of memory, CPU, and hard disk space. Do not forget to set up a process that periodically cleans data. You won't need all the logs from a year ago. Heck, you probably won't need most of the logs older than a month. If a problem is not found within thirty days, the chances are that there is no problem and, even if there is, it relates to an old release not running anymore. If, after reading this book, your release cycle lasts for months, and you are not planning to shorten it, I failed miserably. Please do not send me an email confirming this. It would only make me feel depressed.</p><p>That was a short detour from the main subject of the chapter (logging and monitoring). Since the book is mostly based on hands-on examples, I could not explain <span class="emphasis"><em>self-healing based on historical response times</em></span> without having data to work with. Therefore, this discussion was added here. Throughout the rest of this chapter, there will be at one more excursion into a subject that might just as well belong to the <a class="link" href="ch15.html" title="Chapter 15. Self-Healing Systems">Chapter 15</a>, <span class="emphasis"><em>Self-Healing Systems</em></span> chapter. Now, let's get back to logging and monitoring.</p><p>Since we have all the information representing the past and the present status of the cluster, we can... This is the moment I imagine you, dear reader, rolling your eyes and mumbling to yourself that software logs do not constitute the full information about the cluster. Only software (logs), together with hardware data (metrics), can be close to a complete information about the cluster. Then again, my imagination might not (and often doesn't) represent reality. You might not have rolled your eyes, or even noticed that hardware is missing.</p><p>If that's the case, you are not paying close attention to what I wrote, and should have a good night sleep, or, at least, grab a coffee. Truth be told, we do have hardware information in Consul, but that is only the current status. We cannot analyze that data, see tendencies, find out why something happened, nor predict the future. If you are still awake, let's look at how we can log hardware status.</p><p>Before we move on, we'll remove the currently running LogStash instance, and exit the prod node:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>docker -H tcp://logging:2375 \</strong></span>
+
+<span class="strong"><strong>   rm -f logstash</strong></span>
+
+<span class="strong"><strong>exit</strong></span>
+</pre></div><div class="section" title="Logging Hardware Status"><div class="titlepage"><div><div><h2 class="title"><a id="ch16lvl2sec96"/>Logging Hardware Status</h2></div></div></div><p>One of the first things they teach you when starting to learn to work on computers is that software runs on hardware. A software cannot run without hardware and hardware is useless without <a class="indexterm" id="id838"/>software. Since they are dependent on each other, any attempt to collects the information about the system needs to include both. We explored some of the ways to gather software data, so the next step is to try to accomplish a similar result with hardware.</p><p>We need a tool that will collect statistics about the system it is running on and has the flexibility to send that information to LogStash. Once we find and deploy such a tool, we can start using statistics it provides to find past and current performance bottlenecks and predict future system requirements. Since LogStash will send the information received from that tool to ElasticSearch, we can create formulas that will allow us to perform performance analysis and capacity planning.</p><p>One such tool is CollectD. It is free open source project written in C, making it high performant and <a class="indexterm" id="id839"/>very portable. It can easily handle hundreds of thousands of data sets, and it comes with over ninety plugins.</p><p>Luckily for us, LogStash has the CollectD input plugin that we can use to receive its events through a UDP port. We'll use (<code class="literal">roles/logstash/files/syslog-collectd.conf</code>)[<a class="ulink" href="https://github.com/vfarcic/ms-lifecycle/blob/master/ansible/roles/logstash/files/syslog-collectd.conf">https://github.com/vfarcic/ms-lifecycle/blob/master/ansible/roles/logstash/files/syslog-collectd.conf</a>] file to configure LogStash to accept <span class="emphasis"><em>CollectD</em></span> input. It is a copy of the (<code class="literal">roles/logstash/files/syslog.conf</code>)[<code class="literal">https://github.com/vfarcic/ms-lifecycle/blob/master/ansible/roles/logstash/files/syslog.conf</code>] with an additional input definition. Let's take a look at its <code class="literal">input</code> section:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>input {</strong></span>
+<span class="strong"><strong>  syslog {</strong></span>
+<span class="strong"><strong>    type =&gt; syslog</strong></span>
+<span class="strong"><strong>    port =&gt; 25826</strong></span>
+<span class="strong"><strong>  }</strong></span>
+<span class="strong"><strong>  udp {</strong></span>
+<span class="strong"><strong>    port =&gt; 25827</strong></span>
+<span class="strong"><strong>    buffer_size =&gt; 1452</strong></span>
+<span class="strong"><strong>    codec =&gt; collectd { }</strong></span>
+<span class="strong"><strong>    type =&gt; collectd</strong></span>
+<span class="strong"><strong>  }</strong></span>
+<span class="strong"><strong>}</strong></span>
+</pre></div><p>As you can see, all we did was add a new input that listens on the UDP port <code class="literal">25827</code>, set buffer size, define that <code class="literal">collectd</code> codec should be used, and added a new field called type. With the value from the type field, we can distinguish <code class="literal">syslog</code> logs from those coming from <code class="literal">collectd</code>.</p><p>Let's run the playbook that will provision the <code class="literal">logging</code> server with LogStash and configure it to accept both <code class="literal">syslog</code> and <code class="literal">collectd</code> input:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>vagrant ssh cd</strong></span>
+
+<span class="strong"><strong>ansible-playbook /vagrant/ansible/elk.yml \</strong></span>
+<span class="strong"><strong>    -i /vagrant/ansible/hosts/prod \</strong></span>
+<span class="strong"><strong>    --extra-vars "logstash_config=syslog-collectd.conf restore_backup=true"</strong></span>
+</pre></div><p>You might have<a class="indexterm" id="id840"/> noticed the usage of the <code class="literal">restore_backup</code> variable. One of <span class="emphasis"><em>kibana</em></span> tasks is to restore an ElasticSearch backup with the definitions of Kibana Dashboards that will be discussed soon. Backup is restored <a class="indexterm" id="id841"/>through the <code class="literal">vfarcic/elastic-dump</code> container containing a nifty tool called <code class="literal">elasticsearch-dump</code> by <span class="emphasis"><em>taskrabbit</em></span>. It can be used to create and restore ElasticSearch backups.</p><p>Now that LogStash is configured to accept <code class="literal">CollectD</code> input, let's turn our attention to the <code class="literal">prod</code> server, and install <code class="literal">Co</code>
+<code class="literal">llectD</code>. We'll use the <code class="literal">prod5.yml</code> playbook that, in addition to the tools we used before, contains the <code class="literal">collectd</code> role. The tasks are defined in the (<code class="literal">roles/collectd/tasks/main.yml</code>)[<a class="ulink" href="https://github.com/vfarcic/ms-lifecycle/tree/master/ansible/roles/collectd/tasks/main.yml">https://github.com/vfarcic/ms-lifecycle/tree/master/ansible/roles/collectd/tasks/main.yml</a>] file. Its content is as follows:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>- name: Packages are installed</strong></span>
+<span class="strong"><strong>  apt:</strong></span>
+<span class="strong"><strong>    name: "{{ item }}"</strong></span>
+<span class="strong"><strong>  with_items: packages</strong></span>
+<span class="strong"><strong>  tags: ["collectd"]</strong></span>
+
+<span class="strong"><strong>- name: Configuration is copied</strong></span>
+<span class="strong"><strong>  template:</strong></span>
+<span class="strong"><strong>    src: collectd.conf</strong></span>
+<span class="strong"><strong>    dest: /etc/collectd/collectd.conf</strong></span>
+<span class="strong"><strong>  register: config_result</strong></span>
+<span class="strong"><strong>  tags: ["collectd"]</strong></span>
+
+<span class="strong"><strong>- name: Service is restarted</strong></span>
+<span class="strong"><strong>  service:</strong></span>
+<span class="strong"><strong>    name: collectd</strong></span>
+<span class="strong"><strong>    state: restarted</strong></span>
+<span class="strong"><strong>  when: config_result|changed</strong></span>
+<span class="strong"><strong>  tags: ["collectd"]</strong></span>
+</pre></div><p>By this time, you should probably consider yourself an expert in Ansible, and do not need an explanation of the role. The only thing worth commenting is the <code class="literal">roles/collectd/files/collectd.conf</code> template that represents the <code class="literal">CollectD</code> configuration. Let's take a quick look at it:</p><div class="informalexample"><pre class="programlisting">Hostname "{{ ansible_hostname }}"
+FQDNLookup false
+
+LoadPlugin cpu
+LoadPlugin df
+LoadPlugin interface
+LoadPlugin network
+LoadPlugin memory
+LoadPlugin swap
+
+&lt;Plugin df&gt;
+        Device "/dev/sda1"
+        MountPoint "/"
+        FSType "ext4"
+        ReportReserved "true"
+&lt;/Plugin&gt;
+
+&lt;Plugin interface&gt;
+        Interface "eth1"
+        IgnoreSelected false
+&lt;/Plugin&gt;
+
+&lt;Plugin network&gt;
+        Server "{{ elk_ip }}" "25827"
+&lt;/Plugin&gt;
+
+&lt;Include "/etc/collectd/collectd.conf.d"&gt;
+        Filter ".conf"
+&lt;/Include&gt;</pre></div><p>It starts by<a class="indexterm" id="id842"/> defining the hostname through the Ansible variable <code class="literal">ansible_hostname</code>, followed by the load of the plugins we'll use. Their names should be self-explanatory. Finally, few of the plugins have additional configurations. Please consult <a class="ulink" href="https://collectd.org/documentation.shtml">https://collectd.org/documentation.shtml</a> documentation for more information about configuration format, all the plugins you can use, and their settings.</p><p>Let's run the playbook:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>ansible-playbook /vagrant/ansible/prod5.yml \</strong></span>
+<span class="strong"><strong>    -i /vagrant/ansible/hosts/prod</strong></span>
+</pre></div><p>Now that <code class="literal">CollectD</code> is running, we can give it a few seconds to kick in and take a look at LogStash logs:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>docker -H tcp://logging:2375 \</strong></span>
+<span class="strong"><strong>    logs logstash</strong></span>
+</pre></div><p>A few of the entries are as follows:</p><div class="informalexample"><pre class="programlisting">{
+             "host" =&gt; "prod",
+       "@timestamp" =&gt; "2016-02-04T18:06:48.843Z",
+           "plugin" =&gt; "memory",
+    "collectd_type" =&gt; "memory",
+    "type_instance" =&gt; "used",
+            "value" =&gt; 356433920.0,
+         "@version" =&gt; "1",
+             "type" =&gt; "collectd"
+}
+{
+             "host" =&gt; "prod",
+       "@timestamp" =&gt; "2016-02-04T18:06:48.843Z",
+           "plugin" =&gt; "memory",
+    "collectd_type" =&gt; "memory",
+    "type_instance" =&gt; "buffered",
+            "value" =&gt; 31326208.0,
+         "@version" =&gt; "1",
+             "type" =&gt; "collectd"
+}
+{
+             "host" =&gt; "prod",
+       "@timestamp" =&gt; "2016-02-04T18:06:48.843Z",
+           "plugin" =&gt; "memory",
+    "collectd_type" =&gt; "memory",
+    "type_instance" =&gt; "cached",
+            "value" =&gt; 524840960.0,
+         "@version" =&gt; "1",
+             "type" =&gt; "collectd"
+}
+{
+             "host" =&gt; "prod",
+       "@timestamp" =&gt; "2016-02-04T18:06:48.843Z",
+           "plugin" =&gt; "memory",
+    "collectd_type" =&gt; "memory",
+    "type_instance" =&gt; "free",
+            "value" =&gt; 129638400.0,
+         "@version" =&gt; "1",
+             "type" =&gt; "collectd"
+}</pre></div><p>From that output, we can see that CollectD sent information about memory. The first entry contains <code class="literal">used</code>, the second <code class="literal">buffered</code>, the third <code class="literal">cached</code>, and, finally, the fourth represents <code class="literal">free</code> memory. Similar entries can be seen from the other plugins. CollectD will periodically repeat the process, thus allowing us to analyze both historical and near real-time <a class="indexterm" id="id843"/>tendencies and problems.</p><p>Since CollectD generated the new fields, let us recreate index pattern by opening <code class="literal">http://10.100.198.202:5601/</code>, navigating to the <span class="strong"><strong>Settings</strong></span> screen, and clicking the <span class="strong"><strong>Create</strong></span> button.</p><p>While there are many reasons to visit Kibana's <span class="strong"><strong>Discover</strong></span> screen for software logs, there are only a few, if any, to use it for CollectD metrics, so we'll concentrate on Dashboards. That being said, even if we are not going to look at hardware data from this screen, we still need to create searches required for visualization. An example search that would retrieve all records from <code class="literal">collectd</code>, made in the <code class="literal">prod</code> host, through the <code class="literal">memory</code> plugin, would be as follows:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>type: "collectd" AND host: "prod" AND plugin: "memory"</strong></span>
+</pre></div><p>That line can be written (or pasted) to the <span class="emphasis"><em>search</em></span> field in the <span class="strong"><strong>Discover</strong></span> screen, and it will return all data matching that filter and the time set in the top-right corner of the screen. The backup we restored already contained a few saved searches that can be opened through the <span class="strong"><strong>Open Saved Search</strong></span> button in the top-right corner of the screen. With those searches, we can proceed to visualizations. As an example, please open the <code class="literal">prod-df</code> saved search.</p><p>Kibana Dashboards consist of one or more visualizations. They can be accessed by clicking the <span class="strong"><strong>Visualize</strong></span> button. When you open the <span class="strong"><strong>Visualize</strong></span> screen, you'll see different types of graphs you can choose to create a new visualization. Since we restored a backup with a few visualizations I prepared, you can load one by clicking it from the <span class="strong"><strong>open a saved visualization</strong></span> section located at the bottom of the screen. Please note that this screen appears only the first time and, from there on, the same action can be accomplished by the <span class="strong"><strong>Load Saved Visualization</strong></span> button located on the top-right side of the screen. Go ahead and play a bit with Kibana visualizations. Once you're done, we'll move to dashboards:</p><div class="mediaobject"><img alt="Logging Hardware Status" src="graphics/B05848_16_07.jpg"/><div class="caption"><p>Figure 16-07 – Kibana visualization of hard disk usage</p></div></div><p>Dashboard <a class="indexterm" id="id844"/>can be opened from the top menu. The backup we restored contains one so let's use it to see CollectD in action. Please click the <span class="strong"><strong>Dashboard</strong></span> button, followed by the <span class="strong"><strong>Load Saved Dashboard</strong></span> icon, and select the <code class="literal">prod</code> dashboard. It will display visualizations with one (and the only) <span class="emphasis"><em>CPU</em></span> (<code class="literal">prod-cpu-0</code>), <span class="emphasis"><em>hard disk</em></span> (<code class="literal">prod-df</code>), and <span class="emphasis"><em>memory</em></span> (<code class="literal">prod-memory</code>) usage inside the <code class="literal">prod</code> VM. CollectD offers many more plugins than those we used. With more information coming in, this dashboard can be made much more colorful, not to say useful.</p><p>However, even though the dashboard we created does not have much activity, you can probably imagine how it could be transformed into an indispensable tool for monitoring the cluster status. There could be a separate dashboard for each server, one for the whole cluster, and so on:</p><div class="mediaobject"><img alt="Logging Hardware Status" src="graphics/B05848_16_08.jpg"/><div class="caption"><p>Figure 16-08 – Kibana dashboard with CPU, hard disk, and memory usage over time</p></div></div><p>That <a class="indexterm" id="id845"/>was the basis of your future hardware monitoring dashboard. What else can with do with hardware information (besides looking at dashboards)?</p></div><div class="section" title="Self-Healing Based on Hardware Data"><div class="titlepage"><div><div><h2 class="title"><a id="ch16lvl2sec97"/>Self-Healing Based on Hardware Data</h2></div></div></div><p>Using hardware<a class="indexterm" id="id846"/> data for self-healing is as important as software information. Now that we have both, we can extend our system. Since we already went through all the tools and practices required for such a system, there is no real need for us to go through them in the hardware context. Instead, I'll just give you a few ideas.</p><p>Consul is already monitoring hardware utilization. With historical data in ElasticSearch, we can predict not only that the warning threshold is reached (for example 80%), but when it will get critical (for example 90%). We can analyze the data and see that, for instance, during last 30 days, disk utilization was increasing by an average rate of 0.5%, meaning that we have twenty days until it reaches the critical state. We could also draw a conclusion that even through the warning threshold is reached, it was a one time deal, and the available space is not shrinking anymore.</p><p>We could<a class="indexterm" id="id847"/> combine software and hardware metrics. With only software data, we might conclude that at peak hours, when traffic increases, we need to scale our services, by adding hardware we might change that opinion after realizing that the problem was actually in the network that cannot support such a load.</p><p>Analysis combinations we can create are limitless, and the number of formulas we'll create will grow with time and experience. Every time we pass through one door, another one opens.</p></div><div class="section" title="Final Thoughts"><div class="titlepage"><div><div><h2 class="title"><a id="ch16lvl2sec98"/>Final Thoughts</h2></div></div></div><p>This is my favorite chapter. It combines most of the practices we learned throughout the book into a grand finale. Almost everything happening on a server, be it software or hardware, system programs or those we deployed, is sent to LogStash and, from there, to ElasticSearch. And it's not only one server. With a simple <code class="literal">rsyslog</code> and <code class="literal">collectd</code> configurations applied to all your nodes, the whole cluster will be sending (almost) all the logs and events. You'll know who did what, which processes started, and which were stopped. You'll be aware what was added, and what was removed. You be alerted when a server is low on CPU, which one is about to get its hard disk full, and so on. You'll have the information about every service you deploy or remove. You'll know when were containers scaled, and when descaled.</p><p>We created a logging and monitoring system that can be described through the following figure:</p><div class="mediaobject"><img alt="Final Thoughts" src="graphics/B05848_16_09.jpg"/><div class="caption"><p>Figure 16-09 – Kibana dashboard with CPU, hard disk, and memory usage over time</p></div></div><p>Knowing everything is a worthy goal and, with a system we designed, you are one step closer to fulfilling it. On top of knowing everything about the past and the present, you made the first step towards knowing the future. If you combine the practices from this chapter with those we learned in the <a class="link" href="ch15.html" title="Chapter 15. Self-Healing Systems">Chapter 15</a>, <span class="emphasis"><em>Self-Healing Systems</em></span>, your systems will be able to recuperate from failures and, in many cases, prevent a disease from happening in the first place.</p><p>Let us finish with some cleaning:</p><div class="informalexample"><pre class="programlisting">
+<span class="strong"><strong>exit</strong></span>
+<span class="strong"><strong>vagrant destroy -f</strong></span>
+</pre></div></div></div></body></html>

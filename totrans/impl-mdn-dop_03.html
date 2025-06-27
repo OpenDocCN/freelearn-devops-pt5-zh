@@ -1,0 +1,598 @@
+<html><head></head><body>
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Docker</h1>
+                </header>
+            
+            <article>
+                
+<p>For many years, the contact point between development and operations has been always a source of problems when deploying a new version of an application to production. Different languages generate different types of artifacts (war or JAR for Java, the source code for Node.js.), which led to heterogeneity in the procedures when rolling out new versions.</p>
+<p>This heterogeneity led into bespoke solutions to roll out versions, which are pretty much sorceries with weird habits, such as deploying at 4 a.m. to avoid an outage in the system and creating error-prone bash scripts that are harder to maintain than the software itself. The problem, aside from the complexity, is that new hires need to ramp up into your systems, and this always introduces a level of risk that we are not aware of for <span>the majority of the time</span> until something goes very wrong.</p>
+<p><strong>Docker</strong> came to the rescue. With Docker, we can generate a deployable artifact, which is not only the software that you built but also its runtime. If you are deploying a Java application, with Docker, you will bundle the application plus the version of Java that is going to be running your application.</p>
+<p>This sounds like a dream: a controlled environment that gets promoted as an artifact from development to QA and later production (sometimes stopping in preproduction for a sanity check) that is repeatable and the only thing that changes across environments is the configuration, usually injected via environment variables. It is not a dream; it is the reality in 2017, and in this chapter, we are going to accelerate from 0 to the speed of light on when it comes to running containers in Docker and building images.</p>
+<p>In this chapter, we will cover the following topics:</p>
+<ul>
+<li>The Docker architecture</li>
+<li>The Docker client</li>
+<li>Building <kbd>docker images</kbd></li>
+<li>Docker registries</li>
+<li>Volumes</li>
+<li>Docker networking</li>
+<li>Docker Compose</li>
+</ul>
+<p>We will also stop at <kbd>docker-compose</kbd>, a tool used to run several containers in combination, so we can compose our system in the development machine, simulating our production configuration or, at the very least, approaching the interconnection of components, but before that, we are going to also dive <span>deep</span> into Docker networking: how can we choose the most appropriate networking for our system and what are the main differences between the different networks that Docker offers?</p>
+<p>Another interesting feature of Docker is how the images get built: basically, we choose a base image (we will look at how to build one), and with a reduced set of commands, we can build a Docker file which is basically a script that instructs Docker on how to build our image with the configuration that we need.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Docker architecture</h1>
+                </header>
+            
+            <article>
+                
+<p>One of my preferred ways of learning is through experimentation. In order to explain the Docker architecture, we are going to show an example, but first, we need to install Docker itself. In this case, I am working with Mac, but at <a href="https://docs.docker.com/engine/installation/">https://docs.docker.com/engine/installation/</a>, you can find the distribution that suits your needs with a very clear set of instructions (usually a package that needs to be installed).</p>
+<p>Once you have installed Docker, run the following command:</p>
+<pre><strong>docker run hello-world</strong></pre>
+<p>Once it finishes, the output should be very similar to the following one:</p>
+<pre><strong>Unable to find image 'hello-world:latest' locally</strong><br/><strong>latest: Pulling from library/hello-world</strong><br/><strong>78445dd45222: Pull complete</strong><br/><strong>Digest: sha256:c5515758d4c5e1e838e9cd307f6c6a0d620b5e07e6f927b07d05f6d12a1ac8d7</strong><br/><strong>Status: Downloaded newer image for hello-world:latest</strong><br/><strong>Hello from Docker!</strong></pre>
+<p>This message shows that your installation appears to be working correctly.<br/>
+<br/>
+To generate this message, Docker took the following steps:</p>
+<ol>
+<li>The Docker client contacted the Docker daemon.</li>
+<li>The Docker daemon pulled the <kbd>hello-world</kbd> image from the Docker Hub.</li>
+<li>The Docker daemon created a new container from that image, which runs the executable that produces the output you are currently reading.</li>
+<li>The Docker daemon streamed that output to the Docker client, which sent it to your Terminal.</li>
+</ol>
+<p>To try something more ambitious, you can run an Ubuntu container with the following:</p>
+<pre><strong>$ docker run -it ubuntu bash</strong></pre>
+<p>Share images, automate workflows, and more with a free Docker ID at <a href="https://cloud.docker.com/">https://cloud.docker.com/</a>.<br/>
+For more examples and ideas, visit: <a href="https://docs.docker.com/engine/userguide/">https://docs.docker.com/engine/userguide/</a>.<a href="https://docs.docker.com/engine/userguide/"/></p>
+<p>As you can see, the <kbd>hello-world</kbd> image gives you some insights into what is going on when running the preceding command.</p>
+<p>Some new concepts have been introduced here:</p>
+<ul>
+<li><strong>Docker Hub</strong>: This is a central repository, which is public and private, where users can push images that they build locally. A Docker registry is used to carry the images across different stages of the deployment pipeline (or even between systems).</li>
+<li><strong>Layer</strong>: Docker images are composed of layers. A layer is basically an ordered filesystem difference. A Docker image is a stack of these layers leading into the final image. When you change a file in an existing image, a new layer is created, but the rest of the layers of the images are reused so we can save a lot (believe me, a lot) of space.</li>
+<li><strong>Docker daemon</strong>: Docker follows a client-server architecture. In this case, the Docker daemon is the server part that can be operated via a <strong>Representational State Transfer</strong> (<strong>REST</strong>) API.</li>
+<li><strong>Docker client</strong>: Docker client is a <strong>Command-Line Interface</strong> (<strong>CLI</strong>) used to operate a Docker daemon. It might be a local daemon or a remote one.</li>
+</ul>
+<p>The last three concepts are the key for drafting the architecture of Docker. Take a look at the following figure:</p>
+<div class="CDPAlignCenter CDPAlign"><img height="459" width="407" class="image-border" src="assets/02249a9d-ef9a-4679-a2f1-ea2bc975c9e4.png"/></div>
+<p> </p>
+<p>The client/server architecture predominates the software. You might think that this is an overkill for a system such as Docker, but it actually gives you a lot of flexibility. For example, in the previous diagram, we can see how the Docker CLI (the client) is able to manage a local instance of the Docker daemon but is <span>also</span> able to talk to a remote daemon by setting an environment variable called <kbd>DOCKER_HOST</kbd>, in this case, to the value of <kbd>62.112.42.57</kbd>.</p>
+<p>One of the key points of Docker is that it completely leverages the virtualization to the Linux kernel, making it impossible to run (as of today) Docker on Windows or even Mac as it uses the capabilities of the Linux kernel. The solution to this is to create a virtual machine with Linux that runs the Docker daemon, and the CLI will talk to the virtual machine to run Docker commands.<br/>
+In Mac, for example, the old versions of Docker use a distribution called <kbd>Boot2Docker</kbd> that runs the Docker daemon, whereas the newer versions of Docker use something called <strong>HyperKit</strong>, which is a lightweight virtualization solution for Mac.<br/>
+Docker for Windows uses a different type of virtualization that is equivalent to the one in Mac so all the assumptions made for Mac are valid for Windows.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Docker internals</h1>
+                </header>
+            
+            <article>
+                
+<p>Up until now, we have seen how Docker works regarding the overall architecture, but what happens at the operating system level in the Docker daemon?</p>
+<p>Roughly explained, Docker provides you with <span>only</span> a runtime for your applications: you can limit the number of cores and the amount of memory to be used by the container, but at the end of the day, the kernel running your container is going to be the same as the kernel running your host machine.</p>
+<p>The proof of that is in the way Docker organizes images: it calculates filesystem differences and packs them in layers that can be reused. Let's pull a fairly big image (not the hello-world from the preceding example):</p>
+<pre><strong>docker pull ubuntu</strong></pre>
+<p>This will produce the following output:</p>
+<pre><strong>Using default tag: latest</strong><br/><strong>latest: Pulling from library/ubuntu</strong><br/><strong>d54efb8db41d: Pull complete</strong><br/><strong>f8b845f45a87: Pull complete</strong><br/><strong>e8db7bf7c39f: Pull complete</strong><br/><strong>9654c40e9079: Pull complete</strong><br/><strong>6d9ef359eaaa: Pull complete</strong><br/><strong>Digest: sha256:dd7808d8792c9841d0b460122f1acf0a2dd1f56404f8d1e56298048885e45535</strong><br/><strong>Status: Downloaded newer image for ubuntu:latest</strong></pre>
+<p>As you can see, Docker has pulled five layers, which basically tells us that the Ubuntu image was built in five steps (not quite true, but it is a good approach). Now we are going to run an instance of Ubuntu. In Docker, an instance of an image is what we call a container, and the main difference between an image and a container is the top writable layer (layers in Docker are stacked in the read-only mode to compose the image, such as the diffs in several patch files). Let's demonstrate this:</p>
+<pre><strong>docker run -it ubuntu /bin/bash</strong></pre>
+<p>The preceding command runs <kbd>/bin/bash</kbd> in an instance of the Ubuntu <span>image</span>. The <kbd>i</kbd> and <kbd>t</kbd> <span>flags</span> allow you to use the container as if it were a virtual machine allocating a virtual TTY (<kbd>t</kbd> flag) and creating the interactive session (<kbd>i</kbd> flag). Now, you can see how your prompt has changed to something like the following:</p>
+<pre><strong>root@329b2f9332d5:/#</strong></pre>
+<p>It does not necessarily have to be the same, but it should be similar. Note that your prompt is now a root prompt, but don't get too excited; it is just inside the container.</p>
+<p>Create a file to alter the filesystem:</p>
+<pre><strong>touch test.txt</strong></pre>
+<p>Now you can disconnect from the container with the <kbd>exit</kbd> command.</p>
+<p>As you can see, the prompt is back to your system prompt, and if you run <kbd>docker ps</kbd>, you can see that there are no running containers, but if you run <kbd>docker ps -a</kbd> (show all the containers, not just the running ones), you should see something similar to this:</p>
+<div class="CDPAlignCenter CDPAlign"><img class="image-border" src="assets/dec430ca-9bf9-47d4-a45d-56044f125ac9.png"/></div>
+<p>This is a container that has been created from an image but is not running anymore. As we said earlier, the only difference between this container and the image is the top writable layer. In order to prove this, we are going to create a new image out of the container that we ran a few minutes ago:</p>
+<pre><strong>docker commit 329b2f9332d5 my-ubuntu</strong></pre>
+<p>In this case, I am using the reference <kbd>329b</kbd>. because it is the one shown in the preceding image (the output of <kbd>docker ps -a</kbd>), but you need to change the hash to the one shown in your output. In fairness, you don't need to type it all; just few characters will do the job. If everything went well, the command should output a <kbd>SHA256</kbd> checksum and return the control to you. Now run <kbd>docker</kbd> images (to list the images in your Docker) and the output should be similar to the following:</p>
+<div class="CDPAlignCenter CDPAlign"><img class="image-border" src="assets/dec430ca-9bf9-47d4-a45d-56044f125ac9.png"/></div>
+<p>As you can see, there is a new image called <kbd>my-ubuntu</kbd> that we just created.</p>
+<p>Now we want to check the difference between the <kbd>ubuntu</kbd> image and the <kbd>my-ubuntu</kbd> image. In order to do that, we need to inspect the layers for each image and see the difference. The command we are going to use to accomplish this task is <kbd>docker history</kbd>, with the name of the image as the third parameter.</p>
+<p>First, for the <kbd>ubuntu</kbd> image:</p>
+<div class="CDPAlignCenter CDPAlign"><img class="image-border" src="assets/b70edb84-d97b-41f8-af1d-9a670f12f85c.png"/></div>
+<p>Then for <kbd>my-ubuntu</kbd>: image (just created from <kbd>u<span>buntu</span></kbd>):</p>
+<div class="CDPAlignCenter CDPAlign"><img class="image-border" src="assets/a5668bcc-dbb3-4aef-a354-7d165e8f7a8a.png"/></div>
+<p>Quite illuminating. The image <kbd>my-ubuntu</kbd> ;is the same image as <kbd>ubuntu</kbd> except for the top writable layer that we just created by logging in to the machine and creating a file. This is very smart because even though both of the two images use around 130 MB of space, the only extra space used for the second image is the top layer that, in this case, uses <span>only</span> 5 bytes, leading to a usage of 130 MB and 5 bytes for the two images. This also has a side-effect in line with what we talked earlier: a container is the exact same thing as an image but with a different top writable layer, so running an instance of the container uses <span>only</span> 5 bytes of space. As you can see, the engineers that created Docker thought about everything!</p>
+<p>The way in which how Docker stores the images in the hard drive is the responsibility of the storage driver: Docker can make use of different drivers and store the images in different ways (and places, such as S3 in AWS), but the most common use case, the default driver, stores the images on the hard drive, creating one file per layer with the checksum of the layer as the name of the file.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Docker client</h1>
+                </header>
+            
+            <article>
+                
+<p>We have made use of the Docker client already in the previous section, but we need to go a bit deeper into the options that the Docker CLI can offer. My favorite way of learning is through experimentation, and what we are going to be doing through this section is building concepts from top to bottom (more decomposing, than building), so I advise you to read the full section in the order without skipping parts, as the latter examples will be based on the previous ones.</p>
+<p>If you have dug into Docker a bit before, you can see that the commands are <strong>quite</strong> verbose and not as intuitive as you might think. The most common use case is the following combination:</p>
+<pre><strong>docker run -i -t &lt;docker-image&gt;</strong></pre>
+<p>This command basically does one simple thing: it runs a container in the interactive mode and allocates <kbd>pseudo-tty</kbd>. This allows us to interact with the container executing the commands (not on every image, but it is true for all the base images of Linux distributions). Let's see what that means:</p>
+<pre><strong>docker run -i -t ubuntu</strong></pre>
+<p>This should return a prompt similar to the following one:</p>
+<pre><strong>root@248ff3bcedc3:/#</strong></pre>
+<p>What just happened? The prompt changed to root with a strange number in the host section. We are in the container. Basically, now we can run commands that are going to be run within the container. To exit the container, just type exit and the control should be returned in the terminal to your host machine, leaving the container running in the background.</p>
+<p>The majority of the time, the preceding command suits our needs, but sometimes, we want to run the container in the background: imagine that you spin up a Jenkins server and you don't want to have your Terminal attached to it. In order to do that, we just need to add the <kbd>-d</kbd> <span>option</span> (daemon) and drop <kbd>-i</kbd> and <kbd>-t</kbd>:</p>
+<pre><strong>docker run -d jenkins</strong></pre>
+<p>Once the image is pulled and it starts running, the control is returned to your Terminal. The last line in the output, and it should be a long string of characters similar to the following one:</p>
+<pre><strong>9f6a33eb6bda4c4e050f3a5dd113b717f07cc97e2fdc5e2c73a2d16613bd540b</strong></pre>
+<p>This is the hash of the running container. If you execute <kbd>docker ps</kbd> , the following output (similar) will be produced:</p>
+<div class="CDPAlignCenter CDPAlign"><img class="image-border" src="assets/f06a6c21-8fd5-4617-ac26-01ff8b807043.png"/></div>
+<div class="packt_tip">Note that the value under <kbd>CONTAINER ID</kbd> in the screenshot matches the first few digits of the hash from the preceding command.</div>
+<p>Now in theory, we have a running instance of Jenkins that, as you can see in the preceding image, is listening on port <kbd>8080</kbd> and port <kbd>50000</kbd>. Let's try to browse <kbd>http://localhost:8080</kbd> with an internet browser. Nothing. Basically, our browser cannot open that URL.</p>
+<p>This is because we haven't told to Docker to bind the container ports to the local ports of the host machine. In order to do that, we need to first stop the container and then start it again with a special parameter.</p>
+<p>Time to learn how to stop containers. We have two options here:</p>
+<ul>
+<li><strong>Stop the container</strong>: With the stop option, we send <kbd>SIGTERM</kbd> to the main process within the container and wait for it to finish (for a grace period). Then, we send <kbd>SIGKILL</kbd>.</li>
+<li><strong>Kill the container</strong>: With the kill option, we send <kbd>SIGKILL</kbd> to the main process in the container, which forces an immediate exit without being able to save the state.</li>
+</ul>
+<p>In this case, which one you choose is irrelevant, but please be careful. When you are running in a production environment, make sure it's fine to kill a container before doing that, as with the stop option, we are giving the running software the option to save the current transactions and exit gracefully. In this case, I am going to kill the container:</p>
+<pre><strong>docker kill 9f6a</strong></pre>
+<p>Docker is smart. I did not need to specify the full container identifier, as with only a few characters, Docker is able to identify the container (or the image in other commands) and kill it.</p>
+<p>If you remember from previous examples, when we kill a container, we have a layer left that leads into a <kbd>dead</kbd> container that we can explore, adding the <kbd>-a</kbd> <span>option</span> to the <kbd>docker ps</kbd> command. For this example, we are going to remove this layer as well with the following command:</p>
+<pre><strong>docker rm 9f6a</strong></pre>
+<p>That's it. The container never existed in our host.</p>
+<p>Now, going back to the Jenkins example, we want to run Jenkins in a way that we can access the running instance from our browser. Let's modify the preceding command and explain why:</p>
+<pre><strong>docker run -p 8080:8080 -p 50000 -d jenkins</strong></pre>
+<p>After a few seconds, if we go to <kbd>http://localhost:8080</kbd> in a browser, we should see the initial configuration for Jenkins, which asks for the initial password to be able to proceed.</p>
+<p>Let's explain the previous command first. We can see a new option: <kbd>-p</kbd>. As you can guess, <kbd>-p</kbd> comes from the port. In fairness, you could change <kbd>-p</kbd> for <kbd>--port</kbd>, and everything will work as expected. With the <kbd>-p</kbd> option, we map ports from the host, your machine, to the container. In this case, we are mapping port <kbd>8080</kbd> from the host to port <kbd>8080</kbd> and port <kbd>50000</kbd> of the host to port <kbd>50000</kbd> of the container, but how can we map a different port in the host? Well, it is fairly simple:</p>
+<pre><strong>docker run -p 8081:8080 -p 50001:50000 -d jenkins</strong></pre>
+<p>After running the preceding command, we have two instances of Jenkins running:</p>
+<ul>
+<li>The first one is exposed in port <kbd>8080</kbd> of your machine</li>
+<li>The second one is exposed in port <kbd>80801</kbd> of your machine</li>
+</ul>
+<p><span>Note</span> that even though we don't use port <kbd>50000</kbd>, I have changed it to <kbd>50001</kbd> as your machine's port <kbd>50000</kbd> is already busy with the first instance of Jenkins that we ran earlier on.</p>
+<p>As you can see, Jenkins is asking for a password, and the initial web page in <kbd>http://localhost:8080</kbd> states that this password is in the logs or in the filesystem. Focusing on the logs, with Docker, we can fetch the logs for any container registered by the daemon at any time. Let's try this:</p>
+<pre><strong>docker logs 11872</strong></pre>
+<p>In my case, the running instance of Jenkins on port <kbd>80801</kbd> has an ID that starts with <kbd>11872</kbd>. Executing the previous command should retrieve the starting log of Jenkins that we can use for troubleshooting or, in this case, to recover the password to initialize Jenkins.</p>
+<p>Another interesting and common option in Docker is passing environment variables to an application running inside the container. If you think about it, there are only three ways in which we can configure an application within a Docker container:</p>
+<ul>
+<li>Environment variables</li>
+<li>A volume with data</li>
+<li>Fetching the configuration from the network</li>
+</ul>
+<p>Let's take a look at the <span>official MySQL image</span> from the Docker Hub:</p>
+<ul>
+<li><a href="https://hub.docker.com/_/mysql/">https://hub.docker.com/_/mysql/</a></li>
+</ul>
+<p>MySQL is a popular database server that has also been <kbd>dockerized</kbd>. If you read a bit through the documentation, one of the config options is the root password for the MySQL database. In fairness, the quick start example points to the right direction:</p>
+<pre><strong>docker run --name some-mysql -e MYSQL_ROOT_PASSWORD=my-secret-pw -d mysql</strong></pre>
+<p>The new option here is <strong><kbd>-e</kbd></strong>. This option allows you to pass an environment variable to the container with the value that you want to specify after <kbd>=</kbd>. After running the preceding command, we are going to run another command:</p>
+<pre><strong>docker inspect caa40cc7d45f</strong></pre>
+<p>In this case, <kbd>caa40cc7d45f</kbd> is the ID that results from running MySQL on my machine (yours should be different). There should be a huge JSON output in the terminal, but one section in particular, Config, has a subsection called <kbd>Env</kbd> , which should look very similar to the following one:</p>
+<pre>...<br/>"Env": [<br/>   "MYSQL_ROOT_PASSWORD=my-secret-pw",<br/>   "no_proxy=*.local, 169.254/16",<br/>   "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",<br/>   "GOSU_VERSION=1.7",<br/>   "MYSQL_MAJOR=5.7",<br/>   "MYSQL_VERSION=5.7.17-1debian8"<br/> ],<br/>...</pre>
+<p>There it is. The preceding environment variable that we passed, <kbd>MYSQL_ROOT_PASSWORD</kbd>, is now accessible from within the container as the environment variable.</p>
+<p>In the <kbd>docker inspect</kbd> command, there is a lot of very valuable information. Just have a read through, as you might be surprised with how familiar you are with the majority of the info: it is mainly Linux terminology.</p>
+<p>So far, we have visited the most common commands as of January 2017. As you know, the software evolves very quickly, and by the time you are reading this book, new versions (such as secrets) have already been added to Docker. The best way to check what is going on is through the documentation on <a href="http://www.docker.com">http://www.docker.com</a>, which, in my opinion, is quite comprehensive. There is also a reference of the commands of your current Docker installation available under the <kbd>docker help</kbd> command.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Building Docker images</h1>
+                </header>
+            
+            <article>
+                
+<p>In the previous sections, we built an image using the commit command of Docker. Although it works, I can see a big problem with it: it is not repeatable. There is no easy way of rebuilding the image once and over again when the software installed in the image is patched due to new vulnerabilities or versions.</p>
+<p>In order to solve this problem, Docker provides a better way of building images: Dockerfiles.</p>
+<p>A Dockerfile is a file that contains a set of ordered commands required to leave the image, ready to be used. Things such as installing software or upgrading the version of the kernel as well as adding users are common activities that can be carried in a Dockerfile. Let's look at an example:</p>
+<pre><strong>FROM node:latest</strong><br/><br/><strong>RUN mkdir -p /app/</strong><br/><strong>WORKDIR /app/</strong><br/><br/><strong>COPY package.json /app/</strong><br/><strong>RUN npm install</strong><br/><br/><strong>COPY . /app</strong><br/><br/><strong>EXPOSE 8080</strong><br/><strong>CMD [ "npm", "start" ]</strong></pre>
+<p>If you have been in the IT field for a few years, you really don't need an explanation on what it is going on, but let's make sure that we are all on the same page:</p>
+<ul>
+<li>We are creating our image based on the latest Node.js image.</li>
+<li>A new folder is created in <kbd>/app</kbd>. Our application will be installed there.</li>
+<li>The working directory is set to this new folder.</li>
+<li>Copy <kbd>package.json</kbd> and install the Node.js dependencies. Remember that we have already set up the working directory to <kbd>/app</kbd>, so the RUN command will be run in the <kbd>/app</kbd> folder.</li>
+<li>Copy the rest of the source code.</li>
+<li>Expose port <kbd>8080</kbd> to the outer world.</li>
+<li>Run <kbd>npm start</kbd>.</li>
+</ul>
+<p>It is very simple once you have done it few times. One thing to keep in mind that might drive beginners <span>crazy is this</span>: <kbd>CMD</kbd> versus <kbd>RUN</kbd>.</p>
+<p>In the preceding Dockerfile, sometimes, we use <kbd>RUN</kbd>, and sometimes, we use <kbd>CMD</kbd>, but both of them seem to do the same thing: run a command. There is one difference:</p>
+<ul>
+<li><kbd>RUN</kbd>: This will run the command when building the image</li>
+<li><kbd>CMD</kbd>: This will run the command when the container based on the generated image starts</li>
+</ul>
+<p>Also, <kbd>RUN</kbd> (generally) creates a new layer, whereas <kbd>CMD</kbd> uses the writable layer of the container.</p>
+<p>Now, it's time to test the Dockerfile from earlier. Before building the image, we need to build a small Node.js application that is going to be used as the software running in the image. Create a new folder with three files:</p>
+<ul>
+<li><kbd>package.json</kbd></li>
+<li><kbd>index.js</kbd></li>
+<li>Dockerfile (the one from before)</li>
+</ul>
+<p>The content of <kbd>package.json</kbd> will be as follows:</p>
+<pre>{<br/> "name": "test",<br/> "version": "1.0.0",<br/> "description": "Test",<br/> "main": "index.js",<br/> "scripts": {<br/> "start": "node index.js"<br/> },<br/> "author": "Test",<br/> "license": "MIT"<br/>}</pre>
+<p>The content of <kbd>index.js</kbd> will be as follows:</p>
+<pre><strong>console.log('Hello world!')</strong></pre>
+<p>And now, with the preceding files and the Dockerfile described before in the same folder, run the following command:</p>
+<pre><strong>docker build . -t my-node-app</strong></pre>
+<p>After a few seconds, your image would be ready for use. Let's check it. If you list your images with the <kbd>docker images</kbd> command, you should see an image called <kbd>my-node-app</kbd>. Now create a container based on the image:</p>
+<pre><strong>docker run my-node-app</strong></pre>
+<p>You should see something similar to the following:</p>
+<pre><strong>npm info it worked if it ends with ok</strong><br/><strong>npm info using npm@4.1.2</strong><br/><strong>npm info using node@v7.7.4</strong><br/><strong>npm info lifecycle test@1.0.0~prestart: test@1.0.0</strong><br/><strong>npm info lifecycle test@1.0.0~start: test@1.0.0</strong><br/><strong>&gt; test@1.0.0 start /app</strong><br/><strong>&gt; node index.js</strong><br/><strong>hello world!</strong><br/><strong>npm info lifecycle test@1.0.0~poststart: test@1.0.0</strong><br/><strong>npm info ok</strong></pre>
+<p>As you can see in the highlighted section, the output of running our application is here.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Dockerfile reference</h1>
+                </header>
+            
+            <article>
+                
+<p>As you can see in the previous section, Dockerfiles are very simple, and if you have any queries, the official documentation for the Dockerfile language is very comprehensive.</p>
+<p>In general, the language used for creating Dockerfiles is very similar to the batch processing language of windows (<kbd>.bat</kbd> files) from a few years ago.</p>
+<p>Let's look at the most used commands:</p>
+<table>
+<tbody>
+<tr>
+<td><kbd>FROM</kbd></td>
+<td>
+<p>This instruction is used to specify the base image. Every single Docker image is created starting from a base image (you can create base images from a running Linux distribution).</p>
+</td>
+</tr>
+<tr>
+<td><kbd>COPY</kbd></td>
+<td>
+<p>As you can guess, <kbd>COPY</kbd> allows you to copy files and folders inside the image. For example, we could copy our application, a war file, or any other artifact that will be packed with the image once it is distributed.</p>
+</td>
+</tr>
+<tr>
+<td><kbd>ADD</kbd></td>
+<td>
+<p>This does the exactly the same thing as <kbd>COPY</kbd> but with three differences:</p>
+<ul>
+<li>The origin of the files could be a URL that gets downloaded before copying</li>
+<li>The origin of the files could be a packed file (such as a TAR file) that will be unpacked in the image filesystem</li>
+</ul>
+</td>
+</tr>
+<tr>
+<td><kbd>RUN</kbd></td>
+<td>
+<p>This runs a command in the image. For example, it can be used to install software in the image. It always creates a new layer in the Docker image, so be careful and keep the <kbd>RUN</kbd> commands to a minimum.</p>
+</td>
+</tr>
+<tr>
+<td><kbd>CMD</kbd></td>
+<td>
+<p>This is the default command to be run when the image gets instantiated as a container. As you can see in the preceding example, we are using <kbd>CMD</kbd> to execute <kbd>npm start</kbd>, which runs <kbd>node index.js</kbd> (refer to <kbd>package.json</kbd>). It does not create a new layer as it uses the top writable layer to store the changes.</p>
+</td>
+</tr>
+<tr>
+<td><kbd>ENTRYPOINT</kbd></td>
+<td>
+<p><kbd>ENTRYPOINT</kbd> is similar to <kbd>CMD</kbd>, but it overrides the default command on a docker image that is <kbd>/bin/sh -c</kbd>. In order to override an specified entry point, you need to pass the <kbd>--entrypoint</kbd> <span>flag</span> when running an instance of the image. <kbd>ENTRYPOINT</kbd> is ideal for configuring containers as command-line tools, as you can pack a fairly complex command with a fairly complex setup in a single container.</p>
+</td>
+</tr>
+<tr>
+<td><kbd>MAINTAINER</kbd></td>
+<td>
+<p>With <kbd>MAINTAINER</kbd>, you can specify who is the maintainer of the image (also specify the email).</p>
+</td>
+</tr>
+<tr>
+<td><kbd>EXPOSE</kbd></td>
+<td>
+<p>This exposes the port specified in the first parameter so that the container can listen to it. It actually does not expose the port in the <kbd>docker</kbd> client host, forcing the user to pass the <kbd>-p</kbd> <span>flag</span> in order to access the given port.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<p> </p>
+<p>With these commands, you can build pretty much anything that you want, and particularly with <kbd>RUN</kbd>, this allows the user to run any command within the container that enables us to run scripts (<kbd>python</kbd>, <kbd>bash</kbd>, and <kbd>ruby</kbd>.) or even install software using package managers.</p>
+<p>Aside from the preceding instructions, the Dockerfile language also comes with support for adding environment variables, volumes, and a few other features that make it quite powerful.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Docker registries</h1>
+                </header>
+            
+            <article>
+                
+<p>In the previous section, we created a new image with our application installed and ready to be used (in this case, a very simple <kbd>Hello world</kbd> Node.js application).</p>
+<p>Now, we need to distribute the image so it can be installed in all the stages of our deployment pipeline or even used by other developers. Docker is interesting for running applications but it is also a very interesting choice to create command-line tools that other developers can benefit from.</p>
+<p>In order to distribute images, we have to rely on exporting/importing the image or using a registry. A registry is basically a software that allows us to store and distribute Docker images. There are two types of registries:</p>
+<ul>
+<li>Public registries</li>
+<li>Private registries</li>
+</ul>
+<p>Let's take a look at the different registry types.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Public registries</h1>
+                </header>
+            
+            <article>
+                
+<p>The most known of the public registries is Docker Hub. It is the official and default registry that every Docker installation knows of. Also, it offers private repositories, but the most interesting feature is the fact that all the official images are available on Docker Hub.</p>
+<p>Let's see how can we use it. First, you need to create an account. Once you are registered, create a new repository:</p>
+<div class="CDPAlignCenter CDPAlign"><img height="357" width="436" class="image-border" src="assets/e20dfccf-d186-422b-b4bc-f5a6c8e20a53.png"/></div>
+<p>This repository hosts an image called <kbd>modern-devops</kbd>, and we are going to push one image into it. Once it is created, you can see that Docker Hub suggests that you pull the image with the following command:</p>
+<pre><strong>docker pull dagonzadub/modern-devops</strong></pre>
+<p>In your case, <kbd>dagonzadub</kbd> will need to be replaced with your username. Obviously, we are not going to pull an image that is not there yet, so let's push an image. In the previous section, we created an image called <kbd>my-node-app</kbd>. We are going to use this image to test Docker Hub. Docker relies on a tag system to know where to push the image or where to pull <span>from</span>. As we are working with the <kbd>default</kbd> registry, we don't need to specify the URL, but we need to specify the user and the repository name. If you haven't deleted the image created in the previous section, run the following command:</p>
+<pre><strong>docker tag my-node-app dagonzadub/modern-devops</strong></pre>
+<p>And then, run this command:</p>
+<pre><strong>docker push dagonzadub/modern-devops</strong></pre>
+<p>After a few seconds (depending on your upload speed, even minutes), your image is available on Docker Hub. As we marked it as <kbd>public</kbd>, everybody can pull and use your image.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Private registries</h1>
+                </header>
+            
+            <article>
+                
+<p>But what happens if we want to store our images in our private registry within our infrastructure?</p>
+<p>Well, we have some options. If we are using cloud providers, such as Google Cloud Platform or Amazon Web Services, they provide a Docker registry that is only accessible from within your account, and you can specify the region <span>in which</span> your images live (remember, the type of data that we are handling might be under strict compliance rules about where we should store the data).</p>
+<p>In AWS, the container registry is called <strong>EC2 Container Registry</strong> (<strong>ECR</strong>), and in GCP, it is called a container registry. If your infrastructure is in one of these private clouds, I encourage you to use it as you can leverage the access to the access controls provided by the platforms.</p>
+<p>Sometimes, we might find ourselves in a situation where we cannot use a cloud provider as our system has to be built on premises. This is when we need to use a private on-premises Docker registry.</p>
+<p>Nowadays, there are quite a few options, but it is highly likely that the market widens in the coming months or years as the companies are using Docker more and more.</p>
+<p>From all the range of registries, there are three that I find particularly interesting:</p>
+<p><strong>Quay</strong>: This is a complete registry in the current market (at the time of writing this). It has some interesting features, but the one that is probably the most interesting is the ability to scan the images searching for security vulnerabilities in the installed software. It can also build images based on changes in your git repository, so if your Dockerfile is altered in GitHub, Quay will automatically trigger a build and deploy the new version of the image. Quay is not free, so a license has to be paid in order to use it.</p>
+<p><strong>Registry</strong>: This is the plain name for a plain concept. It is the official implementation of the registry API and comes packed in a container. It has no interface or access controls by default, but it does the job. It also provides storage management drivers, so we can deploy our images to S3 or Google Cloud Storage buckets as well as many other options. Registry is free and can be pulled from Docker Hub.</p>
+<p>Docker Trusted Registry: This is part of the enterprise version of Docker. Like pretty much any other commercial registry, it provides static container analysis as well as storage management drivers. <strong>Docker Trusted Registry</strong> (<strong>DTR</strong>) is not free, so a license has to be paid for in order to use it.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Docker volumes</h1>
+                </header>
+            
+            <article>
+                
+<p class="mce-root">So far, we have seen how to create images, how to store the images in a registry, and how Docker images work in general (layers and containers versus images).<br/>
+An important part of any application is the storage. In general, Docker applications should be stateless, but with the new orchestration software, such as Kubernetes, Docker Swarm, and similar, every day, more and more engineers are moving toward containerized databases.<br/>
+Docker solves this problem in a very elegant way: you can mount a folder from the local machine into the container as if it were a normal folder.<br/>
+This is a very powerful abstraction as it leverages the ability to push data out of the container to be saved into a <span><strong>Network Attached Storage</strong> (<strong>NAS</strong>)</span> or any other storage technology (it is possible to use a bucket in the Google Cloud Storage or S3 as the volume mounted in a container).</p>
+<p>Let's start with the basics. Just run a MySQL database:</p>
+<pre><strong>docker run --name my-mysql -e MYSQL_ROOT_PASSWORD=my-secret-pw -d mysql:latest</strong></pre>
+<p><span>This works. It actually does what is expected: it launches a container with a mysql instance in it. The problem is that all the data is going to be written to <strong><kbd>/var/lib/mysql</kbd></strong> and this folder is mapped to the top writable layer of the container (remember, in the previous section, we explained the difference between a container and an image). The only way to save data is actually committing the changes and create a new image that is not manageable and, of course, this not the way you want to do it. Think about it: if you remove a fil</span>e in Docker, you are doing it in the top layer, which is the only one writable, so in reality, you are not removing the file; you are just hiding it. The file is in one of the layers using the space but it is not visible. D<span>ocker records differences and a layer itself is a set of differences from the previous stacked layers (think about how Git works; it is the same principle).<br/>
+Instead of committing the changes into a new image, we are going to mount a folder from our docker host into the container. Let's alter the previous command a bit:</span></p>
+<pre><strong>docker run --name my-mysql-2 -v /home/david/docker/data:/var/lib/mysql -e MYSQL_ROOT_PASSWORD=my-secret-pw -d mysql:latest</strong></pre>
+<p>Now we have a new flag, <kbd>-v</kbd>, followed by the <kbd>data:/var/lib/mysql</kbd> value. The meaning of the command is very simple: mount the <kbd>/home/david/data</kbd> <span>folder</span> into the <kbd>/var/lib/mysql</kbd> <span>path</span> of my container.</p>
+<p>As you can guess, the data folder, in my case, <kbd>/home/david/data</kbd>, should be present in your current directory, so if it wasn't present, create it or modify the path to suit your setup and launch the container. This use case can only be achieved through the <kbd>-v</kbd> flag: mount a selected folder from the host into the container.<br/>
+Now, execute <kbd>ls</kbd> inside the data folder (in the Docker host):</p>
+<pre><strong>ls /home/david/data</strong></pre>
+<p>You can see how <kbd>mysql</kbd> has actually written data files corresponding to the databases created in bootstrap.<br/>
+Docker volumes are not limited to one per container, so you can replicate the <strong><kbd>-v</kbd></strong> flag as many times as you need in order to match your requirements.</p>
+<p>Another way of mounting a shared folder between the container and the host is just specifying the path inside the container:</p>
+<pre><strong>docker run --name my-mysql-3 -v /var/lib/myysql -e MYSQL_ROOT_PASSWORD=my-secret-pw -d mysql:latest</strong></pre>
+<p>This command will mount a folder from our Docker host into the container, but the folder in the <kbd>docker</kbd> host will be managed by the storage driver and <kbd>docker</kbd> itself:</p>
+<pre><strong>docker inspect my-mysql-3</strong></pre>
+<p>The output is familiar. We have seen it before in the previous sections, but now we are looking for different information. We are actually looking for a section called <kbd>Mounts</kbd>, which looks like this (at least similar to it):</p>
+<pre>"Mounts": [<br/> {<br/> "Type": "volume",<br/> "Name": "572c2303b8417557072d5dc351f25d152e6947c1129f596f08e7e8d15ea2b220",<br/> "Source": "/var/lib/docker/volumes/572c2303b8417557072d5dc351f25d152e6947c1129f596f08e7e8d15ea2b220/_data",<br/> "Destination": "/var/lib/mysql",<br/> "Driver": "local",<br/> "Mode": "",<br/> "RW": true,<br/> "Propagation": ""<br/> }<br/> ]</pre>
+<p>This is also possible through the <kbd>VOLUME</kbd> <span>instruction</span> in a Dockerfile.</p>
+<p>The preceding JSON is telling us which local folder is going to be mounted in the container (the <kbd>Source</kbd> value of the JSON) and provides an interesting insight: the volume has been named by <kbd>docker</kbd> (the <kbd>Name</kbd> value of the JSON).</p>
+<p>This means that Docker tracks the volumes that are (or have been) mounted in any container and can be listed through an API call:</p>
+<pre><strong>docker volume ls</strong></pre>
+<p>This should produce output similar to the following:</p>
+<pre><strong>DRIVER VOLUME NAME</strong><br/><strong> local 13b66aa9f9c20c5a82c38563a585c041ea4a832e0b98195c610b4209ebeed444</strong><br/><strong> local 572c2303b8417557072d5dc351f25d152e6947c1129f596f08e7e8d15ea2b220</strong><br/><strong> local 695d7cbc47881078f435e466b1dd060be703eda394ccb95bfa7a18f64dc13d41</strong><br/><strong> local b0f4553586b17b4bd2f888a17ba2334ea0e6cf0776415e20598594feb3e05952</strong></pre>
+<p>As you can guess, we can also create volumes through an <kbd>api</kbd> call:</p>
+<pre><strong>docker volume create modern-devops</strong></pre>
+<p>This volume is created in the same way as the previous example: it is up to Docker to decide which folder on the local machine is going to be mounted in the specified path in the container, but in this case, first, we are creating the volume and then mounting it to a container. You can even inspect the volume:</p>
+<pre><strong>docker volume inspect modern-devops</strong></pre>
+<p>And this should return you something similar to the following:</p>
+<pre><span>[<br/>{<br/>"Driver": "local",<br/>"Labels": {},<br/>"Mountpoint": "/var/lib/docker/volumes/modern-devops/_data",<br/>"Name": "modern-devops",<br/>"Options": {},<br/>"Scope": "local"<br/>}<br/>]</span></pre>
+<p>Now we can use this named resource and mount it into our containers, just referencing the name:</p>
+<pre><strong>docker run --name my-mysql-4 -v modern-devops:/var/lib/myysql -e MYSQL_ROOT_PASSWORD=my-secret-pw -d mysql:latest</strong></pre>
+<p>The last (but not least) interesting use case in volumes helps us share the configuration across different containers. Just imagine that you have a fairly complex setup that leads to a gigantic Docker command with several <kbd>-v</kbd>. Docker provides us with a much simpler way of sharing volume configuration across containers:</p>
+<pre><strong>docker run --name my-mysql-5 --volumes-from my-mysql-4 -e MYSQL_ROOT_PASSWORD=my-secret-pw -d mysql:latest</strong></pre>
+<p>This is very simple and intuitive: <kbd>my-mysql-5</kbd> will spawn with the volume configuration of <kbd>my-mysql-4</kbd>.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Docker networking</h1>
+                </header>
+            
+            <article>
+                
+<p>Networking is an important part of Docker. By default, Docker comes with three networks that we can inspect by executing the following command:</p>
+<pre><strong>docker network ls</strong></pre>
+<p>This should produce output similar to the following:</p>
+<div class="CDPAlignCenter CDPAlign"><br/>
+<img height="79" width="516" class="image-border" src="assets/d45651ef-61a5-4658-8040-8f9b1144dd2b.png"/></div>
+<p><br/>
+Let's explain the different networks:</p>
+<ul>
+<li><kbd>bridge</kbd>: This is the default network. It is an entirely different stack from the host machine with a different IP range in the <kbd>bridge</kbd> mode (the host machine acts as a <kbd>router</kbd> for the containers in this network). The containers created without specifying the network are attached to the default bridge network.</li>
+<li><kbd>host</kbd>: In this network, containers share the network stack with the Docker host. If you inspect the configuration in the container, you will find that it is the exactly the same as in the Docker host.</li>
+<li><kbd>none</kbd>: This is easy to guess; the container gets attached to no network: just the loopback interface in the container.</li>
+</ul>
+<p>Now it is time to look at some examples. We are going to use <kbd>busybox</kbd>, which is the <kbd>swiss</kbd> army knife of the Docker images. It has several Unix tools that we could benefit from, but in this case, the characteristic that is going to benefit us is the fact that it is a functional Linux on a reduced space.<br/>
+Let's run the following command:</p>
+<pre><strong>docker run -it busybox /bin/sh</strong></pre>
+<p>If you have followed the previous sections, by now, you can understand the outcome: we gain root access to a running container.<br/>
+The next step is to execute <kbd>ifconfig</kbd> inside the container. It should give us two interfaces:<br/>
+<kbd>- eth0 - 172.17.0.2</kbd><br/>
+<kbd>- lo - 127.0.0.1</kbd></p>
+<p>The IP might change, but you should see these two interfaces. Comparing the IP with the IP in your Docker host, we can validate the fact that the container is running in the bridge network as the IP and network are completely different; in my case, the IP on my Docker host is <kbd>10.0.0.12</kbd>.<br/>
+Now, let's spawn another container with <kbd>busybox</kbd> in a different terminal:</p>
+<pre><strong>docker run -it busybox /bin/sh</strong></pre>
+<p>By now, we should have two <kbd>busybox</kbd> instances running, and they should have consecutive IPs, in my case, <kbd>172.17.0.2</kbd> and <kbd>172.17.0.3</kbd>. If you go back to the terminal of the first instance of <kbd>busybox</kbd>, you can ping the second container by IP. This is because they both belong (or are connected to) the same network, which is the default bridge one.<br/>
+In order to run the containers in the host network, we just need to pass <kbd>--network=host flag</kbd> to the <kbd>docker run</kbd> command and that's it; our container is sharing the network stack with the Docker host, but be careful, if you are on Mac or Windows. The Docker host is a virtual machine so don't attempt to access it through localhost; you will need to find the IP of the virtual machine running <kbd>docker</kbd>.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">User-defined networks</h1>
+                </header>
+            
+            <article>
+                
+<p>It is also possible to create custom and isolated networks in Docker. This is interesting from the security point of view, as it enables us to segregate different containers on the network level so we can enforce a higher level of access control.</p>
+<p>In order to create a network, we just need to execute the following command:</p>
+<pre><strong>docker network create my-network</strong></pre>
+<p>And that's it. Well, that is a simplistic approach, but it works as expected. As you know, networking is a complicated subject, so Docker provides options to customize ranges, masks, and other parameters. The user-defined networks are of the type bridge.<br/>
+Once the network is created, you can run new containers in that network, as follows (on a new terminal):</p>
+<pre><strong>docker run -it --network=my-network busybox /bin/sh</strong></pre>
+<p>As expected, these containers will be isolated from the other networks. In this case, the two containers are launched in the <kbd>bridge</kbd> network. In my case, the third container (the one just launched) has the IP <kbd>172.19.0.2</kbd>, whereas the two launched in the bridge network are <kbd>172.17.0.2</kbd> and <kbd>172.17.0.3</kbd>. Issuing a ping command between containers in different networks results in 100% packet loss.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Docker Compose</h1>
+                </header>
+            
+            <article>
+                
+<p>The majority of the time, Docker is synonymous to microservices. Running a big monolithic application in Docker does not make too much sense as the whole Docker Engine is thought to be running big applications split into different and smaller services. There is no technical limitation to running a monolithic app on Docker, but when the orchestration software comes into place (in the following chapters), it really defeats the purpose of containerization.<br/>
+When dealing with microservices, it is very common to have several services running at the same time when developing, as the new services will lean on the existing ones to execute operations.<br/>
+In order to achieve this setup, Docker facilitates a tool called <kbd>docker-compose</kbd> that, by creating a YAML file with the definition of our containers, can spawn a full ecosystem of containers.<br/>
+Docker compose used to be very popular in the beginning of Docker. Nowadays, it is still widely used, but its space has been slowly reduced to development stages as the container orchestration tools in Kubernetes have taken over the production space.<br/>
+Let's look at how Docker Compose works:</p>
+<pre><strong>version: '2'</strong><br/><strong>services:</strong><br/><strong>my_app:</strong><br/><strong>build: .</strong><br/><strong>depends_on:</strong><br/><strong>- db</strong><br/><strong>db:</strong><br/><strong>image: postgres</strong></pre>
+<p>The preceding YAML file is a <kbd>docker-compose</kbd> definition. As you can guess, there are two components:</p>
+<ul>
+<li>A web application (the current folder)</li>
+<li>A database (postgres)</li>
+</ul>
+<p>Save the file to a folder with the name <kbd>docker-compose.yaml</kbd>.<br/>
+This is a typical case of an application connecting to a database. In order to simplify this, our application is just going to be a dummy application (no database connection) with the following code:</p>
+<pre>let dns = require('dns')<br/><br/>dns.lookup('db', (err, result) =&gt; {<br/>console.log('The IP of the db is: ', result)<br/>})<br/>{<br/> "name": "modern-devops",<br/> "version": "1.0.0",<br/> "description": "Test",<br/> "main": "index.js",<br/> "scripts": {<br/> "start": "node index.js"<br/> },<br/> "author": "",<br/> "license": "ISC"<br/> }<br/>package.json</pre>
+<p>And our Dockerfile is very simple:</p>
+<pre><strong>FROM node:onbuild</strong></pre>
+<p>This Dockerfile will install the required dependencies and run <kbd>npm start</kbd> in the root of our app folder.<br/>
+As you can see, the application is very simple, and it only tries to resolve the name <kbd>db</kbd> instead of connecting to the database (in fairness, we didn't even specify the ports for connecting to it). We are going to demonstrate how <kbd>docker-compose</kbd> wires up the containers. By now, there should be four files in the work folder:</p>
+<ul>
+<li><kbd>index.js</kbd></li>
+<li><kbd>package.json</kbd></li>
+<li>Dockerfile</li>
+<li><kbd>docker-compose.yaml</kbd></li>
+</ul>
+<p>Going back to our <kbd>docker-compose</kbd> file, we can see that in the <kbd>my_app</kbd> definition, we ask to build the current folder (build the image described by the Dockerfile), and we specify that the container itself is dependent on another container called <kbd>db</kbd>. This makes Docker take action and connect the two containers, being able to reach <kbd>db</kbd> from <kbd>my-app</kbd> by name. In order to achieve this, there is an entry created in <kbd>/etc/hosts</kbd> with the IP of <kbd>db</kbd>, so we <kbd>my-app</kbd> will be able to resolve it. Docker compose is very easy to understand: it is nearly self-explanatory, and the fact that it makes use of YAML makes everything so much more readable. Now we need to run it:</p>
+<pre><strong>docker-compose up</strong></pre>
+<p>Once it finishes, there should be a quite a long output, but there are some lines that indicate our success:</p>
+<pre><strong>my_app_1 | &gt; my_app@1.0.0 start /usr/src/app</strong><br/><strong>my_app_1 | &gt; node index.js</strong><br/><strong>my_app_1 |</strong><br/><strong>my_app_1 | The IP of the db is 172.20.0.2</strong><br/><strong>my_app_1 | npm info lifecycle my_app@1.0.0~poststart:my_app@1.0.0</strong><br/><strong>web_1 | npm info ok</strong></pre>
+<p>The highlighted section tells us that <kbd>my_app</kbd> is able to reach db by IP as they are on the same bridge network. Let's see what happened here:</p>
+<ul>
+<li>Docker built the image for the current folder (as specified in <kbd>my_app</kbd>) from the Dockerfile</li>
+<li>Docker pulled the <kbd>postgres</kbd> image from the Docker Hub</li>
+<li>Docker started the images in order: first <kbd>db</kbd> and second <kbd>my_app</kbd>, as specified in the dependencies</li>
+</ul>
+<p>In this book, we are going to give a special emphasis to orchestration technologies, and then we will come back to Docker Compose in <a href="820e2d41-3917-4d4c-ad80-461fc133740b.xhtml" target="_blank">Chapter 5</a>, <span><em>Infrastructure as Code,</em></span> where we will take a deep dive into Docker Swarm, which is where compose becomes really helpful.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Summary</h1>
+                </header>
+            
+            <article>
+                
+<p>In this chapter, we walked through Docker from the internals to the command-line interface to operate a Docker host. Now, we have enough knowledge to understand the consequences and benefits of running Docker in production. We have not looked into how to develop Docker plugins as well as different storage drivers, as unfortunately, we have a limited amount of space in this book to introduce the most interesting concepts, but we have dived deep enough into Docker to be able to learn more from the resources (official documentation, videos, and so on) available to us on the Internet.</p>
+<p>In the next chapter, we will have a look on how to automate tasks around our software: running tests, building images and many other tasks that shouldn't be done manually. This automation is called <strong>continuous integration</strong> because allows our team to integrate new features on a seamless way.</p>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p class="mce-root"/>
+
+
+            </article>
+
+            
+        </section>
+    </body></html>

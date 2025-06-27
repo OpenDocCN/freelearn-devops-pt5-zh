@@ -1,0 +1,159 @@
+<html><head></head><body>
+<div class="calibre6">
+<h2 id="leanpub-auto-blueprint-of-a-self-sufficient-system" class="calibre15">Blueprint Of A Self-Sufficient System</h2>
+
+<p class="calibre3">We came a long way, and now we are at the end of the first stage of the journey. What will happen next is up to you. You’ll have to expand on the knowledge I tried to transmit and improve the system we built. It is a base that needs to be extended to suit your needs. Each system is different, and no blueprint can be followed blindly.</p>
+
+<p class="calibre3">Every good story needs an ending, and this one should not be an exception. I’ll try to summarize the knowledge passed through the previous chapters. Still, I feel I should be brief. If you need a long summary of everything we explored so far, it would mean that I did not do my job well. I did not explain things well enough, or it was so dull that you skipped some parts hoping that they will be summarized at the end. Please let me know if I failed and I’ll do my best to improve. For now, I’ll assume that you got the gist behind the topics we discussed and dedicate this chapter to a concise summary of everything. </p>
+
+<p class="calibre3">We split the tasks that a self-sufficient system should perform into those related to services and those oriented towards infrastructure. Even though some of the tools are used in both groups, the division between the two allowed us to keep a clean separation between infrastructure and services running on top of it.</p>
+
+<h3 id="leanpub-auto-service-tasks" class="calibre20">Service Tasks</h3>
+
+<p class="calibre3">Service tasks are related to flows that are in charge of making sure that services are running, that correct versions are deployed, that information is propagated to all dependencies, that they are reachable, that they behave as expected, and so on. In other words, everything related to services is under this umbrella.</p>
+
+<p class="calibre3">We’ll group service related tasks into self-healing, deployment, reconfiguration, request, and self-adaptation flows.</p>
+
+<h4 id="leanpub-auto-self-healing-flow" class="calibre20">Self-Healing Flow</h4>
+
+<p class="calibre3">Docker Swarm (or any other scheduler) is taking care of self-healing. As long as there’s enough hardware capacity, it will make sure that the desired number of replicas of each service is (almost) always up-and-running. If a replica goes down, it’ll be rescheduled. If a whole node is destroyed or loses connection to other managers, all replicas that were running on it will be rescheduled. Self-healing comes out of the box. Still, there are quite a few other tasks we should define if we’d want our solution to be self-sufficient and (almost) fully autonomous.</p>
+
+<h4 id="leanpub-auto-deployment-flow" class="calibre20">Deployment Flow</h4>
+
+<p class="calibre3">A commit to a repository is the last human action we hope to have. That might not always be the case. No matter how smart and autonomous our system is, there will always be a problem that cannot be solved automatically by the system. Still, we should aim for an entirely non-human system. Even though we won’t manage to get there, it is a worthy goal that will keep us focused and prevent us from taking shortcuts.</p>
+
+<p class="calibre3">What happens when we commit code? A code repository (e.g., GitHub) executes a webhook that sends a request to our continuous deployment tool of choice. We used Jenkins throughout the book but, just as any other tool we used, it can be replaced with a different solution.</p>
+
+<p class="calibre3">The webhook trigger initiates a new Jenkins job that runs our CD pipeline. It runs unit tests, builds a new image, runs functional tests, publishes the image to Docker Hub (or any other registry), and so on and so forth. At the end of the process, the Jenkins pipeline instructs Swarm to update the service associated with the commit. The update should, as a minimum, change the image associated with the service to the one we just built.</p>
+
+<p class="calibre3">Once Docker Swarm receives the instruction to update the service, it executes rolling updates process that will replace one replica at the time (unless specified otherwise). With a process like that, and assuming that our services are designed to be cloud-friendly, new releases do not produce any downtime, and we can run them as often as we want.</p>
+
+
+<figure class="image">
+  <img src="../images/00093.jpeg" alt="Figure 16-1: Continuous deployment process" class="calibre17"/>
+  <figcaption class="calibre18">Figure 16-1: Continuous deployment process</figcaption>
+</figure>
+
+
+<h4 id="leanpub-auto-reconfiguration-flow" class="calibre20">Reconfiguration Flow</h4>
+
+<p class="calibre3">Deploying a new release is only part of the process. In most cases, other services need to be reconfigured to include the information about the deployed service. Monitoring (e.g., <a href="https://prometheus.io/">Prometheus</a>) and proxy (e.g., <a href="http://www.haproxy.org/">HAProxy</a> or <a href="https://www.nginx.com">nginx</a>) are only two out of many examples of services that need to know about other services in the cluster. We’ll call them infrastructure services since, from the functional point of view, their scope is not business related. They are usually in charge of making the cluster operational or, at least, visible.</p>
+
+<p class="calibre3">If we’re running a highly dynamic cluster, infrastructure services need to be dynamic as well. High level of dynamism cannot be accomplished by manually modifying configurations whenever a business service is deployed. We must have a process that monitors changes to services running inside a cluster and updates all those that require info about deployed or updated services.</p>
+
+<p class="calibre3">There are quite a few ways to solve the problem of automatic updating of infrastructure services. Throughout this book, we used one of many possible processes. We assumed that info about a service would be stored as labels. That allowed us to focus on a service at hand and let the rest of the system discover that information.</p>
+
+<p class="calibre3">We used <a href="http://swarmlistener.dockerflow.com/">Docker Flow Swarm Listener (DFSL)</a> to detect changes in services (new deployments, updates, and removals). Whenever a change is detected, relevant information is sent to specified addresses. In our case, those addresses are pointing to the proxy (<a href="http://monitor.dockerflow.com/">Docker Flow Monitor</a>) and Prometheus (<a href="http://proxy.dockerflow.com/">Docker Flow Proxy</a>). Once those services receive a request with information about a new (or updated, or removed) service, they change their configurations and reload the main process. With this flow of events, we can guarantee that all infrastructure services are always up-to-date without us having to worry about their configuration. Otherwise, we’d need to create a much more complex pipeline that would not only deploy a new release but also make sure that all other services are up-to-date.</p>
+
+
+<figure class="image">
+  <img src="../images/00094.jpeg" alt="Figure 16-2: Reconfiguration flow" class="calibre17"/>
+  <figcaption class="calibre18">Figure 16-2: Reconfiguration flow</figcaption>
+</figure>
+
+
+<h4 id="leanpub-auto-request-flow" class="calibre20">Request Flow</h4>
+
+<p class="calibre3">When a user (or an external client) sends a request to one of our services, that request is first captured by the Ingress network. Every port published by a service results in that port being open in Ingress. Since the network’s scope is global, a request can be sent to any of the nodes. When captured, Ingress will evaluate the request and forward it to one of the replicas of a service that published the same port. While doing so, Ingress network performs round-robin load balancing thus guaranteeing that all replicas receive (more or less) the same number of requests.</p>
+
+<p class="calibre3">Overlay network (Ingress being a flavor of it), is not only in charge of forwarding requests to a service that publishes the same port as the request, but is also making sure that only healthy replicas are included in round-robin load balancing. <code class="calibre19">HEALTHCHECK</code> defined in Docker images is essential in guaranteeing zero-downtime deployments. When a new replica is deployed, it will not be included in load balancing algorithm until it reports that it is healthy.</p>
+
+<p class="calibre3">Throughout the book, <a href="http://proxy.dockerflow.com/">Docker Flow Proxy (DFP)</a> was the only service that published any port. That allowed us to channel all traffic through ports <code class="calibre19">80</code> and <code class="calibre19">443</code>. Since it is dynamic and works well with DFSL, we did not need to worry about HAProxy configuration beneath it. That means that all requests to our cluster are picked by Ingress network and forwarded to DFP which would evaluate request paths, domains, and other info coming from headers, and decide which service should receive a request. Once that decision is made, it would forward requests further. Assuming that both the proxy and the destination service are attached to the same network, those forwarded requests would be picked, one more time, by the Overlay network which would perform round-robin load balancing and forward requests to their final destination.</p>
+
+<p class="calibre3">Even though the flow of a request might seem complex, it is very straight-forward from a perspective of a service owner. All that he (or she) needs to do is define a few service labels that would tell the proxy the desired path or a domain that distinguishes that service from others. User’s, on the other hand, never experience downtime no matter how often we deploy new releases.</p>
+
+
+<figure class="image">
+  <img src="../images/00095.jpeg" alt="Figure 16-3: Request service flow" class="calibre17"/>
+  <figcaption class="calibre18">Figure 16-3: Request service flow</figcaption>
+</figure>
+
+
+<h4 id="leanpub-auto-self-adaptation-flow" class="calibre20">Self-Adaptation Flow</h4>
+
+<p class="calibre3">Once we manage to create flows that allow us to deploy new releases without downtime and, at the same time, reconfigure all dependent services, we can move forward and solve the problem of self-adaptation applied to services. The goal is to create a system that would scale (and de-scale) services depending on metrics. That way, our services can operate efficiently no matter the changes imposed from outside. For example, we could increase the number of replicas if response times of a predefined percentile are too high.</p>
+
+<p class="calibre3"><a href="https://prometheus.io/">Prometheus</a> periodically scrapes metrics both from generic exporters as well as from our services. We accomplished the latter by instrumenting them. Exporters are useful for global metrics like those generated by containers (e.g., <a href="https://github.com/google/cadvisor">cAdvisor</a>) or nodes (e.g., <a href="https://github.com/prometheus/node_exporter">Node exporter</a>). Instrumentation, on the other hand, is useful when we want more detailed metrics specific to our service (e.g., the response time of a specific function).</p>
+
+<p class="calibre3">We configured Prometheus (through <a href="http://monitor.dockerflow.com/">Docker Flow Monitor (DFM)</a>) not only to scrape metrics from exporters and instrumented services but also to evaluate alerts that are fired to <a href="https://github.com/prometheus/alertmanager">Alertmanager</a>. It, in turn, filters fired alerts and sends notifications to other parts of the system (internal or external).</p>
+
+<p class="calibre3">When possible, alert notifications should be sent to one or more services that will “correct” the state of the cluster automatically. For example, alert notification that was fired because response times of a service are too long should result in scaling of that service. Such an action is relatively easy to script. It is a repeatable operation that can be easily executed by a machine and, therefore, is a waste of human time. We used Jenkins as a tool that allows us to perform tasks like scaling (up or down).</p>
+
+<p class="calibre3">Alert notifications should be sent to humans only if they are a result of an unpredictable situation. Alerts based on conditions that never happened before are a good candidate for human intervention. We’re good at solving unexpected issues; machines are good at repeatable tasks. Still, even in those never-seen-before cases, we (humans) should not only solve the problem, but also create a script that will repeat the same steps the next time the same issue occurs. The first time an alert resulted in a notification to a human, it should be converted into a notification to a machine that will employ the same steps we did previously. In other words, solve the problem yourself when it happens the first time, and let the machines repeat the solution if it happens again. Throughout the book, we used Slack as a notification engine to humans, and Jenkins as a machine receptor of those notifications.</p>
+
+
+<figure class="image">
+  <img src="../images/00096.jpeg" alt="Figure 16-4: Self-adaptation services flow" class="calibre17"/>
+  <figcaption class="calibre18">Figure 16-4: Self-adaptation services flow</figcaption>
+</figure>
+
+
+<h3 id="leanpub-auto-infrastructure-tasks" class="calibre20">Infrastructure Tasks</h3>
+
+<p class="calibre3">Infrastructure tasks are related to flows that are in charge of making sure that hardware is operational and that nodes are forming the cluster. Just as service replicas, those nodes are dynamic. Their numbers are fluctuating as a result of ever_changing needs behind our services. Everything related to hardware or, more often, VMs and their ability to be members of a cluster is under this umbrella.</p>
+
+<p class="calibre3">We’ll group infrastructure related tasks into self-healing, request, and self-adaptation flows.</p>
+
+<h4 id="leanpub-auto-self-healing-flow-1" class="calibre20">Self-Healing Flow</h4>
+
+<p class="calibre3">A system that automatically manages infrastructure is not much different from the system we built around services. Just as Docker Swarm (or any other scheduler) is in charge of making sure that services are (almost) always up-and-running and in the desired capacity, auto-scaling groups in AWS are making sure that desired number of nodes is (almost) always available. Most other hosting vendors and on-premise solutions have a similar feature under a different name.</p>
+
+<p class="calibre3">Auto-scaling groups are only part of the self-healing solution applied to infrastructure. Recreating a failed node is not enough by itself. We need to have a process that will join that node to the existing cluster. Throughout the book, we used <a href="https://docs.docker.com/docker-for-aws/">Docker For AWS</a> that already has a solution to that problem. Each node runs a few system containers. One of them is periodically checking whether the node it is running on is the lead manager. If it is, information like join tokens and its IP are stored in a central location (at the time of this writing in DynamoDB). When a new node is created, one of the system containers retrieves that data and uses it to join the cluster.</p>
+
+<p class="calibre3">If you are not using Docker For AWS or Azure, you might need to roll up your sleeves and write your own solution or, if you’re lazy, search for it. There are plenty of open source snippets that can help you out.</p>
+
+<p class="calibre3">No matter the solution you choose (or build yourself), the steps are almost always the same. Create auto-scaling groups (or whatever is available with your hosting provider) that will maintain the desired number of nodes. Store join tokens and IP of the lead manager in a fault tolerant location (an external database, service registry, network drive, and so on) and use it to join new nodes to the cluster.</p>
+
+<p class="calibre3">Finally, stateful services are unavoidable. Even if all the services you developed are stateless, the state has to be stored somewhere. For some of the cases, we need to store the state on disk. Using local storage is not an option. Sooner or later a replica will be rescheduled and might end up on a different node. That can be due to a process failure, upgrade, or because a node is not operational anymore. No matter the cause behind rescheduling, the fact is that we must assume that it will not run on the same node forever. The only reasonable way to prevent data loss when the state is stored on disk is to use a network drive or distributed file system. Throughout the book, we used AWS Elastic File System (EFS) since it works in multiple availability zones. In some other cases, you might opt for EBS if IO speed is of the essence. If you choose some other vendor, the solution will be different, but the logic will be the same. Create a network drive and attach it to a service as volume. Docker For AWS and Azure comes with CloudStor volume driver. If you choose a different solution for creating a cluster, you might have to look for a different driver. <a href="http://rexray.readthedocs.io/">REXRay</a> is one of the solutions since it supports most of the commonly used hosting vendors and operating systems.</p>
+
+<p class="calibre3">Before you jump into volumes attached to network drives, make sure you really need them. A common mistake is to assume that state generated by a database needs to be persisted. While in some cases that is true, in many others it is not. Modern databases can replicate data between different instances. In such cases, the persistence of that data might not be required (or even welcome). If multiple instances have the same data, failure of one of them does not mean that data is lost. That instance will be rescheduled and, when appropriately configured, it will retrieve data from one of the replicas that did not fail.</p>
+
+
+<figure class="image1">
+  <img src="../images/00097.jpeg" alt="Figure 16-5: Self-healing infrastructure flow" class="calibre17"/>
+  <figcaption class="calibre18">Figure 16-5: Self-healing infrastructure flow</figcaption>
+</figure>
+
+
+<h4 id="leanpub-auto-request-flow-1" class="calibre20">Request Flow</h4>
+
+<p class="calibre3">We already explored how to make sure that a request initiated by a user or a client outside the cluster reaches the destination service. However, there was one piece of the puzzle missing. We guaranteed that a request would find its way once it enters the cluster but we failed to provide enough assurance that it will reach the cluster. We cannot configure DNS with IP of one of the nodes since that server might fail at any moment. We have to add something in between the DNS and the cluster. That something should have a single goal. It should make sure that a request reaches any of the healthy nodes. It does not matter which one since Ingress network will take over and initiate the request flow we discussed. That element in between can be an external load balancer, elastic IP, or any other solution. As long as it is fault-tolerant and is capable of performing health checks to determine which node is operational, any solution should do. The only challenge is to make sure that the list of the nodes is always up-to-date. That means that any new node added to the cluster should be added to that list. That might be overkill, and you might want to reduce the scope to, for example, all current and future manager nodes. Fortunately, Docker For AWS (or Azure) already has that feature baked into its template and system-level containers. Never the less, if you are using a different solution to create your cluster, it should be relatively easy to find a similar alternative or write your own solution.</p>
+
+
+<figure class="image1">
+  <img src="../images/00098.jpeg" alt="Figure 16-6: Request infra flow" class="calibre17"/>
+  <figcaption class="calibre18">Figure 16-6: Request infra flow</figcaption>
+</figure>
+
+
+<h4 id="leanpub-auto-self-adaptation-flow-1" class="calibre20">Self-Adaptation Flow</h4>
+
+<p class="calibre3">Self-adaptation applied to infrastructure is conceptually the same as the one used for services. We need to collect metrics and store them somewhere (Prometheus) and we need to define alerts and have a system that evaluates them against metrics (Prometheus). When alerts reach a threshold and a specified time passed, they need to be filtered and, depending on the problem, transformed into notifications that will be sent to other services (Alertmanager). We used Jenkins as a receptor of those notifications. If the problem can be solved by the system, pre-defined actions would be executed. Since our examples use AWS, Jenkins would run tasks through AWS CLI. When, on the other hand, alerts result in a new problem that requires a creative solution, the final receptor of the notification is a human (in our case through Slack).</p>
+
+
+<figure class="image">
+  <img src="../images/00099.jpeg" alt="Figure 16-7: Self-adaptation infrastructure flow" class="calibre17"/>
+  <figcaption class="calibre18">Figure 16-7: Self-adaptation infrastructure flow</figcaption>
+</figure>
+
+
+<h3 id="leanpub-auto-logic-matters-tools-might-vary" class="calibre20">Logic Matters, Tools Might Vary</h3>
+
+<p class="calibre3">Do not take the tools we used thus far for granted. Technology changes way too often. By the time you read this, at least one of them will be obsolete. There might be better alternatives. Technology changes with such speed that it is impossible to follow even if we’d dedicate all our time only on evaluation of “new toys.”</p>
+
+<p class="calibre3">Processes and logic are also not static nor everlasting. They should not be taken for granted nor followed forever. There’s no such thing as best-practice-forever-and-ever. Still, logic changes must slower than tools. It has much higher importance since it lasts longer.</p>
+
+<p class="calibre3">I believe that the logic and processes described in this book will outlive the tools we used. Take that for what it’s worth. Explore other tools. Seek for those that better fit your goals. As for me, I haven’t even finished writing this book, and I can already see quite a few improvements over the tools we used. Some of them could be replaced with something better. Others might not have been the best choice from the start. But that does not matter as much as it might seem. Processes and logic are what truly matters, and I hope that those we explored will survive for a while longer.</p>
+
+<p class="calibre3">Do not let this pessimistic attitude discourage you from implementing what you learned. Blame it on me and my never-ending quest for new and better ways to do something.</p>
+
+<h3 id="leanpub-auto-what-now-14" class="calibre20">What Now?</h3>
+
+<p class="calibre3">This is the end. Go and apply what you learned. Improve it. Contribute back to the community.</p>
+
+<p class="calibre3">
+  <strong class="calibre16">So long, and thanks for all the fish.</strong>
+</p>
+
+</div>
+</body></html>

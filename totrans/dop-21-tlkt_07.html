@@ -1,0 +1,375 @@
+<html><head></head><body>
+        <section>
+
+            <header>
+                <h1 class="header-title">Exploring Docker Remote API</h1>
+            </header>
+
+            <article>
+                
+<div class="packt_quote">You can mass-produce hardware; you cannot mass-produce software - you cannot mass-produce the human mind.<br/>
+                                                                                                                       –Michio Kaku</div>
+<p>Up until now, we used Docker through its client. Whenever we needed something, the only thing we had to do is execute a <kbd>docker</kbd> command (example: <kbd>docker service create</kbd>). In most cases, that is enough when we are limiting ourselves to operating our cluster from a command line.</p>
+<p>What happens if we want to accomplish a functionality beyond what the client offers? What if we'd like to operate Docker from inside our applications? Can we get statistics from all the containers running on the whole cluster?</p>
+<p>One possible answer to those and quite a few other questions lies in the adoption of tools beyond those offered by Docker Inc. We'll explore quite a few of those in the chapters that follow.</p>
+<p>Another approach would be to use Docker Remote API. After all, if we choose one of the products of the Docker ecosystem, chances are they will use the API. Docker Compose uses it to issue commands to Docker engines. Even the client uses it to communicate with the remote engine. You might find it useful as well.</p>
+<p>By default, Docker daemon listens on <kbd>unix:///var/run/docker.sock</kbd> and the client must have root access to interact with the daemon. If a group named <kbd>docker</kbd> exists on your system, Docker applies ownership of the socket to the group. That does not mean that the socket is the only way to access the API. There are indeed quite a few others, and I encourage you to experiment with different combinations. For the purpose of this chapter, we'll stick with the socket since it is the easiest way to send API requests.</p>
+
+
+            </article>
+
+            <footer style="margin-top: 5em;">
+                
+            </footer>
+
+        </section>
+    
+
+        <section>
+
+            <header>
+                <h1 class="header-title">Setting up the environment</h1>
+            </header>
+
+            <article>
+                
+<p>As in the previous chapters, we'll start with the creation of a cluster we'll use to experiment.</p>
+<div class="packt_infobox">All the commands from this chapter are available in the <kbd>07-api.sh</kbd> (<a href="https://gist.github.com/vfarcic/bab7f89f1cbd14f9895a9e0dc7293102">https://gist.github.com/vfarcic/bab7f89f1cbd14f9895a9e0dc7293102</a>) Gist.</div>
+<p>Please enter the <kbd>cloud-provisioning</kbd> directory where we pulled the repository. Since I might have updated it since the last time you used it, we'll issue a pull. Finally, we'll run the already familiar        <kbd>script/ dm-swarm.sh</kbd> that will create a new Swarm cluster:</p>
+<pre>
+<strong><span class="hljs-built_in">cd</span> cloud-provisioning<br/><br/>git pull<br/><br/>scripts/dm-swarm.sh</strong>
+</pre>
+<p>The cluster is up and running.</p>
+<p>VMs created with <em>Docker Machine</em> are based on <em>Boot2Docker</em>. It is a lightweight Linux distribution made specifically to run Docker containers. It runs entirely from RAM, is a small 38 MB download, and boots in ~5s. It is based on <em>Tiny Core Linux</em> (<a href="http://tinycorelinux.net/">http://tinycorelinux.net/</a>). What distinguishes it from more popular Linux distributions is its size. It is stripped down to a bare minimum. This approach serves us well. If we adopt containers, there is no real need for most of the kernel modules usually seen in distributions like Ubuntu and RedHat.</p>
+<p>This is in line with the minimalistic approach we strive for when working with containers. I already discussed the reasons for using <kbd>Alpine</kbd> as the base image we use for our containers. The main one is its size (only a few MB). After all, why would we ship our containers with things we don't need? The same can be said for the hosts OS. Less is better, as long as all our needs are fulfilled.</p>
+<p>There is a caveat. <em>Boot2Docker</em> is currently designed and tuned for development. Using it for any kind of production workloads at this time is highly discouraged. That does not diminish its value, but makes a clear distinction what it's good for, and what it's not.</p>
+<p>The reason behind this short introduction to <em>Boot2Docker</em> and Tiny Core Linux lies in the next steps. We're about to install a few programs, and we need to know the package management tool for the distribution we're using. Tiny Core Linux uses <kbd>tce-load</kbd>.<br/>
+In the previous chapters, we executed most of the commands from your OS (MacOS, Linux, or Windows). This time, we'll run them inside one of the Docker Machine VMs. The reason lies in <kbd>jq</kbd> (<a href="https://stedolan.github.io/jq/">https://stedolan.github.io/jq/</a>) we'll use to format JSON output we'll be receiving from the API. It is available on most platforms, but I thought it would be better to avoid possible problems by putting you inside the VM. The second and more important reason lies in the choice to send requests to the API through the Docker socket that is available on the machines.</p>
+<p>Without further ado, we'll proceed with installations of <kbd>curl</kbd> and <kbd>jq</kbd>:</p>
+<pre>
+<strong>docker-machine ssh swarm-<span class="hljs-number">1</span><br/><br/>tce-load -wi curl wget<br/><br/>wget https://github.com/stedolan/jq/releases/download/jq-<span class="hljs-number">1.5</span>/jq-linux64<br/><br/><span class="hljs-built_in">sudo</span> mv jq-linux64 /usr/local/bin/jq<br/><br/><span class="hljs-built_in">sudo</span> chmod +x /usr/local/bin/jq</strong>
+</pre>
+<p>We entered the <kbd>swarm-1</kbd> machine and used <kbd>tce-load</kbd> to install <kbd>curl</kbd> and <kbd>wget</kbd>. Since <kbd>jq</kbd> is not available through <kbd>tce-load</kbd>, we used <kbd>wget</kbd> to download the binary. Finally, we moved <kbd>jq</kbd> to the bin directory and added execute permissions.</p>
+<p>Now we're ready to start exploring Docker Remote API.</p>
+
+
+            </article>
+
+            <footer style="margin-top: 5em;">
+                
+            </footer>
+
+        </section>
+    
+
+        <section>
+
+            <header>
+                <h1 class="header-title">Operating Docker Swarm through the Docker Remote API</h1>
+            </header>
+
+            <article>
+                
+<p>We won't go through the whole API. The official <em>documentation</em> (<a href="https://docs.docker.com/engine/reference/api/docker_remote_api_v1.24/">https://docs.docker.com/engine/reference/api/docker_remote_api_v1.24/</a>) is well written and provides enough details. Instead, we'll go through some basic examples focused around Docker Swarm. We'll see how we can use the API by repeating some of the client commands we practiced earlier. The goal of this chapter is to get just enough knowledge to be able to use the API in your applications as well as a glue between different services we'll explore in the next chapters. Later on, we'll try to leverage this knowledge to create a monitoring system that stores the information about the cluster in a database and performs some actions.</p>
+<p>Let's discuss a very simple example of a possible use case for the API.<br/>
+If a node fails, Swarm will make sure that the containers that were running inside it are rescheduled. However, that does not mean that is enough. We might want to send an email stating that a node failed. Upon receiving such an email, someone would perform an investigation of the cause of the failed node and probably take some corrective actions. Those tasks are not urgent since Swarm mitigated the problem. However, something not being urgent does not mean that it should not be done.</p>
+<p>The chapters that follow will try to make our cluster more robust, and the API will play a crucial role in that. For now, let's have a brief overview.</p>
+<p>We'll start with a simple example. Let's see which nodes form our cluster:</p>
+<pre>
+<strong>curl \ <br/>    --unix-socket /var/run/docker.sock \<br/>    http:/nodes | jq <span class="hljs-string">'.'</span></strong>
+</pre>
+<p>The output displays three nodes with detailed information for each. Showing all the information of all the nodes is too much for the book so let's limit the output to one of the nodes. All we have to do is append the name of the node to the previous command:</p>
+<pre>
+<strong>curl \<br/>    --unix-socket /var/run/docker.sock \<br/>    http:/nodes/swarm-<span class="hljs-number">1</span> | jq <span class="hljs-string">'.'</span></strong>
+</pre>
+<p>The output is as follows:</p>
+<pre>
+<strong>[<br/>  {<br/>    "<span class="hljs-attribute">ID</span>": <span class="hljs-value"><span class="hljs-string">"2vxiqun3wvh1l1g43utk2v5a7"</span></span>,<br/>    "<span class="hljs-attribute">Version</span>": <span class="hljs-value">{<br/>      "<span class="hljs-attribute">Index</span>": <span class="hljs-value"><span class="hljs-number">23</span><br/></span>    }</span>,<br/>    "<span class="hljs-attribute">CreatedAt</span>": <span class="hljs-value"><span class="hljs-string">"2017-01-23T20:30:00.402618571Z"</span></span>,<br/>    "<span class="hljs-attribute">UpdatedAt</span>": <span class="hljs-value"><span class="hljs-string">"2017-01-23T20:30:04.026051022Z"</span></span>,<br/>    "<span class="hljs-attribute">Spec</span>": <span class="hljs-value">{<br/>      "<span class="hljs-attribute">Labels</span>": <span class="hljs-value">{<br/>        "<span class="hljs-attribute">env</span>": <span class="hljs-value"><span class="hljs-string">"prod"</span><br/></span>      }</span>,<br/>      "<span class="hljs-attribute">Role</span>": <span class="hljs-value"><span class="hljs-string">"manager"</span></span>,<br/>      "<span class="hljs-attribute">Availability</span>": <span class="hljs-value"><span class="hljs-string">"active"</span><br/></span>    }</span>,<br/>    "<span class="hljs-attribute">Description</span>": <span class="hljs-value">{<br/>      "<span class="hljs-attribute">Hostname</span>": <span class="hljs-value"><span class="hljs-string">"swarm-1"</span></span>,<br/>      "<span class="hljs-attribute">Platform</span>": <span class="hljs-value">{<br/>        "<span class="hljs-attribute">Architecture</span>": <span class="hljs-value"><span class="hljs-string">"x86_64"</span></span>,<br/>        "<span class="hljs-attribute">OS</span>": <span class="hljs-value"><span class="hljs-string">"linux"</span><br/></span>       }</span>,<br/>      "<span class="hljs-attribute">Resources</span>": <span class="hljs-value">{<br/>        "<span class="hljs-attribute">NanoCPUs</span>": <span class="hljs-value"><span class="hljs-number">1000000000</span></span>,<br/>        "<span class="hljs-attribute">MemoryBytes</span>": <span class="hljs-value"><span class="hljs-number">1044131840</span><br/></span>      }</span>,<br/>      "<span class="hljs-attribute">Engine</span>": <span class="hljs-value">{<br/>        "<span class="hljs-attribute">EngineVersion</span>": <span class="hljs-value"><span class="hljs-string">"1.13.0"</span></span>,<br/>        "<span class="hljs-attribute">Labels</span>": <span class="hljs-value">{<br/>          "<span class="hljs-attribute">provider</span>": <span class="hljs-value"><span class="hljs-string">"virtualbox"</span><br/></span>        }</span>,<br/>        "<span class="hljs-attribute">Plugins</span>": <span class="hljs-value">[<br/>          {<br/>            "<span class="hljs-attribute">Type</span>": <span class="hljs-value"><span class="hljs-string">"Network"</span></span>,<br/>            "<span class="hljs-attribute">Name</span>": <span class="hljs-value"><span class="hljs-string">"bridge"</span><br/></span>          },<br/>          {<br/>            "<span class="hljs-attribute">Type</span>": <span class="hljs-value"><span class="hljs-string">"Network"</span></span>,<br/>            "<span class="hljs-attribute">Name</span>": <span class="hljs-value"><span class="hljs-string">"host"</span><br/></span>          },<br/>          {<br/>            "<span class="hljs-attribute">Type</span>": <span class="hljs-value"><span class="hljs-string">"Network"</span></span>,<br/>            "<span class="hljs-attribute">Name</span>": <span class="hljs-value"><span class="hljs-string">"macvlan"</span><br/></span>          },<br/>          {<br/>            "<span class="hljs-attribute">Type</span>": <span class="hljs-value"><span class="hljs-string">"Network"</span></span>,<br/>            "<span class="hljs-attribute">Name</span>": <span class="hljs-value"><span class="hljs-string">"null"</span><br/></span>          },<br/>          {<br/>            "<span class="hljs-attribute">Type</span>": <span class="hljs-value"><span class="hljs-string">"Network"</span></span>,<br/>            "<span class="hljs-attribute">Name</span>": <span class="hljs-value"><span class="hljs-string">"overlay"</span><br/></span>          },<br/>          {<br/>            "<span class="hljs-attribute">Type</span>": <span class="hljs-value"><span class="hljs-string">"Volume"</span></span>,<br/>            "<span class="hljs-attribute">Name</span>": <span class="hljs-value"><span class="hljs-string">"local"</span><br/></span>          }<br/>        ]<br/></span>     }<br/></span>  }</span>,<br/>  "<span class="hljs-attribute">Status</span>": <span class="hljs-value">{<br/>    "<span class="hljs-attribute">State</span>": <span class="hljs-value"><span class="hljs-string">"ready"</span></span>,<br/>    "<span class="hljs-attribute">Addr</span>": <span class="hljs-value"><span class="hljs-string">"127.0.0.1"</span><br/></span>}</span>,<br/>"<span class="hljs-attribute">ManagerStatus</span>": <span class="hljs-value">{<br/>  "<span class="hljs-attribute">Leader</span>": <span class="hljs-value"><span class="hljs-literal">true</span></span>,<br/>   "<span class="hljs-attribute">Reachability</span>": <span class="hljs-value"><span class="hljs-string">"reachable"</span></span>,<br/>      "<span class="hljs-attribute">Addr</span>": <span class="hljs-value"><span class="hljs-string">"192.168.99.100:2377"</span><br/></span>}<br/></span>},</strong>
+</pre>
+<p>The output, above, is truncated and only includes the "Leader" node. Your output will contain three sets of nodes that start with <kbd>ID</kbd>. We won't go into details of what each of the fields means. You should already be familiar with most of them.</p>
+<p>Please consult <em>Docker Remote API v1.24: Nodes</em> (<a href="https://docs.docker.com/engine/reference/api/docker_remote_api_v1.24/#/nodes">https://docs.docker.com/engine/reference/api/docker_remote_api_v1.24/#/nodes</a>) for more information.</p>
+<p>The API is not limited only to queries. We can use it to perform any of the operations available through the Docker client (and a few more). For example, we can create a new service:</p>
+<pre>
+<strong>curl -XPOST \<br/><span class="hljs-operator">      -d</span> <span class="hljs-string">'{<br/>  "Name": "go-demo-db",<br/>  "TaskTemplate": {<br/>    "ContainerSpec": {<br/>      "Image": "mongo:3.2.10"<br/>    }<br/>  }<br/>}'</span> \<br/>    --unix-socket /var/run/docker.sock \<br/>    http:/services/create | jq <span class="hljs-string">'.'</span></strong>
+</pre>
+<p>We sent a <kbd>POST</kbd> request to create a service named <kbd>go-demo-db</kbd>. The image of the service is <kbd>mongo:3.2.10</kbd>. As a result, the API responded with the service <kbd>ID</kbd>:</p>
+<pre>
+<strong>{<br/>  "<span class="hljs-attribute">ID</span>": <span class="hljs-value"><span class="hljs-string">"7157kfo9cp2vhed4bidrc8hfi"</span><br/></span>}</strong>
+</pre>
+<p>Please consult <em>Docker Remote API v1.24: Create a service</em> (<a href="https://docs.docker.com/engine/reference/api/docker_remote_api_v1.24/#create-a-service">https://docs.docker.com/engine/reference/api/docker_remote_api_v1.24/#create-a-service</a>) for more information.</p>
+<p>We can confirm that the operation was indeed successful by listing all the services:</p>
+<pre>
+<strong>curl \<br/>    --unix-socket /var/run/docker.sock \<br/>    http:/services | jq <span class="hljs-string">'.'</span></strong>
+</pre>
+<p>The output is as follows:</p>
+<pre>
+<strong>[<br/>  {<br/>    "<span class="hljs-attribute">ID</span>": <span class="hljs-value"><span class="hljs-string">"s73ez21cmshwu8okipejehvo0"</span></span>,<br/>    "<span class="hljs-attribute">Version</span>": <span class="hljs-value">{<br/>      "<span class="hljs-attribute">Index</span>": <span class="hljs-value"><span class="hljs-number">26</span><br/></span>    }</span>,<br/>    "<span class="hljs-attribute">CreatedAt</span>": <span class="hljs-value"><span class="hljs-string">"2017-01-23T20:47:27.247329291Z"</span></span>,<br/>    "<span class="hljs-attribute">UpdatedAt</span>": <span class="hljs-value"><span class="hljs-string">"2017-01-23T20:47:27.247329291Z"</span></span>,<br/>    "<span class="hljs-attribute">Spec</span>": <span class="hljs-value">{<br/>      "<span class="hljs-attribute">Name</span>": <span class="hljs-value"><span class="hljs-string">"go-demo-db"</span></span>,<br/>      "<span class="hljs-attribute">TaskTemplate</span>": <span class="hljs-value">{<br/>        "<span class="hljs-attribute">ContainerSpec</span>": <span class="hljs-value">{<br/>          "<span class="hljs-attribute">Image</span>":  <span class="hljs-value"><span class="hljs-string">"mongo:3.2.10@sha256:532a19da83ee0e4e2a2ec6bc4212fc4af26357c040675d5c2\<br/>629a4e4c4563cef"</span><br/></span>         }</span>,<br/>        "<span class="hljs-attribute">ForceUpdate</span>": <span class="hljs-value"><span class="hljs-number">0</span><br/></span>      }</span>,<br/>      "<span class="hljs-attribute">Mode</span>": <span class="hljs-value">{<br/>         "<span class="hljs-attribute">Replicated</span>": <span class="hljs-value">{<br/>           "<span class="hljs-attribute">Replicas</span>": <span class="hljs-value"><span class="hljs-number">1</span><br/></span>      }<br/></span>    }<br/></span>  }</span>,<br/>  "<span class="hljs-attribute">Endpoint</span>": <span class="hljs-value">{<br/>    "<span class="hljs-attribute">Spec</span>": <span class="hljs-value">{}<br/></span>  }</span>,<br/>  "<span class="hljs-attribute">UpdateStatus</span>": <span class="hljs-value">{<br/>      "<span class="hljs-attribute">StartedAt</span>": <span class="hljs-value"><span class="hljs-string">"0001-01-01T00:00:00Z"</span></span>,<br/>      "<span class="hljs-attribute">CompletedAt</span>": <span class="hljs-value"><span class="hljs-string">"0001-01-01T00:00:00Z"</span><br/></span>   }<br/></span>  }<br/>]<br/></strong>
+</pre>
+<p>We got a list of services (at the moment only one) with some of their properties. We can see when was the service created, the number of replicas, and so on. Please consult <em>Docker Remote API v1.24: List services </em>(<a href="https://docs.docker.com/engine/reference/api/docker_remote_api_v1.24/#/list-services">https://docs.docker.com/engine/reference/api/docker_remote_api_v1.24/#/list-services</a>) for more information.</p>
+<p>Similarly, we can retrieve the information of a single instance:</p>
+<pre>
+<strong>curl \<br/>    --unix-socket /var/run/docker.sock \<br/>    http:/services/go-demo-db | jq <span class="hljs-string">'.'</span></strong>
+</pre>
+<p>The output is almost the same as when we listed all services. The only significant difference is that, this time, we got a single result, while the list of services returned an array enclosed in <kbd>[ and ]</kbd>:</p>
+<pre>
+<strong>{<br/>  "<span class="hljs-attribute">ID</span>": <span class="hljs-value"><span class="hljs-string">"s73ez21cmshwu8okipejehvo0"</span></span>,<br/>  "<span class="hljs-attribute">Version</span>": <span class="hljs-value">{<br/>    "<span class="hljs-attribute">Index</span>": <span class="hljs-value"><span class="hljs-number">26</span><br/></span>}</span>,<br/>  "<span class="hljs-attribute">CreatedAt</span>": <span class="hljs-value"><span class="hljs-string">"2017-01-23T20:47:27.247329291Z"</span></span>,<br/>  "<span class="hljs-attribute">UpdatedAt</span>": <span class="hljs-value"><span class="hljs-string">"2017-01-23T20:47:27.247329291Z"</span></span>,<br/>  "<span class="hljs-attribute">Spec</span>": <span class="hljs-value">{<br/>    "<span class="hljs-attribute">Name</span>": <span class="hljs-value"><span class="hljs-string">"go-demo-db"</span></span>,<br/>    "<span class="hljs-attribute">TaskTemplate</span>": <span class="hljs-value">{<br/>      "<span class="hljs-attribute">ContainerSpec</span>": <span class="hljs-value">{<br/>        "<span class="hljs-attribute">Image</span>":  <span class="hljs-value"><span class="hljs-string">"mongo:3.2.10@sha256:532a19da83ee0e4e2a2ec6bc4212fc4af26357c040675d5c2<br/>629a4e4c4563cef"</span><br/></span>      }</span>,<br/>      "<span class="hljs-attribute">ForceUpdate</span>": <span class="hljs-value"><span class="hljs-number">0</span><br/></span>    }</span>,<br/>    "<span class="hljs-attribute">Mode</span>": <span class="hljs-value">{<br/>      "<span class="hljs-attribute">Replicated</span>": <span class="hljs-value">{<br/>        "<span class="hljs-attribute">Replicas</span>": <span class="hljs-value"><span class="hljs-number">1</span><br/></span>      }<br/></span>    }<br/></span>  }</span>,<br/>  "<span class="hljs-attribute">Endpoint</span>": <span class="hljs-value">{<br/>    "<span class="hljs-attribute">Spec</span>": <span class="hljs-value">{}<br/></span>  }</span>,<br/>  "<span class="hljs-attribute">UpdateStatus</span>": <span class="hljs-value">{<br/>    "<span class="hljs-attribute">StartedAt</span>": <span class="hljs-value"><span class="hljs-string">"0001-01-01T00:00:00Z"</span></span>,<br/>    "<span class="hljs-attribute">CompletedAt</span>": <span class="hljs-value"><span class="hljs-string">"0001-01-01T00:00:00Z"</span><br/></span>  }<br/></span>}</strong>
+</pre>
+<p>Please consult <em>Docker Remote API v1.24: Inspect one or more services</em> (<a href="https://docs.docker.com/engine/reference/api/docker_remote_api_v1.24/#inspect-one-or-more-services">https://docs.docker.com/engine/reference/api/docker_remote_api_v1.24/#inspect-one-or-more-services</a>) for more information.</p>
+<p>Let's spice it up a bit and scale to three replicas. We can accomplish that by updating the service. However, before we send an update request, we need the version and ID of the service. That information is available in the output of the service request we sent a moment ago. However, since we are trying to do things in a way that is easy to automate, we might be better off putting those values in environment variables.</p>
+<p>We can use <kbd>jq</kbd> to filter the output and return a particular value.</p>
+<p>The command that returns the version of the service is as follows:</p>
+<pre>
+<strong>VERSION=$(curl \<br/>    --unix-socket /var/run/docker.sock \<br/>    http:/services/go-demo-db | \<br/>    jq <span class="hljs-string">'.Version.Index'</span>)<br/><br/><span class="hljs-built_in">echo</span> <span class="hljs-variable">$VERSION</span></strong>
+</pre>
+<p>The output of the variable <kbd>$VERSION</kbd> is as follows:</p>
+<pre>
+<strong>27</strong>
+</pre>
+<p>Similarly, we should retrieve the service <kbd>ID</kbd> as well:</p>
+<pre>
+<strong>ID=$(curl \<br/>    --unix-socket /var/run/docker.sock \<br/>    http:/services/go-demo-db | \<br/>    jq --raw-output <span class="hljs-string">'.ID'</span>)<br/><br/><span class="hljs-built_in">echo</span> <span class="hljs-variable">$ID</span></strong>
+</pre>
+<p>The output is as follows:</p>
+<pre>
+<strong>7157kfo9cp2vhed4bidrc8hfi</strong>
+</pre>
+<p>Now we have all the information we need to update the service. We'll change the number of replicas to three:</p>
+<pre>
+<strong>curl -XPOST \<br/><span class="hljs-operator">    -d</span> <span class="hljs-string">'{<br/>  "Name": "go-demo-db",<br/>  "TaskTemplate": {<br/>    "ContainerSpec": {<br/>      "Image": "mongo:3.2.10"<br/>    }<br/>  },<br/>  "Mode": {<br/>    "Replicated": {<br/>      "Replicas": 3<br/>    }<br/>  }<br/>}'</span> \<br/>    --unix-socket /var/run/docker.sock \<br/>    http:/services/<span class="hljs-variable">$ID</span>/update?version=<span class="hljs-variable">$VERSION</span></strong>
+</pre>
+<p>Please consult <em>Docker Remote API v1.24: Update a service</em> (<a href="https://docs.docker.com/engine/reference/api/docker_remote_api_v1.24/#update-a-service">https://docs.docker.com/engine/reference/api/docker_remote_api_v1.24/#update-a-service</a>) for more <span>information.</span></p>
+<p>Next, we can list the <kbd>tasks</kbd> and confirm whether the service was indeed scaled to three instances:</p>
+<pre>
+<strong>curl \<br/>    --unix-socket /var/run/docker.sock \<br/>    http:/tasks | jq <span class="hljs-string">'.'</span></strong>
+</pre>
+<p>The output is as follows:</p>
+<pre>
+<strong>[<br/>  {<br/>    "<span class="hljs-attribute">ID</span>": <span class="hljs-value"><span class="hljs-string">"c0nev776zyuoaul51n5w9xc85"</span></span>,<br/>    "<span class="hljs-attribute">Version</span>": <span class="hljs-value">{<br/>      "<span class="hljs-attribute">Index</span>": <span class="hljs-value"><span class="hljs-number">32</span><br/></span>    }</span>,<br/>    "<span class="hljs-attribute">CreatedAt</span>": <span class="hljs-value"><span class="hljs-string">"2017-01-23T20:47:27.255828694Z"</span></span>,<br/>    "<span class="hljs-attribute">UpdatedAt</span>": <span class="hljs-value"><span class="hljs-string">"2017-01-23T20:47:51.329755266Z"</span></span>,<br/>    "<span class="hljs-attribute">Spec</span>": <span class="hljs-value">{<br/>      "<span class="hljs-attribute">ContainerSpec</span>": <span class="hljs-value">{<br/>        "<span class="hljs-attribute">Image</span>":  <span class="hljs-value"><span class="hljs-string">"mongo:3.2.10@sha256:532a19da83ee0e4e2a2ec6bc4212fc4af26357c040675d5c2\<br/>629a4e4c4563cef"</span><br/></span>       }</span>,<br/>       "<span class="hljs-attribute">ForceUpdate</span>": <span class="hljs-value"><span class="hljs-number">0</span><br/></span>    }</span>,<br/>    "<span class="hljs-attribute">ServiceID</span>": <span class="hljs-value"><span class="hljs-string">"s73ez21cmshwu8okipejehvo0"</span></span>,<br/>    "<span class="hljs-attribute">Slot</span>": <span class="hljs-value"><span class="hljs-number">1</span></span>,<br/>    "<span class="hljs-attribute">NodeID</span>": <span class="hljs-value"><span class="hljs-string">"2vxiqun3wvh1l1g43utk2v5a7"</span></span>,<br/>    "<span class="hljs-attribute">Status</span>": <span class="hljs-value">{<br/>      "<span class="hljs-attribute">Timestamp</span>": <span class="hljs-value"><span class="hljs-string">"2017-01-23T20:47:51.295994806Z"</span></span>,<br/>      "<span class="hljs-attribute">State</span>": <span class="hljs-value"><span class="hljs-string">"running"</span></span>,<br/>      "<span class="hljs-attribute">Message</span>": <span class="hljs-value"><span class="hljs-string">"started"</span></span>,<br/>      "<span class="hljs-attribute">ContainerStatus</span>": <span class="hljs-value">{<br/>        "<span class="hljs-attribute">ContainerID</span>": <br/><span class="hljs-value"><span class="hljs-string">"20112c904386733c6748bc186e84255640c9dc279fd3530b771616a1ef767957"</span></span>,<br/>        "<span class="hljs-attribute">PID</span>": <span class="hljs-value"><span class="hljs-number">4238</span><br/></span>       }</span>,<br/>     "<span class="hljs-attribute">PortStatus</span>": <span class="hljs-value">{}<br/></span>     }</span>,<br/>    "<span class="hljs-attribute">DesiredState</span>": <span class="hljs-value"><span class="hljs-string">"running"</span><br/></span> },<br/> {<br/>    "<span class="hljs-attribute">ID</span>": <span class="hljs-value"><span class="hljs-string">"ptbp594sh5k2qey6lexafr31d"</span></span>,<br/>    "<span class="hljs-attribute">Version</span>": <span class="hljs-value">{<br/>      "<span class="hljs-attribute">Index</span>": <span class="hljs-value"><span class="hljs-number">37</span><br/></span> }</span>,<br/>    "<span class="hljs-attribute">CreatedAt</span>": <span class="hljs-value"><span class="hljs-string">"2017-01-23T21:16:55.680872244Z"</span></span>,<br/>    "<span class="hljs-attribute">UpdatedAt</span>": <span class="hljs-value"><span class="hljs-string">"2017-01-23T21:16:55.960585822Z"</span></span>,<br/>    "<span class="hljs-attribute">Spec</span>": <span class="hljs-value">{<br/>      "<span class="hljs-attribute">ContainerSpec</span>": <span class="hljs-value">{<br/>        "<span class="hljs-attribute">Image</span>":  <span class="hljs-value"><span class="hljs-string">"mongo:3.2.10@sha256:532a19da83ee0e4e2a2ec6bc4212fc4af26357c040675d5c2\<br/>629a4e4c4563cef"</span><br/></span>     }</span>,<br/>        "<span class="hljs-attribute">ForceUpdate</span>": <span class="hljs-value"><span class="hljs-number">0</span><br/></span>    }</span>,<br/>    "<span class="hljs-attribute">ServiceID</span>": <span class="hljs-value"><span class="hljs-string">"s73ez21cmshwu8okipejehvo0"</span></span>,<br/>         "<span class="hljs-attribute">Slot</span>": <span class="hljs-value"><span class="hljs-number">2</span></span>,<br/>     "<span class="hljs-attribute">NodeID</span>": <span class="hljs-value"><span class="hljs-string">"skj5sjemrvnusdop3ovcv6q7h"</span></span>,<br/>     "<span class="hljs-attribute">Status</span>": <span class="hljs-value">{<br/>       "<span class="hljs-attribute">Timestamp</span>": <span class="hljs-value"><span class="hljs-string">"2017-01-23T21:16:55.882919942Z"</span></span>,<br/>       "<span class="hljs-attribute">State</span>": <span class="hljs-value"><span class="hljs-string">"preparing"</span></span>,<br/>       "<span class="hljs-attribute">Message</span>": <span class="hljs-value"><span class="hljs-string">"preparing"</span></span>,<br/>       "<span class="hljs-attribute">ContainerStatus</span>": <span class="hljs-value">{}</span>,<br/>       "<span class="hljs-attribute">PortStatus</span>": <span class="hljs-value">{}<br/></span>    }</span>,<br/>    "<span class="hljs-attribute">DesiredState</span>": <span class="hljs-value"><span class="hljs-string">"running"</span><br/></span>},<br/>{<br/>    "<span class="hljs-attribute">ID</span>": <span class="hljs-value"><span class="hljs-string">"rqa04bpvdcddkeia2x1d6r95r"</span></span>,<br/>    "<span class="hljs-attribute">Version</span>": <span class="hljs-value">{<br/>      "<span class="hljs-attribute">Index</span>": <span class="hljs-value"><span class="hljs-number">37</span><br/></span>  }</span>,<br/>  "<span class="hljs-attribute">CreatedAt</span>": <span class="hljs-value"><span class="hljs-string">"2017-01-23T21:16:55.6812298Z"</span></span>,<br/>  "<span class="hljs-attribute">UpdatedAt</span>": <span class="hljs-value"><span class="hljs-string">"2017-01-23T21:16:55.960175605Z"</span></span>,<br/>    "<span class="hljs-attribute">Spec</span>": <span class="hljs-value">{<br/>      "<span class="hljs-attribute">ContainerSpec</span>": <span class="hljs-value">{<br/>        "<span class="hljs-attribute">Image</span>":  <span class="hljs-value"><span class="hljs-string">"mongo:3.2.10@sha256:532a19da83ee0e4e2a2ec6bc4212fc4af26357c040675d5c2\<br/>629a4e4c4563cef"</span><br/></span>    }</span>,<br/>    "<span class="hljs-attribute">ForceUpdate</span>": <span class="hljs-value"><span class="hljs-number">0</span><br/></span>  }</span>,<br/>     "<span class="hljs-attribute">ServiceID</span>": <span class="hljs-value"><span class="hljs-string">"s73ez21cmshwu8okipejehvo0"</span></span>,<br/>     "<span class="hljs-attribute">Slot</span>": <span class="hljs-value"><span class="hljs-number">3</span></span>,<br/>     "<span class="hljs-attribute">NodeID</span>": <span class="hljs-value"><span class="hljs-string">"lbgy0xih6n0w3nmzih0gnfvhd"</span></span>,<br/>     "<span class="hljs-attribute">Status</span>": <span class="hljs-value">{<br/>      "<span class="hljs-attribute">Timestamp</span>": <span class="hljs-value"><span class="hljs-string">"2017-01-23T21:16:55.881446699Z"</span></span>,<br/>      "<span class="hljs-attribute">State</span>": <span class="hljs-value"><span class="hljs-string">"preparing"</span></span>,<br/>      "<span class="hljs-attribute">Message</span>": <span class="hljs-value"><span class="hljs-string">"preparing"</span></span>,<br/>      "<span class="hljs-attribute">ContainerStatus</span>": <span class="hljs-value">{}</span>,<br/>      "<span class="hljs-attribute">PortStatus</span>": <span class="hljs-value">{}<br/></span>    }</span>,<br/>    "<span class="hljs-attribute">DesiredState</span>": <span class="hljs-value"><span class="hljs-string">"running"</span><br/></span>  }<br/>]</strong>
+</pre>
+<p>As you can see, three tasks were returned, each representing one replica of the <kbd>go-demo-db</kbd> service.</p>
+<p>Please consult <em>Docker Remote API v1.24: List tasks </em>(<a href="https://docs.docker.com/engine/reference/api/docker_remote_api_v1.24/#list-tasks">https://docs.docker.com/engine/reference/api/docker_remote_api_v1.24/#list-tasks</a>) for more information.</p>
+<p>All the API requests we made so far were related to nodes and services. In some cases, we might need to go lower and use the API on a container level. For example, we might want to get statistics related to a single container.</p>
+<p>Before we proceed, please make sure that the state of all the tasks is running. Feel free to repeat the <kbd>http:/tasks</kbd> request to confirm the state. If it's not running, please wait for a while and check it again.</p>
+<p>To get stats of a container, first we need to find out on which node it is running:</p>
+<pre>
+<strong><span class="hljs-keyword">exit</span><br/><br/><span class="hljs-built_in">eval</span> $(docker-machine env swarm-<span class="hljs-number">1</span>)<br/><br/>NODE=$(docker service ps \<br/><span class="hljs-operator">    -f</span> desired-state=running \<br/>    go-demo-db \<br/>    | tail -n <span class="hljs-number">1</span> \<br/>    | awk <span class="hljs-string">'{print $4}'</span>)<br/><br/><span class="hljs-built_in">echo</span> <span class="hljs-variable">$NODE</span></strong>
+</pre>
+<p>We exited the <kbd>swarm-1</kbd> machine and used eval to create environment variables that instructed the Docker client running on our host to use the engine running on <kbd>swarm-1</kbd>. Please note that those environment variables are telling the client to use the same API we've been exploring throughout this chapter.</p>
+<p>Further on, we retrieved the node where one of the containers forming the <kbd>go-demo-db</kbd> service is running. We already used a similar command a couple of times, so there's no need explaining it in more detail.</p>
+<p>The output of the <kbd>$NODE</kbd> variable is as follows:</p>
+<pre>
+<strong>swarm-2</strong>
+</pre>
+<p>On my laptop, the container we're looking for is running inside the <kbd>swarm-2</kbd> node. In your case, it might be a different one.<br/>
+Now we can enter the node and get the <kbd>ID</kbd> of the container:</p>
+<pre>
+<strong>docker-machine ssh <span class="hljs-variable">$NODE</span><br/><br/>ID=$(docker ps -qa | tail -n <span class="hljs-number">1</span>)<br/><br/><span class="hljs-built_in">echo</span> <span class="hljs-variable">$ID</span></strong>
+</pre>
+<p>The output of the <kbd>ID</kbd> variable is as follows:</p>
+<pre>
+<strong>f8f345042cf7</strong>
+</pre>
+<p>Finally, we are ready to get the statistics. The command is as follows:</p>
+<pre>
+<strong>curl \<br/>    --unix-socket /var/run/docker.sock \<br/>    http:/containers/<span class="hljs-variable">$ID</span>/stats</strong>
+</pre>
+<p>As soon as the request is sent, you will see a constant stream of statistics. Please press <em>CTRL</em> + <em>C</em> to stop the stream when you get tired looking at it.</p>
+<p>Streaming stats might be a very useful feature if we would like to implement our own monitoring solution. In many other cases, we might want to disable streaming and retrieve only a single recordset. We can accomplish that by setting the <kbd>stream</kbd> parameter to <kbd>false</kbd>.</p>
+<p>The command that returns a single stats recordset is as follows:</p>
+<pre>
+<strong>curl \<br/>    --unix-socket /var/run/docker.sock \<br/>    http:/containers/<span class="hljs-variable">$ID</span>/stats?stream=<span class="hljs-literal">false</span></strong>
+</pre>
+<p>The output is still too big to be presented in the book, so you have to inspect it from your screen.</p>
+<p>We won't go into details of what each field from stats means. You'll have to wait until we reach the monitoring chapter for deeper exploration. For now, the important thing to note is that you can retrieve them for each container inside your cluster.</p>
+<p>As an exercise, create a script that retrieves all the containers running on the node. Iterate through each to get stats of all the containers running inside that VM.</p>
+<p>Please consult <em>Docker Remote API v1.24: Get container stats based on resource usage</em> (<a href="https://docs.docker.com/engine/reference/api/docker_remote_api_v1.24/#get-container-stats-based-on-resource-usage">https://docs.docker.com/engine/reference/api/docker_remote_api_v1.24/#get-container-stats-based-on-resource-usage</a>) for more information.<br/>
+We are almost finished with the exploration of basic API requests related to Swarm services so let's remove the service we created:</p>
+<pre>
+<strong>curl -XDELETE \<br/>    --unix-socket /var/run/docker.sock \<br/>    http:/services/go-demo-db<br/><br/>curl \<br/>    --unix-socket /var/run/docker.sock \<br/>    http:/services</strong>
+</pre>
+<p>We sent the <kbd>DELETE</kbd> request to remove the <kbd>go-demo-db</kbd> service followed with the request to retrieve all services. The output of the later is as follows:</p>
+<pre>
+<strong>[]</strong>
+</pre>
+<p>Our service is no more. We removed it from the cluster and, since that was the only one we created, the request to retrieve the list of services returned an empty array <kbd>[]</kbd>.</p>
+<p>Please consult <em>Docker Remote API v1.24: Remove a service</em> (<a href="https://docs.docker.com/engine/reference/api/docker_remote_api_v1.24/#remove-a-service">https://docs.docker.com/engine/reference/api/docker_remote_api_v1.24/#remove-a-service</a>) for more information.</p>
+<p>Finally, let's get out of the machine:</p>
+<pre>
+<strong><span class="hljs-keyword">exit</span></strong>
+</pre>
+<p>Now that you have a basic understanding of the API, we can explore one possible use case.</p>
+
+
+            </article>
+
+            <footer style="margin-top: 5em;">
+                
+            </footer>
+
+        </section>
+    
+
+        <section>
+
+            <header>
+                <h1 class="header-title">Using Docker Remote API to automate proxy configuration</h1>
+            </header>
+
+            <article>
+                
+<p>Up until now, we were sending reconfigure and remove requests to our proxy. That greatly simplified the configuration. Instead of changing HAProxy config ourselves, we let the service reconfigure itself. We used Consul to persist the state of the proxy. Can we improve the existing design by leveraging Docker Remote API? I think we can.</p>
+<p>Instead of sending reconfigure and remove requests, we can have a service that would monitor the cluster state through the API. Such a tool could detect new and removed services and send the same request to the <kbd>proxy</kbd> like the one we would send manually.</p>
+<p>We can go even further. Since the API allows us to retrieve any information related to the cluster, we don't need to store it in Consul anymore. Whenever a new instance of the service is created, it can retrieve all the information it needs from the API.</p>
+<p>All in all, we can use the API to fully automate changes to the <kbd>proxy</kbd> configuration as well as its state. We can create a new service that will monitor the cluster state. We can also modify the <kbd>proxy</kbd> to consult that service during its initialization.</p>
+<p>I thought to save you some time by taking the liberty to create such a service. The project behind it is called <em>Docker Flow Swarm Listener </em>(<a href="https://github.com/vfarcic/docker-flow-swarm-listener">https://github.com/vfarcic/docker-flow-swarm-listener</a>).</p>
+<p>Let's see it in action.</p>
+
+
+            </article>
+
+            <footer style="margin-top: 5em;">
+                
+            </footer>
+
+        </section>
+    
+
+        <section>
+
+            <header>
+                <h1 class="header-title">Combining the Swarm listener with the proxy</h1>
+            </header>
+
+            <article>
+                
+<p>The <em>Docker Flow Swarm Listener</em> (<a href="https://github.com/vfarcic/docker-flow-swarm-listener">https://github.com/vfarcic/docker-flow-swarm-listener</a>) project leverages Docker Remote API. It has many usages but, for now, we'll limit ourselves to the features that can help make our proxy configuration fully hands-free.</p>
+<p>We'll start by creating two networks:</p>
+<pre>
+<strong><span class="hljs-built_in">eval</span> $(docker-machine env swarm-<span class="hljs-number">1</span>)<br/><br/>docker network create --driver overlay proxy<br/><br/>docker network create --driver overlay go-demo</strong>
+</pre>
+<p>We created those two networks so many times that there is no reason to go over their usefulness. The only difference is that this time, we'll have one more service to attach to the <kbd>proxy</kbd> network.</p>
+<p>Next, we'll create the <kbd>swarm-listener</kbd> (<a href="https://github.com/vfarcic/docker-flow-swarm-listener">https://github.com/vfarcic/docker-flow-swarm-listener</a>) service. It will act as a companion to the Docker Flow Proxy. Its purpose is to monitor Swarm services and send requests to the proxy whenever a service is created or destroyed.</p>
+<div class="packt_tip"><strong>A note to Windows users</strong><br/>
+Git Bash has a habit of altering file system paths. To stop this, execute the following:<br/>
+<kbd>export MSYS_NO_PATHCONV=1</kbd></div>
+<p>Let's create the <kbd>swarm-listener</kbd> service:</p>
+<pre>
+d<strong>ocker service create --name swarm-listener \<br/>    --network proxy \<br/>    --mount \<br/><span class="hljs-string">    "type=bind,source=/var/run/docker.sock,target=/var/run/\<br/>    docker.sock" \</span><br/><span class="hljs-operator">-e</span> DF_NOTIF_CREATE_SERVICE_URL=http://proxy:<span class="hljs-number">8080</span>/v1/<br/>    docker-flow-proxy/reconfigure \<br/><span class="hljs-operator">-e</span> DF_NOTIF_REMOVE_SERVICE_URL=http://proxy:<span class="hljs-number">8080</span>/v1/<br/>    docker-flow-proxy/remove \<br/>    --constraint <span class="hljs-string">'node.role==manager'</span> \<br/>    vfarcic/docker-flow-swarm-listener</strong>
+</pre>
+<p>The service is attached to the <kbd>proxy</kbd> network, mounts the Docker socket, and declares the environment variables <kbd>DF_NOTIF_CREATE_SERVICE_URL</kbd> and <kbd>DF_NOTIF_REMOVE_SERVICE_URL</kbd>. We'll see the purpose of those variables soon. The service is constrained to the manager nodes.</p>
+<p>The next step is to create the <kbd>proxy</kbd> service:</p>
+<pre>
+<strong>docker service create --name proxy \<br/>    -p <span class="hljs-number">80</span>:<span class="hljs-number">80</span> \<br/>    -p <span class="hljs-number">443</span>:<span class="hljs-number">443 </span> \<br/>    --network proxy \<br/><span class="hljs-operator">    -e</span> MODE=swarm \<br/><span class="hljs-operator">    -e</span> LISTENER_ADDRESS=swarm-listener \<br/>    vfarcic/docker-flow-proxy</strong>
+</pre>
+<p>We opened ports <kbd><em>80</em></kbd> and <kbd><em>443</em></kbd>. External requests will be routed through them towards destination services. Please note that this time, we did not open port <kbd>8080</kbd>. Since the <kbd>proxy</kbd> will be receiving notifications from the <kbd>swarm-listener</kbd>, there is no need for having <kbd>8080</kbd> available for manual notifications.</p>
+<p>The <kbd>proxy</kbd> is attached to the <kbd>proxy</kbd> network and has the mode set to swarm. The <kbd>proxy</kbd> must belong to the same network as the listener. They will exchange information whenever a service is created or removed as well as when a new instance of the <kbd>proxy</kbd> is created.</p>
+
+
+            </article>
+
+            <footer style="margin-top: 5em;">
+                
+            </footer>
+
+        </section>
+    
+
+        <section>
+
+            <header>
+                <h1 class="header-title">Automatically reconfiguring the proxy</h1>
+            </header>
+
+            <article>
+                
+<p>Let's create the already familiar demo services:</p>
+<pre>
+<strong>docker service create --name go-demo-db \<br/>  --network go-demo \<br/>  mongo:<span class="hljs-number">3.2</span>.<span class="hljs-number">10</span><br/><br/>docker service create --name go-demo \<br/><span class="hljs-operator">  -e</span> DB=go-demo-db \<br/>  --network go-demo \<br/>  --network proxy \<br/>  --label com.df.notify=<span class="hljs-literal">true</span> \<br/>  --label com.df.distribute=<span class="hljs-literal">true</span> \<br/>  --label com.df.servicePath=/demo  \<br/>  --label com.df.port=<span class="hljs-number">8080</span> \<br/>  vfarcic/go-demo:<span class="hljs-number">1.0</span></strong>
+</pre>
+<p>Please note the labels. We did not have them in the previous chapters. Things changed and now they are a crucial part of the service definition. The <kbd>com.df.notify=true</kbd> tells the <kbd>swarm-listener</kbd>  service whether to send notifications whenever a service is created or removed. Since we don't want to add the <kbd>go-demo-db</kbd> service to the <kbd>proxy</kbd>, the label is defined only for the <kbd>go-demo</kbd> service. The rest of the labels match the query arguments we would use if we'd reconfigure the proxy manually. The only difference is that the labels are prefixed with <kbd>com.df</kbd>. For the list of the query arguments, please see the <em>Reconfigure</em> (<a href="https://github.com/vfarcic/docker-flow-proxy#reconfigure">https://github.com/vfarcic/docker-flow-proxy#reconfigure</a>) section of the project.</p>
+<p>Now we should wait until all the services are running. You can see their status by executing the command that follows:</p>
+<pre>
+<strong>docker service ls</strong>
+</pre>
+<p>Once all the replicas are set to <kbd>1/1</kbd>, we can see the effect of the <kbd>com.df</kbd> labels by sending a request to the <kbd>go-demo</kbd> service through the <kbd>proxy</kbd>:</p>
+<pre>
+<strong>curl -i <span class="hljs-string">"<span class="hljs-variable">$(docker-machine ip swarm-1)</span>/demo/hello"</span></strong>
+</pre>
+<p>The output is as follows:</p>
+<pre>
+<strong><span class="hljs-status">HTTP/1.1 <span class="hljs-number">200</span> OK</span><br/><span class="hljs-attribute">Date</span>: <span class="hljs-string">Thu, 13 Oct 2016 18:26:18 GMT</span><br/><span class="hljs-attribute">Content-Length</span>: <span class="hljs-string">14</span><br/><span class="hljs-attribute">Content-Type</span>: <span class="hljs-string">text/plain; charset=utf-8</span><br/><br/><span class="erlang-repl"><span class="hljs-function_or_atom">hello</span>, <span class="hljs-function_or_atom">world</span><span class="hljs-exclamation_mark">!</span></span></strong>
+</pre>
+<p>We sent a request to the <kbd>proxy</kbd> (the only service listening to the port <kbd>80</kbd>) and got back the response from the <kbd>go-demo</kbd> service. The <kbd>proxy</kbd> was configured automatically as soon as the <kbd>go-demo</kbd> service was created.</p>
+<p>The way the process works is as follows:</p>
+<p><em>Docker Flow Swarm Listener</em> is running inside one of the Swarm manager nodes and queries Docker API in search of newly created services. Once it finds a new service, it looks for its labels. If the service contains the label <kbd>com.df.notify</kbd> (it can hold any value), the rest of the labels with keys starting with <kbd>com.df</kbd>. are retrieved. All those labels are used to form request parameters. Those parameters are appended to the address specified as the <kbd>DF_NOTIF_CREATE_SERVICE_URL</kbd> environment variable defined in the <kbd>swarm-listener</kbd> service. Finally, a request is sent. In this particular case, the request was made to reconfigure the <kbd>proxy</kbd> with the service <kbd>go-demo</kbd> (the name of the service), using <kbd>/demo</kbd> as the path, and running on the port <kbd>808</kbd>0. The distribute label is not necessary in this example since we're running only a single instance of the <kbd>proxy</kbd>. However, in production, we should run at least two <kbd>proxy</kbd> instances (for fault tolerance) and the distribute argument means that reconfiguration should be applied to all.</p>
+<p>Please see the <em>Reconfigure</em> (<a href="https://github.com/vfarcic/docker-flow-proxy#reconfigure">https://github.com/vfarcic/docker-flow-proxy#reconfigure</a>) section for the list of all the arguments that can be used with the proxy.</p>
+
+
+            </article>
+
+            <footer style="margin-top: 5em;">
+                
+            </footer>
+
+        </section>
+    
+
+        <section>
+
+            <header>
+                <h1 class="header-title">Removing a service from the proxy</h1>
+            </header>
+
+            <article>
+                
+<p>Since <kbd>swarm-listener</kbd> is monitoring <kbd>docker</kbd> services, if a service is removed, related entries in the <kbd>proxy</kbd> configuration will be removed as well:</p>
+<pre>
+<strong>docker service rm go-demo</strong>
+</pre>
+<p>If you were to check the Swarm Listener logs in the same way you would check logs for any other container service, you'd see an entry similar to the one that follows:</p>
+<pre>
+<strong>Sending service removed notification <span class="hljs-keyword">to</span> http:<span class="hljs-comment">//proxy:8080/v1/<br/>docker-flow-proxy/remove?serviceName=go-demo</span></strong>
+</pre>
+<p>A moment later, a new entry would appear in the <kbd>proxy</kbd> logs:</p>
+<pre>
+<strong>Processing request /v1/docker<span class="hljs-attribute">-flow</span><span class="hljs-attribute">-proxy</span>/remove<span class="hljs-subst">?</span>serviceName<span class="hljs-subst">=</span>go<span class="hljs-attribute">-demo</span><br/>Processing remove request /v1/docker<span class="hljs-attribute">-flow</span><span class="hljs-attribute">-proxy</span>/remove<br/>Removing go<span class="hljs-attribute">-demo</span> configuration<br/>Removing the go<span class="hljs-attribute">-demo</span> configuration files<br/>Reloading the proxy</strong>
+</pre>
+<p>From this moment on, the service <kbd>go-demo</kbd> is not available through the proxy.</p>
+<p>Swarm Listener detected that the service was removed, sent a notification to the <kbd>proxy</kbd> which, in turn, changed its configuration and reloaded the underlying HAProxy.</p>
+
+
+            </article>
+
+            <footer style="margin-top: 5em;">
+                
+            </footer>
+
+        </section>
+    
+
+        <section>
+
+            <header>
+                <h1 class="header-title">What now?</h1>
+            </header>
+
+            <article>
+                
+<p>Apart from the potential utility of having a proxy that is configured automatically whenever a service is created or removed, <kbd>swarm-listener</kbd> shows how useful it is to leverage the Docker Remote API. If you have your own needs that are not fully covered with Docker or one of the tools in its ecosystem, it is relatively easy to write your own service on top of the API. The truth is that, at the time this chapter was written, the Swarm Mode is only a couple of months old, and there aren’t many third party tools that can be used to fine tune or extend its behavior. Even if you find all the tools that do more or less what you need, it’s still a good idea to write a bit of code yourself and switch from more or less to exactly what you need.</p>
+<p>I encourage you to fire up your favorite editor and write a service in your programming language of choice. You can monitor services and send yourself an email whenever a member of your team creates or removes one. Or you can integrate statistics with your favorite monitoring tool.</p>
+<p>If you are out of ideas for your own service and you're not afraid of <em>Go </em>(<a href="https://golang.org/">https://golang.org/</a>), you might try extending <em>Docker Flow Swarm Listener </em>(<a href="https://github.com/vfarcic/docker-flow-swarm-listener">https://github.com/vfarcic/docker-flow-swarm-listener</a>). Fork it, add a new feature, and make a pull request.</p>
+<p>Remember, learning is golden. If the only outcome is that you learned something, that's already pretty good. If it turns up to be useful, even better.</p>
+<p>We reached the end of the chapter, and you already know the drill. We'll destroy the machines we created and start anew.</p>
+<pre>
+<strong>docker-machine rm <span class="hljs-operator">-f</span> swarm-<span class="hljs-number">1</span> swarm-<span class="hljs-number">2</span> swarm-<span class="hljs-number">3</span></strong>
+</pre>
+
+
+            </article>
+
+            <footer style="margin-top: 5em;">
+                
+            </footer>
+
+        </section>
+    </body></html>

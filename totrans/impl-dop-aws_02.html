@@ -1,0 +1,728 @@
+<html><head></head><body><div class="chapter" title="Chapter&#xA0;2.&#xA0;Start Treating Your Infrastructure as Code"><div class="titlepage"><div><div><h1 class="title"><a id="ch02"/>Chapter 2. Start Treating Your Infrastructure as Code</h1></div></div></div><p>Ladies and gentlemen, put your hands in the air, for Programmable Infrastructure is here!</p><p>Perhaps <span class="strong"><strong>Infrastructure-as-Code</strong></span> (<span class="strong"><strong>IaC</strong></span>) is not an entirely new concept considering how long Configuration Management has been around. Codifying server, storage, and networking infrastructure and their relationships, however, is a relatively recent tendency brought about by the rise of cloud computing. But let us leave Configuration Management for later and focus our attention on that second aspect of IaC.</p><p>You should recall from the previous chapter some of the benefits of storing all the things as code:</p><div class="itemizedlist"><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">Code can be kept under version control</li><li class="listitem" style="list-style-type: disc">Code can be shared/collaborated on easily</li><li class="listitem" style="list-style-type: disc">Code doubles as documentation</li><li class="listitem" style="list-style-type: disc">Code is reproducible</li></ul></div><p>That last point was a big win for me personally. Automated provisioning helped reduce the time it took to deploy a full-featured cloud environment from four hours down to one, and the occurrences of human error to almost zero (one shall not be trusted with an input field).</p><p>Being able to rapidly provision resources becomes a significant advantage when a team starts using multiple environments in parallel and needs those brought up or down on-demand. In this chapter, we examine in detail how to describe (in code) and deploy one such environment on AWS with minimal manual interaction.</p><p>To implement IaC in the cloud, we will look at two tools or services: <span class="strong"><strong>Terraform</strong></span> and <span class="strong"><strong>CloudFormation</strong></span>.</p><p>We will go through examples of the following:</p><div class="itemizedlist"><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">Configuring the tool</li><li class="listitem" style="list-style-type: disc">Writing an IaC template</li><li class="listitem" style="list-style-type: disc">Deploying a template</li><li class="listitem" style="list-style-type: disc">Deploying subsequent changes to the template</li><li class="listitem" style="list-style-type: disc">Deleting a template and removing the provisioned infrastructure</li></ul></div><p>For the purpose of these examples, let us assume our application requires a <span class="strong"><strong>Virtual Private Cloud</strong></span> (<span class="strong"><strong>VPC</strong></span>) that hosts a <span class="strong"><strong>Relational Database Services</strong></span> (<span class="strong"><strong>RDS</strong></span>) backend and a couple of <span class="strong"><strong>Elastic Compute Cloud</strong></span> (<span class="strong"><strong>EC2</strong></span>) instances behind an <span class="strong"><strong>Elastic Load Balancer</strong></span> (<span class="strong"><strong>ELB</strong></span>). We will keep most components behind <span class="strong"><strong>Network Address Translation</strong></span> (<span class="strong"><strong>NAT</strong></span>), allowing only the load balancer to be accessed externally.</p><div class="section" title="IaC using Terraform"><div class="titlepage"><div><div><h1 class="title"><a id="ch02lvl1sec3"/>IaC using Terraform</h1></div></div></div><p>One of the tools that can help deploy infrastructure on AWS is HashiCorp's Terraform (<a class="ulink" href="https://www.terraform.io">https://www.terraform.io</a>). HashiCorp is that genius bunch that gave us Vagrant, Packer, and Consul. I would recommend you look up their website if you have not already.</p><p>Using <span class="strong"><strong>Terraform</strong></span> (<span class="strong"><strong>TF</strong></span>), we will be able to write a template describing an environment, perform a <span class="emphasis"><em>dry run</em></span> to see what is about to happen and whether it is expected, deploy the template, and make any late adjustments where necessary-all of this without leaving the shell prompt.</p><div class="section" title="Configuration"><div class="titlepage"><div><div><h2 class="title"><a id="ch02lvl2sec13"/>Configuration</h2></div></div></div><p>Firstly, you will need to have a copy of TF (<a class="ulink" href="https://www.terraform.io/downloads.html">https://www.terraform.io/downloads.html</a>) on your machine and available on the CLI. You should be able to query the currently installed version, which in my case is 0.6.15:</p><pre class="programlisting">
+<span class="strong"><strong>$ terraform --version</strong></span>
+<span class="strong"><strong>Terraform v0.6.15</strong></span>
+</pre><p>Since TF makes use of the AWS APIs, it requires a set of authentication keys and some level of access to your AWS account. In order to deploy the examples in this chapter you could create a new <span class="strong"><strong>Identity</strong></span>
+<span class="strong"><strong>and</strong></span>
+<span class="strong"><strong>Access Management</strong></span> (<span class="strong"><strong>IAM</strong></span>) user with the following permissions:</p><pre class="programlisting">    "autoscaling:CreateAutoScalingGroup",&#13;
+    "autoscaling:CreateLaunchConfiguration",&#13;
+    "autoscaling:DeleteLaunchConfiguration",&#13;
+    "autoscaling:Describe*",&#13;
+    "autoscaling:UpdateAutoScalingGroup",&#13;
+    "ec2:AllocateAddress",&#13;
+    "ec2:AssociateAddress",&#13;
+    "ec2:AssociateRouteTable",&#13;
+    "ec2:AttachInternetGateway",&#13;
+    "ec2:AuthorizeSecurityGroupEgress",&#13;
+    "ec2:AuthorizeSecurityGroupIngress",&#13;
+    "ec2:CreateInternetGateway",&#13;
+    "ec2:CreateNatGateway",&#13;
+    "ec2:CreateRoute",&#13;
+    "ec2:CreateRouteTable",&#13;
+    "ec2:CreateSecurityGroup",&#13;
+    "ec2:CreateSubnet",&#13;
+    "ec2:CreateTags",&#13;
+    "ec2:CreateVpc",&#13;
+    "ec2:Describe*",&#13;
+    "ec2:ModifySubnetAttribute",&#13;
+    "ec2:RevokeSecurityGroupEgress",&#13;
+    "elasticloadbalancing:AddTags",&#13;
+    "elasticloadbalancing:ApplySecurityGroupsToLoadBalancer",&#13;
+    "elasticloadbalancing:AttachLoadBalancerToSubnets",&#13;
+    "elasticloadbalancing:CreateLoadBalancer",&#13;
+    "elasticloadbalancing:CreateLoadBalancerListeners",&#13;
+    "elasticloadbalancing:Describe*",&#13;
+    "elasticloadbalancing:ModifyLoadBalancerAttributes",&#13;
+    "rds:CreateDBInstance",&#13;
+    "rds:CreateDBSubnetGroup",&#13;
+    "rds:Describe*"&#13;
+</pre><div class="note" title="Note" style=""><div class="inner"><h3 class="title"><a id="note1"/>Note</h3><p>Please refer to this file for more information:
+<a class="ulink" href="https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_02_CodeFiles/Terraform/iam_user_policy.json">https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_02_CodeFiles/Terraform/iam_user_policy.json</a>.</p></div></div><p>One way to make the credentials of the IAM user available to TF is by exporting the following environment variables:</p><pre class="programlisting">
+<span class="strong"><strong>$ export AWS_ACCESS_KEY_ID='user_access_key'</strong></span>
+<span class="strong"><strong>$ export AWS_SECRET_ACCESS_KEY='user_secret_access_key'</strong></span>
+</pre><p>This should be sufficient to get us started.</p><div class="note" title="Note" style=""><div class="inner"><h3 class="title"><a id="note2"/>Note</h3><p>
+<span class="strong"><strong>Downloading the example code</strong></span></p><p>Detailed steps to download the code bundle are mentioned in the Preface of this book.</p><p>The code bundle for the book is also hosted on GitHub at: <a class="ulink" href="https://github.com/PacktPublishing/Implementing-DevOps-on-AWS">https://github.com/PacktPublishing/Implementing-DevOps-on-AWS</a>.
+We also have other code bundles from our rich catalog of books and
+videos available at: <a class="ulink" href="https://github.com/PacktPublishing/">https://github.com/PacktPublishing/</a>. Check them out!</p></div></div></div><div class="section" title="Template design"><div class="titlepage"><div><div><h2 class="title"><a id="ch02lvl2sec14"/>Template design</h2></div></div></div><p>Before we get to coding, here are some of the rules:</p><div class="itemizedlist"><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">You could choose to write a TF template as a single large file or a combination of smaller ones</li><li class="listitem" style="list-style-type: disc">Templates can be written in pure JSON or TF's own format</li><li class="listitem" style="list-style-type: disc">TF will look for files with<code class="literal">.tf</code> or <code class="literal">.tf.json</code> extensions in a given folder and load them in alphabetical order</li><li class="listitem" style="list-style-type: disc">TF templates are declarative, hence the order in which resources appear in them does not affect the flow of execution</li></ul></div><p>A TF template generally consists of three sections: <span class="emphasis"><em>resources</em></span>, <span class="emphasis"><em>variables</em></span>, and <span class="emphasis"><em>outputs</em></span>. As mentioned in the preceding section, it is a matter of personal preference how you arrange these; however, for better readability I suggest we make use of the TF format and write each section to a separate file. Also, while the file extensions are of importance, the filenames are up to you.</p><div class="section" title="Resources"><div class="titlepage"><div><div><h3 class="title"><a id="ch02lvl3sec0"/>Resources</h3></div></div></div><p>In a way, this file holds the main part of a template, as the resources represent the actual components that end up being provisioned. For example, we will be using the VPC Terraform resource, RDS, ELB and a few others to provision what roughly looks like this:</p><p>
+</p><div class="mediaobject"><img src="graphics/B05585_02_05a-1024x844.jpg" alt="Resources"/></div><p>
+</p><p>Since template elements can be written in any order, TF determines the flow of execution by examining any references that it finds (for example, a VPC should exist before an ELB that is said to belong to it is created). Alternatively, explicit flow control attributes such as <code class="literal">depends_on</code> are used, as we will observe shortly.</p><p>To find out more, let us go through the contents of the <code class="literal">resources.tf</code> file.</p><div class="note" title="Note" style=""><div class="inner"><h3 class="title"><a id="note3"/>Note</h3><p>Please refer to:
+<a class="ulink" href="https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_02_CodeFiles/Terraform/resources.tf">https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_02_CodeFiles/Terraform/resources.tf</a>.</p></div></div><p>First, we tell Terraform what provider to use for our infrastructure:</p><pre class="programlisting"># Set a Provider &#13;
+  provider "aws"  &#13;
+{ &#13;
+  region = "${var.aws-region}" &#13;
+} &#13;
+</pre><p>You will notice that no credentials are specified, since we set them as environment variables earlier.</p><p>Now we can add the VPC and its networking components:</p><pre class="programlisting"># Create a VPC &#13;
+  resource "aws_vpc" "terraform-vpc"  &#13;
+{ &#13;
+  cidr_block = "${var.vpc-cidr}" &#13;
+ &#13;
+  tags  &#13;
+  { &#13;
+    Name = "${var.vpc-name}" &#13;
+  } &#13;
+} &#13;
+ &#13;
+# Create an Internet Gateway &#13;
+  resource "aws_internet_gateway" "terraform-igw"  &#13;
+{ &#13;
+  vpc_id = "${aws_vpc.terraform-vpc.id}" &#13;
+} &#13;
+ &#13;
+# Create NAT &#13;
+  resource "aws_eip" "nat-eip"  &#13;
+{ &#13;
+  vpc = true &#13;
+} &#13;
+</pre><p>So far, we have declared the VPC, its Internet and NAT gateways, plus a set of public and private subnets with matching routing tables.</p><p>It will help clarify the syntax if we examined some of those resource blocks, line by line:</p><pre class="programlisting">resource "aws_subnet" "public-1" { &#13;
+</pre><p>The first argument is the type of the resource followed by an arbitrary name:</p><pre class="programlisting">vpc_id = "${aws_vpc.terraform-vpc.id}" &#13;
+</pre><p>The <code class="literal">aws_subnet</code> resource named <code class="literal">public-1</code> has a <code class="literal">vpc_id</code> property, which refers to the <code class="literal">id</code> attribute of a different <code class="literal">aws_vpc</code> resource named <code class="literal">terraform-vpc</code>. Such references to other resources implicitly define the execution flow, that is to say, the VPC needs to exist before the subnet can be created:</p><pre class="programlisting">cidr_block = "${cidrsubnet(var.vpc-cidr, 8, 1)}" &#13;
+</pre><p>We will talk more about variables in a moment, but the format is <code class="literal">var.var_name as shown here</code>.</p><p>Here, we use the <code class="literal">cidrsubnet</code> function with the <code class="literal">vpc-cidr</code> variable, which returns a <code class="literal">cidr_block</code> to be assigned to the <code class="literal">public-1</code> subnet. Please refer to the TF documentation for this and other useful functions.</p><p>Next, we add a RDS to the VPC:</p><pre class="programlisting">resource "aws_db_instance" "terraform" { &#13;
+identifier = "${var.rds-identifier}" &#13;
+allocated_storage = "${var.rds-storage-size}" &#13;
+storage_type= "${var.rds-storage-type}" &#13;
+engine = "${var.rds-engine}" &#13;
+engine_version = "${var.rds-engine-version}" &#13;
+instance_class = "${var.rds-instance-class}" &#13;
+username = "${var.rds-username}" &#13;
+password = "${var.rds-password}" &#13;
+port = "${var.rds-port}" &#13;
+vpc_security_group_ids = ["${aws_security_group.terraform-rds.id}"] &#13;
+db_subnet_group_name = "${aws_db_subnet_group.rds.id}" &#13;
+} &#13;
+</pre><p>Here, we mostly see references to variables with a few calls to other resources.</p><p>Following the RDS is an ELB:</p><pre class="programlisting">resource "aws_elb" "terraform-elb"  &#13;
+{ &#13;
+  name = "terraform-elb" &#13;
+  security_groups = ["${aws_security_group.terraform-elb.id}"] &#13;
+  subnets = ["${aws_subnet.public-1.id}", &#13;
+"${aws_subnet.public-2.id}"] &#13;
+ &#13;
+listener  &#13;
+  { &#13;
+   instance_port = 80 &#13;
+   instance_protocol = "http" &#13;
+   lb_port = 80 &#13;
+   lb_protocol = "http" &#13;
+  } &#13;
+ &#13;
+tags  &#13;
+  { &#13;
+   Name = "terraform-elb" &#13;
+  } &#13;
+    } &#13;
+</pre><p>Lastly, we define the EC2 Auto Scaling Group and related resources such as the Launch Configuration.</p><p>For the Launch Configuration we define the AMI and type of instance to be used, the name of the SSH keypair, EC2 security group(s) and the UserData to be used to bootstrap the instances:</p><pre class="programlisting">resource "aws_launch_configuration" "terraform-lcfg" { &#13;
+image_id = "${var.autoscaling-group-image-id}" &#13;
+instance_type = "${var.autoscaling-group-instance-type}" &#13;
+key_name = "${var.autoscaling-group-key-name}" &#13;
+security_groups = ["${aws_security_group.terraform-ec2.id}"] &#13;
+user_data = "#!/bin/bash \n set -euf -o pipefail \n exec 1&gt; &gt;(logger -s -t $(basename $0)) 2&gt;&amp;1 \n yum -y install nginx; chkconfig nginx on; service nginx start" &#13;
+ &#13;
+lifecycle { &#13;
+create_before_destroy = true &#13;
+} &#13;
+</pre><p>The Auto Scaling Group takes the ID of the Launch Configuration, a list of VPC subnets, the min/max number of instances and the name of the ELB to attach provisioned instances to:</p><pre class="programlisting">} &#13;
+resource "aws_autoscaling_group" "terraform-asg" { &#13;
+name = "terraform" &#13;
+launch_configuration = "${aws_launch_configuration.terraform-lcfg.id}" &#13;
+vpc_zone_identifier = ["${aws_subnet.private-1.id}", "${aws_subnet.private-2.id}"] &#13;
+min_size = "${var.autoscaling-group-minsize}" &#13;
+max_size = "${var.autoscaling-group-maxsize}" &#13;
+load_balancers = ["${aws_elb.terraform-elb.name}"] &#13;
+depends_on = ["aws_db_instance.terraform"] &#13;
+tag { &#13;
+key = "Name" &#13;
+value = "terraform" &#13;
+propagate_at_launch = true &#13;
+} &#13;
+} &#13;
+</pre><p>The preceding <code class="literal">user_data</code> shell script will install and start NGINX onto the EC2 node(s).</p></div><div class="section" title="Variables"><div class="titlepage"><div><div><h3 class="title"><a id="ch02lvl3sec1"/>Variables</h3></div></div></div><p>We have made great use of variables to define our resources, making the template as re-usable as possible. Let us now look inside <code class="literal">variables.tf</code> to study these further.</p><p>Similarly to the resources list, we start with the VPC:</p><div class="note" title="Note" style=""><div class="inner"><h3 class="title"><a id="note4"/>Note</h3><p>Please refer to:
+<a class="ulink" href="https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_02_CodeFiles/Terraform/variables.tf">https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_02_CodeFiles/Terraform/variables.tf</a>.</p></div></div><pre class="programlisting">variable "aws-region" { &#13;
+type = "string" &#13;
+description = "AWS region" &#13;
+} &#13;
+variable "aws-availability-zones" { &#13;
+type = "string" &#13;
+description = "AWS zones" &#13;
+} &#13;
+variable "vpc-cidr" { &#13;
+type = "string" &#13;
+description = "VPC CIDR" &#13;
+} &#13;
+variable "vpc-name" { &#13;
+type = "string" &#13;
+description = "VPC name" &#13;
+} &#13;
+</pre><p>The syntax is as follows:</p><pre class="programlisting">variable "variable_name" {  &#13;
+variable properties  &#13;
+} &#13;
+</pre><p>
+<code class="literal">variable_name</code> is arbitrary, but needs to match relevant <code class="literal">var.var_name</code> references made in other parts of the template. For example, the <code class="literal">aws-region</code> variable will satisfy the <code class="literal">${var.aws-region}</code> reference we made earlier when describing the region of the <code class="literal">provider aws resource</code>.</p><p>We will mostly use <code class="literal">string</code> variables, but there is another useful type called <span class="strong"><strong>map</strong></span> that can hold lookup tables. Maps are queried in a similar way to looking up values in a hash/dict (Please see: <a class="ulink" href="https://www.terraform.io/docs/configuration/variables.html">https://www.terraform.io/docs/configuration/variables.html</a>).</p><p>Next comes RDS:</p><pre class="programlisting">variable "rds-identifier" { &#13;
+type = "string" &#13;
+description = "RDS instance identifier" &#13;
+}   &#13;
+variable "rds-storage-size" { &#13;
+type = "string" &#13;
+description = "Storage size in GB" &#13;
+} &#13;
+variable "rds-storage-type" { &#13;
+type = "string" &#13;
+description = "Storage type" &#13;
+} &#13;
+variable "rds-engine" { &#13;
+type = "string" &#13;
+description = "RDS type" &#13;
+} &#13;
+variable "rds-engine-version" { &#13;
+type = "string" &#13;
+description = "RDS version" &#13;
+} &#13;
+variable "rds-instance-class" { &#13;
+type = "string" &#13;
+description = "RDS instance class" &#13;
+} &#13;
+variable "rds-username" { &#13;
+type = "string" &#13;
+description = "RDS username" &#13;
+} &#13;
+variable "rds-password" { &#13;
+type = "string" &#13;
+description = "RDS password" &#13;
+} &#13;
+variable "rds-port" { &#13;
+type = "string" &#13;
+description = "RDS port number" &#13;
+} &#13;
+</pre><p>Lastly, we add our EC2 related variables:</p><pre class="programlisting">variable "autoscaling-group-minsize" { &#13;
+type = "string" &#13;
+description = "Min size of the ASG" &#13;
+} &#13;
+variable "autoscaling-group-maxsize" { &#13;
+type = "string" &#13;
+description = "Max size of the ASG" &#13;
+} &#13;
+variable "autoscaling-group-image-id" { &#13;
+type="string" &#13;
+description = "EC2 AMI identifier" &#13;
+} &#13;
+variable "autoscaling-group-instance-type" { &#13;
+type = "string" &#13;
+description = "EC2 instance type" &#13;
+} &#13;
+variable "autoscaling-group-key-name" { &#13;
+type = "string" &#13;
+description = "EC2 ssh key name" &#13;
+} &#13;
+</pre><p>We now have the type and description of all our variables defined in <code class="literal">variables.tf</code>, but no values have been assigned to them yet.</p><p>TF is quite flexible with how this can be done. We could do it any of the following ways:</p><div class="itemizedlist"><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">Assign (default) values directly in <code class="literal">variables.tf:</code></li><li class="listitem" style="list-style-type: disc">variable "<code class="literal">aws-region</code>" { <code class="literal">type = "string"</code><code class="literal">description = "AWS region"</code><code class="literal">default = 'us-east-1'</code> }</li><li class="listitem" style="list-style-type: disc">Not assign a value to a variable, in which case TF will prompt for it at run time</li><li class="listitem" style="list-style-type: disc"><code class="literal">* </code>Pass a <code class="literal">-var 'key=value'</code> argument directly to the TF command, like so:</li></ul></div><pre class="programlisting">-var 'aws-region=us-east-1' &#13;
+</pre><div class="itemizedlist"><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">Store <code class="literal">key=value</code> pairs in a file</li><li class="listitem" style="list-style-type: disc">Use environment variables prefixed with <code class="literal">TF_VAR</code>, as in <code class="literal">TF_VAR_ aws-region</code></li></ul></div><p>Using a <code class="literal">key=value</code> pairs file proves to be quite convenient within teams, as each engineer can have a private copy (excluded from revision control). If the file is named <code class="literal">terraform.tfvars</code> it will be read automatically by TF; alternatively, <code class="literal">-var-file</code> can be used on the command line to specify a different source.</p><p>Here is the content of our sample <code class="literal">terraform.tfvars</code> file:</p><div class="note" title="Note" style=""><div class="inner"><h3 class="title"><a id="note5"/>Note</h3><p>Please refer to:
+<a class="ulink" href="https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_02_CodeFiles/Terraform/terraform.tfvars">https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_02_CodeFiles/Terraform/terraform.tfvars</a>.</p></div></div><pre class="programlisting">autoscaling-group-image-id = "ami-08111162" &#13;
+autoscaling-group-instance-type = "t2.nano" &#13;
+autoscaling-group-key-name = "terraform" &#13;
+autoscaling-group-maxsize = "1" &#13;
+autoscaling-group-minsize = "1" &#13;
+aws-availability-zones = "us-east-1b,us-east-1c" &#13;
+aws-region = "us-east-1" &#13;
+rds-engine = "postgres" &#13;
+rds-engine-version = "9.5.2" &#13;
+rds-identifier = "terraform-rds" &#13;
+rds-instance-class = "db.t2.micro" &#13;
+rds-port = "5432" &#13;
+rds-storage-size = "5" &#13;
+rds-storage-type = "gp2" &#13;
+rds-username = "dbroot" &#13;
+rds-password = "donotusethispassword" &#13;
+vpc-cidr = "10.0.0.0/16" &#13;
+vpc-name = "Terraform" &#13;
+</pre><p>A point of interest is <code class="literal">aws-availability-zones</code>, as it holds multiple values that we interact with using the element and split functions, as seen in <code class="literal">resources.tf</code>.</p></div><div class="section" title="Outputs"><div class="titlepage"><div><div><h3 class="title"><a id="ch02lvl3sec2"/>Outputs</h3></div></div></div><p>The third, mostly informational part of our template contains the TF Outputs. These allow selected values to be returned to the user when testing, deploying or after a template has been deployed. The concept is similar to how echo statements are commonly used in shell scripts to display useful information during execution.</p><p>Let us add outputs to our template by creating an <code class="literal">outputs.tf</code> file:</p><div class="note" title="Note" style=""><div class="inner"><h3 class="title"><a id="note6"/>Note</h3><p>Please refer to:
+<a class="ulink" href="https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_02_CodeFiles/Terraform/outputs.tf">https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_02_CodeFiles/Terraform/outputs.tf</a>.</p></div></div><pre class="programlisting">output "VPC ID" { &#13;
+value = "${aws_vpc.terraform-vpc.id}" &#13;
+} &#13;
+ &#13;
+output "NAT EIP" { &#13;
+value = "${aws_nat_gateway.terraform-nat.public_ip}" &#13;
+} &#13;
+ &#13;
+output "ELB URI" { &#13;
+value = "${aws_elb.terraform-elb.dns_name}" &#13;
+} &#13;
+output "RDS Endpoint" { &#13;
+value = "${aws_db_instance.terraform.endpoint}" &#13;
+} &#13;
+</pre><p>To configure an output, you simply reference a given resource and its attribute. As shown in preceding code, we have chosen the ID of the VPC, the Elastic IP address of the NAT gateway, the DNS name of the ELB and the endpoint address of the RDS instance.</p><p>This section completes the template in this example. You should now have four files in your template folder: <code class="literal">resources.tf</code>, <code class="literal">variables.tf</code>, <code class="literal">terraform.tfvars</code>, and <code class="literal">outputs.tf</code>.</p></div></div><div class="section" title="Operations"><div class="titlepage"><div><div><h2 class="title"><a id="ch02lvl2sec15"/>Operations</h2></div></div></div><p>We shall examine five main TF operations:</p><div class="itemizedlist"><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">Validating a template</li><li class="listitem" style="list-style-type: disc">Testing (dry-run)</li><li class="listitem" style="list-style-type: disc">Initial deployment</li><li class="listitem" style="list-style-type: disc">Updating a deployment</li><li class="listitem" style="list-style-type: disc">Removal of a deployment</li></ul></div><div class="note" title="Note" style=""><div class="inner"><h3 class="title"><a id="note7"/>Note</h3><p>In the following command line examples, Terraform is run within the folder that contains the template files.</p></div></div><div class="section" title="Validation"><div class="titlepage"><div><div><h3 class="title"><a id="ch02lvl3sec3"/>Validation</h3></div></div></div><p>Before going any further, a basic syntax check should be done with the <code class="literal">terraform validate</code> command. After renaming one of the variables in <code class="literal">resources.tf</code>, validate returns an <code class="literal">unknown variable</code> error:</p><pre class="programlisting">
+<span class="strong"><strong>$ terraform validate</strong></span>
+<span class="strong"><strong>Error validating: 1 error(s) occurred:</strong></span>
+<span class="strong"><strong>* provider config 'aws': unknown variable referenced: 'aws-region-1'. define it with 'variable' blocks</strong></span>
+</pre><p>Once the variable name has been corrected, re-running <code class="literal">validate</code> returns no output, meaning validation has passed.</p></div><div class="section" title="Dry-run"><div class="titlepage"><div><div><h3 class="title"><a id="ch02lvl3sec4"/>Dry-run</h3></div></div></div><p>The next step is to perform a test/dry-run execution with <code class="literal">terraform plan</code>, which displays what would happen during an actual deployment. The command returns a color-coded list of resources and their properties or more precisely, as follows:</p><pre class="programlisting">
+<span class="strong"><strong>$ terraform plan</strong></span>
+<span class="strong"><strong>Resources are shown in alphabetical order for quick scanning. Green resources will be created (or destroyed and then created if an existing resource exists), yellow resources are being changed in-place, and red resources will be destroyed.</strong></span>
+</pre><p>To literally get the picture of what the to-be-deployed infrastructure looks like, you could use <code class="literal">terraform graph</code>:</p><pre class="programlisting">
+<span class="strong"><strong>$ terraform graph &gt; my_graph.dot</strong></span>
+</pre><p>DOT files can be manipulated with the <span class="strong"><strong>Graphviz</strong></span> open source software (Please see <a class="ulink" href="http://www.graphviz.org">http://www.graphviz.org</a>) or many online readers/converters. The following diagram is a portion of a larger graph representing the template we designed earlier:</p><p>
+</p><div class="mediaobject"><img src="graphics/image_02_002.jpg" alt="Dry-run"/></div><p>
+</p><p>Terraform graph</p></div><div class="section" title="Deployment"><div class="titlepage"><div><div><h3 class="title"><a id="ch02lvl3sec5"/>Deployment</h3></div></div></div><p>If you are happy with the plan and graph, the template can now be deployed using <code class="literal">terraform apply</code>:</p><pre class="programlisting">
+<span class="strong"><strong>$ terraform apply</strong></span>
+<span class="strong"><strong>aws_eip.nat-eip: Creating...</strong></span>
+<span class="strong"><strong>allocation_id: "" =&gt; "&lt;computed&gt;"</strong></span>
+<span class="strong"><strong>association_id: "" =&gt; "&lt;computed&gt;"</strong></span>
+<span class="strong"><strong>domain: "" =&gt; "&lt;computed&gt;"</strong></span>
+<span class="strong"><strong>instance: "" =&gt; "&lt;computed&gt;"</strong></span>
+<span class="strong"><strong>network_interface: "" =&gt; "&lt;computed&gt;"</strong></span>
+<span class="strong"><strong>private_ip: "" =&gt; "&lt;computed&gt;"</strong></span>
+<span class="strong"><strong>public_ip: "" =&gt; "&lt;computed&gt;"</strong></span>
+<span class="strong"><strong>vpc: "" =&gt; "1"</strong></span>
+<span class="strong"><strong>aws_vpc.terraform-vpc: Creating...</strong></span>
+<span class="strong"><strong>cidr_block: "" =&gt; "10.0.0.0/16"</strong></span>
+<span class="strong"><strong>default_network_acl_id: "" =&gt; "&lt;computed&gt;"</strong></span>
+<span class="strong"><strong>default_security_group_id: "" =&gt; "&lt;computed&gt;"</strong></span>
+<span class="strong"><strong>dhcp_options_id: "" =&gt; "&lt;computed&gt;"</strong></span>
+<span class="strong"><strong>enable_classiclink: "" =&gt; "&lt;computed&gt;"</strong></span>
+<span class="strong"><strong>enable_dns_hostnames: "" =&gt; "&lt;computed&gt;"</strong></span>
+<span class="strong"><strong>Apply complete! Resources: 22 added, 0 changed, 0 destroyed.</strong></span>
+</pre><p>The state of your infrastructure has been saved to the following path. This state is required to modify and destroy your infrastructure, so keep it safe. To inspect the complete state, use the <code class="literal">terraform show</code> command.</p><pre class="programlisting">
+<span class="strong"><strong>State path: terraform.tfstate</strong></span>
+<span class="strong"><strong>Outputs:</strong></span>
+<span class="strong"><strong>ELB URI = terraform-elb-xxxxxx.us-east-1.elb.amazonaws.com</strong></span>
+<span class="strong"><strong>NAT EIP = x.x.x.x</strong></span>
+<span class="strong"><strong>RDS Endpoint = terraform-rds.xxxxxx.us-east-1.rds.amazonaws.com:5432</strong></span>
+<span class="strong"><strong>VPC ID = vpc-xxxxxx</strong></span>
+</pre><p>At the end of a successful deployment, you will notice the <code class="literal">Outputs</code> we configured earlier and a message about another important part of <span class="emphasis"><em>TF - the state file</em></span> (please refer to <a class="ulink" href="https://www.terraform.io/docs/state/">https://www.terraform.io/docs/state/</a>):</p><p>TF stores the state of your managed infrastructure from the last time TF was run. By default, this state is stored in a local file named <code class="literal">terraform.tfstate</code>, but it can also be stored remotely, which works better in a team environment.</p><p>TF uses this local state to create plans and make changes to your infrastructure. Prior to any operation, TF does a refresh to update the state with the real infrastructure.</p><p>In a sense, the <code class="literal">state</code> file contains a snapshot of your infrastructure and is used to calculate any changes when a template has been modified. Normally, you would keep the <code class="literal">terraform.tfstate</code> file under version control alongside your templates. In a team environment however, if you encounter too many merge conflicts you can switch to storing the <code class="literal">state</code> file(s) in an alternative location such as S3 (please see: <a class="ulink" href="https://www.terraform.io/docs/state/remote/index.html">https://www.terraform.io/docs/state/remote/index.html</a>).</p><p>Allow a few minutes for the EC2 node to fully initialize, then try loading the ELB URI from the preceding <code class="literal">Outputs</code> in your browser. You should be greeted by <span class="strong"><strong>nginx</strong></span>, as shown in the following screenshot:</p><p>
+</p><div class="mediaobject"><img src="graphics/image_02_003.jpg" alt="Deployment"/></div><p>
+</p></div><div class="section" title="Updates"><div class="titlepage"><div><div><h3 class="title"><a id="ch02lvl3sec6"/>Updates</h3></div></div></div><p>As per Murphy 's Law, as soon as we deploy a template, a change to it will become necessary. Fortunately, all that is needed for this is to update and re-deploy the given template.</p><p>Let's say we need to add a new rule to the ELB security group (shown in bold):</p><div class="orderedlist"><ol class="orderedlist arabic"><li class="listitem">Update the <code class="literal">"aws_security_group" "terraform-elb"</code> resource block in <code class="literal">resources.tf</code>:<pre class="programlisting">    resource "aws_security_group" "terraform-elb" {&#13;
+    name = "terraform-elb"&#13;
+    description = "ELB security group"&#13;
+    vpc_id = "${aws_vpc.terraform-vpc.id}"&#13;
+    &#13;
+    ingress {&#13;
+    from_port = "80"&#13;
+    to_port = "80"&#13;
+    protocol = "tcp"&#13;
+    cidr_blocks = ["0.0.0.0/0"]&#13;
+    }&#13;
+    &#13;
+    ingress {&#13;
+    from_port = "443"&#13;
+    to_port = "443"&#13;
+    protocol = "tcp"&#13;
+    cidr_blocks = ["0.0.0.0/0"]&#13;
+    }&#13;
+    &#13;
+    egress {&#13;
+    from_port = 0&#13;
+    to_port = 0&#13;
+    protocol = "-1"&#13;
+    cidr_blocks = ["0.0.0.0/0"]&#13;
+    }&#13;
+    &#13;
+    }&#13;
+</pre><p>
+</p></li><li class="listitem">Verify what is about to change:<pre class="programlisting">
+<span class="strong"><strong>$ terraform plan</strong></span>
+<span class="strong"><strong>...</strong></span>
+<span class="strong"><strong>~ aws_security_group.terraform-elb</strong></span>
+<span class="strong"><strong>ingress.#: "1" =&gt; "2"</strong></span>
+<span class="strong"><strong>ingress.2214680975.cidr_blocks.#: "1" =&gt; "1"</strong></span>
+<span class="strong"><strong>ingress.2214680975.cidr_blocks.0: "0.0.0.0/0" =&gt; "0.0.0.0/0"</strong></span>
+<span class="strong"><strong>ingress.2214680975.from_port: "80" =&gt; "80"</strong></span>
+<span class="strong"><strong>ingress.2214680975.protocol: "tcp" =&gt; "tcp"</strong></span>
+<span class="strong"><strong>ingress.2214680975.security_groups.#: "0" =&gt; "0"</strong></span>
+<span class="strong"><strong>ingress.2214680975.self: "0" =&gt; "0"</strong></span>
+<span class="strong"><strong>ingress.2214680975.to_port: "80" =&gt; "80"</strong></span>
+<span class="strong"><strong>ingress.2617001939.cidr_blocks.#: "0" =&gt; "1"</strong></span>
+<span class="strong"><strong>ingress.2617001939.cidr_blocks.0: "" =&gt; "0.0.0.0/0"</strong></span>
+<span class="strong"><strong>ingress.2617001939.from_port: "" =&gt; "443"</strong></span>
+<span class="strong"><strong>ingress.2617001939.protocol: "" =&gt; "tcp"</strong></span>
+<span class="strong"><strong>ingress.2617001939.security_groups.#: "0" =&gt; "0"</strong></span>
+<span class="strong"><strong>ingress.2617001939.self: "" =&gt; "0"</strong></span>
+<span class="strong"><strong>ingress.2617001939.to_port: "" =&gt; "443"</strong></span>
+<span class="strong"><strong>Plan: 0 to add, 1 to change, 0 to destroy.</strong></span>
+</pre><p>
+</p></li><li class="listitem">Deploy the change:<pre class="programlisting">
+<span class="strong"><strong>$ terraform apply</strong></span>
+<span class="strong"><strong>...</strong></span>
+<span class="strong"><strong>aws_security_group.terraform-elb: Modifying...</strong></span>
+<span class="strong"><strong>ingress.#: "1" =&gt; "2"</strong></span>
+<span class="strong"><strong>ingress.2214680975.cidr_blocks.#: "1" =&gt; "1"</strong></span>
+<span class="strong"><strong>ingress.2214680975.cidr_blocks.0: "0.0.0.0/0" =&gt; "0.0.0.0/0"</strong></span>
+<span class="strong"><strong>ingress.2214680975.from_port: "80" =&gt; "80"</strong></span>
+<span class="strong"><strong>ingress.2214680975.protocol: "tcp" =&gt; "tcp"</strong></span>
+<span class="strong"><strong>ingress.2214680975.security_groups.#: "0" =&gt; "0"</strong></span>
+<span class="strong"><strong>ingress.2214680975.self: "0" =&gt; "0"</strong></span>
+<span class="strong"><strong>ingress.2214680975.to_port: "80" =&gt; "80"</strong></span>
+<span class="strong"><strong>ingress.2617001939.cidr_blocks.#: "0" =&gt; "1"</strong></span>
+<span class="strong"><strong>ingress.2617001939.cidr_blocks.0: "" =&gt; "0.0.0.0/0"</strong></span>
+<span class="strong"><strong>ingress.2617001939.from_port: "" =&gt; "443"</strong></span>
+<span class="strong"><strong>ingress.2617001939.protocol: "" =&gt; "tcp"</strong></span>
+<span class="strong"><strong>ingress.2617001939.security_groups.#: "0" =&gt; "0"</strong></span>
+<span class="strong"><strong>ingress.2617001939.self: "" =&gt; "0"</strong></span>
+<span class="strong"><strong>ingress.2617001939.to_port: "" =&gt; "443"</strong></span>
+<span class="strong"><strong>aws_security_group.terraform-elb: Modifications complete</strong></span>
+<span class="strong"><strong>...</strong></span>
+<span class="strong"><strong>Apply complete! Resources: 0 added, 1 changed, 0 destroyed.</strong></span>
+</pre><p>
+</p><div class="note" title="Note" style=""><div class="inner"><h3 class="title"><a id="note8"/>Note</h3><p>Some update operations can be destructive (please refer to <a class="ulink" href="http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/using-cfn-updating-stacks-update-behaviors.html">http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/using-cfn-updating-stacks-update-behaviors.html</a>). You should always check the CloudFormation documentation on the resource you are planning to modify to see whether a change is going to cause an interruption. TF provides some protection via the <code class="literal">prevent_destroy</code> life cycle property (please refer to <a class="ulink" href="https://www.terraform.io/docs/configuration/resources.html#prevent_destroy">https://www.terraform.io/docs/configuration/resources.html#prevent_destroy</a>).</p></div></div><p>
+</p></li></ol></div></div><div class="section" title="Removal"><div class="titlepage"><div><div><h3 class="title"><a id="ch02lvl3sec7"/>Removal</h3></div></div></div><p>This is a friendly reminder to always remove AWS resources after you are done experimenting with them to avoid any unexpected charges.</p><p>Before performing any <code class="literal">delete</code> operations, we will need to grant such privileges to the (<code class="literal">terraform</code>) IAM user we created in the beginning of this chapter. As a shortcut, you could temporarily attach the <span class="strong"><strong>AdministratorAccess</strong></span> managed policy to the user via the AWS Console, as shown in the following figure:</p><p>
+</p><div class="mediaobject"><img src="graphics/image_02_004.jpg" alt="Removal"/></div><p>
+</p><p>To remove the VPC and all associated resources that we created as part of this example, we will use <code class="literal">terraform destroy</code>:</p><pre class="programlisting">
+<span class="strong"><strong>$ terraform destroy</strong></span>
+<span class="strong"><strong>Do you really want to destroy?</strong></span>
+<span class="strong"><strong>Terraform will delete all your managed infrastructure.</strong></span>
+<span class="strong"><strong>There is no undo. Only 'yes' will be accepted to confirm.</strong></span>
+<span class="strong"><strong>Enter a value: yes</strong></span>
+</pre><p>
+<code class="literal">Terraform</code> asks for a confirmation then proceeds to destroy resources, ending with the following:</p><pre class="programlisting">
+<span class="strong"><strong>Apply complete! Resources: 0 added, 0 changed, 22 destroyed.</strong></span>
+</pre><p>Next, we remove the temporary admin access we granted to the IAM user by detaching the <span class="strong"><strong>AdministratorAccess</strong></span> managed policy, as shown in the following screenshot:</p><p>
+</p><div class="mediaobject"><img src="graphics/image_02_005.jpg" alt="Removal"/></div><p>
+</p><p>Then, verify that the VPC is no longer visible in the AWS Console.</p></div></div></div></div>
+<div class="section" title="IaC using CloudFormation"><div class="titlepage"><div><div><h1 class="title"><a id="ch02lvl1sec4"/>IaC using CloudFormation</h1></div></div></div><p>
+<span class="strong"><strong>CloudFormation</strong></span> is an AWS service for deploying infrastructure as code. As before, we are going to describe our infrastructure via templates containing parameters (variables), resources, and outputs.</p><p>CloudFormation calls each deployed template a <span class="strong"><strong>Stack</strong></span>. Creating, listing, updating, and deleting stacks is possible via the AWS Console, CLI, or API. In a small setup, you would probably deploy each of your stacks individually, but as your architecture becomes more complex, you can start nesting stacks. You would have a top-level or a parent stack (template) that invokes a number of sub-stacks. Nested stacks allow you to pass variables between them and, of course, save you the time of having to deploy each one individually.</p><div class="section" title="Configuration"><div class="titlepage"><div><div><h2 class="title"><a id="ch02lvl2sec16"/>Configuration</h2></div></div></div><p>CloudFormation provides a GUI via the AWS Console; we however, are going to focus on the AWS CLI since it is most suitable for automating tasks in the future.</p><p>Depending on the OS you run, you could download an installer from <a class="ulink" href="https://aws.amazon.com/cli/">https://aws.amazon.com/cli/</a> or use Python PIP:</p><pre class="programlisting">
+<span class="strong"><strong>$ pip install awscli</strong></span>
+<span class="strong"><strong>$ aws --version</strong></span>
+<span class="strong"><strong>aws-cli/1.10.34 ...</strong></span>
+</pre><p>We will need a set of API keys, so let's create a new IAM user called <code class="literal">cloudformation</code> with the following privileges:</p><pre class="programlisting">    "cloudformation:CancelUpdateStack",&#13;
+    "cloudformation:ContinueUpdateRollback",&#13;
+    "cloudformation:Create*",&#13;
+    "cloudformation:Describe*",&#13;
+    "cloudformation:EstimateTemplateCost",&#13;
+    "cloudformation:ExecuteChangeSet",&#13;
+    "cloudformation:Get*",&#13;
+    "cloudformation:List*",&#13;
+    "cloudformation:PreviewStackUpdate",&#13;
+    "cloudformation:SetStackPolicy",&#13;
+    "cloudformation:SignalResource",&#13;
+    "cloudformation:UpdateStack",&#13;
+    "cloudformation:ValidateTemplate",&#13;
+    "autoscaling:CreateAutoScalingGroup",&#13;
+    "autoscaling:CreateLaunchConfiguration",&#13;
+    "autoscaling:DeleteLaunchConfiguration",&#13;
+    "autoscaling:Describe*",&#13;
+    "autoscaling:UpdateAutoScalingGroup",&#13;
+    "ec2:AllocateAddress",&#13;
+    "ec2:AssociateAddress",&#13;
+    "ec2:AssociateRouteTable",&#13;
+    "ec2:AttachInternetGateway",&#13;
+    "ec2:AuthorizeSecurityGroupEgress",&#13;
+    "ec2:AuthorizeSecurityGroupIngress",&#13;
+    "ec2:CreateInternetGateway",&#13;
+    "ec2:CreateNatGateway",&#13;
+    "ec2:CreateRoute",&#13;
+    "ec2:CreateRouteTable",&#13;
+    "ec2:CreateSecurityGroup",&#13;
+    "ec2:CreateSubnet",&#13;
+    "ec2:CreateTags",&#13;
+    "ec2:CreateVpc",&#13;
+    "ec2:Describe*",&#13;
+    "ec2:Modify*",&#13;
+    "ec2:RevokeSecurityGroupEgress",&#13;
+    "elasticloadbalancing:CreateLoadBalancer",&#13;
+    "elasticloadbalancing:CreateLoadBalancerListeners",&#13;
+    "elasticloadbalancing:Describe*",&#13;
+    "elasticloadbalancing:ModifyLoadBalancerAttributes",&#13;
+    "elasticloadbalancing:SetLoadBalancerPoliciesOfListener",&#13;
+    "rds:CreateDBInstance",&#13;
+    "rds:CreateDBSubnetGroup",&#13;
+    "rds:Describe*"&#13;
+</pre><div class="note" title="Note" style=""><div class="inner"><h3 class="title"><a id="note9"/>Note</h3><p>Please refer to:
+<a class="ulink" href="https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_02_CodeFiles/CloudFormation/iam_user_policy.json">https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_02_CodeFiles/CloudFormation/iam_user_policy.json</a>.</p></div></div><p>You have the choice of using <code class="literal">aws configure</code>, which will prompt you for the API credentials, or if you prefer not to store them permanently, you could use an environment variable:</p><pre class="programlisting">
+<span class="strong"><strong>$ export AWS_ACCESS_KEY_ID='user_access_key'</strong></span>
+<span class="strong"><strong>$ export AWS_SECRET_ACCESS_KEY='user_secret_access_key'</strong></span>
+</pre><p>CloudFormation templates do not store any AWS region information, so to avoid specifying it on the command line each time. It can be exported as well:</p><pre class="programlisting">
+<span class="strong"><strong>$ export AWS_DEFAULT_REGION='us-east-1'</strong></span>
+</pre><p>With those environment variables in place, <code class="literal">awscli</code> should be ready for use.</p></div><div class="section" title="Template design"><div class="titlepage"><div><div><h2 class="title"><a id="ch02lvl2sec17"/>Template design</h2></div></div></div><p>CloudFormation templates are written in JSON and usually contain at least three sections (in any order): parameters, resources and outputs.</p><p>Unfortunately it is not possible to store these into separate files (with the exception of parameter values), so in this example we will work with a single template file named <code class="literal">main.json</code>.</p><p>Templates can be used locally or imported from a remote location (an S3 bucket is a common choice).</p><div class="section" title="Parameters"><div class="titlepage"><div><div><h3 class="title"><a id="ch02lvl3sec8"/>Parameters</h3></div></div></div><p>Parameters add flexibility and portability to our Stack by letting us pass variables to it such as instance types, AMI ids, SSH keypair names and similar values which it is best not to hard-code.</p><p>Each parameter takes an arbitrary logical name (alphanumeric, unique within the template), description, type, and an optional default value. The available types are <code class="literal">String</code>, <code class="literal">Number</code>, <code class="literal">CommaDelimitedList</code>, and the more special AWS-specific type, such as <code class="literal">AWS::EC2::KeyPair::KeyName</code>, as seen in the preceding code.</p><p>The latter is useful for validation, as CloudFormation will check whether a key pair with the given name actually exists in your AWS account.</p><p>Parameters can also have properties such as <code class="literal">AllowedValues</code>, <code class="literal">Min/MaxLength</code>, <code class="literal">Min/MaxValue</code>, <code class="literal">NoEcho</code> and other (please see <a class="ulink" href="http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/parameters-section-structure.html">http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/parameters-section-structure.html</a>).</p><p>There is a limit of 60 parameters per template.</p><p>Let us examine the parameters found at the top of our template:</p><div class="note" title="Note" style=""><div class="inner"><h3 class="title"><a id="note10"/>Note</h3><p>Please refer to:
+<a class="ulink" href="https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_02_CodeFiles/CloudFormation/main.json">https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_02_CodeFiles/CloudFormation/main.json</a>.</p></div></div><pre class="programlisting">"Parameters" : { &#13;
+"vpcCidr" : { &#13;
+"Description" : "VPC CIDR", &#13;
+"Type" : "String" &#13;
+}, &#13;
+"vpcName" : { &#13;
+"Description" : "VPC name", &#13;
+"Type" : "String" &#13;
+}, &#13;
+"awsAvailabilityZones" : { &#13;
+"Description" : "List of AZs", &#13;
+"Type" : "CommaDelimitedList" &#13;
+}, &#13;
+"publicCidr" : { &#13;
+"Description" : "List of public subnet CIDRs", &#13;
+"Type" : "CommaDelimitedList" &#13;
+},... &#13;
+"rdsInstanceClass" : { &#13;
+"Description" : "RDS instance class", &#13;
+"Type" : "String", &#13;
+"AllowedValues" : ["db.t2.micro", "db.t2.small", "db.t2.medium"] &#13;
+}, &#13;
+"rdsUsername" : { &#13;
+"Description" : "RDS username", &#13;
+"Type" : "String" &#13;
+}, &#13;
+"rdsPassword" : { &#13;
+"Description" : "RDS password", &#13;
+"Type" : "String", &#13;
+"NoEcho" : "true" &#13;
+}, &#13;
+... &#13;
+"autoscalingGroupKeyname" : { &#13;
+"Description" : "EC2 ssh key name", &#13;
+"Type" : "AWS::EC2::KeyPair::KeyName" &#13;
+}, &#13;
+"autoscalingGroupImageId" : { &#13;
+"Description" : "EC2 AMI ID", &#13;
+"Type" : "AWS::EC2::Image::Id" &#13;
+} &#13;
+} &#13;
+</pre><p>We have used the following:</p><div class="itemizedlist"><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc"><code class="literal">CommaDelimitedList</code>, which we will conveniently query later with a special function</li><li class="listitem" style="list-style-type: disc"><code class="literal">AllowedValues</code> and <code class="literal">MinValue</code> to enforce constraints</li><li class="listitem" style="list-style-type: disc"><code class="literal">NoEcho</code> for passwords or other sensitive data</li><li class="listitem" style="list-style-type: disc">Some AWS-specific types to have CloudFormation further validate input</li></ul></div><p>You will notice that there are no values assigned to any of the preceding parameters.</p><p>To maintain a reusable template, we will store values in a separate file (<code class="literal">parameters.json</code>):</p><div class="note" title="Note" style=""><div class="inner"><h3 class="title"><a id="note11"/>Note</h3><p>Please refer to:
+<a class="ulink" href="https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_02_CodeFiles/CloudFormation/parameters.json">https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_02_CodeFiles/CloudFormation/parameters.json</a>.</p></div></div><pre class="programlisting">[ &#13;
+{ &#13;
+"ParameterKey": "vpcCidr", &#13;
+"ParameterValue": "10.0.0.0/16" &#13;
+}, &#13;
+{ &#13;
+"ParameterKey": "vpcName", &#13;
+"ParameterValue": "CloudFormation" &#13;
+}, &#13;
+{ &#13;
+"ParameterKey": "awsAvailabilityZones", &#13;
+"ParameterValue": "us-east-1b,us-east-1c"  &#13;
+}, &#13;
+{ &#13;
+"ParameterKey": "publicCidr", &#13;
+"ParameterValue": "10.0.1.0/24,10.0.3.0/24" &#13;
+}, &#13;
+{ &#13;
+"ParameterKey": "privateCidr", &#13;
+"ParameterValue": "10.0.2.0/24,10.0.4.0/24" &#13;
+}, &#13;
+{ &#13;
+"ParameterKey": "rdsIdentifier", &#13;
+"ParameterValue": "cloudformation" &#13;
+}, &#13;
+{ &#13;
+"ParameterKey": "rdsStorageSize", &#13;
+"ParameterValue": "5" &#13;
+}, &#13;
+{ &#13;
+"ParameterKey": "rdsStorageType", &#13;
+"ParameterValue": "gp2" &#13;
+}, &#13;
+{ &#13;
+"ParameterKey": "rdsEngine", &#13;
+"ParameterValue": "postgres" &#13;
+},... &#13;
+</pre></div><div class="section" title="Resources"><div class="titlepage"><div><div><h3 class="title"><a id="ch02lvl3sec9"/>Resources</h3></div></div></div><p>You are already familiar with the concept of resources and how they are used to describe different pieces of infrastructure.</p><p>Regardless of how resources appear in a template, CloudFormation will follow its internal logic to decide the order in which these get provisioned.</p><p>The syntax for declaring a resource is as follows:</p><pre class="programlisting">"Logical ID" : { &#13;
+"Type" : "", &#13;
+"Properties" : {} &#13;
+} &#13;
+</pre><p>IDs need to be alphanumeric and unique within the template.</p><p>The list of CloudFormation resource types and their properties can be found here: <a class="ulink" href="http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-template-resource-type-ref.html">http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-template-resource-type-ref.html</a>
+</p><p>The max number of resources a template can have is 200. Reaching that limit, you will need to split a template into smaller ones and possibly look into nested stacks.</p><p>Back to our example, as per tradition we start by creating a VPC and its supporting elements such as subnets, Internet gateway and NAT gateway:</p><div class="note" title="Note" style=""><div class="inner"><h3 class="title"><a id="note12"/>Note</h3><p>Please refer to:
+<a class="ulink" href="https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_02_CodeFiles/CloudFormation/main.json">https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_02_CodeFiles/CloudFormation/main.json</a>.</p></div></div><pre class="programlisting">"Resources" : { &#13;
+"vpc" : { &#13;
+"Type" : "AWS::EC2::VPC",   &#13;
+"Properties" : { &#13;
+"CidrBlock" : { "Ref" : "vpcCidr" }, &#13;
+"EnableDnsSupport" : "true", &#13;
+"EnableDnsHostnames" : "true", &#13;
+"Tags" : [ { "Key" : "Name", "Value" : { "Ref" : "vpcName" } } ] &#13;
+} &#13;
+}, &#13;
+"publicSubnet1" : { &#13;
+"Type" : "AWS::EC2::Subnet", &#13;
+"Properties" : { &#13;
+"AvailabilityZone" : { "Fn::Select" : [ "0", {"Ref" : "awsAvailabilityZones"} ] }, &#13;
+"CidrBlock" : { "Fn::Select" : [ "0", {"Ref" : "publicCidr"} ] }, &#13;
+"MapPublicIpOnLaunch" : "true", &#13;
+"Tags" : [ { "Key" : "Name", "Value" : "Public" } ], &#13;
+"VpcId" : { "Ref" : "vpc" } &#13;
+} &#13;
+}, &#13;
+... &#13;
+"internetGateway" : { &#13;
+"Type" : "AWS::EC2::InternetGateway", &#13;
+"Properties" : { &#13;
+"Tags" : [ { "Key" : "Name", "Value" : { "Fn::Join" : [ " - ", [ { "Ref" : "vpcName" }, "IGW" ] ] } } ] &#13;
+} &#13;
+}, &#13;
+"internetGatewayAttachment" : { &#13;
+"Type" : "AWS::EC2::VPCGatewayAttachment", &#13;
+"Properties" : { &#13;
+"InternetGatewayId" : { "Ref" : "internetGateway" }, &#13;
+"VpcId" : { "Ref" : "vpc" } &#13;
+} &#13;
+}, &#13;
+"natEip" : { &#13;
+"Type" : "AWS::EC2::EIP", &#13;
+"Properties" : { &#13;
+"Domain" : "vpc" &#13;
+} &#13;
+}, &#13;
+"natGateway" : { &#13;
+"Type" : "AWS::EC2::NatGateway", &#13;
+"Properties" : { &#13;
+"AllocationId" : { "Fn::GetAtt" : ["natEip", "AllocationId"]}, &#13;
+"SubnetId" : { "Ref" : "publicSubnet1" } &#13;
+}, &#13;
+"DependsOn" : "internetGatewayAttachment" &#13;
+}, &#13;
+</pre><p>Note some of the <code class="literal">CloudFormation</code> functions used in the preceding code:</p><div class="itemizedlist"><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc"><code class="literal">"Fn::Select"</code> in <code class="literal">"CidrBlock" : { "Fn::Select" : [ "0", {"Ref" : "publicCidr"} ] }</code>, which allows us to query the <code class="literal">CommaDelimitedList</code> type parameters we set earlier</li><li class="listitem" style="list-style-type: disc"><code class="literal">"Fn::Join"</code>, for concatenating strings</li><li class="listitem" style="list-style-type: disc"><code class="literal">"Fn::GetAtt"</code>, for retrieving resource attributes</li></ul></div><p>Also, the <code class="literal">DependsOn</code> property of the <code class="literal">natGateway</code> resource allows us to set explicit conditions on the order of execution. In this case, we are saying that the Internet Gateway resource needs to be ready (attached to the VPC) before the NAT Gateway is provisioned.</p><p>After the VPC, let's add RDS:</p><pre class="programlisting">    "rdsInstance" : {&#13;
+    "Type" : "AWS::RDS::DBInstance",&#13;
+    "Properties" : {&#13;
+    "DBInstanceIdentifier" : { "Ref" : "rdsIdentifier" },&#13;
+    "DBInstanceClass" : { "Ref" : "rdsInstanceClass" },&#13;
+    "DBSubnetGroupName" : { "Ref" : "rdsSubnetGroup" },&#13;
+    "Engine" : { "Ref" : "rdsEngine" },&#13;
+    "EngineVersion" : { "Ref" : "rdsEngineVersion" },&#13;
+    "MasterUserPassword" : { "Ref" : "rdsPassword" },&#13;
+    "MasterUsername" : { "Ref" : "rdsUsername" },&#13;
+    "StorageType" : { "Ref" : "rdsStorageType" },&#13;
+    "AllocatedStorage" : { "Ref" : "rdsStorageSize" },&#13;
+    "VPCSecurityGroups" : [ { "Ref" : "rdsSecurityGroup" } ],&#13;
+    "Tags" : [ { "Key" : "Name", "Value" : { "Ref" : "rdsIdentifier" } } ]&#13;
+    }}&#13;
+</pre><p>Then add the ELB:</p><pre class="programlisting">    ...&#13;
+    "elbInstance" : {&#13;
+    "Type" : "AWS::ElasticLoadBalancing::LoadBalancer",&#13;
+    "Properties" : {&#13;
+    "LoadBalancerName" : "cloudformation-elb",&#13;
+    "Listeners" : [ { "InstancePort" : "80", "InstanceProtocol" : "HTTP", "LoadBalancerPort" : "80", "Protocol" : "HTTP" } ],&#13;
+    "SecurityGroups" : [ { "Ref" : "elbSecurityGroup" } ],&#13;
+    "Subnets" : [ { "Ref" : "publicSubnet1" }, { "Ref" : "publicSubnet2" } ],&#13;
+    "Tags" : [ { "Key" : "Name", "Value" : "cloudformation-elb" } ]&#13;
+    }&#13;
+    }&#13;
+</pre><p>And add the EC2 resources:</p><pre class="programlisting">    ...&#13;
+    "launchConfiguration" : {&#13;
+    "Type" : "AWS::AutoScaling::LaunchConfiguration",&#13;
+    "Properties" : {&#13;
+    "ImageId" : { "Ref": "autoscalingGroupImageId" },&#13;
+    "InstanceType" : { "Ref" : "autoscalingGroupInstanceType" },&#13;
+    "KeyName" : { "Ref" : "autoscalingGroupKeyname" },&#13;
+    "SecurityGroups" : [ { "Ref" : "ec2SecurityGroup" } ]&#13;
+</pre><p>We still use a <code class="literal">UserData</code> shell script to install the NGINX package; however, the presentation is slightly different this time. <code class="literal">CloudFormation</code> is going to concatenate the lines using a new line character as a delimiter then encode the result in <code class="literal">Base64</code>:</p><pre class="programlisting">    "UserData" : {&#13;
+    "Fn::Base64" : {&#13;
+    "Fn::Join" : [&#13;
+    "\n",&#13;
+    [&#13;
+    "#!/bin/bash",&#13;
+    "set -euf -o pipefail",&#13;
+    "exec 1&gt; &gt;(logger -s -t $(basename $0)) 2&gt;&amp;1",&#13;
+    "yum -y install nginx; chkconfig nginx on; service nginx start"&#13;
+    ]&#13;
+    ]&#13;
+    }&#13;
+    }&#13;
+    }&#13;
+    }&#13;
+</pre><p>We use <code class="literal">DependsOn</code> to ensure the RDS instance goes in before <code class="literal">autoScalingGroup</code>:</p><pre class="programlisting">"autoScalingGroup" : { &#13;
+"Type" : "AWS::AutoScaling::AutoScalingGroup", &#13;
+"Properties" : { &#13;
+"LaunchConfigurationName" : { "Ref" : "launchConfiguration" }, &#13;
+"DesiredCapacity" : "1", &#13;
+"MinSize" : "1", &#13;
+"MaxSize" : "1", &#13;
+"LoadBalancerNames" : [ { "Ref" : "elbInstance" } ], &#13;
+"VPCZoneIdentifier" : [ { "Ref" : "privateSubnet1" }, { "Ref" : "privateSubnet2" } ], &#13;
+"Tags" : [ { "Key" : "Name", "Value" : "cloudformation-asg", "PropagateAtLaunch" : "true" } ] &#13;
+},  &#13;
+"DependsOn" : "rdsInstance" &#13;
+} &#13;
+</pre></div><div class="section" title="Outputs"><div class="titlepage"><div><div><h3 class="title"><a id="ch02lvl3sec10"/>Outputs</h3></div></div></div><p>Again, we will use these to highlight some resource attributes following a successful deployment. Another important feature of <code class="literal">Outputs</code>, however, is that they can be used as input parameters for other templates (stacks). This becomes very useful with nested stacks.</p><div class="note" title="Note" style=""><div class="inner"><h3 class="title"><a id="note13"/>Note</h3><p>Once declared, <code class="literal">Outputs</code> cannot be subsequently updated on their own. You will need to modify at least one resource in order to trigger an Output update.</p></div></div><p>We add the <code class="literal">VPC ID</code>, <code class="literal">NAT IP</code> address and <code class="literal">ELB DNS</code> name as <code class="literal">Outputs</code>:</p><div class="note" title="Note" style=""><div class="inner"><h3 class="title"><a id="note14"/>Note</h3><p>Please refer to:
+<a class="ulink" href="https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_02_CodeFiles/CloudFormation/main.json">https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_02_CodeFiles/CloudFormation/main.json</a>.</p></div></div><pre class="programlisting">"Outputs" : { &#13;
+"vpcId" : { &#13;
+"Description" : "VPC ID", &#13;
+"Value" : { "Ref" : "vpc" } &#13;
+}, &#13;
+"natEip" : { &#13;
+"Description" : "NAT IP address", &#13;
+"Value" : { "Ref" : "natEip" } &#13;
+}, &#13;
+"elbDns" : { &#13;
+"Description" : "ELB DNS", &#13;
+"Value" : { "Fn::GetAtt" : [ "elbInstance", "DNSName" ] } &#13;
+} &#13;
+} &#13;
+</pre><p>Currently, a template can have no more than 60 Outputs.</p></div></div><div class="section" title="Operations"><div class="titlepage"><div><div><h2 class="title"><a id="ch02lvl2sec18"/>Operations</h2></div></div></div><p>If you have been following along, you should now have a <code class="literal">main.json</code> and a <code class="literal">parameters.json</code> in your current folder. It is time to put them to use, so here are a few operations we are going to perform:</p><div class="itemizedlist"><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">Validate a template</li><li class="listitem" style="list-style-type: disc">Deploy a stack</li><li class="listitem" style="list-style-type: disc">Update a stack</li><li class="listitem" style="list-style-type: disc">Delete a stack</li></ul></div><div class="section" title="Template validation"><div class="titlepage"><div><div><h3 class="title"><a id="ch02lvl3sec11"/>Template validation</h3></div></div></div><p>First things first, a basic check of our JSON template with <code class="literal">validate-template</code>:</p><pre class="programlisting">
+<span class="strong"><strong>$ aws cloudformation validate-template --template-body file://main.json</strong></span>
+<span class="strong"><strong>{</strong></span>
+<span class="strong"><strong>"Description": "Provisions EC2, ELB, ASG and RDS resources",</strong></span>
+<span class="strong"><strong>"Parameters": [</strong></span>
+<span class="strong"><strong>{</strong></span>
+<span class="strong"><strong>"NoEcho": false,</strong></span>
+<span class="strong"><strong>"Description": "EC2 AMI ID",</strong></span>
+<span class="strong"><strong>"ParameterKey": "autoscalingGroupImageId"</strong></span>
+<span class="strong"><strong>}</strong></span>
+</pre><p>If there's no errors, the CLI returns the parsed template. Note that we could have just as easily pointed to a remote location using <code class="literal">--template-url</code> instead of <code class="literal">-template-body</code>.</p></div><div class="section" title="Deploying a Stack"><div class="titlepage"><div><div><h3 class="title"><a id="ch02lvl3sec12"/>Deploying a Stack</h3></div></div></div><p>To deploy our template (stack), we will use <code class="literal">create-stack</code>. It takes an arbitrary name, the location of the template, and the file containing parameter values:</p><pre class="programlisting">
+<span class="strong"><strong>$ aws cloudformation create-stack --stack-name cfn-test --template-body &#13;
+      file://main.json --parameters file://parameters.json</strong></span>
+<span class="strong"><strong>{</strong></span>
+<span class="strong"><strong>"StackId": "arn:aws:cloudformation:us-east-1:xxxxxx:stack/cfn-test/xxxxxx"</strong></span>
+<span class="strong"><strong>}</strong></span>
+</pre><p>CloudFormation starts creating the stack and no further output is returned. To get progress information on the CLI, use <code class="literal">describe-stacks</code>:</p><pre class="programlisting">$ aws cloudformation describe-stacks --stack-name cfn-test &#13;
+{ &#13;
+"Stacks": [ &#13;
+{ &#13;
+"StackId": "arn:aws:cloudformation:us-east-xxxxxx:stack/cfn-test/xxxxxx" &#13;
+... &#13;
+"CreationTime": "2016-05-29T20:07:17.813Z", &#13;
+"StackName": "cfn-test", &#13;
+"NotificationARNs": [], &#13;
+"StackStatus": "CREATE_IN_PROGRESS", &#13;
+"DisableRollback": false &#13;
+} &#13;
+] &#13;
+} &#13;
+</pre><p>And for even more details, use <code class="literal">describe-stack-events</code>.</p><p>After a few minutes (based on our small template) <code class="literal">StackStatus</code> changes from <code class="literal">CREATE_IN_PROGRESS</code> to <code class="literal">CREATE_COMPLETE</code> and we are provided the requested <code class="literal">Outputs</code>:</p><pre class="programlisting">
+<span class="strong"><strong>$ aws cloudformation describe-stacks --stack-name cfn-test</strong></span>
+<span class="strong"><strong>"Outputs": [</strong></span>
+<span class="strong"><strong>{</strong></span>
+<span class="strong"><strong>"Description": "VPC ID",</strong></span>
+<span class="strong"><strong>"OutputKey": "vpcId",</strong></span>
+<span class="strong"><strong>"OutputValue": "vpc-xxxxxx"</strong></span>
+<span class="strong"><strong>},</strong></span>
+<span class="strong"><strong>{</strong></span>
+<span class="strong"><strong>"Description": "NAT IP address",</strong></span>
+<span class="strong"><strong>"OutputKey": "natEip",</strong></span>
+<span class="strong"><strong>"OutputValue": "x.x.x.x"</strong></span>
+<span class="strong"><strong>},</strong></span>
+<span class="strong"><strong>{</strong></span>
+<span class="strong"><strong>"Description": "ELB DNS",</strong></span>
+<span class="strong"><strong>"OutputKey": "elbDns",</strong></span>
+<span class="strong"><strong>"OutputValue": "cloudformation-elb-xxxxxx.us-east-1.elb.amazonaws.com"</strong></span>
+<span class="strong"><strong>}</strong></span>
+<span class="strong"><strong>],</strong></span>
+<span class="strong"><strong>"CreationTime": "2016-05-29T20:07:17.813Z",</strong></span>
+<span class="strong"><strong>"StackName": "cfn-test",</strong></span>
+<span class="strong"><strong>"NotificationARNs": [],</strong></span>
+<span class="strong"><strong>"StackStatus": "CREATE_COMPLETE",</strong></span>
+<span class="strong"><strong>"DisableRollback": false</strong></span>
+</pre><p>At this point, the <code class="literal">elbDNS</code> URL should return the nginx welcome page, as shown here:</p><p>
+</p><div class="mediaobject"><img src="graphics/image_02_006.jpg" alt="Deploying a Stack"/></div><p>
+</p><p>If not, you might need to allow some more time for the EC2 node to fully initialize.</p></div><div class="section" title="Updating a stack"><div class="titlepage"><div><div><h3 class="title"><a id="ch02lvl3sec13"/>Updating a stack</h3></div></div></div><p>
+<code class="literal">CloudFormation</code> offers two ways of updating a deployed stack.</p><div class="note" title="Note" style=""><div class="inner"><h3 class="title"><a id="note15"/>Note</h3><p>Some update operations can be destructive (please refer to <a class="ulink" href="http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/using-cfn-updating-stacks-update-behaviors.html">http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/using-cfn-updating-stacks-update-behaviors.html</a>). You should always check the <code class="literal">CloudFormation</code> documentation on the resource you are planning to modify to see whether a change is going to cause any interruption.</p></div></div><p>If you would like to quickly deploy a minor change, then all you need to do is modify the template file and deploy it directly with <code class="literal">update-stack</code>:</p><pre class="programlisting">
+<span class="strong"><strong>$ aws cloudformation update-stack --stack-name cfn-test &#13;
+      --template-body file://main.json &#13;
+      --parameters file://parameters.json</strong></span>
+</pre><p>Otherwise, a good practice would be to use <code class="literal">Change Sets</code> to preview stack changes before deploying them. For example, let us update the rules in the ELB security group as we did before:</p><div class="orderedlist"><ol class="orderedlist arabic"><li class="listitem">Modify the <code class="literal">main.json</code> template (add another rule to <code class="literal">elbSecurityGroup</code>):<pre class="programlisting">    "elbSecurityGroup" : {&#13;
+    "Type" : "AWS::EC2::SecurityGroup",&#13;
+    "Properties" : {&#13;
+    "SecurityGroupIngress" : [ { "ToPort" : "80", "FromPort" : "80", &#13;
+    "IpProtocol" : "tcp", "CidrIp" : "0.0.0.0/0" },&#13;
+    &#13;
+      { "ToPort" : "443", "FromPort" : "443", "IpProtocol" : &#13;
+        "tcp", "CidrIp" : "0.0.0.0/0" } ]&#13;
+   </pre><p>
+   </p></li><li class="listitem">Create a Change Set<code class="literal">:</code><pre class="programlisting">
+<span class="strong"><strong>$ aws cloudformation create-change-set &#13;
+      --change-set-name updatingElbSecGroup &#13;
+      --stack-name cfn-test --template-body file://main.json &#13;
+      --parameters file://parameters.json</strong></span>
+</pre><p>
+</p></li><li class="listitem">Preview the Change Set:<pre class="programlisting">
+<span class="strong"><strong>$ aws cloudformation describe-change-set &#13;
+      --change-set-name updatingSecGroup &#13;
+      --stack-name cfn-test</strong></span>
+</pre><p>
+</p></li><li class="listitem">Execute the Change Set:<pre class="programlisting">
+<span class="strong"><strong>$ aws cloudformation execute-change-set --change-set-name &#13;
+      updatingSecGroup --stack-name cfn-test</strong></span>
+</pre><p>
+</p><div class="note" title="Note" style=""><div class="inner"><h3 class="title"><a id="tip16"/>Tip</h3><p>Whether via a Change Set or updating directly, if you are simply modifying parameter values (<code class="literal">parameters.json</code>) you can skip re-uploading the template (<code class="literal">main.json</code>) with <code class="literal">--use-previous-template</code>.</p></div></div><p>
+</p></li></ol></div></div><div class="section" title="Deleting a stack"><div class="titlepage"><div><div><h3 class="title"><a id="ch02lvl3sec14"/>Deleting a stack</h3></div></div></div><p>In order to tidy up after our experiments, we will need to grant temporary Admin privileges to the CloudFormation IAM user (the same procedure as in the earlier TF section); run <code class="literal">delete-stack</code>:</p><pre class="programlisting">
+<span class="strong"><strong>$ aws cloudformation delete-stack --stack-name cfn-test</strong></span>
+</pre><p>Then revoke the Admin privileges.</p></div></div></div>
+<div class="section" title="Summary"><div class="titlepage"><div><div><h1 class="title"><a id="ch02lvl1sec5"/>Summary</h1></div></div></div><p>In this chapter, we looked at the importance and usefulness of Infrastructure as Code and ways to implement it using <code class="literal">Terraform</code> or AWS <code class="literal">CloudFormation</code>.</p><p>We examined the structure and individual components of both a TF and a CF template then practiced deploying those onto AWS using the CLI. I trust that the examples we went through have demonstrated the benefits and immediate gains from the practice of deploying infrastructure as code.</p><p>So far, however, we have only done half the job. With the provisioning stage completed, you will naturally want to start configuring your infrastructure, and that is what we are going to do in the next chapter on <span class="emphasis"><em>Configuration Management</em></span>.</p></div></body></html>

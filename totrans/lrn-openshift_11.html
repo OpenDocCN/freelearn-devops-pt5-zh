@@ -1,0 +1,715 @@
+<html><head></head><body>
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Managing OpenShift Networking</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">In the previous chapter, <span class="calibre11">we introduced you to the realm of security in OpenShift. OpenShift is an enterprise-ready application management platform that supports multiple security features, making it able to integrate into any corporate security landscape.</span></p>
+<p class="calibre2">Like any cloud platform, OpenShift heavily relies on a networking stack on two different layers:</p>
+<ul class="calibre9">
+<li class="calibre10">The underlying network topology, which is directly determined either by physical network equipment or virtual network devices in the case of OpenShift itself deployed in the virtual environment. This level provides connectivity to OpenShift masters and nodes, and is beyond the control of OpenShift itself.</li>
+<li class="calibre10">The virtual network topology, which is determined by the OpenShift SDN plugin being used. This level is concerned with managing connectivity between applications and providing external access to them.</li>
+</ul>
+<p class="calibre2">In this chapter, we are going to work with networking on the upper level—OpenShift SDN—and we will cover the following topics:</p>
+<p class="calibre2"/>
+<ul class="calibre9">
+<li class="calibre10">Network topology in OpenShift</li>
+<li class="calibre10">SDN plugins</li>
+<li class="calibre10">Egress routers</li>
+<li class="calibre10">Static IPs for external project traffic</li>
+<li class="calibre10">Egress network policies</li>
+<li class="calibre10">DNS</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Technical requirements</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">For this chapter, we will be using the following configuration of VMs managed via Vagrant using the default VirtualBox provider:</p>
+<table border="1" class="calibre22">
+<tbody class="calibre23">
+<tr class="calibre24">
+<td class="calibre25"><strong class="calibre1">Name</strong></td>
+<td class="calibre25"><strong class="calibre1">Role</strong></td>
+</tr>
+<tr class="calibre24">
+<td class="calibre25">openshift-master</td>
+<td class="calibre25">Master</td>
+</tr>
+<tr class="calibre24">
+<td class="calibre25">openshift-node-1</td>
+<td class="calibre25">Node</td>
+</tr>
+<tr class="calibre24">
+<td class="calibre25"><span>openshift-node-2</span></td>
+<td class="calibre25"><span>Node</span></td>
+</tr>
+</tbody>
+</table>
+<div class="packt_infobox">Make sure you have enough RAM on your desktop or laptop you use. The configuration above was tested with 8GB RAM, but it was barely enough, so w<span>e recommend running it on a system with 16GB at least.</span></div>
+<p class="calibre2">This configuration corresponds to the following Vagrantfile:</p>
+<pre class="calibre18"><strong class="calibre1">$ cat Vagrantfile</strong> <br class="title-page-name"/>$common_provision = &lt;&lt;SCRIPT<br class="title-page-name"/>cat &lt;&lt;EOF &gt;&gt; /etc/hosts<br class="title-page-name"/>172.24.0.11 openshift-master.example.com openshift-master<br class="title-page-name"/>172.24.0.12 openshift-node-1.example.com openshift-node-1<br class="title-page-name"/>172.24.0.13 openshift-node-2.example.com openshift-node-2<br class="title-page-name"/>EOF<br class="title-page-name"/>sed -i '/^127.0.0.1.*openshift.*$/d' /etc/hosts<br class="title-page-name"/>yum -y update<br class="title-page-name"/>yum install -y docker<br class="title-page-name"/>systemctl start docker<br class="title-page-name"/>systemctl enable docker<br class="title-page-name"/>SCRIPT<br class="title-page-name"/><br class="title-page-name"/>$master_provision = &lt;&lt;SCRIPT<br class="title-page-name"/>yum -y install git epel-release<br class="title-page-name"/>yum -y install ansible<br class="title-page-name"/>git clone -b release-3.9 https://github.com/openshift/openshift-ansible /root/openshift-ansible<br class="title-page-name"/>ssh-keygen -f /root/.ssh/id_rsa -N ''<br class="title-page-name"/>cp /root/.ssh/id_rsa.pub /root/.ssh/authorized_keys<br class="title-page-name"/>for i in 1 3; do ssh-keyscan 172.24.0.1$i; done &gt;&gt; .ssh/known_hosts<br class="title-page-name"/>cp .ssh/known_hosts /root/.ssh/known_hosts<br class="title-page-name"/>for i in 1 2; do sudo ssh-copy-id -o IdentityFile=/vagrant_private_keys/machines/openshift-node-$i/virtualbox/private_key -f -i /root/.ssh/id_rsa root@172.24.0.1$((i+1)); done<br class="title-page-name"/>reboot<br class="title-page-name"/>SCRIPT<br class="title-page-name"/><br class="title-page-name"/>$node_provision = &lt;&lt;SCRIPT<br class="title-page-name"/>cp -r /home/vagrant/.ssh /root<br class="title-page-name"/>reboot<br class="title-page-name"/>SCRIPT<br class="title-page-name"/><br class="title-page-name"/>Vagrant.configure(2) do |config|<br class="title-page-name"/>  config.vm.define "openshift-node-1" do |conf|<br class="title-page-name"/>    conf.vm.box = "centos/7"<br class="title-page-name"/>    conf.vm.hostname = 'openshift-node-1.example.com'<br class="title-page-name"/>    conf.vm.network "private_network", ip: "172.24.0.12"<br class="title-page-name"/>    conf.vm.provider "virtualbox" do |v|<br class="title-page-name"/>       v.memory = 2048<br class="title-page-name"/>       v.cpus = 2<br class="title-page-name"/>    end<br class="title-page-name"/>    conf.vm.provision "shell", inline: $common_provision<br class="title-page-name"/>    conf.vm.provision "shell", inline: $node_provision<br class="title-page-name"/>  end<br class="title-page-name"/><br class="title-page-name"/>  config.vm.define "openshift-node-2" do |conf|<br class="title-page-name"/>    conf.vm.box = "centos/7"<br class="title-page-name"/>    conf.vm.hostname = 'openshift-node-2.example.com'<br class="title-page-name"/>    conf.vm.network "private_network", ip: "172.24.0.13"<br class="title-page-name"/>    conf.vm.provider "virtualbox" do |v|<br class="title-page-name"/>       v.memory = 2048<br class="title-page-name"/>       v.cpus = 2<br class="title-page-name"/>    end<br class="title-page-name"/>    conf.vm.provision "shell", inline: $common_provision<br class="title-page-name"/>    conf.vm.provision "shell", inline: $node_provision<br class="title-page-name"/>  end<br class="title-page-name"/><br class="title-page-name"/>  config.vm.define "openshift-master" do |conf|<br class="title-page-name"/>    conf.vm.box = "centos/7"<br class="title-page-name"/>    conf.vm.hostname = 'openshift-master.example.com'<br class="title-page-name"/>    conf.vm.network "private_network", ip: "172.24.0.11"<br class="title-page-name"/>    conf.vm.synced_folder '.vagrant/', '/vagrant_private_keys', type: 'rsync'<br class="title-page-name"/>    conf.vm.provider "virtualbox" do |v|<br class="title-page-name"/>       v.memory = 4096<br class="title-page-name"/>       v.cpus = 2<br class="title-page-name"/>    end<br class="title-page-name"/>    conf.vm.provision "shell", inline: $common_provision<br class="title-page-name"/>    conf.vm.provision "shell", inline: $master_provision<br class="title-page-name"/>  end<br class="title-page-name"/>end</pre>
+<p class="calibre2"/>
+<p class="calibre2"/>
+<div class="title-page-name">
+<p class="calibre2">In order to be able to reach the cluster inside the VM from your host system, make sure file <kbd class="calibre12">/etc/hosts</kbd><span class="calibre11"> </span>on your laptop looks like this:</p>
+<pre class="calibre18"><strong class="calibre1">$ cat /etc/hosts</strong><br class="title-page-name"/>127.0.0.1   localhost openshift localhost.localdomain localhost4 localhost4.localdomain4<br class="title-page-name"/>::1         localhost localhost.localdomain localhost6 localhost6.localdomain6<br class="title-page-name"/><strong class="calibre1">172.24.0.11 openshift.example.com</strong></pre></div>
+<p class="calibre2">Run <kbd class="calibre12">vagrant up</kbd> and wait till it finishes all the work. It may take up to 30 mins depending on your internet connectivity and compute resources:</p>
+<pre class="calibre18"><strong class="calibre1">$ vagrant up</strong><br class="title-page-name"/>Bringing machine 'openshift-node-1' up with 'virtualbox' provider...<br class="title-page-name"/>Bringing machine 'openshift-node-2' up with 'virtualbox' provider...<br class="title-page-name"/>Bringing machine 'openshift-master' up with 'virtualbox' provider...<br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...</pre>
+<p class="calibre2"><span class="calibre11">Once it's done, open SSH session into the master </span><span class="calibre11">VM and become root:</span></p>
+<pre class="calibre18"><strong class="calibre1">$ vagrant ssh openshift-master</strong><br class="title-page-name"/>[vagrant@openshift-master ~]$<strong class="calibre1"> sudo -i</strong><br class="title-page-name"/>[root@openshift-master ~]#</pre>
+<p class="calibre2">You can use the following inventory for deploying OpenShift:</p>
+<pre class="calibre18"><strong class="calibre1"># cat /etc/ansible/hosts<br class="title-page-name"/></strong>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...<br class="title-page-name"/>[masters]<br class="title-page-name"/>172.24.0.11<br class="title-page-name"/><br class="title-page-name"/>[nodes]<br class="title-page-name"/>172.24.0.11 openshift_node_labels="{'region': 'us', 'zone': 'default'}" openshift_ip=172.24.0.11 openshift_master_cluster_hostname=172.24.0.11 openshift_hostname=172.24.0.11<br class="title-page-name"/>172.24.0.12 openshift_node_labels="{'region': 'infra', 'zone': 'east'}" openshift_ip=172.24.0.12 openshift_master_cluster_hostname=172.24.0.12 openshift_hostname=172.24.0.12<br class="title-page-name"/>172.24.0.13 openshift_node_labels="{'region': 'us', 'zone': 'west'}" openshift_ip=172.24.0.13 openshift_master_cluster_hostname=172.24.0.13 openshift_hostname=172.24.0.13<br class="title-page-name"/><br class="title-page-name"/>[etcd]<br class="title-page-name"/>172.24.0.11<br class="title-page-name"/><br class="title-page-name"/>[OSEv3:vars]<br class="title-page-name"/>openshift_deployment_type=origin<br class="title-page-name"/>openshift_disable_check=memory_availability,disk_availability<br class="title-page-name"/>ansible_service_broker_install=false<br class="title-page-name"/>openshift_master_cluster_public_hostname=openshift.example.com<br class="title-page-name"/>openshift_public_hostname=openshift.example.com<br class="title-page-name"/>openshift_master_default_subdomain=openshift.example.com<br class="title-page-name"/>openshift_schedulable=true<br class="title-page-name"/><br class="title-page-name"/>[OSEv3:children]<br class="title-page-name"/>masters<br class="title-page-name"/>nodes<br class="title-page-name"/>etcd</pre>
+<div class="packt_infobox"><span>Even though variables in the <kbd class="calibre26">nodes</kbd> group </span><span>appear to be on separate lines, they are actually on previous ones with hosts they are associated with. If you just copy this file as it is from the one provided with other materials on this book, it will work.</span></div>
+<p class="calibre2">Now, it's time to install OpenShift:</p>
+<pre class="calibre18"><strong class="calibre1"># cd openshift-ansible</strong><br class="title-page-name"/><strong class="calibre1"># ansible-playbook playbooks/prerequisites.yml</strong><br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...<br class="title-page-name"/><strong class="calibre1"># ansible-playbook playbooks/deploy_cluster.yml</strong><br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Network topology in OpenShift</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">In order to provide a common medium for containers to communicate with each other, OpenShift makes use of an overlay network that's implemented via VXLAN. The <strong class="calibre4">Virtual eXtensible Local Area Network</strong> (<span class="calibre11"><strong class="calibre4">VXLAN</strong>) </span>protocol provides a mechanism for transferring Layer 2 (Ethernet) frames across Layer 3 (IP) networks. Depending on the SDN plugin being used, the scope of communication may be limited to pods within the same project or maybe completely unrestricted. No matter which plugin is used, the network topology is still the same.</p>
+<p class="calibre2"/>
+<p class="calibre2"/>
+<p class="calibre2"/>
+<p class="calibre2"/>
+<p class="calibre2">When a new node is registered in <kbd class="calibre12">etcd</kbd>, the master allocates a private <kbd class="calibre12">/23</kbd> subnet from the cluster network. By default, subnets are allocated from <kbd class="calibre12">10.128.0.0/14</kbd>, but can be configured in the <kbd class="calibre12">networkConfig</kbd> stanza of the master configuration file. The following is an excerpt from the file containing the relevant parameters:</p>
+<pre class="calibre18"><strong class="calibre1"># cat /etc/origin/master/master-config.yaml</strong><br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...<br class="title-page-name"/>networkConfig:<br class="title-page-name"/>  clusterNetworkCIDR: <strong class="calibre1">10.128.0.0/14</strong><br class="title-page-name"/>  clusterNetworks:<br class="title-page-name"/>  - cidr: <strong class="calibre1">10.128.0.0/14</strong><br class="title-page-name"/>    hostSubnetLength: <strong class="calibre1">9</strong><br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...</pre>
+<p class="calibre2">The <kbd class="calibre12">hostSubnetLength</kbd> setting determines how many IP addresses are allocated to every node to be distributed between pods running on a given node. In our default configuration, the size of each subnet is 2<sup class="calibre16">9</sup>=512 addresses, which makes <kbd class="calibre12">510</kbd> IPs available for pods. Summing up, each pod's IP address will have mask /23 (14+9).</p>
+<div class="packt_infobox">Please note that the <kbd class="calibre26">clusterNetworks[].cidr</kbd> setting can only be changed to a larger subnet that includes the previous setting. For example, it can be set to <kbd class="calibre26">10.128.0.0/12</kbd>, as it contains <kbd class="calibre26">/14</kbd>, but not to <kbd class="calibre26">10.128.0.0/16</kbd>, as they don't overlap completely.<br class="title-page-name"/>
+Also, <kbd class="calibre26">hostSubnetLength</kbd> cannot be changed once the cluster is created. </div>
+<p class="calibre2">The overlay network in OpenShift is built from the following components:</p>
+<ul class="calibre9">
+<li class="calibre10"><kbd class="calibre12">br0</kbd>: An OVS bridge that all pods running on a particular node are plugged into via a <kbd class="calibre12">veth</kbd> pair. Each node has a single <kbd class="calibre12">br0</kbd> device which serves as a virtual switch.</li>
+<li class="calibre10"><kbd class="calibre12">tun0</kbd>: This is an internal port of <kbd class="calibre12">br0</kbd>  numbered 2, which is assigned each node subnet's default gateway address and is used for external access. OpenShift also creates routing and netfilter rules to direct traffic to the external network via NAT.</li>
+<li class="calibre10"><kbd class="calibre12">vxlan_sys_4789</kbd>: An OVS port <kbd class="calibre12">1</kbd> of <kbd class="calibre12">br0</kbd> which provides connectivity between pods running on different nodes. It's referred to as <kbd class="calibre12">vxlan</kbd> in the OVS rules.</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Tracing connectivity</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">In this subsection, we will create a <kbd class="calibre12">demo</kbd> project hosting a single <kbd class="calibre12">httpd</kbd> pod in order to see<span class="calibre11"> first-hand</span> how the overlay network is constructed in OpenShift.</p>
+<ol class="calibre13">
+<li value="1" class="calibre10">First, let's create the project:</li>
+</ol>
+<pre class="calibre19"><strong class="calibre1"># oc new-project demo</strong><br class="title-page-name"/>...</pre>
+<ol start="2" class="calibre13">
+<li value="2" class="calibre10">Then, create a pod running Apache web server in the project:</li>
+</ol>
+<pre class="calibre19"><strong class="calibre1"># cat httpd-pod.yml</strong> <br class="title-page-name"/>apiVersion: v1<br class="title-page-name"/>kind: Pod<br class="title-page-name"/>metadata:<br class="title-page-name"/>  name: httpd<br class="title-page-name"/>  labels:<br class="title-page-name"/>    role: web<br class="title-page-name"/>spec:<br class="title-page-name"/>  containers:<br class="title-page-name"/>  - name: httpd<br class="title-page-name"/>    image: manageiq/httpd<br class="title-page-name"/>    resources:<br class="title-page-name"/>      requests:<br class="title-page-name"/>        cpu: 400m<br class="title-page-name"/>        memory: 128Mi<br class="title-page-name"/><strong class="calibre1"># oc create -f httpd-pod.yml</strong><br class="title-page-name"/>pod "httpd" created</pre>
+<ol start="3" class="calibre13">
+<li value="3" class="calibre10">We will need the IP address allocated to the pod, as well as the address of the node it was scheduled to:</li>
+</ol>
+<pre class="calibre19"><strong class="calibre1"># oc describe po/httpd | grep '\(Node\|IP\):'</strong><br class="title-page-name"/>Node: <strong class="calibre1">172.24.0.13/172.24.0.13</strong><br class="title-page-name"/>IP: <strong class="calibre1">10.129.0.20</strong></pre>
+<ol start="4" class="calibre13">
+<li value="4" class="calibre10">Another step is to get the name of the pod's network interface, which is actually one end of the <kbd class="calibre12">veth</kbd> pair that's used to connect the pod to the <kbd class="calibre12">br0</kbd> bridge:</li>
+</ol>
+<pre class="calibre19"><strong class="calibre1"># oc rsh httpd ip a</strong><br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...<br class="title-page-name"/>3: <strong class="calibre1">eth0@if25</strong>: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 1450 qdisc noqueue state UP group default <br class="title-page-name"/>    link/ether 0a:58:0a:81:00:2c brd ff:ff:ff:ff:ff:ff link-netnsid 0<br class="title-page-name"/>    inet <strong class="calibre1">10.129.0.20/23</strong> brd 10.129.1.255 scope global eth0<br class="title-page-name"/>       valid_lft forever preferred_lft forever<br class="title-page-name"/>    inet6 fe80::14d1:32ff:fef9:b92c/64 scope link <br class="title-page-name"/>       valid_lft forever preferred_lft forever</pre>
+<p class="calibre2">Now, let's move on to another project, called <kbd class="calibre12">default</kbd>. This project is used to host special pods for the router and internal Docker registry. Both pods are deployed on the node labeled <kbd class="calibre12">infra</kbd>, which is <kbd class="calibre12">openshift-node-1</kbd> in our case. Let's confirm this and find out the IP address of the registry pod:</p>
+<pre class="calibre18"><strong class="calibre1"># oc project default</strong><br class="title-page-name"/>Now using project "default" on server "https://openshift-master.example.com:8443".<br class="title-page-name"/><strong class="calibre1"># oc get po</strong><br class="title-page-name"/>NAME READY STATUS RESTARTS AGE<br class="title-page-name"/>docker-registry-1-cplvg 1/1 Running 1 17h<br class="title-page-name"/>router-1-52xrr 1/1 Running 1 17h<br class="title-page-name"/><strong class="calibre1"># oc describe po/docker-registry-1-cplvg | grep '\(Node\|IP\):'</strong><br class="title-page-name"/>Node: <strong class="calibre1">172.24.0.12/172.24.0.12</strong><br class="title-page-name"/>IP: <strong class="calibre1">10.128.0.5</strong></pre>
+<div class="packt_infobox">The reason we picked the registry pod is that the router pod runs in privileged mode to have direct access to the node's networking stack; as such, it wouldn't represent a typical configuration.</div>
+<p class="calibre2">Now, launch the following command to get the name of the registry pod's NIC:</p>
+<pre class="calibre18"><strong class="calibre1"># oc rsh docker-registry-1-cplvg ip a</strong><br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...<br class="title-page-name"/>3: <strong class="calibre1">eth0@if12</strong>: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 1450 qdisc noqueue state UP group default<br class="title-page-name"/>    link/ether 0a:58:0a:80:00:05 brd ff:ff:ff:ff:ff:ff link-netnsid 0<br class="title-page-name"/>    inet <strong class="calibre1">10.128.0.5/23</strong> brd 10.128.1.255 scope global eth0<br class="title-page-name"/>       valid_lft forever preferred_lft forever<br class="title-page-name"/>    inet6 fe80::948e:9aff:feca:7f61/64 scope link<br class="title-page-name"/>       valid_lft forever preferred_lft forever</pre>
+<p class="calibre2">The following steps will be performed on the first node—<kbd class="calibre12">openshift-node-1</kbd>.</p>
+<p class="calibre2"/>
+<p class="calibre2">First, let's see what network devices were created on that node after OpenShift was installed:</p>
+<pre class="calibre18"><strong class="calibre1"># ip a</strong><br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...<br class="title-page-name"/>9: <strong class="calibre1">br0</strong>: &lt;BROADCAST,MULTICAST&gt; mtu 1450 qdisc noop state DOWN group default qlen 1000<br class="title-page-name"/>    link/ether ae:da:68:ed:ac:4c brd ff:ff:ff:ff:ff:ff<br class="title-page-name"/>10: <strong class="calibre1">vxlan_sys_4789</strong>: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 65520 qdisc noqueue master ovs-system state UNKNOWN group default qlen 1000<br class="title-page-name"/>    link/ether 0e:fd:50:11:a1:a8 brd ff:ff:ff:ff:ff:ff<br class="title-page-name"/>11: <strong class="calibre1">tun0</strong>: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 1450 qdisc noqueue state UNKNOWN group default qlen 1000<br class="title-page-name"/>    link/ether fa:4e:a6:71:84:8e brd ff:ff:ff:ff:ff:ff<br class="title-page-name"/>    inet 10.128.0.1/23 brd 10.128.1.255 scope global tun0<br class="title-page-name"/>       valid_lft forever preferred_lft forever<br class="title-page-name"/>    inet6 fe80::f84e:a6ff:fe71:848e/64 scope link<br class="title-page-name"/>       valid_lft forever preferred_lft forever<br class="title-page-name"/>12: <strong class="calibre1">veth5d5b06ef@if3</strong>: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 1450 qdisc noqueue master ovs-system state UP group default<br class="title-page-name"/>    link/ether be:3e:2d:24:22:42 brd ff:ff:ff:ff:ff:ff link-netnsid 0<br class="title-page-name"/>    inet6 fe80::bc3e:2dff:fe24:2242/64 scope link<br class="title-page-name"/>       valid_lft forever preferred_lft forever</pre>
+<p class="calibre2"><kbd class="calibre12">br0</kbd> is the OVS bridge that was mentioned at the beginning of the <em class="calibre17">Network topology in OpenShift</em> <span class="calibre11">section</span>. In order to see its active ports, use the <kbd class="calibre12">ovs-vsctl</kbd> command, which is provided by the <kbd class="calibre12">openvswitch</kbd> package:</p>
+<pre class="calibre18"><strong class="calibre1"># ovs-vsctl show</strong><br class="title-page-name"/>bb215e68-10dc-483f-863c-5cd67927ed6b<br class="title-page-name"/>    Bridge "br0"<br class="title-page-name"/>        fail_mode: secure<br class="title-page-name"/>        Port "<strong class="calibre1">vxlan0</strong>"<br class="title-page-name"/>            Interface "vxlan0"<br class="title-page-name"/>                type: vxlan<br class="title-page-name"/>                options: {key=flow, remote_ip=flow}<br class="title-page-name"/>        Port "<strong class="calibre1">tun0</strong>"<br class="title-page-name"/>            Interface "tun0"<br class="title-page-name"/>                type: internal<br class="title-page-name"/>        Port "<strong class="calibre1">veth5d5b06ef</strong>"<br class="title-page-name"/>            Interface "veth5d5b06ef"<br class="title-page-name"/>        Port "br0"<br class="title-page-name"/>            Interface "br0"<br class="title-page-name"/>                type: internal<br class="title-page-name"/>    ovs_version: "2.6.1"</pre>
+<p class="calibre2"/>
+<p class="calibre2"/>
+<p class="calibre2">Now, discover the same information about the second node, <kbd class="calibre12">openshift-node-2</kbd>:</p>
+<pre class="calibre18"><strong class="calibre1"># ip a</strong><br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...<br class="title-page-name"/>9: <strong class="calibre1">br0</strong>: &lt;BROADCAST,MULTICAST&gt; mtu 1450 qdisc noop state DOWN group default qlen 1000<br class="title-page-name"/>    link/ether ea:e2:58:58:04:44 brd ff:ff:ff:ff:ff:ff<br class="title-page-name"/>10: <strong class="calibre1">vxlan_sys_4789</strong>: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 65520 qdisc noqueue master ovs-system state UNKNOWN group default qlen 1000<br class="title-page-name"/>    link/ether 76:ef:26:5c:61:08 brd ff:ff:ff:ff:ff:ff<br class="title-page-name"/>11: <strong class="calibre1">tun0</strong>: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 1450 qdisc noqueue state UNKNOWN group default qlen 1000<br class="title-page-name"/>    link/ether 4a:a7:ab:95:bc:46 brd ff:ff:ff:ff:ff:ff<br class="title-page-name"/>    inet 10.129.0.1/23 brd 10.129.1.255 scope global tun0<br class="title-page-name"/>       valid_lft forever preferred_lft forever<br class="title-page-name"/>    inet6 fe80::48a7:abff:fe95:bc46/64 scope link<br class="title-page-name"/>       valid_lft forever preferred_lft forever<br class="title-page-name"/>30: <strong class="calibre1">veth7b4d46e7@if3</strong>: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 1450 qdisc noqueue master ovs-system state UP group default<br class="title-page-name"/>    link/ether 7e:82:7a:d2:9b:df brd ff:ff:ff:ff:ff:ff link-netnsid 0<br class="title-page-name"/>    inet6 fe80::7c82:7aff:fed2:9bdf/64 scope link<br class="title-page-name"/>       valid_lft forever preferred_lft forever<br class="title-page-name"/># ovs-vsctl show<br class="title-page-name"/>3c752e9a-07c9-4b19-9789-a99004f2eaa3<br class="title-page-name"/>    Bridge "br0"<br class="title-page-name"/>        fail_mode: secure<br class="title-page-name"/>        Port "br0"<br class="title-page-name"/>            Interface "br0"<br class="title-page-name"/>                type: internal<br class="title-page-name"/>        Port "<strong class="calibre1">vxlan0</strong>"<br class="title-page-name"/>            Interface "vxlan0"<br class="title-page-name"/>                type: vxlan<br class="title-page-name"/>                options: {key=flow, remote_ip=flow}<br class="title-page-name"/>        Port "<strong class="calibre1">veth7b4d46e7</strong>"<br class="title-page-name"/>            Interface "veth7b4d46e7"<br class="title-page-name"/>        Port "<strong class="calibre1">tun0</strong>"<br class="title-page-name"/>            Interface "tun0"<br class="title-page-name"/>                type: internal<br class="title-page-name"/>    ovs_version: "2.6.1"</pre>
+<p class="calibre2"><span class="calibre11">In order to sum up the preceding code, the following diagram provides a visual representation of what the resulting overlay network looks like in our cluster:</span></p>
+<p class="cdpaligncenter"><img class="alignnone54" src="../images/00064.jpeg"/></p>
+<div class="cdpaligncenter1">Figure 1 - Overlay network topology</div>
+<p class="calibre2">Finally, let's clean up before the next section:</p>
+<pre class="calibre18"><strong class="calibre1"># oc delete project demo</strong><br class="title-page-name"/>project "demo" deleted</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">SDN plugins</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">In the previous section, we learned what components the overlay network in OpenShift comprises. Now, it's time to see how it can be configured to suit the requirements of a particular environment.</p>
+<p class="calibre2"> OpenShift makes its internal SDN plugins available out-of-the-box, as well as plugins for integration with third-party SDN frameworks. The following are three built-in plugins that are available in OpenShift:</p>
+<ul class="calibre9">
+<li class="calibre10"><kbd class="calibre12"><kbd class="calibre26">ovs-subnet</kbd></kbd></li>
+<li class="calibre10"><kbd class="calibre12">ovs-multitenant</kbd></li>
+<li class="calibre10"><kbd class="calibre12">ovs-networkpolicy</kbd></li>
+</ul>
+<p class="calibre2">The decision regarding which plugin to use is based on what level of security and control you aim to achieve. In the following subsections, we will discuss the main features and use cases for each of those plugins. </p>
+<p class="calibre2">With SDNs taking over networking, third-party vendors have also started to develop their own solutions for programmable networks. Red Hat works closely with such providers to ensure smooth integration of their products into OpenShift. The following solutions have been tested and verified by Red Hat as production-ready:</p>
+<ul class="calibre9">
+<li class="calibre10">Nokia Nuage</li>
+<li class="calibre10">Cisco Contiv</li>
+<li class="calibre10">Juniper Contrail</li>
+<li class="calibre10">Tigera Calico</li>
+<li class="calibre10">VMWare NSX-T</li>
+</ul>
+<p class="calibre2">Getting each of those to work with OpenShift is beyond the scope of this book, but you will find detailed instructions by following the links provided at the end of this chapter.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">ovs-subnet plugin</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">This is the default plugin that's enabled after OpenShift has just been installed. It provides connectivity for pods across the entire cluster with no limitations whatsoever, meaning that traffic can flow freely between all pods. This may be undesirable in large multi-tenant environments that place high importance on security. The SDN plugin being used is determined by the <kbd class="calibre12">networkConfig.networkPluginName</kbd> setting in the master configuration file:</p>
+<pre class="calibre18"><strong class="calibre1"># cat /etc/origin/master/master-config.yaml</strong><br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...<br class="title-page-name"/>networkConfig:<br class="title-page-name"/>  clusterNetworkCIDR: 10.128.0.0/14<br class="title-page-name"/>  clusterNetworks:<br class="title-page-name"/>  - cidr: 10.128.0.0/14<br class="title-page-name"/>    hostSubnetLength: 9<br class="title-page-name"/>  externalIPNetworkCIDRs:<br class="title-page-name"/>  - 0.0.0.0/0<br class="title-page-name"/>  hostSubnetLength: 9<br class="title-page-name"/>  <strong class="calibre1">networkPluginName: redhat/openshift-ovs-subnet<br class="title-page-name"/></strong>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...</pre>
+<p class="calibre2">The SDN plugin can also be specified explicitly upon installation via the <kbd class="calibre12">os_sdn_network_plugin_name</kbd> Ansible variable. By default, it's <kbd class="calibre12">redhat/openshift-ovs-subnet</kbd>.</p>
+<p class="calibre2">In order to see for yourself what exactly the <kbd class="calibre12">ovs-subnet</kbd> plugin does (or, rather, does not do), create two projects with one pod each and try to reach one of them from the other one.</p>
+<ol class="calibre13">
+<li value="1" class="calibre10">First, create a <kbd class="calibre12">demo-1</kbd> project:</li>
+</ol>
+<pre class="calibre19"><strong class="calibre1"># oc new-project demo-1</strong><br class="title-page-name"/>...</pre>
+<ol start="2" class="calibre13">
+<li value="2" class="calibre10">Next, launch a pod by running the httpd web server using the same YAML definition, like we did in the <em class="calibre28">Tracing connectivity</em> <span>subsection</span>:</li>
+</ol>
+<pre class="calibre19"><strong class="calibre1"># cat httpd-pod.yml <br class="title-page-name"/></strong>apiVersion: v1<br class="title-page-name"/>kind: Pod<br class="title-page-name"/>metadata:<br class="title-page-name"/>  name: httpd<br class="title-page-name"/>  labels:<br class="title-page-name"/>    role: web<br class="title-page-name"/>spec:<br class="title-page-name"/>  containers:<br class="title-page-name"/>  - name: httpd<br class="title-page-name"/>    image: manageiq/httpd<br class="title-page-name"/>    resources:<br class="title-page-name"/>      requests:<br class="title-page-name"/>        cpu: 400m<br class="title-page-name"/>        memory: 128Mi<strong class="calibre1"><br class="title-page-name"/><br class="title-page-name"/># oc create -f httpd-pod.yml</strong><br class="title-page-name"/>pod "httpd" created</pre>
+<p class="calibre2"/>
+<p class="calibre2"/>
+<ol start="3" class="calibre13">
+<li value="3" class="calibre10">Let's find out the IP address assigned to our pod:</li>
+</ol>
+<pre class="calibre19"><strong class="calibre1"># oc describe po/httpd | grep IP:</strong><br class="title-page-name"/>IP: <strong class="calibre1">10.129.0.22</strong></pre>
+<ol start="4" class="calibre13">
+<li value="4" class="calibre10">Move on to creating the second project:</li>
+</ol>
+<pre class="calibre19"><strong class="calibre1"># oc new-project demo-2</strong><br class="title-page-name"/>...</pre>
+<p class="calibre27">And create the same pod in that project:</p>
+<pre class="calibre19"><strong class="calibre1"># oc create -f httpd-pod.yml</strong><br class="title-page-name"/>pod "httpd" created</pre>
+<ol start="5" class="calibre13">
+<li value="5" class="calibre10">Now, let's see whether we can <kbd class="calibre12">ping</kbd> the first pod from the one we have just created:</li>
+</ol>
+<pre class="calibre19"><strong class="calibre1"># oc rsh httpd ping 10.129.0.22</strong><br class="title-page-name"/>PING 10.129.0.22 (10.129.0.22) 56(84) bytes of data.<br class="title-page-name"/>64 bytes from 10.129.0.22: icmp_seq=1 ttl=64 time=0.345 ms<br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...</pre>
+<p class="calibre2">Just to be sure, let's reverse our experiment and try to reach the pod in the <kbd class="calibre12">demo-2</kbd> project from the one deployed in <kbd class="calibre12">demo-1</kbd>:</p>
+<pre class="calibre18"><strong class="calibre1"># oc project</strong><br class="title-page-name"/>Using project "<strong class="calibre1">demo-2</strong>" on server "https://openshift-master.example.com:8443".<br class="title-page-name"/># oc describe po/httpd | grep IP:<br class="title-page-name"/>IP: <strong class="calibre1">10.129.0.23<br class="title-page-name"/># </strong>oc project demo-1<strong class="calibre1"><br class="title-page-name"/></strong>Now using project "<strong class="calibre1">demo-1</strong>" on server "https://openshift-master.example.com:8443".<br class="title-page-name"/># oc rsh httpd ping <strong class="calibre1">10.129.0.23</strong><br class="title-page-name"/>PING 10.129.0.23 (10.129.0.23) 56(84) bytes of data.<br class="title-page-name"/>64 bytes from 10.129.0.23: icmp_seq=1 ttl=64 time=0.255 ms<br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...</pre>
+<p class="calibre2">As you can see, communication between pods is completely uninhibited, which may be undesirable. In the two following subsections, we will demonstrate how to enforce project isolation using other OpenShift plugins.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">ovs-multitenant plugin</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">While it's usually not that big of a deal in PoC and sandboxes, security becomes a matter of utmost importance in large enterprises with diverse teams and project portfolios, even more so when the development of certain applications is outsourced to third-party companies. The <kbd class="calibre12">ovs-multitenant</kbd> plugin is a perfect choice if just having projects separated is enough. Unlike the <kbd class="calibre12">ovs-subnet</kbd> plugin, which passes all traffic across all pods, this one assigns the same VNID to all pods for each project, keeping them unique across projects, and sets up flow rules on the <kbd class="calibre12">br0</kbd> bridge to make sure that traffic is only allowed between pods with the same VNID.</p>
+<p class="calibre2">There is, however, an exception to that rule—traffic is allowed to flow between the <kbd class="calibre12">default</kbd> project and each of the other ones. This is because that project is privileged and is assigned VNID, so that all pods in the cluster have access to the router and internal registry. Both of these are integral components of OpenShift.</p>
+<p class="calibre2">In order to switch to the new plugin, we will have to perform a series of steps.</p>
+<ol class="calibre13">
+<li value="1" class="calibre10">First, change <kbd class="calibre12">networkPluginName</kbd> in the master's configuration file:</li>
+</ol>
+<pre class="calibre19"><strong class="calibre1"># cat /etc/origin/master/master-config.yaml</strong><br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...<br class="title-page-name"/>networkConfig:<br class="title-page-name"/>  clusterNetworkCIDR: 10.128.0.0/14<br class="title-page-name"/>  clusterNetworks:<br class="title-page-name"/>  - cidr: 10.128.0.0/14<br class="title-page-name"/>    hostSubnetLength: 9<br class="title-page-name"/>  externalIPNetworkCIDRs:<br class="title-page-name"/>  - 0.0.0.0/0<br class="title-page-name"/>  hostSubnetLength: 9<br class="title-page-name"/>  <strong class="calibre1">networkPluginName: redhat/openshift-ovs-multitenant</strong><br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...</pre>
+<p class="calibre27">Then, on all nodes:</p>
+<pre class="calibre19"><strong class="calibre1"># cat /etc/origin/node/node-config.yaml</strong><br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...<br class="title-page-name"/>networkPluginName: redhat/openshift-ovs-multitenant<br class="title-page-name"/># networkConfig struct introduced in origin 1.0.6 and OSE 3.0.2 which<br class="title-page-name"/># deprecates networkPluginName above. The two should match.<br class="title-page-name"/>networkConfig:<br class="title-page-name"/>   mtu: 1450<br class="title-page-name"/>   <strong class="calibre1">networkPluginName: redhat/openshift-ovs-multitenant</strong><br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...</pre>
+<ol start="2" class="calibre13">
+<li value="2" class="calibre10">Next, restart the master API and controllers:</li>
+</ol>
+<pre class="calibre19"><strong class="calibre1"># systemctl restart origin-master-{api,controllers}</strong></pre>
+<ol start="3" class="calibre13">
+<li value="3" class="calibre10">Stop the node processes on all nodes:</li>
+</ol>
+<pre class="calibre19"><strong class="calibre1"># systemctl stop origin-node</strong></pre>
+<ol start="4" class="calibre13">
+<li value="4" class="calibre10">Restart the OpenVSwitch service on all nodes:</li>
+</ol>
+<pre class="calibre19"><strong class="calibre1"> # systemctl restart openvswitch</strong></pre>
+<ol start="5" class="calibre13">
+<li value="5" class="calibre10">Finally, start the node processes again:</li>
+</ol>
+<pre class="calibre19"><strong class="calibre1"># systemctl start origin-node</strong></pre>
+<div class="packt_infobox">Note that when you restart a node process, pods on that node will get a new IP addresses.</div>
+<p class="calibre2">Now, let's see if projects <kbd class="calibre12">demo-1</kbd> and <kbd class="calibre12">demo-2</kbd> are able to reach each other. First, let's get the new IP address of the <kbd class="calibre12">httpd</kbd> pod from the <kbd class="calibre12">demo-1</kbd> project:</p>
+<pre class="calibre18"><strong class="calibre1"># oc describe po/httpd | grep IP:</strong><br class="title-page-name"/>IP: 10.129.0.25</pre>
+<p class="calibre2">Now, do the same for the <kbd class="calibre12">demo-2</kbd> project:</p>
+<pre class="calibre18"><strong class="calibre1"># oc project demo-2</strong><br class="title-page-name"/>Now using project "demo-2" on server "https://openshift-master.example.com:8443".<br class="title-page-name"/><br class="title-page-name"/><strong class="calibre1"># oc describe po/httpd | grep IP:</strong><br class="title-page-name"/>IP: 10.129.0.24</pre>
+<p class="calibre2">Let's try and <kbd class="calibre12">ping</kbd> the pod in the <kbd class="calibre12">demo-1</kbd> project from <kbd class="calibre12">demo-2</kbd>:</p>
+<pre class="calibre18"><strong class="calibre1"># oc rsh httpd ping 10.129.0.25</strong><br class="title-page-name"/>PING 10.129.0.25 (10.129.0.25) 56(84) bytes of data.<br class="title-page-name"/>^C<br class="title-page-name"/>--- 10.129.0.25 ping statistics ---<br class="title-page-name"/>10 packets transmitted, 0 received, <strong class="calibre1">100% packet loss</strong>, time 9057ms<br class="title-page-name"/><br class="title-page-name"/>command terminated with exit code 1</pre>
+<p class="calibre2">And vice versa:</p>
+<pre class="calibre18"><strong class="calibre1"># oc project demo-1</strong><br class="title-page-name"/>Now using project "demo-1" on server "https://openshift-master.example.com:8443".<br class="title-page-name"/># oc rsh httpd ping <strong class="calibre1">10.129.0.24</strong><br class="title-page-name"/><br class="title-page-name"/>PING 10.129.0.24 (10.129.0.24) 56(84) bytes of data.<br class="title-page-name"/><br class="title-page-name"/>^C<br class="title-page-name"/>--- 10.129.0.24 ping statistics ---<br class="title-page-name"/>5 packets transmitted, 0 received, <strong class="calibre1">100% packet loss</strong>, time 4012ms<br class="title-page-name"/><br class="title-page-name"/>command terminated with exit code 1</pre>
+<p class="calibre2">We have confirmed that the projects are indeed isolated. But what if in a real-world scenario there is an exception and you need some projects to be able to communicate with each other? An example would be a standard 3-tier application with a database, backend, and frontend residing in different projects for more granular control over resource allocation. For these kinds of use cases, the OpenShift CLI provides a command to <kbd class="calibre12">join</kbd> projects together, effectively enabling communication between them:</p>
+<pre class="calibre18"><strong class="calibre1"># oc adm pod-network join-projects --to=demo-1 demo-2</strong></pre>
+<p class="calibre2">This command provides no output and can be used as a quick way to make exceptions in your security policy.</p>
+<div class="packt_infobox">It's worth noting that the same result can be achieved by swapping projects: <kbd class="calibre26">oc adm pod-network join-projects --to=demo-2 demo-1</kbd>.</div>
+<p class="calibre2">Now, let's see if it worked. Try to <kbd class="calibre12">ping</kbd> our pod from the <kbd class="calibre12">demo-1</kbd> project first and then from <kbd class="calibre12">demo-2</kbd>:</p>
+<pre class="calibre18"><strong class="calibre1"># oc rsh httpd ping 10.129.0.24</strong><br class="title-page-name"/>PING 10.129.0.24 (10.129.0.24) 56(84) bytes of data.<br class="title-page-name"/>64 bytes from 10.129.0.24: icmp_seq=1 ttl=64 time=0.323 ms<br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...<br class="title-page-name"/><strong class="calibre1"># oc project demo-2</strong><br class="title-page-name"/>Now using project "demo-2" on server "https://openshift-master.example.com:8443".<br class="title-page-name"/><strong class="calibre1"># oc rsh httpd ping 10.129.0.25</strong><br class="title-page-name"/>PING 10.129.0.25 (10.129.0.25) 56(84) bytes of data.<br class="title-page-name"/>64 bytes from 10.129.0.25: icmp_seq=1 ttl=64 time=0.287 ms<br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...</pre>
+<p class="calibre2">Now that we have tested the plugin's functionality with ordinary projects, let's go ahead and confirm the <kbd class="calibre12">default</kbd> project's privileged status. Switch to <kbd class="calibre12">default</kbd> and find out the IP address of the registry pod:</p>
+<pre class="calibre18"><strong class="calibre1"># oc project default</strong><br class="title-page-name"/>Now using project "default" on server "https://openshift-master.example.com:8443".<br class="title-page-name"/><strong class="calibre1"># oc get po</strong><br class="title-page-name"/>NAME                        READY   STATUS      RESTARTS  AGE<br class="title-page-name"/>docker-registry-1-cplvg     1/1     Running     2         22h<br class="title-page-name"/>router-1-52xrr              1/1     Running     1         22h<br class="title-page-name"/><strong class="calibre1"># oc describe po/docker-registry-1-cplvg | grep IP:</strong><br class="title-page-name"/>IP: <strong class="calibre1">10.128.0.6</strong></pre>
+<p class="calibre2">Next, switch back to <kbd class="calibre12">demo-1</kbd> and try to reach the registry pod from there:</p>
+<pre class="calibre18"><strong class="calibre1"># oc project demo-1</strong><br class="title-page-name"/>Now using project "demo-1" on server "https://openshift-master.example.com:8443".<br class="title-page-name"/><strong class="calibre1"># oc rsh httpd ping 10.128.0.6</strong><br class="title-page-name"/>PING 10.128.0.6 (10.128.0.6) 56(84) bytes of data.<br class="title-page-name"/>64 bytes from 10.128.0.6: icmp_seq=1 ttl=64 time=1.94 ms<br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...</pre>
+<p class="calibre2">Again, do the same for the <kbd class="calibre12">demo-2</kbd> project:</p>
+<pre class="calibre18"><strong class="calibre1"># oc project demo-2</strong><br class="title-page-name"/>Now using project "demo-2" on server "https://openshift-master.example.com:8443".<br class="title-page-name"/><strong class="calibre1"># oc rsh httpd ping 10.128.0.6</strong><br class="title-page-name"/>PING 10.128.0.6 (10.128.0.6) 56(84) bytes of data.<br class="title-page-name"/>64 bytes from 10.128.0.6: icmp_seq=1 ttl=64 time=1.72 ms<br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...</pre>
+<p class="calibre2">Joining projects together is not an irreversible operation—you can isolate a certain project from the rest of the environment just as easily:</p>
+<pre class="calibre18"><strong class="calibre1"># oc adm pod-network isolate-projects demo-1</strong></pre>
+<p class="calibre2">The preceding command effectively blocks all traffic to and from all pods in the <kbd class="calibre12">demo-1</kbd> project. Let's confirm that by trying to reach the pod in that project from <kbd class="calibre12">demo-2</kbd>, which is where we are right now:</p>
+<pre class="calibre18"><strong class="calibre1"># oc rsh httpd ping 10.129.0.25</strong><br class="title-page-name"/>PING 10.129.0.25 (10.129.0.25) 56(84) bytes of data.<br class="title-page-name"/><br class="title-page-name"/>^C<br class="title-page-name"/>--- 10.129.0.25 ping statistics ---<br class="title-page-name"/>3 packets transmitted, 0 received, <strong class="calibre1">100% packet</strong> loss, time 2014ms<br class="title-page-name"/><br class="title-page-name"/>command terminated with exit code 1</pre>
+<p class="calibre2">Just like we did previously, let's do the same from <kbd class="calibre12">demo-1</kbd>:</p>
+<pre class="calibre18"><strong class="calibre1"># oc project demo-1</strong><br class="title-page-name"/>Now using project "demo-1" on server "https://openshift-master.example.com:8443".<br class="title-page-name"/><br class="title-page-name"/><strong class="calibre1"># oc rsh httpd ping 10.129.0.24</strong><br class="title-page-name"/>PING 10.129.0.24 (10.129.0.24) 56(84) bytes of data.<br class="title-page-name"/>^C<br class="title-page-name"/>--- 10.129.0.24 ping statistics ---<br class="title-page-name"/>4 packets transmitted, 0 received, <strong class="calibre1">100% packet loss</strong>, time 3009ms<br class="title-page-name"/><br class="title-page-name"/>command terminated with exit code 1</pre>
+<p class="calibre2">As you can see, the project was successfully isolated using just a single command.</p>
+<p class="calibre2">Besides joining and isolating projects, OpenShift also provides another feature for managing pod networking—making a project global. This allows traffic to the project from all pods across all projects and vice versa—the same as with the <kbd class="calibre12">default</kbd> project. A potential use case for such a configuration is project hosting a messaging bus that's used by all other applications in the cluster.</p>
+<p class="calibre2">Let's make the <kbd class="calibre12">demo-2</kbd> project global:</p>
+<pre class="calibre18"><strong class="calibre1"># oc adm pod-network make-projects-global demo-2</strong></pre>
+<p class="calibre2">Let's see if it worked:</p>
+<pre class="calibre18"><strong class="calibre1"># oc rsh httpd ping 10.129.0.24</strong><br class="title-page-name"/>PING 10.129.0.24 (10.129.0.24) 56(84) bytes of data.<br class="title-page-name"/>64 bytes from 10.129.0.24: icmp_seq=1 ttl=64 time=0.276 ms<br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...</pre>
+<p class="calibre2">Unlike before, where the <kbd class="calibre12">demo-1</kbd> project was isolated, traffic is now allowed.</p>
+<p class="calibre2">Now, let's move to the last SDN plugin, which is provided by OpenShift.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">ovs-networkpolicy plugin</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">While providing a simple to use <span class="calibre11">and mostly adequate</span> mechanism for managing access between projects, the <kbd class="calibre12">ovs-multitenant</kbd> plugin lacks the ability to control access at a more granular level. This is where the <kbd class="calibre12">ovs-networkpolicy</kbd> plugin steps in—it lets you create custom <kbd class="calibre12">NetworkPolicy</kbd> objects that, for example, can apply restrictions to ingress or egress traffic.</p>
+<p class="calibre2">In order to migrate from the <kbd class="calibre12">ovs-multitenant</kbd> plugin to this one, we have to isolate ordinary projects from each other and allow traffic to and from global projects. Global projects are distinguished by having <kbd class="calibre12">0</kbd> as their NETID, as seen in the following output:</p>
+<pre class="calibre18">[root@openshift-master book]<strong class="calibre1"># oc get netnamespaces</strong><br class="title-page-name"/>NAME                NETID      EGRESS IPS<br class="title-page-name"/><strong class="calibre1">default             0          []</strong><br class="title-page-name"/>demo-1              9793016    []<br class="title-page-name"/><strong class="calibre1">demo-2              0          []</strong><br class="title-page-name"/>kube-public         10554334   []<br class="title-page-name"/>kube-system         8648643    []<br class="title-page-name"/>logging             11035285   []<br class="title-page-name"/>management-infra    4781458    []<br class="title-page-name"/>openshift           13291653   []<br class="title-page-name"/>openshift-infra     12251614   []<br class="title-page-name"/>openshift-node      38906      []</pre>
+<p class="calibre2">In our case, the only global projects are <kbd class="calibre12">default</kbd> and <kbd class="calibre12">demo-2</kbd>.</p>
+<p class="calibre2">To spare you the manual effort, a helper script has already been written to create all of the necessary <kbd class="calibre12">NetworkPolicy</kbd> objects to allow traffic between pods in the same project and between each project and global ones. This script must be run prior to carrying out the usual steps for migrating from one OpenShift plugin to another. </p>
+<p class="calibre2">First, we have to download the script and make it executable:</p>
+<pre class="calibre18"><strong class="calibre1"># curl -O https://raw.githubusercontent.com/openshift/origin/master/contrib/migration/migrate-network-policy.sh</strong><br class="title-page-name"/><strong class="calibre1"># chmod +x migrate-network-policy.sh</strong></pre>
+<p class="calibre2">Next, run it and observe what steps are being taken to ensure the presence of correct network policies across projects:</p>
+<pre class="calibre18"><strong class="calibre1"># ./migrate-network-policy.sh</strong><br class="title-page-name"/><br class="title-page-name"/>NAMESPACE: default<br class="title-page-name"/>Namespace is global: adding label legacy-netid=0<br class="title-page-name"/><br class="title-page-name"/>NAMESPACE: demo-1<br class="title-page-name"/>networkpolicy "default-deny" created<br class="title-page-name"/>networkpolicy "allow-from-self" created<br class="title-page-name"/>networkpolicy "allow-from-global-namespaces" created<br class="title-page-name"/><br class="title-page-name"/>NAMESPACE: demo-2<br class="title-page-name"/>Namespace is global: adding label legacy-netid=0<br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...</pre>
+<p class="calibre2">Notice the special treatment that global projects get: they were assigned the <kbd class="calibre12">pod.network.openshift.io/legacy-netid=0</kbd> label, which is used as a selector by NetworkPolicy objects to enable access from such projects. To see this for yourself, export the <kbd class="calibre12">allow-from-global-namespaces</kbd> network policy's definition:</p>
+<pre class="calibre18"><strong class="calibre1"># oc export networkpolicy/allow-from-global-namespaces</strong><br class="title-page-name"/>apiVersion: extensions/v1beta1<br class="title-page-name"/>kind: NetworkPolicy<br class="title-page-name"/>metadata:<br class="title-page-name"/>  creationTimestamp: null<br class="title-page-name"/>  generation: 1<br class="title-page-name"/>  name: allow-from-global-namespaces<br class="title-page-name"/>spec:<br class="title-page-name"/>  <strong class="calibre1">ingress:</strong><br class="title-page-name"/><strong class="calibre1">  - from:</strong><br class="title-page-name"/><strong class="calibre1">    - namespaceSelector:</strong><br class="title-page-name"/><strong class="calibre1">        matchLabels:</strong><br class="title-page-name"/><strong class="calibre1">          pod.network.openshift.io/legacy-netid: "0"</strong><br class="title-page-name"/>  podSelector: {}<br class="title-page-name"/>  policyTypes:<br class="title-page-name"/>  - Ingress</pre>
+<p class="calibre2">Once this is done, the rest of the process is the same as in the previous subsection with the <kbd class="calibre12">networkPluginName</kbd> set to <kbd class="calibre12">redhat/openshift-ovs-networkpolicy</kbd>. Refer to the previous section for detailed instructions on how to enable an OpenShift plugin.</p>
+<p class="calibre2">Now that this is out of the way, let's remind ourselves what project we are in:</p>
+<pre class="calibre18"><strong class="calibre1"># oc project</strong><br class="title-page-name"/>Using project "<strong class="calibre1">demo-1</strong>" on server "https://openshift-master.example.com:8443".</pre>
+<p class="calibre2">Next, find out the new IP address of our Apache pod for future reference:</p>
+<pre class="calibre18"><strong class="calibre1"># oc describe po/httpd | grep IP:</strong><br class="title-page-name"/>IP: <strong class="calibre1">10.129.0.26</strong></pre>
+<p class="calibre2">Do the same for the <kbd class="calibre12">demo-2</kbd> project:</p>
+<pre class="calibre18"><strong class="calibre1"># oc project demo-2</strong><br class="title-page-name"/>...<br class="title-page-name"/># oc describe po/httpd | grep IP:<br class="title-page-name"/>IP: <strong class="calibre1">10.129.0.27</strong></pre>
+<p class="calibre2">Now, try pinging the pod in <kbd class="calibre12">demo-1</kbd> from <kbd class="calibre12">demo-2</kbd>:</p>
+<pre class="calibre18"><strong class="calibre1"># oc rsh httpd ping 10.129.0.26</strong><br class="title-page-name"/>PING 10.129.0.26 (10.129.0.26) 56(84) bytes of data.<br class="title-page-name"/>64 bytes from 10.129.0.26: icmp_seq=1 ttl=64 time=0.586 ms<br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...</pre>
+<p class="calibre2">And vice versa, from <kbd class="calibre12">demo-1</kbd> to <kbd class="calibre12">demo-2</kbd>:</p>
+<pre class="calibre18"><strong class="calibre1"># oc project demo-1</strong><br class="title-page-name"/>Now using project "demo-1" on server "https://openshift-master.example.com:8443".<br class="title-page-name"/><strong class="calibre1"># oc rsh httpd ping 10.129.0.27</strong><br class="title-page-name"/>PING 10.129.0.27 (10.129.0.27) 56(84) bytes of data.<br class="title-page-name"/>64 bytes from 10.129.0.27: icmp_seq=1 ttl=64 time=0.346 ms<br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...</pre>
+<p class="calibre2">Astute readers may recall that <kbd class="calibre12">demo-2</kbd> is actually a global project, meaning that both ingress and egress traffic is enabled between it and any other project, thanks to the <kbd class="calibre12">allow-from-global-namespaces</kbd> network policy.</p>
+<p class="calibre2">Let's create another project called <kbd class="calibre12">demo-3</kbd> to host the same <kbd class="calibre12">httpd</kbd> pod and get the IP address of the pod:</p>
+<pre class="calibre18"><strong class="calibre1"># oc new-project demo-3</strong><br class="title-page-name"/>...<br class="title-page-name"/><br class="title-page-name"/><strong class="calibre1"># oc create -f httpd-pod.yml</strong><br class="title-page-name"/>pod "httpd" created<br class="title-page-name"/><br class="title-page-name"/><strong class="calibre1"># oc describe po/httpd | grep IP:</strong><br class="title-page-name"/>IP: <strong class="calibre1">10.129.0.28</strong></pre>
+<p class="calibre2">Try to reach the pod in the <kbd class="calibre12">demo-1</kbd> project:</p>
+<pre class="calibre18"><strong class="calibre1"># oc rsh httpd ping 10.129.0.26</strong><br class="title-page-name"/>PING 10.129.0.26 (10.129.0.26) 56(84) bytes of data.<br class="title-page-name"/>^C<br class="title-page-name"/>--- 10.129.0.26 ping statistics ---<br class="title-page-name"/>10 packets transmitted, 0 received, 100% packet loss, time 9063ms<br class="title-page-name"/><br class="title-page-name"/>command terminated with exit code 1</pre>
+<p class="calibre2">This time, packets didn't come through because <kbd class="calibre12">demo-3</kbd> is just a regular project and as such it's subject to network policy restrictions. Let's change that by creating a network policy in the <kbd class="calibre12">demo-1</kbd> project that will allow traffic from <kbd class="calibre12">demo-3</kbd>, but before that, we will have to label the <kbd class="calibre12">demo-3</kbd> project so that the policy can refer to it using a selector:</p>
+<pre class="calibre18"><strong class="calibre1"># oc project demo-1</strong><br class="title-page-name"/>...<br class="title-page-name"/><br class="title-page-name"/><strong class="calibre1"># oc label namespace demo-3 name=demo-3</strong><br class="title-page-name"/>namespace "demo-3" labeled<br class="title-page-name"/><br class="title-page-name"/><strong class="calibre1"># cat networkpolicy-demo-3.yml</strong><br class="title-page-name"/>kind: NetworkPolicy<br class="title-page-name"/>apiVersion: extensions/v1beta1<br class="title-page-name"/>metadata:<br class="title-page-name"/>  name: networkpolicy-demo-3<br class="title-page-name"/>spec:<br class="title-page-name"/>  podSelector:<br class="title-page-name"/>  <strong class="calibre1">ingress:</strong><br class="title-page-name"/><strong class="calibre1">  - from:</strong><br class="title-page-name"/><strong class="calibre1">    - namespaceSelector:</strong><br class="title-page-name"/><strong class="calibre1">        matchLabels:</strong><br class="title-page-name"/><strong class="calibre1">          name: demo-3</strong><br class="title-page-name"/><br class="title-page-name"/><strong class="calibre1"># oc create -f networkpolicy-demo-3.yml</strong><br class="title-page-name"/>networkpolicy "networkpolicy-demo-3" created</pre>
+<div class="packt_infobox">Notice that <kbd class="calibre26">ingress</kbd> is on the same level of indentation as <kbd class="calibre26">podSelector</kbd>—this is not a typo, but an omitted pod selector, because in our example we match namespaces instead of pods.</div>
+<p class="calibre2">Let's try accessing <kbd class="calibre12">demo-1</kbd> again:</p>
+<pre class="calibre18"><strong class="calibre1"># oc project demo-3</strong><br class="title-page-name"/>Now using project "demo-3" on server "https://openshift-master.example.com:8443".<br class="title-page-name"/># oc rsh httpd ping <strong class="calibre1">10.129.0.26</strong><br class="title-page-name"/>PING 10.129.0.26 (10.129.0.26) 56(84) bytes of data.<br class="title-page-name"/>64 bytes from 10.129.0.26: icmp_seq=1 ttl=64 time=0.546 ms<br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...</pre>
+<p class="calibre2">As you can see, the network policy is now in effect.</p>
+<p class="calibre2">OpenShift can also be configured to create a default network policy for every project when it's being instantiated. The OpenShift CLI provides a command for bootstrapping a project template:</p>
+<pre class="calibre18"><strong class="calibre1"># oc adm create-bootstrap-project-template -o yaml &gt; demo-project-request.yml</strong></pre>
+<p class="calibre2">Modify the template so that it contains a network policy that blocks all ingress traffic—this is the easiest way to see if it's working or not:</p>
+<pre class="calibre18"><strong class="calibre1"># cat demo-project-request.yml</strong><br class="title-page-name"/>apiVersion: v1<br class="title-page-name"/>kind: Template<br class="title-page-name"/>metadata:<br class="title-page-name"/>  creationTimestamp: null<br class="title-page-name"/>  name: demo-project-request<br class="title-page-name"/>objects:<br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...<br class="title-page-name"/>- apiVersion: extensions/v1beta1<br class="title-page-name"/>  kind: NetworkPolicy<br class="title-page-name"/>  metadata:<br class="title-page-name"/>    name: <strong class="calibre1">default-deny</strong><br class="title-page-name"/>  spec:<br class="title-page-name"/>    ingress:<br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...</pre>
+<p class="calibre2">Create the template from its YAML definition:</p>
+<pre class="calibre18"><strong class="calibre1"># oc create -f demo-project-request.yml</strong><br class="title-page-name"/>template "demo-project-request" created</pre>
+<div class="packt_infobox">The template was created in the <kbd class="calibre26">demo-3</kbd> project because it's not technically important, but it's recommended to store it in one of the pre-existing projects, such as <kbd class="calibre26">default</kbd> or <kbd class="calibre26">openshift-infra</kbd>.</div>
+<p class="calibre2">To configure OpenShift to pick up the new template, make the following edit to the master's configuration file:</p>
+<pre class="calibre18"><strong class="calibre1"># cat /etc/origin/master/master-config.yaml</strong><br class="title-page-name"/>projectConfig:<br class="title-page-name"/>  defaultNodeSelector: node-role.kubernetes.io/compute=true<br class="title-page-name"/>  projectRequestMessage: ''<br class="title-page-name"/>  <strong class="calibre1">projectRequestTemplate: demo-3/demo-project-request</strong></pre>
+<p class="calibre2">Lastly, restart the master API service to activate the changes:</p>
+<pre class="calibre18"><strong class="calibre1"># systemctl restart origin-master-api</strong></pre>
+<p class="calibre2">Let's create a <kbd class="calibre12">new-project</kbd> and see if the network policy was created:</p>
+<pre class="calibre18"><strong class="calibre1"># oc new-project demo-4</strong><br class="title-page-name"/>...<br class="title-page-name"/><br class="title-page-name"/># oc get networkpolicy<br class="title-page-name"/>NAME POD-SELECTOR AGE<br class="title-page-name"/><strong class="calibre1">default-deny</strong> &lt;none&gt; 7s</pre>
+<p class="calibre2">Now that the project has been successfully instantiated with the security policy we configured, let's see if the policy itself works. Like we did previously, we will create a pod by running Apache web server and getting its IP address:</p>
+<pre class="calibre18"><strong class="calibre1"># cat httpd-pod.yml <br class="title-page-name"/></strong>apiVersion: v1<br class="title-page-name"/>kind: Pod<br class="title-page-name"/>metadata:<br class="title-page-name"/>  name: httpd<br class="title-page-name"/>  labels:<br class="title-page-name"/>    role: web<br class="title-page-name"/>spec:<br class="title-page-name"/>  containers:<br class="title-page-name"/>  - name: httpd<br class="title-page-name"/>    image: manageiq/httpd<br class="title-page-name"/>    resources:<br class="title-page-name"/>      requests:<br class="title-page-name"/>        cpu: 400m<br class="title-page-name"/>        memory: 128Mi<br class="title-page-name"/><strong class="calibre1"><br class="title-page-name"/># oc create -f httpd-pod.yml</strong><br class="title-page-name"/>pod "httpd" created<br class="title-page-name"/><br class="title-page-name"/><strong class="calibre1"># oc describe po/httpd | grep IP:</strong><br class="title-page-name"/>IP: <strong class="calibre1">10.129.0.29</strong></pre>
+<p class="calibre2">Next, we will switch the project to <kbd class="calibre12">demo-3</kbd> and see if we can reach our pod from there:</p>
+<pre class="calibre18">#<strong class="calibre1"> oc project demo-3</strong><br class="title-page-name"/>Now using project "demo-3" on server "https://openshift-master.example.com:8443".<br class="title-page-name"/># oc rsh httpd ping <strong class="calibre1">10.129.0.29</strong><br class="title-page-name"/>PING 10.129.0.29 (10.129.0.29) 56(84) bytes of data.<br class="title-page-name"/>^C<br class="title-page-name"/>--- 10.129.0.29 ping statistics ---<br class="title-page-name"/>5 packets transmitted, 0 received, 100% packet loss, time 4019ms<br class="title-page-name"/><br class="title-page-name"/>command terminated with exit code 1</pre>
+<p class="calibre2">As expected, all incoming traffic is blocked.</p>
+<p class="calibre2">On this note, we conclude the section on OpenShift SDN plugins.</p>
+<p class="calibre2"/>
+<p class="calibre2"/>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Egress routers</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">As you have learned previously, routers in OpenShift direct ingress traffic from external clients to services that, in turn, forward it to pods. OpenShift also offers a reverse type of router intended for forwarding egress traffic from pods to a certain destination in the external network. But unlike ingress routers implemented via HAProxy, egress ones are built on Squid. Egress routers are potentially useful for cases such as:</p>
+<ul class="calibre9">
+<li class="calibre10">Masking different external resources being used by several applications with a single global resource. For example, applications may be developed in such a way that they are built pulling dependencies from different mirrors, and collaboration between their development teams is rather loose. So, instead of getting them to use the same mirror, an operations team can just set up an egress router to intercept all traffic directed to those mirrors and redirect it to the same site.</li>
+<li class="calibre10">To redirect all suspicious requests for specific sites to the audit system for further analysis.</li>
+</ul>
+<p class="calibre2">OpenShift supports the following types of egress router:</p>
+<ul class="calibre9">
+<li class="calibre10"><em class="calibre28">redirect</em> for redirecting traffic to a certain destination IP</li>
+<li class="calibre10"><em class="calibre28">http-proxy</em> for proxying HTTP, HTTPS, and DNS traffic</li>
+</ul>
+<div class="packt_infobox">Due to limitations regarding <kbd class="calibre26">macvlan</kbd> interfaces in VirtualBox, an egress router cannot be set up in our virtual lab, nor in AWS. The best platform to use it on is bare-metal.</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Static IPs for external project traffic</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">The OpenShift scheduler takes all decisions regarding the placement of pods on nodes, taking into account factors such as the even distribution of pods, node affinity, and available resources. The whole point of default scheduling in OpenShift is to use of available resources as efficiently as possible, but it doesn't take into account the project pods that are created in them. The reason for this is that developers shouldn't be concerned with the placement of an applications' pods across the cluster, and that's why they have absolutely no control over where their pods end up. The problem starts to manifest itself in large organizations with multiple applications subject to different policies regarding security and compliance.</p>
+<p class="calibre2"/>
+<p class="calibre2"/>
+<p class="calibre2">For example, an application handling bank account details must be subject to thorough audit, while its development version must have no access to production databases. Since the concept of projects is unknown to the scheduler, pods with different applications may end up on the same node, generating traffic with the same source IP address (the node's IP address), making it impossible to distinguish them from each other on the corporate firewall and to apply the appropriate policies. Technically, one can create a custom scheduling policy which will <kbd class="calibre12">pin</kbd> pods with specific labels to a specific node or set of nodes, which will provide a consistent pool of source addresses to be permitted through the firewall. However, over time, it will seriously skew the pods' distribution across the cluster, leading to inefficient use of resources and mix operations and the development teams' <span class="calibre11">areas of control, which defeats the purpose of scheduling</span>.</p>
+<p class="calibre2">OpenShift provides a solution for exactly this kind of problem—you can assign an externally routable IP address to a particular project and whitelist it on the corporate firewall, at the same time leaving scheduling completely transparent to developers.</p>
+<div class="packt_infobox">As with egress routers, the virtual environment of VirtualBox places limitations on the possibility of demonstrating this feature.</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Egress network policies</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">While the idea behind network policies is to control access between pods across projects, egress network policies allow you to restrict access from all pods in a project to certain <em class="calibre17">external</em> resources. A typical use case for this feature would be denying pods access to source code from hosting providers and content mirrors to prevent any updates of applications and/or system libraries in those pods. It's important to understand that, unlike egress routers, egress network policies don't perform any redirection of traffic, working on just an <em class="calibre17">Allow versus Deny</em> basis instead.</p>
+<p class="calibre2">Let's see what <span class="calibre11">level of </span>access pods our <kbd class="calibre12">demo-1</kbd> project has:</p>
+<pre class="calibre18"><strong class="calibre1"># oc project demo-1</strong><br class="title-page-name"/>...<br class="title-page-name"/><strong class="calibre1"># oc rsh httpd ping github.com</strong><br class="title-page-name"/>PING github.com (192.30.255.113) 56(84) bytes of data.<br class="title-page-name"/>64 bytes from lb-192-30-255-113-sea.github.com (192.30.255.113): icmp_seq=1 ttl=61 time=61.8 ms<br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...<br class="title-page-name"/><strong class="calibre1"># oc rsh httpd ping google.com</strong><br class="title-page-name"/>PING google.com (172.217.14.78) 56(84) bytes of data.<br class="title-page-name"/>64 bytes from lax17s38-in-f14.1e100.net (172.217.14.78): icmp_seq=1 ttl=61 time=132 ms<br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...</pre>
+<p class="calibre2">Currently, there are no egress network policies being enforced in the project, so access to external resources is completely unrestricted.</p>
+<p class="calibre2">Now, create a custom egress network policy from the YAML definition, which is going to block all traffic to GitHub and permit traffic to all other external resources:</p>
+<pre class="calibre18"><strong class="calibre1"># cat demo-egress-policy.yml</strong> <br class="title-page-name"/>kind: EgressNetworkPolicy<br class="title-page-name"/>apiVersion: v1<br class="title-page-name"/>metadata:<br class="title-page-name"/>  name: demo-egress-policy<br class="title-page-name"/>spec:<br class="title-page-name"/>  egress:<br class="title-page-name"/>  - type: Deny<br class="title-page-name"/>    to:<br class="title-page-name"/>      dnsName: <strong class="calibre1">github.com</strong><br class="title-page-name"/><br class="title-page-name"/><strong class="calibre1"># oc create -f demo-egress-policy.yml</strong> <br class="title-page-name"/>egressnetworkpolicy "demo-egress-policy" created<strong class="calibre1"><br class="title-page-name"/></strong></pre>
+<p class="calibre2">Let's try accessing the same resources as in the beginning of this section:</p>
+<pre class="calibre18"><strong class="calibre1"># oc rsh httpd ping github.com</strong><br class="title-page-name"/>PING github.com (192.30.255.113) 56(84) bytes of data.<br class="title-page-name"/>^C<br class="title-page-name"/>--- github.com ping statistics ---<br class="title-page-name"/>20 packets transmitted, 0 received, <strong class="calibre1">100% packet loss</strong>, time 19090ms<br class="title-page-name"/><br class="title-page-name"/>command terminated with exit code 1<br class="title-page-name"/><strong class="calibre1"># oc rsh httpd ping google.com</strong><br class="title-page-name"/>PING google.com (172.217.14.78) 56(84) bytes of data.<br class="title-page-name"/>64 bytes from lax17s38-in-f14.1e100.net (172.217.14.78): icmp_seq=1 ttl=61 time=35.9 ms<br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...</pre>
+<p class="calibre2">As you can see, GitHub is now inaccessible, which is exactly what we expected.</p>
+<p class="calibre2">In this example, we implemented a <em class="calibre17">deny all but</em> type of security policy, but we can also implement a reverse type, granting access to single resources, blocking everything else. Continuing our example with GitHub and Google, <kbd class="calibre12">edit</kbd> the policy's specification to resemble the following:</p>
+<pre class="calibre18"><strong class="calibre1"># oc edit egressnetworkpolicy/demo-egress-policy</strong><br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...<br class="title-page-name"/>spec:<br class="title-page-name"/>  egress:<br class="title-page-name"/>  - to:<br class="title-page-name"/>      dnsName: <strong class="calibre1">github.com</strong><br class="title-page-name"/>    type: Allow<br class="title-page-name"/>  - to:<br class="title-page-name"/>      cidrSelector: <strong class="calibre1">0.0.0.0/0</strong><br class="title-page-name"/>    type: Deny</pre>
+<p class="calibre2">The preceding configuration directs the policy to block traffic to all external resources, except for GitHub and <kbd class="calibre12">dnsmasq</kbd> on the node.</p>
+<p class="calibre2">Let's test this out:</p>
+<pre class="calibre18"><strong class="calibre1"># oc rsh httpd-egress ping github.com</strong><br class="title-page-name"/>PING github.com (192.30.253.112) 56(84) bytes of data.<br class="title-page-name"/>64 bytes from lb-192-30-253-112-iad.github.com (192.30.253.112): icmp_seq=1 ttl=61 time=68.4 ms<br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...<br class="title-page-name"/><strong class="calibre1"># oc rsh httpd-egress ping google.com</strong><br class="title-page-name"/>PING google.com (209.85.201.138) 56(84) bytes of data.<br class="title-page-name"/>^C<br class="title-page-name"/>--- google.com ping statistics ---<br class="title-page-name"/>18 packets transmitted, 0 received, <strong class="calibre1">100% packet loss</strong>, time 17055ms<br class="title-page-name"/><br class="title-page-name"/>command terminated with exit code 1</pre>
+<p class="calibre2">Again, the policy works as expected.</p>
+<div class="packt_infobox">Note that egress rules are evaluated in the order in which they are specified and the first matching rule wins, meaning that, if we had placed the Deny rule first, traffic to GitHub would have been blocked as well, even though it's explicitly permitted in one of the subsequent rules.</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">DNS</h1>
+                
+            
+            <article>
+                
+<p class="calibre2"><span class="calibre11">One of the mechanisms for linking pods together, which has been discussed earlier in this book, relies on environment variables—the same as you would achieve by using plain Docker. When you deploy a multi-container application on OpenShift, pods that provide certain environment variables for pods that consume them must be started first, so that the variables are configured correctly by OpenShift. For example, if you deploy a 3-tier application consisting of a database, backend, and frontend, you will have to deploy the database first so that the backend pod picks up environment variables with the correct address and port for the database.</span></p>
+<p class="calibre2">Pods can access each other's services directly via their IPs, but in a highly dynamic environment, where services may often be re-created, there is a need for a more stable solution. <span class="calibre11">Aside from using environment variables, OpenShift provides its internal DNS, implemented via SkyDNS and dnsmasq </span><span class="calibre11">for service discovery. This approach doesn't limit your deployment to a certain order and spares you the need to implement additional logic in your deployment strategy. Using OpenShift DNS, all applications can discover each other across the entire cluster via consistent names, which makes it possible for developers to rely on them when migrating to OpenShift. The only thing they need to do is agree with Operations on the names of the services.</span></p>
+<p class="calibre2">DNS in OpenShift gives pods the ability to discover the following resources in OpenShift:</p>
+<table border="1" class="calibre22">
+<tbody class="calibre23">
+<tr class="calibre24">
+<td class="calibre25"><strong class="calibre1">Name</strong></td>
+<td class="calibre25"><strong class="calibre1">Domain</strong></td>
+</tr>
+<tr class="calibre24">
+<td class="calibre25">
+<p class="calibre2">Services</p>
+</td>
+<td class="calibre25">
+<p class="calibre2"><kbd class="calibre12">&lt;service&gt;.&lt;project&gt;.svc.cluster.local</kbd></p>
+</td>
+</tr>
+<tr class="calibre24">
+<td class="calibre25">
+<p class="calibre2">Endpoints</p>
+</td>
+<td class="calibre25">
+<p class="calibre2"><kbd class="calibre12">&lt;service&gt;.&lt;project&gt;.endpoints.cluster.local</kbd></p>
+</td>
+</tr>
+</tbody>
+</table>
+<p class="calibre2"> </p>
+<p class="calibre2">In the following exercise, we will see how two applications that are deployed in different projects can reach each other.</p>
+<ol class="calibre13">
+<li value="1" class="calibre10">First, let's create a project called <kbd class="calibre12">demo-1</kbd>:</li>
+</ol>
+<pre class="calibre19"><strong class="calibre1"># oc new-project demo-1</strong><br class="title-page-name"/>...</pre>
+<ol start="2" class="calibre13">
+<li value="2" class="calibre10">Next, create a pod running Apache web server. We will be using the same YAML configuration as before:</li>
+</ol>
+<pre class="calibre19"><strong class="calibre1"># oc create -f httpd-pod.yml</strong><br class="title-page-name"/>pod "httpd" created</pre>
+<p class="calibre2"/>
+<p class="calibre2"/>
+<p class="calibre2">In order to simulate the way <em class="calibre17">real</em> applications interact with each other, we will have to create a service to serve as a sole ingress point for our pod:</p>
+<pre class="calibre19"><strong class="calibre1"># oc expose po/httpd --port 80</strong><br class="title-page-name"/>service "httpd" exposed</pre>
+<p class="calibre2">Now that the first project is ready, let's create another one:</p>
+<pre class="calibre18"><strong class="calibre1"># oc new-project demo-2</strong><br class="title-page-name"/>...</pre>
+<p class="calibre2">Like we did previously, create a pod from the same YAML definition as before:</p>
+<pre class="calibre18"><strong class="calibre1"># oc create -f httpd-pod.yml</strong><br class="title-page-name"/>pod "httpd" created</pre>
+<p class="calibre2">And create a service by exposing the pod:</p>
+<pre class="calibre18"><strong class="calibre1"># oc expose po/httpd --port 80</strong><br class="title-page-name"/>service "httpd" exposed</pre>
+<p class="calibre2">Now, let's open a bash session into the newly created pod and try to reach the pod from the <kbd class="calibre12">demo-1</kbd> project:</p>
+<pre class="calibre18"><strong class="calibre1"># oc exec httpd -it bash</strong><br class="title-page-name"/>bash-4.2$ <strong class="calibre1">dig httpd.demo-1.svc.cluster.local</strong><br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...<br class="title-page-name"/>;; ANSWER SECTION:<br class="title-page-name"/>httpd.demo-1.svc.cluster.local. 30 IN A <strong class="calibre1">172.30.35.41</strong><br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...</pre>
+<p class="calibre2">For the sake of completeness, let's switch the project to <kbd class="calibre12">demo-1</kbd> and try the same from the first pod:</p>
+<pre class="calibre18"><strong class="calibre1"># oc project demo-1</strong><br class="title-page-name"/>Now using project "demo-1" on server "https://openshift-master.example.com:8443".<br class="title-page-name"/><strong class="calibre1"># oc exec httpd -it bash</strong><br class="title-page-name"/>bash-4.2$ <strong class="calibre1">dig httpd.demo-2.svc.cluster.local</strong><br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...<br class="title-page-name"/>;; ANSWER SECTION:<br class="title-page-name"/>httpd.demo-2.svc.cluster.local. 30 IN A <strong class="calibre1">172.30.81.86</strong><br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...</pre>
+<p class="calibre2">It's even possible to get all endpoints of a particular service, although it's recommended to use services as points of contact:</p>
+<pre class="calibre18"><strong class="calibre1">$ dig httpd.demo-2.endpoints.cluster.local</strong><br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...<br class="title-page-name"/>;; ANSWER SECTION:<br class="title-page-name"/>httpd.demo-2.endpoints.cluster.local. 30 IN A <strong class="calibre1">10.129.0.7<br class="title-page-name"/></strong>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...</pre>
+<div class="packt_infobox">OpenShift injects cluster-level subdomains into the local resolver's configuration at <kbd class="calibre26">/etc/resolv.conf</kbd>, so if you take a look in that file, you will find the line <kbd class="calibre26">search &lt;project&gt;.svc.cluster.local svc.cluster.local cluster.local</kbd>. Therefore, FQDNs don't have to be specified in order to reach resources across a project's boundaries and in the same project. For example, you can use <kbd class="calibre26">httpd.demo-1</kbd> to call a service named <kbd class="calibre26">httpd</kbd> in the <kbd class="calibre26">demo-1</kbd> project, or just <kbd class="calibre26">httpd</kbd> if it's in the same project.</div>
+<p class="calibre2">As you can see, both pods can reach each other via their services, which makes it possible not to rely on environment variables. So, in order to migrate their applications to OpenShift, developers will have to configure environment variables of their applications to point to the DNS names of dependent services. </p>
+<p class="calibre2">At the beginning of this chapter, we provided diagrams detailing the DNS architecture and DNS request flow in OpenShift. Now, let's see what it looks like on a live cluster.</p>
+<p class="calibre2">Run the following command on the master to see what processes are listening on TCP and UDP ports ending with <kbd class="calibre12">53</kbd> (DNS):</p>
+<pre class="calibre18"><strong class="calibre1"># ss -tulpn | grep '53 '</strong><br class="title-page-name"/>udp UNCONN 0 0 *:8053 *:* users:(("<strong class="calibre1">openshift</strong>",pid=1492,fd=10))<br class="title-page-name"/>tcp LISTEN 0 128 *:8053 *:* users:(("<strong class="calibre1">openshift</strong>",pid=1492,fd=13))</pre>
+<p class="calibre2">The process launched from the <kbd class="calibre12">openshift</kbd> binary is no other than the OpenShift Master API, as SkyDNS is embedded into it and uses etcd as a source of authority to keep track of new services and to delete records for deleted ones:</p>
+<pre class="calibre18"><strong class="calibre1"># ps auxf | grep openshift</strong><br class="title-page-name"/>...<br class="title-page-name"/>root       1492  7.3 10.3 1040996 402668 ?      Ssl  00:41  17:51 <strong class="calibre1">/usr/bin/openshift start master api</strong> --config=/etc/origin/master/master-config.yaml --loglevel=2 --listen=https://0.0.0.0:8443 --master=https://openshift-master.example.com:8443<br class="title-page-name"/>...</pre>
+<p class="calibre2">Now, let's take a look at listening ports on our first node—the setup is completely the same for all nodes in a cluster:</p>
+<pre class="calibre18"><strong class="calibre1"># ss -tulpn | grep '53 '</strong><br class="title-page-name"/>udp UNCONN 0 0 <strong class="calibre1">172.24.0.12:53</strong> *:* users:(("dnsmasq",pid=1202,fd=4))<br class="title-page-name"/>udp UNCONN 0 0 <strong class="calibre1">127.0.0.1:53</strong> *:* users:(("openshift",pid=2402,fd=26))<br class="title-page-name"/>udp UNCONN 0 0 <strong class="calibre1">10.128.0.1:53</strong> *:* users:(("dnsmasq",pid=1202,fd=15))<br class="title-page-name"/>udp UNCONN 0 0 <strong class="calibre1">172.17.0.1:53</strong> *:* users:(("dnsmasq",pid=1202,fd=19))<br class="title-page-name"/>udp UNCONN 0 0 <strong class="calibre1">10.0.2.15:53</strong> *:* users:(("dnsmasq",pid=1202,fd=6))<br class="title-page-name"/>...<br class="title-page-name"/>tcp LISTEN 0 5 <strong class="calibre1">172.24.0.12:53</strong> *:* users:(("dnsmasq",pid=1202,fd=5))<br class="title-page-name"/>tcp LISTEN 0 128 <strong class="calibre1">127.0.0.1:53</strong> *:* users:(("openshift",pid=2402,fd=31))<br class="title-page-name"/>tcp LISTEN 0 5 <strong class="calibre1">10.128.0.1:53</strong> *:* users:(("dnsmasq",pid=1202,fd=16))<br class="title-page-name"/>tcp LISTEN 0 5 <strong class="calibre1">172.17.0.1:53</strong> *:* users:(("dnsmasq",pid=1202,fd=20))<br class="title-page-name"/>tcp LISTEN 0 5 <strong class="calibre1">10.0.2.15:53</strong> *:* users:(("dnsmasq",pid=1202,fd=7))<br class="title-page-name"/>...</pre>
+<p class="calibre2">From the preceding output, we can see that SkyDNS is still present on nodes, but there's also <kbd class="calibre12">dnsmasq</kbd>. The latter actually forwards DNS requests into the <kbd class="calibre12">cluster.local</kbd> and <kbd class="calibre12">in-addr.arpa</kbd> zones, while redirecting all others to an upstream DNS server—in our case, its DNS is provided by VirtualBox itself.</p>
+<p class="calibre2">Let's take a look at OpenShift processes running on nodes:</p>
+<pre class="calibre18"><strong class="calibre1"># ps auxf | grep openshift</strong><br class="title-page-name"/>...<br class="title-page-name"/>root       2402  9.0  5.4 1067700 102980 ?      Ssl  00:42  22:39<strong class="calibre1"> /usr/bin/openshift start node</strong> --config=/etc/origin/node/node-config.yaml --loglevel=2</pre>
+<p class="calibre2">Notice that this is the same OpenShift process as listed in the output of the <kbd class="calibre12">ss</kbd> command. As with the Master API, SkyDNS is embedded into the Node process as well to serve DNS requests for services of applications that are deployed on OpenShift.</p>
+<p class="calibre2">The information we've learned can be represented by the following diagram:</p>
+<p class="cdpaligncenter"><img class="alignnone55" src="../images/00065.jpeg"/></p>
+<div class="cdpaligncenter1">Figure 2 - The DNS architecture in OpenShift</div>
+<p class="calibre2">Lastly, let's figure out the actual path DNS queries take before reaching their destinations. For that, we will take a look into various resolver and <kbd class="calibre12">dnsmasq</kbd> configuration files.</p>
+<p class="calibre2">Our first stop is the configuration of the local DNS resolver for the <kbd class="calibre12">httpd</kbd> pod in the <kbd class="calibre12">demo-2</kbd> project:</p>
+<pre class="calibre18"><strong class="calibre1"># oc exec httpd -it bash</strong><br class="title-page-name"/>bash-4.2$ <strong class="calibre1">cat /etc/resolv.conf</strong> <br class="title-page-name"/>nameserver 10.0.2.15<br class="title-page-name"/>search demo-1.svc.cluster.local svc.cluster.local cluster.local example.com<br class="title-page-name"/>options ndots:5</pre>
+<p class="calibre2">According to the preceding configuration, DNS queries for domains specified in the <kbd class="calibre12">search</kbd> directive are to be resolved by the DNS server available at <kbd class="calibre12">10.0.2.15</kbd>, which is the IP of one of the network interfaces dnsmasq is listening to on the node.</p>
+<p class="calibre2">Now, let's take a look into the file specifying the DNS forwarding policy for internal zones:</p>
+<pre class="calibre18"><strong class="calibre1"># cat /etc/dnsmasq.d/node-dnsmasq.conf</strong><br class="title-page-name"/>server=/in-addr.arpa/127.0.0.1<br class="title-page-name"/>server=/cluster.local/127.0.0.1</pre>
+<p class="calibre2">The preceding configuration directs dnsmasq to forward all DNS queries for domains <kbd class="calibre12">in-addr.arpa</kbd> and <kbd class="calibre12">cluster.local</kbd> to whatever DNS server is listening on localhost, which is SkyDNS.</p>
+<p class="calibre2">Next, open the following file:</p>
+<pre class="calibre18"><strong class="calibre1"># cat /etc/dnsmasq.d/origin-upstream-dns.conf</strong><br class="title-page-name"/>server=10.0.2.2</pre>
+<p class="calibre2">As opposed to the previous configuration, this directive configures <kbd class="calibre12">dnsmasq</kbd> to forward all other DNS queries to the upstream DNS, which is the DNS provided by VirtualBox in our case.</p>
+<p class="calibre2">What we have just discovered can be represented by the following diagram:</p>
+<p class="cdpaligncenter"><img class="alignnone56" src="../images/00066.jpeg"/></p>
+<div class="cdpaligncenter1">Figure 3 - DNS query flow in OpenShift</div>
+<p class="calibre2">This concludes our exploration of OpenShift DNS.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Summary</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">In this chapter, you learned about the importance of SDN and the role it plays in OpenShift, the composed network topology diagram for an existing OpenShift cluster, gained knowledge on various OpenShift and third-party plugins, and saw for yourself what features they provide. You also learned about use cases of both egress routers and static IPs for external project traffic, and also created your own egress network policy to restrict access to an external resource.</p>
+<p class="calibre2">In the next chapter, we will be working on the deployment of a simple application.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Questions</h1>
+                
+            
+            <article>
+                
+<ol class="calibre13">
+<li value="1" class="calibre10">Which interface of OVS bridge is used to pass traffic from pods running on a particular node to and from pods running on other nodes?
+<ol class="calibre14">
+<li value="1" class="calibre10">tun0</li>
+<li value="2" class="calibre10">br0</li>
+<li value="3" class="calibre10">veth...</li>
+<li value="4" class="calibre10">vxlan_sys_4789</li>
+</ol>
+</li>
+<li value="2" class="calibre10">Suppose we have a multi-tenant environment with many applications developed by independent teams and outsource contractors that must be able to collaborate in rare cases, but for the most part must be totally isolated from each other. What is the simplest course of action to achieve that?
+<ol class="calibre14">
+<li value="1" class="calibre10">Use the ovs-networkpolicy plugin and write custom network policies to enable omni-directional traffic between the projects used by those parties</li>
+<li value="2" class="calibre10">Use the ovs-subnet plugin</li>
+<li value="3" class="calibre10">Use the ovs-multitenant plugin and join and isolate projects as needed</li>
+<li value="4" class="calibre10">Use the plugin for a third-party solution, such as VMWare NSX-T or Tigera Calico</li>
+</ol>
+</li>
+</ol>
+<ol start="3" class="calibre13">
+<li value="3" class="calibre10">What feature is best suited for whitelisting traffic coming from all pods in a specific project?
+<ol class="calibre14">
+<li value="1" class="calibre10">Egress router in proxy mode</li>
+<li value="2" class="calibre10">Egress router in redirect mode</li>
+<li value="3" class="calibre10">Static IP for external traffic from the project</li>
+<li value="4" class="calibre10">Custom scheduling policy</li>
+<li value="5" class="calibre10">Custom iptables rules in the  <kbd class="calibre12">OPENSHIFT-ADMIN-OUTPUT-RULES</kbd> chain of the <kbd class="calibre12">filter</kbd> table</li>
+</ol>
+</li>
+<li value="4" class="calibre10">Which of the following is the correct specification of the egress network policy that allows access to <kbd class="calibre12">rubygems.org</kbd> and <kbd class="calibre12">launchpad.net</kbd> only, assuming that this is the only egress network policy in the project?
+<ol class="calibre14">
+<li value="1" class="calibre10"><kbd class="calibre12"><span>- type: Deny</span></kbd><br class="title-page-name"/>
+<kbd class="calibre12"><span>  to:</span></kbd><br class="title-page-name"/>
+<kbd class="calibre12"><span>     cidrSelector: 0.0.0.0/0</span></kbd><br class="title-page-name"/>
+<kbd class="calibre12"><span>- type: Allow</span></kbd><br class="title-page-name"/>
+<kbd class="calibre12"><span>  to:</span></kbd><br class="title-page-name"/>
+<kbd class="calibre12"><span>    dnsName: rubygems.org</span></kbd><br class="title-page-name"/>
+<kbd class="calibre12"><span>- type: Allow</span></kbd><br class="title-page-name"/>
+<kbd class="calibre12"><span>  to:</span></kbd><br class="title-page-name"/>
+<kbd class="calibre12"><span>    dnsName: launchpad.net</span></kbd></li>
+<li class="calibre10" value="2"><kbd class="calibre12"><span>- type: Allow</span></kbd><br class="title-page-name"/>
+<kbd class="calibre12"><span>  to:</span></kbd><br class="title-page-name"/>
+<kbd class="calibre12"><span>    dnsName: rubygems.org</span></kbd><br class="title-page-name"/>
+<kbd class="calibre12"><span>- type: Allow</span></kbd><br class="title-page-name"/>
+<kbd class="calibre12"><span>  to:</span></kbd><br class="title-page-name"/>
+<kbd class="calibre12"><span>    dnsName: launchpad.net</span></kbd></li>
+<li value="3" class="calibre10"><kbd class="calibre12">- type: Allow</kbd><br class="title-page-name"/>
+<kbd class="calibre12">  to:</kbd><br class="title-page-name"/>
+<kbd class="calibre12">    dnsName: rubygems.org</kbd><br class="title-page-name"/>
+<kbd class="calibre12">- type: Allow</kbd><br class="title-page-name"/>
+<kbd class="calibre12">  to:</kbd><br class="title-page-name"/>
+<kbd class="calibre12">    dnsName: launchpad.net</kbd><br class="title-page-name"/>
+<kbd class="calibre12">- type: Deny</kbd><br class="title-page-name"/>
+<kbd class="calibre12">  to:</kbd><br class="title-page-name"/>
+<kbd class="calibre12">    cidrSelector: 0.0.0.0/0</kbd></li>
+<li value="4" class="calibre10"><kbd class="calibre12"><span>- type: Allow</span></kbd><br class="title-page-name"/>
+<kbd class="calibre12"><span>  to:</span></kbd><br class="title-page-name"/>
+<kbd class="calibre12"><span>    dnsNames:</span></kbd></li>
+<li value="5" class="calibre10"><kbd class="calibre12">    - launchpad.net</kbd><br class="title-page-name"/>
+<kbd class="calibre12">   - rubygems.org</kbd><br class="title-page-name"/>
+<kbd class="calibre12">- type: Deny</kbd><br class="title-page-name"/>
+<kbd class="calibre12">  to:</kbd><br class="title-page-name"/>
+<kbd class="calibre12">    cidrSelector: 0.0.0.0/0</kbd></li>
+</ol>
+</li>
+<li value="5" class="calibre10">What is the correct DNS name for the service named <kbd class="calibre12">web</kbd> in the <kbd class="calibre12">dev</kbd> project?
+<ol class="calibre14">
+<li value="1" class="calibre10"><kbd class="calibre12">web.dev.cluster.local</kbd></li>
+<li value="2" class="calibre10"><kbd class="calibre12">web.cluster.local</kbd></li>
+<li value="3" class="calibre10"><kbd class="calibre12">web.dev.svc.cluster.local</kbd></li>
+<li value="4" class="calibre10"><kbd class="calibre12">web.dev.endpoints.cluster.local</kbd></li>
+</ol>
+</li>
+</ol>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Further reading</h1>
+                
+            
+            <article>
+                
+<p class="calibre2"><span class="calibre11">Please look at the following links for further reading relating to this chapter:</span></p>
+<ul class="calibre9">
+<li class="calibre10"><span><strong class="calibre1">OpenShift DNS overview</strong>:</span><a href="https://docs.openshift.org/latest/architecture/networking/networking.html" class="calibre8"><span> </span>https://docs.openshift.org/latest/architecture/networking/networking.html</a></li>
+<li class="calibre10"><span><strong class="calibre1">High-level overview of SDN plugins and network topology in OpenShift</strong>:</span><a href="https://docs.openshift.org/latest/architecture/networking/sdn.html" class="calibre8"><span> </span>https://docs.openshift.org/latest/architecture/networking/sdn.html</a></li>
+<li class="calibre10"><span><strong class="calibre1">A few examples of third-party SDN plugins</strong>:</span><a href="https://docs.openshift.org/latest/architecture/networking/network_plugins.html" class="calibre8"><span> </span>https://docs.openshift.org/latest/architecture/networking/network_plugins.html</a></li>
+<li class="calibre10"><span><strong class="calibre1">Optimizing network performance for OpenShift</strong>: </span><a href="https://docs.openshift.org/latest/scaling_performance/network_optimization.html" class="calibre8">https://docs.openshift.org/latest/scaling_performance/network_optimization.html</a></li>
+<li class="calibre10"><strong class="calibre1"><span>Configuring the SDN in OpenShift and migrating between SDN plugins</span></strong><a href="https://docs.openshift.org/latest/install_config/configuring_sdn.html" class="calibre8"><span>:</span></a><a href="https://docs.openshift.org/latest/install_config/configuring_sdn.html" class="calibre8"><span> </span>https://docs.openshift.org/latest/install_config/configuring_sdn.html</a><a href="https://docs.openshift.org/latest/install_config/configuring_sdn.html" class="calibre8"> </a></li>
+<li class="calibre10"><span><strong class="calibre1">NSX-T Container Plug-in for OpenShift, Installation and Administration Guide</strong>:</span><a href="https://docs.vmware.com/en/VMware-NSX-T/2.1/nsxt_21_ncp_openshift.pdf" class="calibre8"><span> </span>https://docs.vmware.com/en/VMware-NSX-T/2.1/nsxt_21_ncp_openshift.pdf</a></li>
+<li class="calibre10"><span><strong class="calibre1">Installing Red Hat OpenShift Container Platform with Contrail Networking</strong>:</span><a href="https://www.jnpr.net/documentation/en_US/contrail4.0/topics/task/installation/install-redhat-openshift.html" class="calibre8"><span> </span>https://www.jnpr.net/documentation/en_US/contrail4.0/topics/task/installation/install-redhat-openshift.html</a> </li>
+<li class="calibre10"><span><strong class="calibre1">Using Contiv with OpenShift</strong>: </span><a href="http://contiv.github.io/documents/openshift/index.html" class="calibre8">http://contiv.github.io/documents/openshift/index.html</a> </li>
+<li class="calibre10"><span><strong class="calibre1">Installing Calico on OpenShift</strong>: </span><a href="https://docs.projectcalico.org/v2.4/getting-started/openshift/installation" class="calibre8">https://docs.projectcalico.org/v2.4/getting-started/openshift/installation</a> </li>
+<li class="calibre10"><span><strong class="calibre1">Configuring Nuage SDN</strong>: </span><a href="https://docs.openshift.com/container-platform/3.9/install_config/configuring_nuagesdn.html" class="calibre8">https://docs.openshift.com/container-platform/3.9/install_config/configuring_nuagesdn.html</a> </li>
+<li class="calibre10"><span><strong class="calibre1">Managing networking in OpenShift via CLI</strong>:</span><a href="https://docs.openshift.org/latest/admin_guide/managing_networking.html" class="calibre8"><span> </span>https://docs.openshift.org/latest/admin_guide/managing_networking.html</a> </li>
+<li class="calibre10"><span><strong class="calibre1">Red Hat OpenShift Container Platform DNS deep dive</strong>:</span><a href="https://www.redhat.com/en/blog/red-hat-openshift-container-platform-dns-deep-dive-dns-changes-red-hat-openshift-container-platform-36" class="calibre8"><span> </span>https://www.redhat.com/en/blog/red-hat-openshift-container-platform-dns-deep-dive-dns-changes-red-hat-openshift-container-platform-36</a> </li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    </body></html>

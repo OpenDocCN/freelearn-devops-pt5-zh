@@ -1,0 +1,1482 @@
+<html><head></head><body>
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Adding Continuous Integration and Continuous Deployment</h1>
+                </header>
+            
+            <article>
+                
+<p>In the previous chapters, we focused on improving the creation and management of infrastructure. The DevOps culture doesn't stop there, however. As you might recall from <a href="1e42d3ae-b9f3-420a-8b87-000810a339b6.xhtml">Chapter 1</a>, <em>The Cloud and the DevOps Revolution</em>, DevOps culture also includes having a very efficient process to test and deploy code. At the 2009 Velocity conference, John Allspaw and Paul Hammond made a very inspirational speech about how Flickr was carrying out over 10 deployments a day (<a href="http://bit.ly/292ASlW" target="_blank">http://bit.ly/292ASlW</a>). This presentation is often mentioned as a pivotal moment that contributed to the creation of the DevOps movement. In their presentation, John and Paul talk about the conflicts between development and operations teams but also outline a number of best practices that allow Flickr to deploy new code to production multiple times a day.</p>
+<p>With innovations such as virtualization, the public and private cloud, and automation, creating new start ups has never been so easy. Because of that, the biggest problem many companies are now facing is being able to stand apart from their competitors. Having the ability to iterate faster than most competitors can be a detrimental to a company's success.  An effective DevOps organization uses a number of tools and strategies to increase the velocity at which engineering organizations release new code to production. This is what we will focus on in this chapter.</p>
+<p>We will first look at creating a <strong>Continuous Integration</strong> (<strong>CI</strong>) pipeline. A CI pipeline will allow us to test proposed code changes automatically and continuously. This will free up the time of developers and QAs who no longer have to carry out as much manual testing. It also makes the integration of code changes much easier. To implement our pipeline, we will use GitHub and one of the most widely used integration tools—<strong>Jenkins</strong>.</p>
+<p>We will then look at creating a <strong>Continuous Deployment</strong> (<strong>CD</strong>) pipeline. Once the code has gone through the CI pipeline, we will use this continuous deployment pipeline to automatically deploy the new code. We will rely on two AWS services to implement this pipeline—<strong>AWS CodeDeploy</strong> and <strong>AWS CodePipeline</strong>. CodeDeploy lets us define how the new code needs to be deployed on our EC2 instances while CodePipeline lets us orchestrate the full life cycle of our application.</p>
+<p>In order to deploy our code to production, we will add an extra step that will allow the operator to deploy the latest build that is present in the staging to the production process at the press of a button. This ability to deploy code to production on-demand is called CD. Its main advantage is that it provides the ability for the deployment operator to validate a build in a staging environment before it gets deployed to production. At the end of the chapter, we will see a couple of techniques and strategies that effective engineering organizations use to convert their continuous delivery pipelines into continuous deployment pipelines so that the entire process of deploying code up to production can happen without any human intervention. We will cover the following topics:</p>
+<ul>
+<li>Building a continuous integration pipeline</li>
+<li>Building a continuous deployment pipeline</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Technical requirements</h1>
+                </header>
+            
+            <article>
+                
+<p>The technical requirements for this chapter as follows:</p>
+<ul>
+<li>GitHub</li>
+<li>Jenkins</li>
+<li>Ansible</li>
+<li>AWS CodeDeploy</li>
+<li>AWS CodePipeline</li>
+</ul>
+<p>The links are as follows:</p>
+<ul>
+<li><strong>Jenkins package repository</strong>: <a href="https://pkg.jenkins.io/" target="_blank">https://pkg.jenkins.io/</a></li>
+<li><strong>Jenkins setup playbook</strong>: <a href="https://raw.githubusercontent.com/yogeshraheja/ansible/master/roles/jenkins/tasks/main.yml" target="_blank">https://raw.githubusercontent.com/yogeshraheja/ansible/master/roles/jenkins/tasks/main.yml</a></li>
+<li><strong>Jenkinsfile</strong>: <a href="https://raw.githubusercontent.com/yogeshraheja/helloworld/master/Jenkinsfile" target="_blank">https://raw.githubusercontent.com/yogeshraheja/helloworld/master/Jenkinsfile</a></li>
+<li><strong>Code deploy library</strong>: <a href="https://raw.githubusercontent.com/yogeshraheja/Effective-DevOps-with-AWS/master/Chapter05/ansible/library/aws_codedeploy" target="_blank">https://raw.githubusercontent.com/yogeshraheja/Effective-DevOps-with-AWS/master/Chapter05/ansible/library/aws_codedeploy</a></li>
+</ul>
+<p class="mce-root"/>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Building a CI pipeline</h1>
+                </header>
+            
+            <article>
+                
+<p>Initially, working in a CI environment meant that developers had to commit their code in a common branch as frequently as possible, as opposed to working off a separate branch or not committing changes for weeks. This allowed for improved visibility of the ongoing work and encouraged communication to avoid integration problems, a situation that is commonly known as <strong>Integration Hell</strong>. As the toolset related to source control and build and release management matured, so did the vision of how code integration should look in an ideal world.</p>
+<p>Nowadays, most effective engineering organizations will continue down the path of integrating early and often. They often use, however, a more modern development process, where developers are required to edit the code and, at the same time, add or edit the different relevant tests to validate the change. This drastically increases overall productivity; it is now easier to find new bugs as the amount of code that changes between merges is fairly small.</p>
+<p>To adopt such a workflow, using a source control tool such as Git for example, you can proceed as follows:</p>
+<ol>
+<li>When as a developer, you want to make changes, start by creating a new Git branch that branches off the HEAD of the master branch.</li>
+<li>Edit the code and, at the same time, add or edit the different relevant tests to validate the change.</li>
+<li>Test the code locally.</li>
+<li>When the code is ready, rebase the branch to integrate new eventual changes from other developers. If needed, resolve conflicts and test the code again.</li>
+<li>If everything went well, the next step consists of creating a <kbd>pull request</kbd>. In this process, you tell other developers that your code is ready to be reviewed.</li>
+<li>Once the pull request is created, an automated testing system such as the one we will build in this chapter will pick up the change and run the entire test suite to make sure nothing fails.</li>
+<li>In addition, other interested parties will review the code and the different tests that were added to the branch. If they are satisfied with the proposed change, they will approve it, giving the developers the green light to merge their changes.</li>
+<li>In the last step, the developers merge their pull requests, which will translate into merging their new code and testing the master branch. Other developers will now integrate this change when they rebase or create new branches.</li>
+</ol>
+<p>In the following section, we will create a CI server using Jenkins running on top of an EC2 instance and GitHub.</p>
+<div>
+<div class="packt_infobox">As projects get bigger, the number of tests, the time it takes to run them. While certain advanced build systems such as Bazel (<a href="https://bazel.build/">https://bazel.build/</a>) have the ability to run only those tests relevant to a particular change, it is usually easier to start simply and create a CI system that runs all the tests available every time a new pull request is proposed. Having an external test infrastructure with the elasticity of AWS becomes a huge time saver for the developers who don't want to wait minutes or even hours for all the tests to be executed. In this book, we will focus on web application development. You may face a more challenging environment in which you need to build software for specific hardware and operating system. Having a dedicated CI system will allow you to run your tests on the hardware and software you are ultimately targeting.</div>
+</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Creating a Jenkins server using Ansible and CloudFormation</h1>
+                </header>
+            
+            <article>
+                
+<p>As mentioned before, we are going to use Jenkins as our central system to run our CI pipeline. With over 10 years of development, Jenkins has been the leading open-source solution to practice continuous integration for a long time. Famous for its rich plugin ecosystem, Jenkins has gone through a major new release (Jenkins 2.x), which has put the spotlight on a number of very DevOps-centric features, including the ability to create native delivery pipelines that can be checked in  and version-controlled. It also provides better integration with source control systems such as GitHub, which we are using in this book.</p>
+<p>We are going to continue using <strong>Ansible</strong> and <strong>CloudFormation</strong> in the same way as we did in <a href="8a74da7b-0748-4b90-a3bc-58e853e820ec.xhtml">Chapter 3</a>, <em>Treating Your Infrastructure as Code, </em>to manage our Jenkins server.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Creating the Ansible playbook for Jenkins</h1>
+                </header>
+            
+            <article>
+                
+<p>Start by navigating to our <kbd>ansible</kbd> roles directory:</p>
+<pre><strong>$ cd ansible/roles</strong>  </pre>
+<p class="mce-root"/>
+<p>This directory should contain the <kbd>helloworld</kbd> and <kbd>nodejs</kbd> directories, with the configurations that we created previously in <a href="8a74da7b-0748-4b90-a3bc-58e853e820ec.xhtml">Chapter 3</a>, <em>Treating Your Infrastructure as Code</em>. We are now going to create our Jenkins role with the <kbd>ansible-galaxy</kbd> command:</p>
+<pre><strong>$ ansible-galaxy init jenkins</strong>  </pre>
+<p>We are now going to edit the task definition for this new role by editing the file: <kbd>jenkins/tasks/main.yml</kbd>. Open up the file with your favorite text editor.</p>
+<p>The goal of our task is to install and start Jenkins. In order to do this, since we are on a Linux-based operating system (AWS Amazon Linux, in our case), we are going to install an RPM package through <kbd>yum</kbd>. Jenkins maintains a <kbd>yum</kbd> repository, so the first step will consist of importing this to our <kbd>yum</kbd> repository configuration, basically as an entry in <kbd>/etc/yum.repos.d</kbd>:</p>
+<p class="mce-root">The following is the initial comment of the tasks file, add the following:</p>
+<pre>- name: Add Jenkins repository<br/>  shell: wget -O /etc/yum.repos.d/jenkins.repo https://pkg.jenkins.io/redhat/jenkins.repo</pre>
+<p>The next step will consist of importing the GPG key of that repository. Ansible has a module to manage these kinds of keys:</p>
+<pre>- name: Import Jenkins GPG key <br/>  rpm_key: <br/>    state: present <br/>    key: https://pkg.jenkins.io/redhat/jenkins.io.key</pre>
+<p>We have now reached the point where we can use <kbd>yum</kbd> to install Jenkins. We will do that with the following call:</p>
+<pre>- name: Install Jenkins <br/>  yum: <br/>    name: jenkins-2.99<br/>    enablerepo: jenkins <br/>    state: present</pre>
+<p>Since the <kbd>jenkins</kbd> repository is disabled by default, we are enabling it through the <kbd>enablerepo</kbd> flag for the execution of this <kbd>yum</kbd> command.</p>
+<p class="mce-root"/>
+<p>At this point, Jenkins will be installed. To conform with best practice guidelines, we will specify which version of Jenkins we want to install (in our case the version is 2.99). We also want to start the service and have it enabled at the <kbd>chkconfig</kbd> level so that if the EC2 instance where Jenkins is installed restarts, Jenkins will start automatically. We can do that using the service module. Add the following after the previous call:</p>
+<pre>- name: Start Jenkins <br/>  service: <br/>    name: jenkins <br/>    enabled: yes <br/>    state: started </pre>
+<p>For a simple Jenkins role, that's all we need.</p>
+<p>We should now have a <kbd>main.yml</kbd> file that looks as follows: <a href="https://raw.githubusercontent.com/yogeshraheja/ansible/master/roles/jenkins/tasks/main.yml">https://raw.githubusercontent.com/yogeshraheja/ansible/master/roles/jenkins/tasks/main.yml</a>.</p>
+<p>AWS Amazon Linux comes with Java 7 but Jenkins has pre-requisites to install Java 8 for Jenkins version 2.54 and above. So you will see two extra tasks in the preceding link, which will uninstall Java 7 and install Java 8:</p>
+<pre>- name: Removing old version of JAVA from Amazon Linux<br/>  yum:<br/>    name: java-1.7.0-openjdk<br/>    state: absent<br/><br/>- name: Install specific supported version of JAVA<br/>  yum:<br/>    name: java-1.8.0-openjdk<br/>    state: present</pre>
+<div class="packt_infobox">As you gain more experience with Jenkins and Ansible, explore the web or the Ansible galaxy, you will find more advanced roles allowing you to configure Jenkins in more detail, generate jobs, and select the plugins to install. It is an important step to go through that this book won't cover, but ideally, you want your entire system to be described by code. In addition, in this chapter, we are using Jenkins over HTTP. It is strongly encouraged to use it over an encrypted protocol such as HTTPS or, as we will see in <span class="ChapterrefPACKT"><a href="">Chapter 8</a>,</span> <em>Hardening the Security of Your AWS Environment,</em> in a private subnet with a VPN connection.</div>
+<p>We have now built a role that will allow us to install Jenkins. We want to create a new EC2 instance and install Jenkins on it with the end goal of testing our Node.js code on the instance. In order to be able to do that, the Jenkins host will need to also have the node and <kbd>npm</kbd> installed.</p>
+<p>We have two options. We can either add our <kbd>nodejs</kbd> role as a dependency of the Jenkins role, as we did for the <kbd>helloworld</kbd> role, or we can list the <kbd>nodejs</kbd> role in the list of roles for our playbook. Since ultimately Jenkins doesn't really require a node to run, we will opt for the second approach. In the root directory of our <kbd>ansible</kbd> repository, create the <kbd>playbook</kbd> file. The filename is <kbd>jenkins.yml</kbd> and it should look as follows:</p>
+<pre>--- 
+- hosts: "{{ target | default('localhost') }}" 
+  become: yes 
+  roles: 
+    - jenkins 
+    - nodejs </pre>
+<p>Our role is now complete, so we can commit our new role and push it to GitHub. Following the best practices described previously, we will start by creating a new branch:</p>
+<pre><strong>$ git checkout -b jenkins</strong>  </pre>
+<p>Add our files with the following command:</p>
+<pre><strong>$ git add jenkins.yml roles/jenkins</strong>  </pre>
+<p>Commit and finally <kbd>push</kbd> the changes:</p>
+<pre><strong>$ git commit -m "Adding a Jenkins playbook and role"<br/></strong><strong>$ git push origin jenkins</strong></pre>
+<p>From there, submit a pull request inside GitHub and merge the branch back to the master:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/b70fa6ca-f937-49db-959d-505bffbc2ec9.png"/></p>
+<p>Once done, get back to the master branch with the following command:</p>
+<pre><strong>$ git checkout master<br/>$ git branch<br/>    jenkins<br/>  * master<br/>$ git pull<br/></strong></pre>
+<p>In a real-life situation, you likely also want to periodically run the following:</p>
+<pre><strong>$ git pull</strong></pre>
+<p>This will retrieve the changes made by other developers.</p>
+<p>We can now create our CloudFormation template in order to call the role.</p>
+<p class="mce-root"/>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Creating the CloudFormation template</h1>
+                </header>
+            
+            <article>
+                
+<p>In order to keep our code fairly similar to the code we looked at in <a href="8a74da7b-0748-4b90-a3bc-58e853e820ec.xhtml">Chapter 3</a>, <em>Treating Your Infrastructure as Code,</em> we are going to start off with the <kbd>helloworld</kbd> Troposphere code that we created in that chapter. First, we are going to duplicate the Python script. Go to your <kbd>EffectiveDevOpsTemplates</kbd> directory, where you have your Troposphere templates, and then clone the <kbd>ansiblebase-cf-template.py</kbd> file as follows:</p>
+<pre><strong>$ cp ansiblebase-cf-template.py jenkins-cf-template.py</strong>  </pre>
+<p>The Jenkins host will need to interact with AWS. To allow this, we will create an instance profile, which we will describe in more detail later, taking advantage of another library that is developed by the same authors as Troposphere. We will install it as follows:</p>
+<pre><strong>$ pip install awacs</strong></pre>
+<p>We are now going to edit the <kbd>jenkins-cf-template.py</kbd> file. The first two changes we will make are to the name and port of the application. Jenkins runs by default on <kbd>TCP/8080</kbd>:</p>
+<pre>ApplicationName = "jenkins" 
+ApplicationPort = "8080" </pre>
+<p>We will also set a number of constants around the GitHub information.  Replace the value of your <kbd>GithubAccount</kbd> with your GitHub username or organization name:</p>
+<pre>GithubAccount = "yogeshraheja"</pre>
+<p>We also want to add an instance IAM profile to better control how our EC2 instance can interact with AWS services such as EC2. We previously used the IAM service in <a href="1abe175d-50df-434d-bc0a-097397a39cee.xhtml">Chapter 2</a>, <em>Deploying Your First Web Application,</em> when we created our user. You may recall that in addition to creating the user, we also assigned it the administrator policy, which gives the user full access to all AWS services. On top of that, we generated an access key and a secret access key, which we are currently using to authenticate ourselves as that administrator user and interact with services such as CloudFormation and EC2.</p>
+<p>When you are using EC2 instances, the <strong>instance profile</strong> feature provided lets you specify an IAM role to your instance. In other words, we can assign IAM permissions directly to EC2 instances without having to use access keys and secret access keys.</p>
+<p class="mce-root"/>
+<p>Having an instance profile will be very useful later on in this chapter, when we work on the CI pipeline and integrate our Jenkins instance with the AWS managed services. To do this, we will first import some extra libraries. The following is from Troposphere <kbd>import()</kbd> section, add the following:</p>
+<pre>from troposphere.iam import ( 
+    InstanceProfile, 
+    PolicyType as IAMPolicy, 
+    Role,  
+) 
+ 
+from awacs.aws import ( 
+    Action, 
+    Allow, 
+    Policy, 
+    Principal, 
+    Statement, 
+) 
+ 
+from awacs.sts import AssumeRole </pre>
+<p>Then, in between the instantiation of the variables <kbd>ud</kbd> and the creation of the instance, we are going to create and add our role resource to the template as follows:</p>
+<pre>t.add_resource(Role(
+    "Role",
+    AssumeRolePolicyDocument=Policy(
+        Statement=[
+            Statement(
+                Effect=Allow,
+                Action=[AssumeRole],
+                Principal=Principal("Service", ["ec2.amazonaws.com"])
+            )
+        ]
+    )
+))</pre>
+<p>As we did previously for the role, we can now create our instance profile and reference the role. The following code is the creation of the role:</p>
+<pre>t.add_resource(InstanceProfile(<br/>    "InstanceProfile",<br/>    Path="/",<br/>    Roles=[Ref("Role")]<br/>))</pre>
+<p class="mce-root"/>
+<p>Finally, we can reference our new instance profile by updating the declaration of our instance. We will add a period after <kbd>UserData=ud</kbd> and on the line after initializing the <kbd>IamInstanceProfile</kbd> as follows:</p>
+<pre>t.add_resource(ec2.Instance(<br/>    "instance",<br/>    ImageId="ami-cfe4b2b0",<br/>    InstanceType="t2.micro",<br/>    SecurityGroups=[Ref("SecurityGroup")],<br/>    KeyName=Ref("KeyPair"),<br/>    UserData=ud,<br/>    IamInstanceProfile=Ref("InstanceProfile"),<br/>)</pre>
+<p><span>The file should now look like this </span><a href="https://github.com/yogeshraheja/EffectiveDevOpsTemplates/blob/master/jenkins-cf-template.py" target="_blank">https://github.com/yogeshraheja/EffectiveDevOpsTemplates/blob/master/jenkins-cf-template.py</a>. You can save the changes, commit the new script to GitHub, and generate the CloudFormation template:</p>
+<pre><strong>$ git add jenkins-cf-template.py<br/>$ git commit -m "Adding troposphere script to generate a Jenkins instance"<br/>$ git push<br/>$ python jenkins-cf-template.py &gt; jenkins-cf.template<br/></strong></pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Launching the stack and configuring Jenkins</h1>
+                </header>
+            
+            <article>
+                
+<p>In order to create our EC2 instance with Jenkins running on it, we will proceed as we did in <a href="8a74da7b-0748-4b90-a3bc-58e853e820ec.xhtml">Chapter 3</a>, <em>Treating Your Infrastructure as Code</em>, using either the web interface or the command-line interface as follows:</p>
+<pre><strong>$ aws cloudformation create-stack \</strong>
+<strong>      --capabilities CAPABILITY_IAM \</strong>
+      <strong>--stack-name jenkins \</strong>
+      <strong>--template-body file://jenkins-cf.template \</strong>
+      <strong>--parameters  <br/>      ParameterKey=KeyPair,ParameterValue=EffectiveDevOpsAWS</strong>  </pre>
+<p>As we did before, we can then wait until the execution is complete:</p>
+<pre><strong>$ aws cloudformation wait stack-create-complete \</strong>
+<strong>      --stack-name jenkins</strong>  </pre>
+<p>After that, we can extract the host's public IP:</p>
+<pre><strong>$ aws cloudformation describe-stacks \</strong>
+<strong>      --stack-name jenkins \</strong>
+      <strong>--query 'Stacks[0].Outputs[0]'</strong>
+    <strong>{</strong>
+    <strong>    "Description": "Public IP of our instance.",</strong>
+    <strong>    "OutputKey": "InstancePublicIp",</strong>
+    <strong>    "OutputValue": "18.208.183.35"</strong>
+    <strong>}</strong>  </pre>
+<p>Because we kept the <strong>Ansible Jenkins</strong> role fairly simple, we need to complete its configuration in order to complete the installation of Jenkins. Follow these steps:</p>
+<ol>
+<li>Open port <kbd>8080</kbd> of the instance public IP in your browser (that is, in my case, <kbd>http://18.208.183.35:8080)</kbd>. Wait for a while to get Jenkins configurations to get configured before you get the screen):</li>
+</ol>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/dd5efa0e-175e-46fa-8640-8c59d3b03232.png"/></p>
+<ol start="2">
+<li>Using the following <kbd>ssh</kbd> command (adapt the IP address) and its ability to run commands remotely, we can extract the admin password, and provide it to that first configuration screen with the following command:</li>
+</ol>
+<pre style="padding-left: 90px"><br/><strong>$ ssh -i ~/.ssh/EffectiveDevOpsAWS.pem ec2-user@18.208.183.35 \ </strong><br/><strong>sudo cat /var/lib/jenkins/secrets/initialAdminPassword </strong></pre>
+<ol start="3">
+<li>On the next screen, choose to install the suggested plugins.</li>
+<li>Create your first admin user on the next screen and click on the <span class="packt_screen">Save and Finish</span> button.</li>
+<li>Finally, click on the <span class="packt_screen">Start using Jenkins</span> button.</li>
+</ol>
+<p>Our Jenkins instance is now ready to be used.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Preparing our CI environment</h1>
+                </header>
+            
+            <article>
+                
+<p>We are going to use our Jenkins instance in conjunction with GitHub to recreate our <kbd>helloworld</kbd> application using a proper CI pipeline. To do this, we are going to go through a number of preliminary steps, starting with the creation of a new GitHub organization that has a new repository named <kbd>helloworld</kbd>.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Creating a new GitHub organization and repository</h1>
+                </header>
+            
+            <article>
+                
+<p>We are now going to create a new organization having a new repository dedicated to hosting our <kbd>helloworld</kbd> node application. We will create the organization by going through the following steps and then will create a new repository inside the organization using the same steps as in <a href="8a74da7b-0748-4b90-a3bc-58e853e820ec.xhtml">Chapter 3</a>, <em>Treating Your Infrastructure as Code</em>:</p>
+<ol>
+<li>Open <a href="https://github.com/new">https://github.com/organizations/new</a> in your browser.</li>
+<li>Set the organization name, which will be a separate GitHub account inside your main GitHub account. I am creating mine with the name <kbd>yogeshrahejahelloworld</kbd>.</li>
+<li>Provide your email ID and select the free plan.</li>
+</ol>
+<ol start="4">
+<li>Click on the <span class="packt_screen">Create organization</span> button and select the default settings for the next two steps:</li>
+</ol>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/e0293a81-55ab-48bb-9d48-4922a28028fc.png"/></p>
+<ol start="5">
+<li>Create a new repository for the newly created organization:</li>
+</ol>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/8e1a7d3c-12b7-4922-b78c-397adbe631e4.png"/></p>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<ol start="6">
+<li>Call your repository<span> </span><kbd>helloworld</kbd>.</li>
+<li>Check the <span> </span><span class="packt_screen">Initialize this repository with a README </span>checkbox.</li>
+<li>Click on<span> the </span><span class="packt_screen">Create Repository</span> button:</li>
+</ol>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/22eba538-9e1f-44a8-b652-726d32ac3d7a.png"/></p>
+<p>This will create the repository, a master branch, and a <kbd>README.md</kbd> file.</p>
+<p>A proper CI pipeline works silently in the background. In order to achieve this, when the code is hosted on GitHub, Jenkins needs to get notifications from GitHub to indicate that the code has changed so that it can trigger a build automatically. This is something we can easily implement thanks to a plugin called <kbd>github-organization-plugin</kbd>. This plugin is one of those that were installed when we chose to install the suggested plugins in Jenkins. In order to use it, we first need to create a personal access token in GitHub.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Creating a GitHub personal access token</h1>
+                </header>
+            
+            <article>
+                
+<p>Creating a personal access token will give the plugins the ability to access the code pushed to GitHub and create the necessary hooks to get notifications when new commits and pull requests occur. In order to create the token, use the following steps:</p>
+<ol>
+<li>Open <a href="https://github.com/settings/tokens" target="_blank"><span class="URLPACKT">https://github.com/settings/tokens</span></a> in your browser.</li>
+<li>Click on the <span class="packt_screen">Generate new token</span> button.</li>
+<li>Give it a descriptive name, such as <kbd>Effective DevOps with AWS Jenkins</kbd>.</li>
+<li>Select the  <span class="packt_screen">repo</span>, <span class="packt_screen">admin:repo_hook,</span> and <span class="packt_screen">admin:org_hook</span> scopes.</li>
+<li>Click on the <span class="packt_screen">Generate token</span> button.</li>
+<li>This brings you back to the main token page. Save the token that is generated. We will need it later.</li>
+</ol>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Adding the access token to the credentials in Jenkins</h1>
+                </header>
+            
+            <article>
+                
+<p>We can now add the token to Jenkins as follows:</p>
+<ol>
+<li>Open Jenkins, in my case <kbd>http://18.208.183.35:8080</kbd>.</li>
+<li>Click on <span class="packt_screen">C</span><span class="packt_screen">redentials</span> in the menu on the left, then click on <span class="packt_screen">System</span> just after it it, and then <span class="packt_screen">Global credentials</span>.</li>
+<li>On the next screen, click on <span class="packt_screen">Add credentials</span>.</li>
+<li>The credentials we are going to create are of the type <span class="packt_screen">Username with password</span>.</li>
+<li>The scope should be global.</li>
+<li>Use your GitHub organization as a username.</li>
+<li>Use the token generated in the previous section as your password.</li>
+<li>The ID can be something like <kbd>GitHub</kbd> as shown in the following screenshot:</li>
+</ol>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/50c9d78c-1ef5-4c08-abc3-7c8ea5f234d9.png"/></p>
+<ol start="9">
+<li>You can also choose to give it a description<span class="packt_screen">.</span> After that, click <span class="packt_screen">OK</span>.</li>
+</ol>
+<p>The last step of our initialization process consists of creating the Jenkins job.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Creating the Jenkins job to automatically run the builds</h1>
+                </header>
+            
+            <article>
+                
+<p>As mentioned previously, Jenkins has a plugin to help with the GitHub integration. We can easily take advantage of this by creating a GitHub organization job. To do this, go through the following steps:</p>
+<ol start="1">
+<li>Open your Jenkins home page in your browser, enter  <kbd>http://18.208.183.35:8080/</kbd>  and click on <span class="packt_screen">C</span><span class="packt_screen">reate new jobs</span>.</li>
+<li>Enter an item name, provide your GitHub username or organization name, click on <span class="packt_screen">GitHub Organization</span>, and then click on <span class="packt_screen">OK</span>.</li>
+<li>This will bring us to a new page, where we will be able to configure the project:
+<ol>
+<li>In the <span class="packt_screen">C</span><span class="packt_screen">redentials</span> drop-down menu, select your newly created credential.</li>
+<li>Validate that the owner is your username or organization name or the name you provided while creating the job. This will be used by Jenkins to scan all your repositories.</li>
+<li>Since we already know that we are only interested in the <kbd>helloworld</kbd> repository, click on the <span class="packt_screen">Add</span> button at the bottom of the <span class="packt_screen">Behaviors</span> section and select the first option, which should be <span class="packt_screen">Filter by Name (with regular expression)</span>.</li>
+</ol>
+</li>
+</ol>
+<ol>
+<li style="list-style-type: none">
+<ol start="4">
+<li>In the newly populated field, <span class="packt_screen">Regular expression</span>, replace <kbd>.*</kbd> with <kbd>helloworld</kbd>. Select strategy as <span class="packt_screen">All branches</span> from the <span class="packt_screen">Discover branches</span> section and scroll down to select one minute from the <span class="packt_screen">Scan Organization Triggers</span> section on the same page:</li>
+</ol>
+</li>
+</ol>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/04b09d75-9436-4b4d-b976-19e5036c0db8.png"/></p>
+<p class="mce-root"/>
+<ul>
+<li style="list-style-type: none">
+<ul>
+<li style="list-style-type: none">
+<ol start="5">
+<li>Click on <span class="packt_screen">Save</span><span>.</span></li>
+</ol>
+</li>
+</ul>
+</li>
+</ul>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/08e9deeb-4169-4321-93b7-a2adde97eea2.png"/></p>
+<p>The job will be created and will scan the project to find a branch. It will find the master branch with the <kbd>README</kbd> file in it, but because we don't have any code yet we will not do anything. In the following section, we are going to remediate that lack of code and implement our <kbd>helloworld</kbd> application:</p>
+<p class="mce-root"><img src="assets/dbbb6d83-9963-408f-8e90-e6b23984b48f.png" style="border: 1em solid black;text-align: center;"/></p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Implementing the helloworld application using our CI environment</h1>
+                </header>
+            
+            <article>
+                
+<p>Here, we will once again use the simple <kbd>helloworld</kbd> web application that we created in <span class="ChapterrefPACKT"><a href="c54f64c9-e8a3-4eed-b68d-087ff40f8b1d.xhtml">Chapter 2</a>,</span> <em>Deploying Your First Web Application</em>. The goal here is more to illustrate the use of our CI pipeline than to build a complex web application:</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Initializing the project</h1>
+                </header>
+            
+            <article>
+                
+<p>We are going to use the same AWS instance that we deployed and configured in the previous section for Jenkins, as a development environment. Therefore, we need to have <kbd>nodejs</kbd> and <kbd>npm</kbd> installed on our instance. If you haven't installed these yet, refer to the instructions in <a href="1abe175d-50df-434d-bc0a-097397a39cee.xhtml">Chapter 2</a>, <em>Deploying Your First Web Application:</em></p>
+<pre><strong>$ ssh -i ~/.ssh/EffectiveDevOpsAWS.pem ec2-user@18.208.183.35</strong><br/><strong>$ node –v</strong><br/><strong>$ npm –v</strong> </pre>
+<p class="mce-root">The output of running the preceding command is as follows:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/15de66b9-f970-4b78-b705-32e42125a52d.png"/></p>
+<p>Our first step will be to clone the <kbd>helloworld</kbd> GitHub repository that we created in the preceding section:</p>
+<pre><strong>$ git clone https://github.com/&lt;your_github_organization&gt;/helloworld.git</strong><br/><strong>$ cd helloworld</strong></pre>
+<p>We can now create a new branch:</p>
+<pre><strong>$ git checkout -b initial-branch</strong>  </pre>
+<p>Create an empty file called <kbd>helloworld.js</kbd>:</p>
+<pre><strong>$ touch helloworld.js</strong>  </pre>
+<p>One of the best ways to write tests for these types of projects is to use a <strong>Test Driven Development</strong> (<strong>TDD</strong>) approach. In a TDD process, developers create the tests <span>first</span><span>, then run them to make sure they are failing, write the code, and then test again. At that point, the tests should pass. We can create a pull request and merge it once it has been reviewed and approved.</span></p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Creating a functional test using Mocha</h1>
+                </header>
+            
+            <article>
+                
+<p>In order to illustrate the process of writing tests for our TDD approach, we will use a tool called <strong>Mocha</strong> (<a href="https://mochajs.org/" target="_blank">https://mochajs.org/</a>). Mocha is a very common and easy-to-use JavaScript test framework to create a test.</p>
+<p>We will install it locally on our system using the following <kbd>npm</kbd>, the Node.js package manager command.</p>
+<p>First, we will initialize <kbd>npm</kbd> with the following command:</p>
+<pre><strong>$ npm config set registry http://registry.npmjs.org/</strong><br/><strong>$ npm init –yes</strong></pre>
+<p class="mce-root">The output of running the preceding command is as follows:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/745a176a-ac1b-4ad2-bf85-1cd70713d165.png" style="width:40.75em;height:46.75em;"/></p>
+<p>This will create a new file called <kbd>package.json</kbd>. Next, we will install Mocha and add it to our list of development dependencies as follows:</p>
+<pre><strong>$ npm install mocha@2.5.3 --save-dev</strong></pre>
+<p>This will create a directory called <kbd>node_modules</kbd>. Mocha will be installed in that directory.</p>
+<p>In addition to Mocha, we will use a headless browser testing module to render our <kbd>helloworld</kbd> application, called <strong>Zombie</strong>. We can install it with the same command as follows:</p>
+<pre><strong>$ npm install zombie@3.0.15 --save-dev</strong> </pre>
+<p>In order to separate the tests from the rest of the project, we are now going to create a directory called <kbd>test</kbd> in the root location of our <kbd>helloworld</kbd> project. By default, Mocha will look for tests in that directory:</p>
+<pre><strong>$ mkdir test<br/></strong></pre>
+<p>The last piece of boilerplate code we will use will configure <kbd>npm</kbd> to use Mocha to run our tests. With your editor, open the <kbd>package.json</kbd> file and replace the test scripts with the following command:</p>
+<pre><strong> "scripts": {</strong><br/><strong>   "test": "node_modules/mocha/bin/mocha"</strong><br/><strong> },</strong></pre>
+<p>Inside the <kbd>test</kbd> directory, create and edit the file <kbd>helloworld_test.js</kbd>.</p>
+<p>The first step consists of loading two modules that we are going to use and need in our test. The first one is <kbd>zombie</kbd>, our headline browser, and the second one is the <kbd>assert</kbd> module, which is the standard module used to create unit testing in Node.js applications:</p>
+<pre>var Browser = require('zombie') 
+var assert = require('assert') </pre>
+<p>Next, we need to load our application. This is done by calling the same <kbd>require()</kbd> function, but this time we will ask it to load the <kbd>helloworld.js</kbd> file that we will soon implement. For now, it's an empty file:</p>
+<pre>var app = require('../helloworld')</pre>
+<p>We can now start creating the test. The basic syntax of Mocha tries to mimic what it thinks specification document could require. The following are the three required statements, add the following:</p>
+<pre>describe('main page', function() { 
+  it('should say hello world')
+})</pre>
+<p>We now need to add hooks into that test to interact with our web application.</p>
+<p>The first step will be to point the test to our application endpoint. As you might remember from the previous chapters, the application is running on <kbd>http://localhost:3000</kbd>. We will use the hook called <kbd>before()</kbd> to set up a precondition. Above the call to <kbd>it()</kbd>, add the following to point our headless browser to the proper server:</p>
+<pre>describe('main page', function() {<br/><strong>before(function() {</strong><br/><strong>   this.browser = new Browser({ site: 'http://localhost:3000' })</strong><br/><strong>})</strong><br/><br/>it('should say hello world')<br/>}) <br/>...</pre>
+<p>At this point, our headless browser will connect to our application, but it won't request any page. Let's add that in another <kbd>before()</kbd> hook, as follows:</p>
+<pre>describe('main page', function() { 
+  before(function() { 
+    this.browser = new Browser({ site: 'http://localhost:3000' }) 
+  })
+ 
+<strong>  before(function(done) {<br/></strong><strong>    this.browser.visit('/', done)<br/></strong><strong>  })</strong>
+ 
+  it('should say hello world') 
+})<br/>...</pre>
+<p>Now that the home page has loaded, we need to implement the code in the <kbd>it()</kbd> function to validate our assertion. We will edit the line with the <kbd>it()</kbd> call to add a callback function, as follows:</p>
+<pre>describe('main page', function() { <br/>  before(function() {<br/>    this.browser = new Browser({ site: 'http://localhost:3000' })<br/>  })<br/>  before(function(done) {<br/>    this.browser.visit('/', done)<br/>  })<br/>  it('should say hello world', function() { <br/>    assert.ok(this.browser.success)<br/>    assert.equal(this.browser.text(), "Hello World")<br/>  })<br/>})</pre>
+<p>Our test is now ready. If everything went well, your code should look like the one shown at the following link: <a href="https://raw.githubusercontent.com/yogeshraheja/helloworld/master/test/helloworld_test.js">https://raw.githubusercontent.com/yogeshraheja/helloworld/master/test/helloworld_test.js</a>.</p>
+<p>We can test it in Terminal by simply calling the Mocha command, as follows:</p>
+<pre><strong>$ npm test<br/><br/>./node_modules/mocha/bin/mocha</strong>
+<strong>  main page</strong>
+<strong>    1) "before all" hook</strong>
+  <strong>0 passing (48ms)</strong>
+  <strong>1 failing</strong>
+  <strong>1) main page "before all" hook:</strong>
+<strong>     TypeError: connect ECONNREFUSED 127.0.0.1:3000</strong>  </pre>
+<p>As you can see, our test is failing. It can't connect to the web application. This is, of course, expected, since we haven't implemented the application code yet.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Developing the remainder of the application</h1>
+                </header>
+            
+            <article>
+                
+<p>We are now ready to develop our application. Since we already went through creating the exact code in <a href="1abe175d-50df-434d-bc0a-097397a39cee.xhtml">Chapter 2</a>, <em>Deploying Your First Web Application</em>, we are simply going to copy it or download it directly as follows:</p>
+<pre><strong>$ curl -L https://raw.githubusercontent.com/yogeshraheja/Effective-DevOps-with-AWS/master/Chapter02/helloworld.js &gt; helloworld.js</strong></pre>
+<p>We can now test the code again using the <kbd><span><span>npm</span></span></kbd> command:</p>
+<pre><strong>$ npm test</strong>
+<strong>Server running</strong>
+<strong>  main page</strong>
+      <strong>should say hello world</strong>
+  <strong>1 passing (78ms)</strong>  </pre>
+<p class="mce-root">The output of running the preceding command is as follows:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/459801e2-d046-4807-8516-0dfdfa7fd057.png" style="width:25.50em;height:17.00em;"/></p>
+<p>Our test is now passing.</p>
+<p>We are almost there. We have satisfied one of our first goals, which was to have test coverage for our code. Of course, a real application with more complexity would have many more tests, but what we want to focus on now is automation. Now that we've learned how to test our code manually, we want to see how Jenkins can do this for us.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Creating the CI pipeline in Jenkins</h1>
+                </header>
+            
+            <article>
+                
+<p>As we saw earlier, Jenkins works by creating and executing jobs. Historically, one way to create the pipeline would be to open Jenkins in the browser, navigate to the job we previously created, and edit it to outline the different steps involved in testing our code. The problem with that solution is that there isn't a good review process involved and it's hard to track every change made over time. In addition, it's very hard for developers to make changes in a project that involves adding new build steps as the code of the project and the job building the project aren't synced together. Jenkins 2 made the concept of describing the build process into a local file a standard feature, which we're going to use in the following section.</p>
+<p>We are going to create and edit a new file in the project called <kbd>Jenkinsfile</kbd> (capital <kbd>J</kbd>, no file extension). The file will be written in <strong>Groovy</strong> (<a href="http://www.groovy-lang.org">http://www.groovy-lang.org</a>).</p>
+<p>On the first line of the file, we are going to put the following:</p>
+<pre><strong>#!groovy</strong> </pre>
+<p>This is useful for the different IDEs and GitHub as it indicates the nature of the file. The first step of our script will consist of asking Jenkins to assign the job to a node as follows:</p>
+<pre><strong>node { }</strong> </pre>
+<p>Our Jenkins installation is fairly simple. We only have one server and therefore only one node. If we had more nodes, we could add parameters to the call to target a node with a specific architecture, or even drive the parallel execution.</p>
+<p>Our CI testing can be logically broken up into a few steps:</p>
+<ol>
+<li>Get the code from GitHub.</li>
+<li>Install the different dependencies by calling the <kbd>npm install</kbd> command.</li>
+<li>Run our run with the command <kbd>mocha</kbd>.</li>
+<li>Clean up.</li>
+</ol>
+<p>These steps have an equivalent concept in Jenkins called <strong>stages</strong>. We are going to add them inside the node routing. Here is what the first stage will look like:</p>
+<pre>node { 
+   stage 'Checkout' 
+        checkout scm 
+} </pre>
+<p>This tells Jenkins to get the code from the source control. When we created the job, we stated that it was a GitHub organization job, so Jenkins will know how to interpret that correctly.</p>
+<p>Next, we need to call the <kbd>npm install</kbd> command. Groovy doesn't understand native language specific features such as calling <kbd>npm</kbd>. To do this, therefore, we will use the <kbd>sh</kbd> command, which will allow us to spawn a shell and run a command. Here is what our second stage looks like:</p>
+<pre>stage 'Checkout'<br/>    checkout scm<br/><br/>stage 'Setup'<br/>    sh 'npm config set registry http://registry.npmjs.org/'<br/>    sh 'npm install'</pre>
+<p>In our next stage, we are going to run Mocha. The following is the <kbd>Setup</kbd> stage; add the following:</p>
+<pre>   stage 'Mocha test' 
+        sh './node_modules/mocha/bin/mocha' </pre>
+<p>Finally, we can proceed to clean up the repository with the following stage:</p>
+<pre>stage 'Cleanup'<br/>        echo 'prune and cleanup'<br/>        sh 'npm prune'<br/>        sh 'rm node_modules -rf'</pre>
+<p>The Jenkins file is now ready, it should look like this: <a href="https://raw.githubusercontent.com/yogeshraheja/helloworld/master/Jenkinsfile" target="_blank">https://raw.githubusercontent.com/yogeshraheja/helloworld/master/Jenkinsfile</a>. </p>
+<p>We can now commit our code and test it:</p>
+<pre><strong>$ git add Jenkinsfile helloworld.js package.json test</strong><br/><strong>$ git commit -m "Helloworld application"</strong><br/><strong>$ git push origin initial-branch</strong></pre>
+<p>This will create a remote branch called <kbd>initial-branch</kbd>. As the branch gets created, Jenkins will get a notification from GitHub about the change and will run the CI pipeline. In a matter of seconds, our test will run on Jenkins, which in turn will send the result back to GitHub. We can observe this as follows:</p>
+<ol start="1">
+<li>Open GitHub in your browser and navigate to the <kbd>helloworld</kbd> project you created.</li>
+<li>Click on <span class="packt_screen">Branch</span> and select <span class="packt_screen">initial-branch</span>.</li>
+<li>From that screen, click on <span class="packt_screen">New pull request</span>, provide a title and a good description of the change you are making. If possible, mention other developers so that they can thoroughly review the change you are proposing.</li>
+<li>Click on <span class="packt_screen">Create pull request</span> and follow the steps to create a pull request. Once the pull request is created, you will be able to see how GitHub shows that the pull request has passed all checks:
+<div class="packt_figure CDPAlignCenter CDPAlign"/>
+</li>
+</ol>
+<div class="packt_figure CDPAlignCenter CDPAlign"><img src="assets/f1cdb793-6c9b-4ab8-8ebc-31d6b4c5626d.png"/></div>
+<ol start="5">
+<li>You can also go to your Jenkins browser and check the build history. You can even check the details from Jenkins by clicking the organization, followed by repository and branch. This will bring us back to the Jenkins job, where you can observe the execution of the job and its pipeline in more detail:</li>
+</ol>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/f966e8c5-f53e-48e2-92f1-eb04a6fd4a28.png"/></p>
+<ol start="6">
+<li>At that point, if you mentioned other developers, they should get a notification so that they can look at the content of the pull request. Once it is reviewed and approved, the pull request can be merged. From that point on, when developers pull the master branch or rebase their branch, they will see your code.</li>
+</ol>
+<div class="packt_infobox">Depending on the size of the team working on a repository, it is common to have to rebase a branch. The two most important times to do that are before creating the pull request (step 2) and before merging it (step 6).</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Productionizing the CI pipeline</h1>
+                </header>
+            
+            <article>
+                
+<p>We have now put in place a basic, yet functional, CI pipeline. While this is a good starting point, you are likely to want to perfect certain details of this system. As mentioned <span>previously</span><span>, our Ansible recipe for Jenkins can be improved to include the configuration of the jobs such as the <kbd>helloworld</kbd> job we manually created.</span></p>
+<p>We only created a single functional test to illustrate how to use a TDD approach and how to integrate a testing step in our pipeline. The success of a continuous integration pipeline depends strongly on the quality and quantity of the tests produced. Tests will typically be broken up into functional and non-functional tests. In order to best take advantage of your pipeline, you will want to catch possible errors as early as possible. This means focusing on the functional tests and in particular the <strong>unit tests,</strong> which are used to validate small units of code such as a method in a class.</p>
+<p>After this, you can focus on <strong>integration testing,</strong> which covers a bit more ground and usually interacts with data stores and other functions in the code. Finally, you will want to add <strong>acceptance testing</strong> to verify that all the requirements for your stories are complete:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/4a791083-e83e-48b0-a39f-81c6ca5fa43a.png" style="width:31.08em;height:16.17em;"/></p>
+<p>In terms of non-functional testing, you will usually want to look at <strong>performance</strong>, <strong>security</strong>, <strong>usability,</strong> and <strong>compatibility</strong> testing.</p>
+<p>Finally, you can complement your own tests with code analyzer tools to get a sense of the code coverage (how many lines of code are executed by your automated tests).</p>
+<p>As always with DevOps, it is important to collect metrics. In a CI pipeline, you will typically want to monitor the number of builds that go through the CI pipeline and the quality of the pull requests.</p>
+<p>Like any other system, you will need to spend a bit of time setting up backups and monitoring. You may decide to back up the Jenkins home directory if you haven't moved to a model where your jobs and the Jenkins configuration are managed by your configuration management system (Ansible). In terms of metrics, keeping an eye on the system performance, its availability, and health are paramount. A breakage in the build pipeline should be considered a critical issue as it impacts the productivity of all the developers and operators.</p>
+<p>Finally, you should expect to have to scale up your CI infrastructure over time. As code and tests get added, it will take longer and longer to run the tests. You may decide to add more Jenkins slaves, which will allow you to run tests in parallel and/or use bigger instances. In the current format, Jenkins will run the <kbd>helloworld</kbd> pipeline every time a change is pushed to a branch. You may also decide to only run the pipeline once the pull requests are created.</p>
+<p>In the initial section of this chapter, we adopted a new workflow where developers commit code and tests to individual branches and send frequent pull requests to share the proposed changes with the rest of the engineering organization. In addition, we made sure that the new code is fully tested by creating a continuous integration pipeline. To do this, we created a Jenkins server and hooked it to GitHub. Thanks to that system, all the tests committed with the project get automatically executed and the results are sent back to GitHub. We are now in an ideal situation to take our workflow to the next level and automate deployment.</p>
+<div class="packt_infobox"><strong>Are the QA teams no longer needed with DevOps?</strong><br/>
+Yes and no. In an effective DevOps organization, non-technical QA jobs are not usually needed. If everything is fully automated and the developers write sufficient tests to cover all aspects of the code, the organization doesn't need to task anyone to write and execute test plans. Instead of that, DevOps-focused organizations will have engineers, sometimes called QA engineers, who focus on quality but with an emphasis on automation. This involves working on tooling and processes to improve the ability to automatically test code.</div>
+<p class="mce-root"/>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Building a continuous deployment pipeline</h1>
+                </header>
+            
+            <article>
+                
+<p>By creating a CI pipeline, we have taken the first step toward being an effective <strong>engineering</strong> organization. Because our workflow now involves working in individual branches and merging them back to the master branch after going through automated testing and human reviews, we can assume that the code present in the master branch is of high quality and is safe to deploy. We can now focus on the next challenge, which is to release code automatically as new code gets merged into the master branch.</p>
+<p>By continuously releasing new code, you drastically accelerate the feedback loop process that DevOps provides. Releasing new code to production at high speed lets you collect real customer metrics, which often leads to exposing new and often unexpected issues. For many companies, deploying new code to production is a challenge. It can be quite worrying, especially if it involves thousands of new commits all going out to production at the same time in a process that occurs only a few times a year. Companies that do this often schedule their maintenance late at night and during weekends. Adopting a more modern approach, such as the one we will go through in the remainder of the chapters, will have a significant positive impact on the work-life balance of the engineering team.</p>
+<div class="packt_infobox">Most well-known tech companies such as Google or Facebook don't deploy code on Fridays. The goal is to avoid pushing bugs out just before the weekend, which <span>could</span><span> </span><span>otherwise lead to unexpected pages on Saturdays or Sundays. Because they aren't scared of deploying code, a lot of those changes will go out to production at peak hours so that they can quickly catch any issues related to load.</span></div>
+<p>In order to implement our continuous deployment pipeline, we are going to look at two new AWS services—<strong>CodePipeline</strong> and <strong>CodeDeploy</strong>:</p>
+<ul>
+<li>CodePipeline let us create our deployment pipeline. We will tell it to take our code from GitHub, like we did before, and send it to Jenkins to run CI testing on it. Instead of simply returning the result to GitHub, however, we will then take the code and deploy it to our EC2 instance with the help of AWS CodeDeploy.</li>
+<li>CodeDeploy is a service that lets us properly deploy code to our EC2 instances. By adding a certain number of configuration files and scripts, we can use CodeDeploy to deploy and test our code <span>reliably</span><span>. Thanks to CodeDeploy, we don't have to worry about any kind of complicated logic when it comes to sequencing our deployment. It is tightly integrated with EC2 and knows how to perform rolling updates across multiple instances and, if needed, perform a rollback.</span></li>
+</ul>
+<p>In <a href="8a74da7b-0748-4b90-a3bc-58e853e820ec.xhtml">Chapter 3</a>, <em>Treating Your Infrastructure as Code</em>, we looked at how to configure servers and deploy the <kbd>helloworld</kbd> application using Ansible. While this solution allowed us to illustrate how to use configuration management, this solution is not good enough for a more critical service. There isn't any notion of sequencing, there are no good feedback mechanisms to tell us how the deploy went, and we didn't implement any validation steps.</p>
+<p>Having a dedicated service geared towards carrying out deployments in AWS will make deploying applications a lot better, as we will see in the following section. In order to demonstrate these services, we will first build a new generic Node.js web server using Ansible.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Creating new web servers for continuous deployment</h1>
+                </header>
+            
+            <article>
+                
+<p>In order to use CodeDeploy, the EC2 instances need to be running the CodeDeploy agent. This is normally done by downloading an executable from an S3 bucket, which varies depending on the region your instances are running in. Conveniently, AWS has also released a custom Ansible library, which can automate these steps. Because that library isn't a part of the standard Ansible library, we first need to add it to our Ansible repository.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Importing a custom library to Ansible for AWS CodeDeploy</h1>
+                </header>
+            
+            <article>
+                
+<p>By default, Ansible expects to find the custom libraries in the <kbd>/usr/share/my_modules/</kbd> directory. Previously, when we looked at the inventory script in <a href="8a74da7b-0748-4b90-a3bc-58e853e820ec.xhtml">Chapter 3</a>, <em>Treating Your Infrastructure as Code</em>, we changed this default behavior by editing the <kbd>ansible.cfg</kbd> file. We will make the necessary changes so that the library is being downloaded onto the host with the rest of the Ansible files. The simplest way to accomplish this is to create a new directory at the root of our <kbd>ansible</kbd> repository and put the library in it.</p>
+<p>On your computer, open a Terminal and go to your <kbd>ansible</kbd> directory:</p>
+<p>In the root directory of our <kbd>ansible</kbd> repository, where the <kbd>ansible.cfg</kbd> file is located, we are going to add the new directory library to store the AWS CodeDeploy <kbd>ansible</kbd> library:</p>
+<pre><strong>$ mkdir library</strong>  </pre>
+<p class="mce-root"/>
+<p>Once the folder is created, we can download the <kbd>ansible</kbd> library in it:</p>
+<pre><strong>$ curl -L https://raw.githubusercontent.com/yogeshraheja/Effective-DevOps-with-AWS/master/Chapter05/ansible/library/aws_codedeploy &gt; library/aws_codedeploy</strong></pre>
+<p>Lastly, we are going to edit the <kbd>ansible.cfg</kbd> file that is present in the root directory of the <kbd>ansible</kbd> repository to specify the location of the library folder as follows:</p>
+<pre># update ansible.cfg <br/>[defaults]<br/>inventory = ./ec2.py <br/>remote_user = ec2-user <br/>become = True <br/>become_method = sudo <br/>become_user = root <br/>nocows = 1<br/><strong>library = library</strong></pre>
+<p>We are now ready to start using the library. CodeDeploy is a service that we are likely to reuse over time as new services get added to our system. I<span>n order to ensure that our Ansible repository code conforms to the <strong>Don't Repeat Yourself</strong> (<strong>DRY</strong>) principle, </span>we are going to create an Ansible role that is dedicated to CodeDeploy.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Creating a CodeDeploy Ansible role</h1>
+                </header>
+            
+            <article>
+                
+<p>We are first going to go into the role directory that is present at the root location of our <kbd>ansible</kbd> repository:</p>
+<pre><strong>$ cd roles</strong>  </pre>
+<p>As before, we will rely on <kbd>ansible-galaxy</kbd> to put in place the scaffolding that is needed to create our role:</p>
+<pre><strong>$ ansible-galaxy init codedeploy</strong>  </pre>
+<p>Our role will be very simple. We are going to edit the <span><kbd>codedeploy/tasks/main.yml</kbd> </span><span>file and make a call to the new module that the <kbd>aws_codedeploy</kbd> library provides, as follows:</span></p>
+<pre><strong>---</strong>
+<strong># tasks file for codedeploy</strong>
+<strong>- name: Installs and starts the AWS CodeDeploy Agent</strong>
+<strong>  aws_codedeploy: </strong>
+    <strong>enabled: yes</strong>  </pre>
+<p class="mce-root"/>
+<p>At this point, we can create our new playbook for generic <kbd>nodejs</kbd> web servers. First, go back in the root directory of the <kbd>ansible</kbd> repository:</p>
+<pre><strong>$ cd ..</strong>  </pre>
+<p>Create a new file called <kbd>nodeserver.yml</kbd>:</p>
+<pre><strong>$ touch nodeserver.yml</strong>  </pre>
+<p>We will take the same approach we did previously with our other playbooks. The goal of our servers will be to run Node.js applications and run the CodeDeploy daemon. Edit the <kbd>nodeserver.yml</kbd> file and add the following to it:</p>
+<pre>--- 
+- hosts: "{{ target | default('localhost') }}" 
+  become: yes 
+  roles: 
+    - nodejs 
+    - codedeploy </pre>
+<div class="packt_infobox">When using CodeDeploy in a config management system such as Ansible or CloudFormation, <span>it is important to always install all the dependencies for your application prior to starting it. This allows you to </span><span>avoid a race condition.</span></div>
+<p>We can now commit our changes to <kbd>git</kbd>. First, create a new branch and then add new files and directories that we created:</p>
+<pre class="mce-root"><strong>$ git checkout -b code-deploy<br/></strong><strong>$ git add library roles/codedeploy nodeserver.yml</strong> <strong>ansible.cfg</strong></pre>
+<p class="mce-root">Finally, <kbd>commit</kbd> and <kbd>push</kbd> the changes:</p>
+<pre class="mce-root"><strong>$ git commit -m "adding aws_codedeploy library, role and a nodeserver playbook"</strong><br/><strong>$ git push origin code-deploy</strong></pre>
+<p>As before, you can now create a pull request. Once the pull request has been reviewed and approved, merge it back to the master. After you have followed these steps, your Ansible repository should look as follows: <a href="https://github.com/yogeshraheja/Effective-DevOps-with-AWS/tree/master/Chapter05/ansible" target="_blank">https://github.com/yogeshraheja/Effective-DevOps-with-AWS/tree/master/Chapter05/ansible</a>.<a href="https://github.com/yogeshraheja/Effective-DevOps-with-AWS/tree/master/Chapter05/ansible" target="_blank"/></p>
+<p class="mce-root"/>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Creating the web server CloudFormation template</h1>
+                </header>
+            
+            <article>
+                
+<p>As we now have our Ansible playbook ready, we can create our CloudFormation template using Troposphere. Start by duplicating the Troposphere script that we created for Jenkins earlier in the chapter:</p>
+<pre><strong>$ cd EffectiveDevOpsTemplates</strong><br/><strong>$ cp jenkins-cf-template.py nodeserver-cf-template.py</strong></pre>
+<p>Edit the <kbd><span>nodeserver-cf-template.py</span></kbd> file to make the following changes. First, change the application name and port by updating the variables as follows:</p>
+<pre>ApplicationName = "nodeserver" 
+ApplicationPort = "300<strong>0"</strong> </pre>
+<p>In addition, our instances will need to download files from S3. To allow this to happen, replace the policy that allowed CodePipeline on our Jenkins instance with a policy to allow S3. Edit the policy called <kbd>AllowCodePipeline</kbd> and update its name and action. Above the instantiation of our instance, add a new IAM policy resource as follows:</p>
+<pre>t.add_resource(IAMPolicy( 
+    "Policy", 
+    PolicyName="AllowS3", 
+    PolicyDocument=Policy( 
+        Statement=[ 
+            Statement( 
+                Effect=Allow, 
+                Action=[Action("s3", "*")], 
+                Resource=["*"]) 
+        ] 
+    ), 
+    Roles=[Ref("Role")] 
+)) </pre>
+<p>The new script should look as follows: <a href="https://raw.githubusercontent.com/yogeshraheja/EffectiveDevOpsTemplates/master/nodeserver-cf-template.py" target="_blank">https://raw.githubusercontent.com/yogeshraheja/EffectiveDevOpsTemplates/master/nodeserver-cf-template.py</a>.</p>
+<p>As the new script is now ready, we can save it and generate the CloudFormation template as follows:</p>
+<pre><strong>$ git add nodeserver-cf-template.py</strong><br/><strong>$ git commit -m "Adding node server troposhere script"</strong><br/><strong>$ git push</strong><br/><strong>$ python nodeserver-cf-template.py &gt; nodeserver-cf.template</strong></pre>
+<p class="mce-root"/>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Launching our web server</h1>
+                </header>
+            
+            <article>
+                
+<p>As before, we are going to launch our instance using CloudFormation. Note that we are calling this first stack <kbd>helloworld-staging</kbd>. We will first look at CodeDeploy as a way to deploy our code to a staging environment. We will use this name in CodeDeploy so that we can target the deployments to that specific stack:</p>
+<pre><strong><br/>$ aws cloudformation create-stack \<br/>    --capabilities CAPABILITY_IAM \<br/>    --stack-name helloworld-staging \<br/>    --template-body file://nodeserver-cf.template \<br/>    --parameters ParameterKey=KeyPair,ParameterValue=EffectiveDevOpsAWS </strong>  </pre>
+<p>In a few minutes, our instance will be ready.</p>
+<p>We are now at an important point in our DevOps transformation. We have now created generic <kbd>nodejs</kbd> web servers that allow you to deploy code on them easily. We are really close to a realistic environment that effective companies traditionally use to deploy and run their services. The fact that we are able to create these environments simply and on demand is our key to success.</p>
+<div class="packt_infobox">When architecting services, always make sure that the infrastructure can easily be recreated. Being able to troubleshoot an issue is great, but being able to quickly rebuild a service host and stop the impact on the user is often even more desirable.</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Integrating our helloworld application with CodeDeploy</h1>
+                </header>
+            
+            <article>
+                
+<p>Now that our servers are initiated and the CodeDeploy agent is running, we can start using them. First, we need to create an IAM service role for CodeDeploy. We then need to add an entry in the CodeDeploy service to define our application. Finally, we need to add <span>our application specification file and a few scripts to help with deploying and running our service </span><span>to the <kbd>helloworld</kbd> application.</span></p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Creating the IAM service role for CodeDeploy</h1>
+                </header>
+            
+            <article>
+                
+<p>CodeDeploy permissions work with IAM at the level of the individual application. In order to provide sufficient permissions, we will create a new IAM service role with the following policy:</p>
+<pre>{ 
+  "Version": "2012-10-17", 
+  "Statement": [ 
+    { 
+      "Sid": "", 
+      "Effect": "Allow", 
+      "Principal": { 
+        "Service": [ 
+          "codedeploy.amazonaws.com" 
+        ] 
+      }, 
+      "Action": "sts:AssumeRole" 
+    } 
+  ] 
+} </pre>
+<p>We will create a new role that will be called <kbd>CodeDeployServiceRole</kbd> using the <span>following command in the </span><span>command-line interface:</span></p>
+<pre><strong>$ aws iam create-role \</strong><br/><strong>    --role-name CodeDeployServiceRole \</strong><br/><strong>    --assume-role-policy-document \</strong><br/><strong>    https://raw.githubusercontent.com/yogeshraheja/Effective-DevOps-    <br/>    with-AWS/master/Chapter05/misc/CodeDeploy-Trust.json</strong></pre>
+<p>We now need to attach the role policy to provide the proper permissions to the service role:</p>
+<pre><br/><strong>$ aws iam attach-role-policy \</strong><br/><strong>    --role-name CodeDeployServiceRole \</strong><br/><strong>    --policy-arn \</strong><br/><strong>    arn:aws:iam::aws:policy/service-role/AWSCodeDeployRole  </strong></pre>
+<p>Our IAM service role is now ready. We can finally start interacting with the CodeDeploy web interface.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Creating the CodeDeploy application</h1>
+                </header>
+            
+            <article>
+                
+<p>Now that we have launched EC2 instances with the CodeDeploy service running on them and defined our IAM service role, we have all the requirements to create a CodeDeploy application. As always, there are many ways to use AWS services, but we will demonstrate the basic uses with the web interface in this section:</p>
+<ol>
+<li>Open <a href="https://console.aws.amazon.com/codedeploy">https://console.aws.amazon.com/codedeploy</a> in your browser.</li>
+<li>If prompted, click on <span class="packt_screen">Get Started Now</span>.</li>
+<li>This leads us to a welcome screen with two options, <span class="packt_screen">Sample Deployment</span> and <span class="packt_screen">Custom Deployment</span>. Choose <span class="packt_screen">Custom Deployment</span> and click on <span class="packt_screen">Skip Walkthrough</span><strong>.</strong> This brings us to a form called <span class="packt_screen">Create Application</span>.</li>
+<li>In that form, under <span class="packt_screen">Application Name</span>, give our application the name <kbd>helloworld</kbd>.</li>
+<li>The deployment groups can be viewed as the environment in which the application will live. We will first create a staging environment. Under <span class="packt_screen">Deployment Group Name</span>, provide the name <kbd>staging</kbd>.</li>
+<li>We now need to add instances to our application. Our goal is to target the EC2 instance that we previously created with CloudFormation. As you might recall, we called our stack <kbd>helloworld-staging</kbd>. In the section <span class="packt_screen">Environment configuration</span>, select <span class="packt_screen">Amazon EC2 instances</span>, and select <kbd>aws:cloudformation:stack-name</kbd> in the <span>Key</span> field and <kbd>helloworld- staging</kbd> in the <span class="packt_screen">Value</span> field. This will make sure that CodeDeploy only selects the instance that we intend to use for our application. AWS CodeDeploy should confirm that it matched one instance:</li>
+</ol>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/b2b61b09-cff2-43b7-9d2a-8fe58e409a65.png" style="width:43.58em;height:20.42em;"/></p>
+<ol start="7">
+<li>The next section is called <strong>Deployment configuration</strong>. One of the strengths of CodeDeploy is its ability to understand how to deploy code to a cluster of servers. This features makes it easy to avoid outages during deployment. By default, the service comes with three deployment options—one at a time, all at once, and half at a time. It is possible to create custom deployment configurations, but in our case, since we have only one instance, we can leave the default option <kbd>CodeDeployDefault.OneAtATime</kbd>.</li>
+<li>The next two sections are called triggers and alarms. We aren't going to cover these in detail in this book, but basically triggers are useful when it comes to collecting metrics around deployment and monitoring. By creating triggers to push notifications in SNS and creating CloudWatch metrics, you can easily collect metrics around deployments. This helps you answer questions such as how many deployments are happening, how many fail, how many deploys lead to rollback, and so on.</li>
+<li>Our application is somewhat stateless, therefore enabling rollback upon failure is a good idea. Select the <span class="packt_screen">Roll back when a deployment fails</span> option.</li>
+<li>Lastly, we need to select the service role that we created in the previous steps. Under <span class="packt_screen">Service Role ARN</span>, s<span>elect the role that ends with</span> <span class="packt_screen">CodeDeployServiceRole</span><span>.</span></li>
+<li>Finally, click on <span class="packt_screen">Create Application</span>.</li>
+</ol>
+<p>This brings us back to the CodeDeploy application page for our newly created <kbd>helloworld</kbd> application.</p>
+<p>Creating the application in CodeDeploy allows us to define where our newly created application will be deployed. We will now look at how to deploy our code.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Adding the CodeDeploy configuration and scripts to our repository</h1>
+                </header>
+            
+            <article>
+                
+<p>When we worked on creating a Jenkins pipeline earlier in this chapter, we created a Jenkinsfile file inside the <kbd>helloworld</kbd> GitHub repository. The reason for this was that we could change the code and the way the code is tested in the same change set. For the same reason, it is a good idea to put the logic about how to deploy our code with the code itself. </p>
+<p>Our <kbd>helloworld</kbd> repository currently contains the application <span>that we created inside a new GitHub organization (<kbd>yogeshrahejahelloworld</kbd> in my case). It also contains the applications tests</span> and a repository with name <kbd>helloworld</kbd> . We are now going to add the information that CodeDeploy needs in order to execute the deployment of our service.</p>
+<p>CodeDeploy relies on an application specification file called <kbd>appspec.yml</kbd> to manage deployment. We first need to create this file. Go to the directory where the <kbd>helloworld</kbd> GitHub project is cloned and create a new branch off the master:</p>
+<pre><strong>$ git clone https://github.com/&lt;YOUR GITHUB ORGANIZATION&gt;/helloworld.git</strong><br/><strong>$ cd helloworld</strong><br/><strong>$ git checkout -b helloworld-codedeploy </strong></pre>
+<p>We are now going to create and edit the file <kbd>appspec.yml</kbd>:</p>
+<pre><strong>$ touch appspec.yml</strong>  </pre>
+<p>On the first line of the file, we are going to define which version of the AppSpec file we want to use. Currently, the only version that is supported is <kbd>0.0</kbd>:</p>
+<pre>version: 0.0 </pre>
+<p>On the next line, we are going to specify the operating system on which we wish to deploy our service. In our case, this is Linux:</p>
+<pre>os: linux </pre>
+<p>We are now going to describe which file goes where. To do this, we are going to create a section called <kbd>files</kbd> and put each file that we want to deploy using a format source destination. Note that the file is written in YAML and therefore the spacing and alignment are important:</p>
+<pre>version: 0.0 
+os: linux 
+files:<br/> - source: helloworld.js<br/> destination: /usr/local/helloworld/</pre>
+<p>Thanks to this section, CodeDeploy now knows to copy the <kbd>helloworld.js</kbd> in the target destination, <kbd>/usr/local/helloworld</kbd>. Our <kbd>helloworld</kbd> directory will be automatically created by CodeDeploy. In order to start the application, we will also need our upstart script, which isn't currently in the repository.</p>
+<p>Back in the Terminal of  the root directory of the <kbd>helloworld</kbd> project, we are going to create a subdirectory called <kbd>scripts</kbd> and add the upstart script to it:</p>
+<pre><strong>$ mkdir scripts</strong><br/><strong>$ wget https://raw.githubusercontent.com/yogeshraheja/Effective-DevOps-with-AWS/master/Chapter02/helloworld.conf -O scripts/helloworld.conf</strong></pre>
+<p>We can now add the <span><kbd>helloworld.conf</kbd> file</span> that new file to our <kbd>appspsec.yml</kbd> by adding another block with the source and destination of the upstart script as follows:</p>
+<pre>files:<br/>  - source: helloworld.js<br/>    destination: /usr/local/helloworld/<br/>  - source: scripts/helloworld.conf <br/>    destination: /etc/init/</pre>
+<p>The two files that we need in order to run our application as a service will now be present in the appropriate locations. In order to deploy our application, we need more files. We need CodeDeploy to start and stop the service. Previously, we started the application using Ansible, but this time around we aren't using Ansible to manage our service. CodeDeploy has a much more elegant solution: when a deployment starts, the CodeDeploy agent running on the EC2 instance will go through the following sequence of events:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="assets/90cf2590-75a6-4078-93da-0405583c3e9a.jpg"/></p>
+<p>The archive containing our application will be downloaded on the system during the <strong>DownloadBundle</strong> event. The install section will be used to copy the files defined in our template to their destinations.</p>
+<p>CodeDeploy uses the concept of hooks. In the <kbd>appspec.yml</kbd> file we can create a number of hooks to execute custom scripts during each of the stages described previously. We are going to create three scripts: a script to start our application, a script to stop it, and finally a script to check if the deployment was successful.</p>
+<p>We will put these three scripts in the <kbd>scripts</kbd> directory that we created previously. Let's create the first file <kbd>start.sh</kbd> and start editing it:</p>
+<pre><strong>$ touch scripts/start.sh</strong>  </pre>
+<p>The script is very straightforward. We are simply going to call upstart to start the service:</p>
+<pre><strong>#!/bin/sh</strong>
+<strong>start helloworld</strong>  </pre>
+<p>This is all we need. We are now going to create our stop script file:</p>
+<pre><strong>$ touch scripts/stop.sh</strong>  </pre>
+<p class="mce-root"/>
+<p>As we did before, edit it as follows:</p>
+<pre>#!/bin/sh<br/>[[ -e /etc/init/helloworld.conf ]] \ <br/>   &amp;&amp; status helloworld | \<br/>      grep -q '^helloworld start/running, process' \ <br/>   &amp;&amp; [[ $? -eq 0 ]] \<br/>   &amp;&amp; stop helloworld || echo "Application not started"</pre>
+<p>The stop script is slightly more complicated than the start script because it will be executed during the <kbd>BeforeInstall</kbd> step. The basic logic is the same: we are making a call to stop the <kbd>helloworld</kbd> application. We have some extra calls before this because we need to handle the case of the first deployment where the application hasn't been installed and started before.</p>
+<p>The last script we will create is called <kbd>validate.sh</kbd>:</p>
+<pre><strong>$ touch scripts/validate.sh</strong>  </pre>
+<p>Once again the code is very simple:</p>
+<pre><strong>#!/bin/sh</strong>
+<strong>curl -I localhost:3000</strong>  </pre>
+<p>For the purposes of this book, we are carrying out the most basic validation possible. This consists of a HEAD request on the only route that our application has. In a more realistic application, we would test more routes and anything that could potentially go wrong when new code is pushed out.</p>
+<p>Our scripts need to be executable to avoid any unnecessary warnings in CodeDeploy:</p>
+<pre><strong>$ chmod a+x scripts/{start,stop,validate}.sh </strong></pre>
+<p>We can now add our hooks in our <kbd>appspec.yml</kbd> file. Open the file again and <span>create a <kbd>hooks</kbd> section </span><span>below the <kbd>files</kbd> section:</span></p>
+<pre>version: 0.0 
+os: linux 
+files: 
+[...] 
+hooks: </pre>
+<p class="mce-root"/>
+<p>We will first declare the stop script that we want to run at the <kbd>BeforeInstall</kbd> stage. In the hooks section, add the following:</p>
+<pre>hooks: 
+  BeforeInstall: 
+    - location: scripts/stop.sh 
+      timeout: 30 </pre>
+<p>We are allowing <kbd>30</kbd> seconds for the execution of the stop command to complete. We are going to repeat a similar operation to add our start and validate scripts as follows:</p>
+<pre>hooks: 
+  BeforeInstall: 
+    - location: scripts/stop.sh 
+      timeout: 30 
+  ApplicationStart:<br/>    - location: scripts/start.sh<br/>      timeout: 30<br/>  ValidateService:<br/>    - location: scripts/validate.sh</pre>
+<p>When our deploy pipeline runs, it will try to do the following:</p>
+<ol>
+<li>Download our application package and decompress it in a temporary directory</li>
+<li>Run the stop script</li>
+<li>Copy the application and upstart script</li>
+<li>Run the start script</li>
+<li>Run the validate script to make sure everything is working as expected</li>
+</ol>
+<p>We can add all our new files to <kbd>git</kbd>, commit and push the changes, and send a pull request as follows:</p>
+<pre><strong>$ git add scripts appspec.yml</strong><br/><strong>$ git commit -m "Adding CodeDeploy support to the application"</strong><br/><strong>$ git push</strong></pre>
+<p>The branch will go through Jenkins and be tested. A peer can then review the code change; once it is approved, you can merge your pull request.</p>
+<p>In order to perform deployment, we essentially need to answer three questions—<em>what are we trying to deploy?</em> <em>Where are we trying to deploy it?</em> <em>How can we deploy it?</em> We answered the second question when we created the job in CodeDeploy and the third question with our appspec file and its helper scripts. We now need to look into the first question—<em>what are we trying to deploy?</em> This is where we are going to use AWS CodePipeline.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Building our deployment pipeline with AWS CodePipeline</h1>
+                </header>
+            
+            <article>
+                
+<p>AWS CodePipeline is a service dedicated to creating delivery pipelines. You can think of it as similar to the Jenkins pipelines feature with an AWS twist. The service is very well integrated with the rest of the AWS ecosystem, which means that it has a number of great features and useful advantages over Jenkins. Because it's a fully managed service, you don't have to worry about its uptime the way we do with a single Jenkins instance. It integrates out of the box with CodeDeploy, which is very handy for our case. While we won't go into too much detail here, the service is fully integrated with the IAM service, which means that you have a very granular level of control over who can do what. The service can, for example, prevent unauthorized users from performing deployments. Thanks to its API, a number of services can be integrated into your pipelines, including Jenkins and GitHub.</p>
+<p>We will first look into creating a basic pipeline in two stages. In the first stage, we will get the code from GitHub, package it, and store the package on S3. In the second stage, we will take that package and deploy it to our staging instance using CodeDeploy.</p>
+<p>After that, we will go through a more advanced scenario. We will see how we can use our Jenkins instance to run our tests before deploying our code to staging. We will also create a production environment and add an on-demand production deployment process, called a continuous delivery pipeline. Finally, we will look at a couple of strategies that will allow us to build confidence in the code that we push through our pipeline so that we will be able to remove the on-demand production deployment step and turn it into a fully automated pipeline.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Creating a continuous deployment pipeline for staging</h1>
+                </header>
+            
+            <article>
+                
+<p>To create our first deployment pipeline with <kbd>CodePipeline</kbd>, we are going to use the AWS console, which offers a very intuitive web interface:</p>
+<ol>
+<li>Open the following link in your browser: <a href="https://console.aws.amazon.com/codepipeline">h</a><a href="https://console.aws.amazon.com/codepipeline">t</a><a href="https://console.aws.amazon.com/codepipeline">t</a><a href="https://console.aws.amazon.com/codepipeline">p</a><a href="https://console.aws.amazon.com/codepipeline">s</a><a href="https://console.aws.amazon.com/codepipeline">://c</a><a href="https://console.aws.amazon.com/codepipeline">o</a><a href="https://console.aws.amazon.com/codepipeline">n</a><a href="https://console.aws.amazon.com/codepipeline">s</a><a href="https://console.aws.amazon.com/codepipeline">o</a><a href="https://console.aws.amazon.com/codepipeline">l</a><a href="https://console.aws.amazon.com/codepipeline">e</a><a href="https://console.aws.amazon.com/codepipeline">.</a><a href="https://console.aws.amazon.com/codepipeline">a</a><a href="https://console.aws.amazon.com/codepipeline">w</a><a href="https://console.aws.amazon.com/codepipeline">s</a><a href="https://console.aws.amazon.com/codepipeline">.</a><a href="https://console.aws.amazon.com/codepipeline">a</a><a href="https://console.aws.amazon.com/codepipeline">m</a><a href="https://console.aws.amazon.com/codepipeline">a</a><a href="https://console.aws.amazon.com/codepipeline">z</a><a href="https://console.aws.amazon.com/codepipeline">o</a><a href="https://console.aws.amazon.com/codepipeline">n</a><a href="https://console.aws.amazon.com/codepipeline">.</a><a href="https://console.aws.amazon.com/codepipeline">c</a><a href="https://console.aws.amazon.com/codepipeline">o</a><a href="https://console.aws.amazon.com/codepipeline">m</a><a href="https://console.aws.amazon.com/codepipeline">/c</a><a href="https://console.aws.amazon.com/codepipeline">o</a><a href="https://console.aws.amazon.com/codepipeline">d</a> <a href="https://console.aws.amazon.com/codepipeline">e</a><a href="https://console.aws.amazon.com/codepipeline">p</a><a href="https://console.aws.amazon.com/codepipeline">i</a><a href="https://console.aws.amazon.com/codepipeline">p</a><a href="https://console.aws.amazon.com/codepipeline">e</a><a href="https://console.aws.amazon.com/codepipeline">l</a><a href="https://console.aws.amazon.com/codepipeline">i</a><a href="https://console.aws.amazon.com/codepipeline">n</a><a href="https://console.aws.amazon.com/codepipeline">e</a>.</li>
+<li>If prompted, click on <span class="packt_screen">Get started</span>.</li>
+<li>On the next screen, give your pipeline the name <kbd>helloworld</kbd> and click on <span class="packt_screen">Next Step</span>.</li>
+</ol>
+<ol start="4">
+<li>For the source location, select GitHub as a <span class="packt_screen">Source provider</span> and click on <span class="packt_screen">Connect to Github</span>. If requested, sign into your GitHub account.</li>
+<li>This will bring you back to the AWS CodePipeline screen. We can now select a <span class="packt_screen">Repository</span> and <span class="packt_screen">branch</span>. We will select the <kbd>helloworld</kbd> project and the master branch. Click on <span class="packt_screen">Next step</span><strong>.</strong></li>
+</ol>
+<div class="packt_infobox">If you don't see the organization name/repository name (that is, <kbd>yogeshrahejahelloworld/helloworld</kbd>) then, as a workaround, clone/copy the organization name/repository name to your global Github repository (that is, <kbd>yogeshrahejahelloworld/helloworld</kbd>  to <kbd>yogeshraheja/hellworld</kbd> in my case).</div>
+<ol start="6">
+<li>This brings us to stage three of our pipeline where we can select our <span class="packt_screen">Build provider</span>. Our application is being written in Node.js so we don't need to build anything. Select <span class="packt_screen">No build</span> and click on <span class="packt_screen">Next step</span>.</li>
+<li>The next step is called <strong>Beta.</strong> This is essentially our staging deployment step. Under <span class="packt_screen">Deployment provider</span>, select <span class="packt_screen">AWS CodeDeploy</span>. Under Application name, select <kbd>helloworld</kbd>. Finally, select <span class="packt_screen">staging</span> for the <span class="packt_screen">Deployment group</span>. Click on <span class="packt_screen">Next step</span>.</li>
+<li>This brings us to a step in which we have to choose our <span class="packt_screen">Role Name</span>. Conveniently, AWS have also added a <span class="packt_screen">Create Role</span> button. Click on this.</li>
+<li>On the next screen, select <span class="packt_screen">Create a new IAM Role</span> and give it the name <kbd>AWS- CodePipeline-Service</kbd>. Use the policy proposed and click on <span class="packt_screen">Allow</span>.</li>
+<li>Go back to the CodePipeline step and make sure that role name says <kbd>AWS- CodePipeline-Service</kbd>. Click on <span class="packt_screen">Next step</span>.</li>
+<li>On the review screen, make sure everything is correct. Finally, click on <span class="packt_screen">Create Pipeline.</span></li>
+</ol>
+<div class="packt_infobox">Because we are using the web interface, Amazon automatically creates an S3 bucket on your behalf to store the artifacts that are produced when the pipeline runs.</div>
+<div class="packt_figure CDPAlignCenter CDPAlign"><img src="assets/c34cd2eb-4c88-42d4-8fb2-217080aa3223.png"/></div>
+<p>The pipeline will be created in a matter of seconds and run for the first time.</p>
+<p class="mce-root"/>
+<div class="packt_infobox">To illustrate the basic functions of CodeDeploy and CodePipeline, we have used the web and command line interface. This process is very manual and doesn't go through any kind of review process. CloudFormation supports these two services. For a real production system, instead of making changes by hand, it is best to use something like Troposphere to generate the templates <span>programmatically</span><span> </span><span>to manage the services.</span></div>
+<p>Once both steps have run, you can verify that the code has been deployed by opening in your browser <kbd>http://<strong>&lt;instanceip&gt;</strong>:3000</kbd>. The instance IP can be found in the CloudFormation template or the EC2 console. You can even verify the success with the following one-liner:</p>
+<pre><strong>$ aws cloudformation describe-stacks \</strong><br/><strong>    --stack-name helloworld-staging \</strong><br/><strong>    --query 'Stacks[0].Outputs[0].OutputValue' \</strong><br/><strong>    | xargs -I {} curl {}:3000 <br/>Hello World</strong></pre>
+<p>We have finished our basic pipeline. By taking advantage of CodePipeline, CodeDeploy, GitHub, and S3, we have built a very elegant solution to handle the deployment our web application. Every time a pull request is merged to the master, our pipeline will pick up the change, automatically create a new package with the new code, store it on S3, and then deploy it to staging. Thanks to CodeDeploy we can have a basic test in place to verify that the version is working. If needed, we can also roll back to any revisions that were built previously.</p>
+<p>Our pipeline doesn't have to be limited to staging; we can actually do a lot more. As we mentioned previously, CodePipeline can integrate with Jenkins. We can use <span><span>CodePipeline </span></span>to build artifacts, but also to run some extra series of tests. Let's add it to our pipeline before deploying to staging.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Integrating Jenkins to our CodePipeline pipeline</h1>
+                </header>
+            
+            <article>
+                
+<p>One of the features that makes Jenkins so popular is its plugin capability. AWS released a number of plugins to integrate different services with Jenkins. We are going to use the one that has been created for CodePipeline. First, this will require us to change the IAM profile role of the instance so that it can interact with CodePipeline. We will then install the CodePipeline plugin in Jenkins and create a job to run our test. Finally, we will edit our pipeline to integrate the new stage.</p>
+<p class="mce-root"/>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Updating the IAM profile through CloudFormation</h1>
+                </header>
+            
+            <article>
+                
+<p>In order to add the new privileges to the instance profile, we are going to edit the <span><kbd>jenkins-cf-template.py</kbd> </span><span>template that we created earlier in the chapter.</span> <span>We are going to add a policy to grant permissions to allow the Jenkins instance to communicate with CodePipeline. This step is very similar to the change we made to grant S3 access to our web server previously.</span></p>
+<p>Above the instance variable instantiation, add the following:</p>
+<pre>t.add_resource(IAMPolicy(<br/>    "Policy",<br/>    PolicyName="AllowS3",<br/>    PolicyDocument=Policy(<br/>        Statement=[<br/>            Statement(<br/>                Effect=Allow,<br/>                Action=[Action("s3", "*")],<br/>                Resource=["*"])<br/>        ]<br/>    ),<br/>        <br/>))</pre>
+<p>Then, save the changes and regenerate the template. The new template should look as follows:<a href="https://raw.githubusercontent.com/yogeshraheja/Effective-DevOps-with-AWS/master/Chapter05/EffectiveDevOpsTemplates/jenkins-cf-template.py" target="_blank"> https://raw.githubusercontent.com/yogeshraheja/Effective-DevOps-with-AWS/master/Chapter05/EffectiveDevOpsTemplates/jenkins-cf-template.py</a>:<a href="https://raw.githubusercontent.com/yogeshraheja/Effective-DevOps-with-AWS/master/Chapter05/EffectiveDevOpsTemplates/jenkins-cf-template.py" target="_blank"/></p>
+<pre><strong>$ git add jenkins-cf-template.py</strong><br/><strong>$ git commit -m "Allowing Jenkins to interact with CodePipeline"</strong><br/><strong>$ git push</strong><br/><strong>$ python jenkins-cf-template.py &gt; jenkins-cf.template</strong> </pre>
+<p>Using the web interface, update the stack:</p>
+<ol>
+<li>Open <a href="https://console.aws.amazon.com/cloudformation">https://console.aws.amazon.com/cloudformation</a>.</li>
+<li>Check the checkbox next to the Jenkins stack and in the <span class="packt_screen">Actions</span> menu, select <span class="packt_screen">Update Stack</span>.</li>
+</ol>
+<ol start="3">
+<li>Browse to the newly generated <kbd>jenkins-cf.template</kbd> and click on <span class="packt_screen">Next</span> until you get to the review screen:</li>
+</ol>
+<p class="mce-root CDPAlignCenter CDPAlign"><img src="assets/38e0c4c5-cf02-4276-99dd-c6940556b57f.png"/></p>
+<ol start="4">
+<li>As shown in the preceding screenshot, only the IAM policy is being added because we created our instance with an instance profile. Our EC2 instance will stay untouched, making this change safe. Click on <span class="packt_screen">Update</span> to confirm the change.</li>
+</ol>
+<p><span>The instance policy will get updated, giving Jenkins enough permissions to interact with CodePipeline. We can now install the Jenkins plugin for CodePipeline.</span></p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Installing and using the CodePipeline Jenkins plugin</h1>
+                </header>
+            
+            <article>
+                
+<p>Installing a plugin in Jenkins is very simple:</p>
+<ol>
+<li>Open your Jenkins instance in your browser (in my case <kbd>http://1 8.208.183.35:8080</kbd>).</li>
+<li>If necessary, log in and click on <span class="packt_screen">Manage Jenkins</span>.</li>
+<li>on the <span class="packt_screen">Manage Jenkins</span> page, select <span class="packt_screen">Manage Plugins</span>.</li>
+<li>Search for the plugin called <span class="packt_screen">AWS CodePipeline Plugin</span>, select it, and install it. We can now start using the plugin.</li>
+<li>Go back to the homepage of your Jenkins server.</li>
+<li>Click on <span class="packt_screen">New Item</span> in the menu on the left.</li>
+<li>Give the new item the name <kbd>HelloworldTest</kbd>, select <span class="packt_screen">Freestyle project</span><strong>,</strong> and click on the <span class="packt_screen">OK</span> button at the bottom of the page.</li>
+</ol>
+<ol start="8">
+<li>On the next screen, under <span class="packt_screen">Source Code Management</span>, select <span class="packt_screen">AWS CodePipeline</span>. Because we configured the permissions at the instance profile level, the only options we need to configure are the <span class="packt_screen">AWS Region</span> and <span class="packt_screen">Category</span>, which are in our case <kbd>US_EAST_1</kbd> and <kbd>Test</kbd><strong> </strong>respectively.</li>
+<li>Under <span class="packt_screen">Build Triggers</span>, select <span class="packt_screen">Poll SCM</span> and then type <kbd>* * * * *</kbd> to tell Jenkins to check with CodePipeline every minute for possible code test requests.</li>
+<li>Under the <span class="packt_screen">Build</span> section, click on <span class="packt_screen">Add build step</span> and then <span class="packt_screen">Execute shell</span>.</li>
+<li>Once again, we are going to run the tests that we created at the beginning of the chapter. In the Command section, type the following:</li>
+</ol>
+<pre style="padding-left: 90px"><strong>npm config set registry http://registry.npmjs.org/ </strong><br/><strong>npm install</strong><br/><strong>./node_modules/mocha/bin/mocha    </strong></pre>
+<ol start="12">
+<li>Add a <span class="packt_screen">post-build action</span> and select the action called <span class="packt_screen">AWS CodePipline Publisher</span>.</li>
+<li>In the newly generated <span class="packt_screen">AWS CodePipeline Publisher</span>, click on <span class="packt_screen">Add</span>, and leave the <span class="packt_screen">Location</span> blank.</li>
+<li>You can configure the rest of the job according to your preferences and then click on <span class="packt_screen">Save</span> <span>to create the new job.</span></li>
+</ol>
+<p>Our test job in Jenkins is ready to be used and we can now update our pipeline.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Adding a test stage to our pipeline</h1>
+                </header>
+            
+            <article>
+                
+<p>We are going to use the web interface to make this change:</p>
+<ol>
+<li>Open <a href="https://console.aws.amazon.com/codepipeline">https://console.aws.amazon.com/codepipeline</a> in your browser.</li>
+<li>Select the <kbd>helloworld</kbd> pipeline we previously created.</li>
+<li>On the <kbd>helloworld</kbd> pipeline page, click on the <span class="packt_screen">Edit</span> button at the top of the pipeline.</li>
+<li>Add a stage by clicking on the <span class="packt_screen">+ Stage</span> button located between the <span class="packt_screen">Source</span> and <span class="packt_screen">Beta</span> stages.</li>
+<li>Call that stage <kbd>Test</kbd> and click on <span class="packt_screen">Action</span>.</li>
+<li>In the menu on the right, under <span class="packt_screen">Action category</span>, choose the action called <kbd>Test</kbd>.</li>
+<li>Call your action Jenkins and, for the <span class="packt_screen">Test provider</span>, select <span class="packt_screen">Add Jenkins</span>.</li>
+<li>In the <span class="packt_screen">Add Jenkins</span> menu, leave the <span class="packt_screen">Provider Name</span> set to <kbd>Jenkins</kbd>. Provide your Jenkins URL, which in my case is <kbd>http://18.203.183.35:8080</kbd>. The project name needs to match the name of the job on Jenkins. This should be <kbd>HelloworldTest</kbd>. Once set, click on <span class="packt_screen">Add action</span>.</li>
+</ol>
+<ol start="9">
+<li>Apply your change by clicking on <span class="packt_screen">Save pipeline changes</span> at the top of the pipeline.</li>
+<li>Run the pipeline again by clicking on <span class="packt_screen">Release change</span>. After a few minutes, you should be able to see the Jenkins step being executed. If everything goes well it should turn green.</li>
+</ol>
+<p>Our pipeline is now starting to look very interesting. Here, we have demonstrated the Jenkins integration in its most rudimentary form, but you can easily imagine more realistic scenarios where you would add a step after deploying your code to staging to carry out better validation with better integration, load, and even penetration testing.</p>
+<p>The goal of AWS CodePipeline is to help you take your services from source control all the way up to production. As you first start working on a service, you might not have the test coverage needed to continuously deploy it to production so you might opt for  one-click production deployment instead. We are going to take advantage of the automation we have built so far in this chapter and build a continuous delivery pipeline for production.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Building a continuous delivery pipeline for production</h1>
+                </header>
+            
+            <article>
+                
+<p>In order to build our continuous delivery pipeline, we are <span>first</span><span> </span><span>going to create a CloudFormation stack for a production environment. We will then add a new deployment group in CodeDeploy, which will provide us with the ability to deploy code to the new CloudFormation stack. Finally, we will upgrade the pipeline to include an approval process to deploy our code to production and the production deployment stage itself.</span></p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Creating the new CloudFormation stack for production</h1>
+                </header>
+            
+            <article>
+                
+<p>Here, we are going to reuse the exact same template as we used for staging. In your Terminal, go to the location you used to generate the node server template and then run the same command as before, but this time with the stack name <kbd>helloworld-production</kbd>:</p>
+<pre><strong>$ aws cloudformation create-stack \</strong><br/><strong>    --capabilities CAPABILITY_IAM \</strong><br/><strong>    --stack-name helloworld-production \</strong><br/><strong>    --template-body file://nodeserver.template \</strong><br/><strong>    --parameters ParameterKey=KeyPair,ParameterValue=EffectiveDevOpsAWS</strong></pre>
+<p>We can then run the following command to wait for the stack to be ready:</p>
+<pre><strong>$ aws cloudformation wait stack-create-complete \</strong><br/><strong>    --stack-name helloworld-production</strong></pre>
+<div class="packt_infobox">You might realize the weakness of our production stack with only one EC2 instance in it. We will address that concern in <a href="c54f64c9-e8a3-4eed-b68d-087ff40f8b1d.xhtml" target="_blank">Chapter 6</a>, <em>Scaling Your Infrastructure,</em> when we talk about scaling strategies.</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Creating a CodeDeploy group to deploy to production</h1>
+                </header>
+            
+            <article>
+                
+<p>Previously, we created a CodeDeploy application and a first deployment group that allowed us to deploy our code to staging. Using the command-line interface, we are now going to add a new deployment group to deploy our code to our newly created production environment.</p>
+<p>One of the parameters needed to add new deployment groups is the <kbd>arn</kbd> of the policy we created initially. We can easily extract this from the staging deployment group that we created previously. We will store the result in a variable called <kbd>arn</kbd>:</p>
+<pre><strong>$ arn=$(aws deploy get-deployment-group \</strong><br/><strong>    --application-name helloworld \</strong><br/><strong>    --deployment-group-name staging \</strong><br/><strong>    --query 'deploymentGroupInfo.serviceRoleArn')</strong></pre>
+<p>We can now run the following command to create the new deployment group:</p>
+<pre><strong>$ aws deploy create-deployment-group \</strong><br/><strong>    --application-name helloworld \</strong><br/><strong>    --ec2-tag-filters Key=aws:cloudformation:stack-             <br/>    name,Type=KEY_AND_VALUE,Value=helloworld-production \</strong><br/><strong>    --deployment-group-name production \</strong><br/><strong>    --service-role-arn $arn</strong></pre>
+<p>If everything went well, the new deployment group should be created. We can verify this by browsing to the application in the AWS CodeDeploy web page or using the command-line with the following command:</p>
+<pre><strong>$ aws deploy list-deployment-groups \</strong><br/><strong>    --application-name helloworld</strong><br/><strong>{</strong><br/><strong>"applicationName": "helloworld", <br/>"deploymentGroups": [</strong><br/><strong>    "staging",<br/>        "production"</strong><br/><strong>]</strong><br/><strong>} </strong></pre>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p class="mce-root"/>
+<p class="mceNonEditable"/>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Adding a continuous delivery step to our pipeline</h1>
+                </header>
+            
+            <article>
+                
+<p>As we saw earlier in this chapter, pipelines are composed of stages. In CodePipeline, stages are characterized by their categories. We have explored three categories so far: source, deploy, and test. In order to add a confirmation step to deploy our service to production, we will use a new category called <strong>approval</strong>.</p>
+<p>Approval actions offer a number of configuration options to send notifications when a job is pending approval. To demonstrate this feature, we are going to create a new SNS topic and subscribe to it. As you might remember from <a href="8a74da7b-0748-4b90-a3bc-58e853e820ec.xhtml">Chapter 3</a>, <em>Treating Your Infrastructure as Code</em>, SNS is the simple notification service that we used to monitor our infrastructure. </p>
+<p>We are going to use the command-line to create a new topic and subscribe to it:</p>
+<pre><strong>$ aws sns create-topic --name production-deploy-approval</strong><br/><strong>{</strong><br/><strong>"TopicArn": "arn:aws:sns:us-east-1:511912822958:production-deploy- approval"</strong><br/><strong>}</strong></pre>
+<p>Here, we will use an email subscription. SNS also supports a number of other protocols such as SMS, HTTP, and SQS. In order to subscribe, you need to know the Topic ARN, which is in the output of the previous command:</p>
+<pre><strong>$ aws sns subscribe --topic-arn \</strong><br/><strong>    arn:aws:sns:us-east-1:511912822958:production-deploy-approval \</strong><br/><strong>    --protocol email \</strong><br/><strong>    --notification-endpoint yogeshraheja07@gmail.com</strong><br/><strong>{</strong><br/><strong>"SubscriptionArn": "pending confirmation"</strong><br/><strong>}</strong> </pre>
+<p>Go to your inbox to confirm the subscription.</p>
+<p>We can now add our new stages, starting with the approval stage:</p>
+<ol>
+<li>Open <a href="https://console.aws.amazon.com/codepipeline">https://console.aws.amazon.com/codepipeline</a> in your browser.</li>
+<li>Select the <kbd>helloworld</kbd> application.</li>
+<li>Click on <kbd>Edit</kbd> at the top of the pipeline.</li>
+<li>Click on the <kbd>+ Stage</kbd> button at the bottom of the pipeline below the Beta stage.</li>
+<li>Give it the name <kbd>Approval</kbd>.</li>
+<li>Click on <span class="packt_screen">+ Action</span><strong>.</strong></li>
+<li>Select <span class="packt_screen">Approval</span> in the <span class="packt_screen">Action Category</span> menu.</li>
+<li>Call the action <span class="packt_screen">Approval</span>.</li>
+</ol>
+<ol start="9">
+<li>Select the approval type <span class="packt_screen">Manual approval</span><strong>.</strong></li>
+<li>Pick the <span class="packt_screen">SNS topic</span> we just created. Typing <kbd>production deploy</kbd> should allow you to find the topic easily thanks to the autocomplete feature of the form.</li>
+<li>Finally, click on <span class="packt_screen">Add action</span>. We are now going to add the deployment to production steps below this approval.</li>
+<li>Click on the <span class="packt_screen">+ Stage</span> button below the newly created stage Approval.</li>
+<li>Call this new stage <span class="packt_screen">Production</span>.</li>
+<li>Click on <span class="packt_screen">+ Action</span>.</li>
+<li>Select the <span class="packt_screen">Deploy</span> category.</li>
+<li>Call the action <span class="packt_screen">Production</span>.</li>
+<li>Select the <span class="packt_screen">CodeDeploy</span> provider.</li>
+<li>Pick <kbd>helloworld</kbd> as our application name.</li>
+<li>Select the deployment group <span class="packt_screen">production</span>.</li>
+<li>Select the artifact <kbd>MyApp</kbd>.</li>
+<li>Click on <span class="packt_screen">Add action</span>.</li>
+<li>Complete the creation of our new stages by clicking on <span class="packt_screen">Save pipeline changes</span> at the top of the pipeline.</li>
+</ol>
+<p>We can once again click on <span class="packt_screen">Release change</span> to test our updated pipeline.</p>
+<p>The pipeline will go through the first three stages and then block at the approval stage. If you check your email inbox, you will find a link where you can review the change. Alternatively, you can simply use the web interface and click on the review button in the approval stage:</p>
+<div class="packt_figure CDPAlignCenter CDPAlign"><img src="assets/cbd25f05-1091-4872-b355-3e1e56661f49.png" style="width:12.50em;height:7.92em;"/></div>
+<p>After carefully reviewing the changes, you can either approve or reject the change. If it is approved, the deployment will continue to the last step of the pipeline and deploy the code to production.</p>
+<p>We have now automated our entire release process. Our <kbd>helloworld</kbd> application may not reflect what a real application might look like, but the pipeline we built around it does. What we built can be used as a blueprint for deploying more complex applications from environment to environment safely. </p>
+<p>There is no question that the ability to move fast and release your new features and services to customers allows you to prevent disruptions. The last step of building a continuous deployment pipeline is to remove the manual approval process to release code to production, thereby taking out the last step involving humans in the release process. Over the years, different companies have come up with a couple of strategies to make production deployments a safe process. In the next section, we will look at some solutions that you can implement.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Strategies to practice continuous deployments in production</h1>
+                </header>
+            
+            <article>
+                
+<p>As always, your first line of defense is to have enough test coverage and sophisticated validation scripts that cover most of the sensitive routes and features in your product. There are some well-known strategies and techniques to make a continuous deployment pipeline safe for production. We will explore three common ones in this section.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Fail fast</h1>
+                </header>
+            
+            <article>
+                
+<p>The pipeline that we built is fairly fast and robust. Depending on the nature of your service, you may choose to trust the quality of the code produced by your team and always deploy the code straight to production. With sufficient monitoring around your logs and application metrics, you will be able to catch issues minutes after the code is deployed. You can then rely on CodeDeploy and its ability to deploy older releases fast to recover from that situation.</p>
+<div class="packt_infobox">If you take this approach and a problem is detected, simply roll back to a previous version. You may know exactly what's wrong and know that it's easy to fix, but the pressure caused by knowing that there is an ongoing issue impacting users can cause you to make more mistakes, making the situation worse.</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Canary deployment</h1>
+                </header>
+            
+            <article>
+                
+<p>Similarly, you could try to deploy your code straight to production, but only expose part of the traffic to the new code for some time. You can build a system where only a small percentage of the traffic hits the new servers that are running the new code and compare the error rate and performance originating from each release for a short period of time. Usually, 10% of the traffic for 10 minutes is sufficient to collect enough information about the quality of the new build. If, after that time, everything looks good, you can then move 100% of the traffic to the new version of the service.</p>
+<p>Bugs such as memory leaks are usually slower to manifest themselves; once the deployment is complete, continue closely monitoring your different systems and key metrics to make sure that no mistakes have been made:</p>
+<div class="CDPAlignCenter CDPAlign"><img src="assets/f553ebcc-786a-4381-8c80-4fc8b2baa3c3.png" style="width:19.75em;height:48.67em;"/></div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Feature flags</h1>
+                </header>
+            
+            <article>
+                
+<p>Also known as a dark launch, this last strategy is the hardest one to implement but also the most valuable. It is used by most well-known tech companies. The idea is to have multiple smart switches on each of your features. When you first deploy the code for a new feature, you do so with those switches turned off. You then progressively turn them on for different subsets of users. You might start by only allowing employees of the company to experience the feature. You might then decide to increase the number of people exposed to that feature by adding a set of trusted users. You might then turn the feature on for 20% of your users, then 50%, and so on. As well as allowing you to do a soft launch, this type of features can be used at the product level to carry out A/B testing, maintenance, where you want to turn off a specific feature, or even load testing.</p>
+<div class="packt_infobox">One of the best uses of a dark launch was summarized in a blog post by Facebook. In 2008, Facebook launched their chat functionality. It was a very challenging feature as it was the first service Facebook developed in Erlang. In order to make sure the service would be able to handle the scale at which Facebook operates, they relied on a dark launch strategy. During the months leading up to the official launch, they simulated what the real traffic could look like by releasing the service without the UI. Real users browsers would establish connections to the chat servers and invisibly send and receive messages to simulate the load. When it was time to launch, Facebook didn't push out new code, but simply turned the switch on to make the chat window visible in the UI. More information about this launch can be found at: <a href="https://www.facebook.com/notes/facebook-engineering/facebook-chat/14218138919/" target="_blank">https://www.facebook.com/notes/facebook-engineering/facebook-cha</a> <a href="https://www.facebook.com/notes/facebook-engineering/facebook-chat/14218138919/">t/14218138919/</a>.<a href="https://www.facebook.com/notes/facebook-engineering/facebook-chat/14218138919/"/></div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Summary</h1>
+                </header>
+            
+            <article>
+                
+<p>In this chapter, we have been through one of the most important aspects of the DevOps philosophy—how to change the way in which code is released.</p>
+<p>Our first objective was to improve developers' productivity. To that effect, we built a continuous integration pipeline. Taking advantage of Jenkins and GitHub, we created a new workflow where developers commit their code in individual branches and submit pull requests. The branches are automatically tested with Jenkins and a final peer review ensures that the code committed is of high quality.</p>
+<div>
+<p>Thanks to this change, we can guarantee that the code present in the master branch of our project is always good and worth being pushed to staging. To do this, we built a continuous deployment pipeline. Thanks to AWS CodeDeploy and CodePipeline, we were able to easily build a fully functional pipeline. The pipeline has all the desired features an operator could wish for. It automatically picks up changes from developers merging their pull requests, creates a package of the new version of the application, stores the package on S3, and then deploys it to staging. As the new code gets deployed, validation steps ensure that the application isn't misbehaving and, if needed, the application can easily be rolled back.</p>
+<p>Once we finished building our continuous deployment pipeline, we extended it to build a continuous delivery capability so that we could carry out production deployment on demand. We also added an extra stage to integrate testing through Jenkins within the pipeline itself. Finally, we discussed different techniques and strategies to have a continuous deployment pipeline for production that will allow us to perform dozens of production deployments a day for any given service.</p>
+<p>Since we started to take a more DevOps approach towards managing our architecture and  services, we haven't looked at the notions of high availability or load balancing. Even in this chapter, we only created one EC2 instance for our production environment. We will address this in <a href="c54f64c9-e8a3-4eed-b68d-087ff40f8b1d.xhtml" target="_blank">Chapter 6</a>, <em>Scaling Your Infrastructure.</em> We will look at tools and services to scale our infrastructure and handle massive amounts of traffic.</p>
+</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Questions</h1>
+                </header>
+            
+            <article>
+                
+<ol>
+<li>What is Continuous Integration, Continuous Deployment and Continuous Delivery?</li>
+<li>What is Jenkins, and how does it help in the SDLC cycle?</li>
+<li>Describe how to build your first continuous deployment pipeline.</li>
+</ol>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    <h1 class="header-title">Further reading</h1>
+                </header>
+            
+            <article>
+                
+<p>Please read the following articles for more information:</p>
+<ul>
+<li><strong>Jenkins Reference</strong>: <a href="https://jenkins.io/" target="_blank">https://jenkins.io/</a></li>
+<li><strong>Mocha Reference</strong>: <a href="https://mochajs.org/" target="_blank">https://mochajs.org/</a></li>
+<li><strong>AWS CodeDeploy Reference</strong>: <a href="https://docs.aws.amazon.com/codedeploy/latest/userguide/welcome.html" target="_blank">https://docs.aws.amazon.com/codedeploy/latest/userguide/welcome.html</a></li>
+</ul>
+<ul>
+<li><strong>AWS CodePipeline Reference</strong>: <a href="https://docs.aws.amazon.com/codepipeline/latest/userguide/welcome.html" target="_blank">https://docs.aws.amazon.com/codepipeline/latest/userguide/welcome.html</a></li>
+<li><strong>Jenkins Reference</strong>: <a href="https://jenkins.io/" target="_blank">https://jenkins.io/</a></li>
+<li><strong>Mocha Reference</strong>: <a href="https://mochajs.org/" target="_blank">https://mochajs.org/</a></li>
+<li><strong>AWS CodeDeploy Reference</strong>: <a href="https://docs.aws.amazon.com/codedeploy/latest/userguide/welcome.html" target="_blank">https://docs.aws.amazon.com/codedeploy/latest/userguide/welcome.html</a></li>
+<li><strong>AWS CodePipeline Reference</strong>: <a href="https://docs.aws.amazon.com/codepipeline/latest/userguide/welcome.html" target="_blank">https://docs.aws.amazon.com/codepipeline/latest/userguide/welcome.html</a></li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    </body></html>

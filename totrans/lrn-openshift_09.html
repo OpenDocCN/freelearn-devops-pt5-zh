@@ -1,0 +1,878 @@
+<html><head></head><body>
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Advanced OpenShift Concepts</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">In the previous chapter, we briefly described basic OpenShift objects such as pods, services, and routes. We also gave you an understanding of how to use namespaces for resource isolation and how to manage users in OpenShift.</p>
+<p class="calibre2">This chapter deals with advanced OpenShift resources, such as <strong class="calibre4">ImageStreams</strong> and <strong class="calibre4">ConfigMaps</strong>, logically continuing on from the previous chapter on OpenShift core concepts. The OpenShift API provides dozens of varied resources to control different aspects of application deployment, security, and so on. For now, we will focus on some of the most important ones.</p>
+<p class="calibre2">After completing this chapter, you will have learned about the following:</p>
+<p class="calibre2"/>
+<p class="calibre2"/>
+<ul class="calibre9">
+<li class="calibre10">Tracking the version history of images using ImageStreams</li>
+<li class="calibre10">Separating configuration from application code using ConfigMaps</li>
+<li class="calibre10">Controlling resource consumption using LimitRanges and ResourceQuotas</li>
+<li class="calibre10">Autoscaling your application depending on CPU and RAM utilization</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Technical requirements</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">In this chapter, we will practice with OpenShift deployed on the VM managed by Vagrant. The last section on auto-scaling requires Hawkular metrics to be enabled, so you will have to install OpenShift with <kbd class="calibre12">openshift_metrics_install_metrics</kbd> Ansible variable. The metrics collector and dashboard are deployed in their own pods, so we will also need to provide the VM with more RAM. Use the following Vagrantfile to deploy the lab:</p>
+<pre class="calibre18"><strong class="calibre1">$ cat Vagrantfile<br class="title-page-name"/></strong>$lab_openshift = &lt;&lt;SCRIPT<br class="title-page-name"/>yum -y update<br class="title-page-name"/>yum install -y epel-release git docker httpd-tools java-1.8.0-openjdk-headless<br class="title-page-name"/>yum install -y ansible python-passlib<br class="title-page-name"/>systemctl start docker<br class="title-page-name"/>systemctl enable docker<br class="title-page-name"/>git clone -b release-3.9 https://github.com/openshift/openshift-ansible /root/openshift-ansible<br class="title-page-name"/>ssh-keygen -f /root/.ssh/id_rsa -N ''<br class="title-page-name"/>cp /root/.ssh/id_rsa.pub /root/.ssh/authorized_keys<br class="title-page-name"/>ssh-keyscan 172.24.0.11 &gt;&gt; .ssh/known_hosts<br class="title-page-name"/>cp .ssh/known_hosts /root/.ssh/known_hosts<br class="title-page-name"/>ssh-copy-id -i /root/.ssh/id_rsa root@172.24.0.11<br class="title-page-name"/>reboot<br class="title-page-name"/>SCRIPT<br class="title-page-name"/><br class="title-page-name"/>Vagrant.configure(2) do |config|<br class="title-page-name"/> config.vm.define "openshift" do |conf|<br class="title-page-name"/> conf.vm.box = "centos/7"<br class="title-page-name"/> conf.vm.hostname = 'openshift.example.com'<br class="title-page-name"/> conf.vm.network "private_network", ip: "172.24.0.11"<br class="title-page-name"/> conf.vm.provider "virtualbox" do |v|<br class="title-page-name"/> v.memory = 6144<br class="title-page-name"/> v.cpus = 2<br class="title-page-name"/> end<br class="title-page-name"/> conf.vm.provision "shell", inline: $lab_openshift<br class="title-page-name"/> end<br class="title-page-name"/>end</pre>
+<p class="calibre2">In order to be able to reach the cluster inside the VM from your host system, make sure file <kbd class="calibre12">/etc/hosts</kbd> on your laptop looks like this:</p>
+<pre class="calibre18"><strong class="calibre1">$ cat /etc/hosts</strong><br class="title-page-name"/>127.0.0.1 localhost openshift localhost.localdomain localhost4 localhost4.localdomain4<br class="title-page-name"/>::1 localhost localhost.localdomain localhost6 localhost6.localdomain6<br class="title-page-name"/><strong class="calibre1">172.24.0.11 openshift.example.com hawkular-metrics.openshift.example.com</strong></pre>
+<p class="calibre2"><span class="calibre11">Run </span><kbd class="calibre12">vagrant up</kbd><span class="calibre11"> and wait until it finishes all the work. It may take up to 30 mins depending on your internet connectivity and compute resources:</span></p>
+<pre class="calibre18"><strong class="calibre1">$ vagrant up</strong><br class="title-page-name"/>Bringing machine 'openshift' up with 'virtualbox' provider...<br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...</pre>
+<p class="calibre2"><span class="calibre11">Once it's done, open SSH session into the </span><span class="calibre11">VM and become root:</span></p>
+<pre class="calibre18"><strong class="calibre1">$ vagrant ssh</strong><br class="title-page-name"/>[vagrant@openshift ~]$<strong class="calibre1"> sudo -i</strong><br class="title-page-name"/>[root@openshift ~]#</pre>
+<p class="calibre2">You can use the following inventory for deploying OpenShift:</p>
+<pre class="calibre18"><strong class="calibre1"># cat /etc/ansible/hosts<br class="title-page-name"/></strong>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...<br class="title-page-name"/>[masters]<br class="title-page-name"/>172.24.0.11<br class="title-page-name"/><br class="title-page-name"/>[nodes]<br class="title-page-name"/>172.24.0.11 openshift_node_labels="{'region': 'infra', 'zone': 'default'}" openshift_schedulable=true<br class="title-page-name"/><br class="title-page-name"/>[etcd]<br class="title-page-name"/>172.24.0.11<br class="title-page-name"/><br class="title-page-name"/>[OSEv3:vars]<br class="title-page-name"/>openshift_deployment_type=origin<br class="title-page-name"/>openshift_disable_check=memory_availability,disk_availability<br class="title-page-name"/>openshift_ip=172.24.0.11<br class="title-page-name"/>ansible_service_broker_install=false<br class="title-page-name"/>openshift_master_cluster_hostname=172.24.0.11<br class="title-page-name"/>openshift_master_cluster_public_hostname=openshift.example.com<br class="title-page-name"/>openshift_hostname=172.24.0.11<br class="title-page-name"/>openshift_public_hostname=openshift.example.com<br class="title-page-name"/><strong class="calibre1">openshift_metrics_install_metrics=true<br class="title-page-name"/>openshift_metrics_image_version=v3.9</strong><br class="title-page-name"/>openshift_master_default_subdomain=openshift.example.com<br class="title-page-name"/><br class="title-page-name"/>[OSEv3:children]<br class="title-page-name"/>masters<br class="title-page-name"/>nodes<br class="title-page-name"/>etcd</pre>
+<div class="packt_infobox">Notice that we have specified <kbd class="calibre26">openshift_metrics_install_metrics</kbd> variable to configure metrics for the section on autoscaling.<br class="title-page-name"/>
+<br class="title-page-name"/>
+As of the time of writing, metrics image hasn't been tagged with the correct version yet, so we had to provide <kbd class="calibre26">openshift_metrics_image_version</kbd> variable as well to prevent metrics pods going into <kbd class="calibre26">ImagePullBackOff</kbd> state. More details at <a href="https://github.com/openshift/origin/issues/19440" class="calibre6">https://github.com/openshift/origin/issues/19440</a>.</div>
+<p class="calibre2"/>
+<p class="calibre2"/>
+<p class="calibre2">Now, it's time to install OpenShift:</p>
+<pre class="calibre18"><strong class="calibre1"># cd openshift-ansible</strong><br class="title-page-name"/><strong class="calibre1"># ansible-playbook playbooks/prerequisites.yml</strong><br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...<br class="title-page-name"/><strong class="calibre1"># ansible-playbook playbooks/deploy_cluster.yml</strong><br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>..</pre>
+<div class="title-page-name">
+<p class="calibre2">Log in as an unprivileged user:</p>
+<pre class="calibre18"><strong class="calibre1"># oc login -u alice<br class="title-page-name"/></strong>Username:<strong class="calibre1"> alice</strong><br class="title-page-name"/>Password:<strong class="calibre1"> anypassword</strong><br class="title-page-name"/>Login successful.</pre>
+<div class="packt_infobox">Remeber that since this time we didn't configure identity provider explicitly, OpenShift defaults to AllowAll, so we can use any password.</div>
+<p class="calibre2">Next, create a dedicated project for our lab:</p>
+</div>
+<pre class="calibre18"><strong class="calibre1"># oc new-project advanced</strong><br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...</pre>
+<p class="calibre2">Log in back as <kbd class="calibre12">system:admin</kbd>:</p>
+<pre class="calibre18"><strong class="calibre1"># oc login -u system:admin<br class="title-page-name"/></strong>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...</pre>
+<div class="title-page-name">
+<p class="calibre2">Next, we will need to run the following command:</p>
+<pre class="calibre18"><strong class="calibre1"># </strong><strong class="calibre1">oc adm policy add-scc-to-user anyuid -z default</strong><br class="title-page-name"/>scc "anyuid" added to: ["system:serviceaccount:advanced:default"]</pre>
+<div class="packt_infobox"><span>We have not discussed the concept behind the command above yet, but at this point it suffices to understand that it relaxes permissions imposed by OpenShift on pods. The concept is known as <strong class="calibre1">Security Context Constraint</strong> (<strong class="calibre1">SCC</strong>) and is discussed more thoroughly in <a href="" target="_blank" class="calibre6">Chapter 10</a>, <em class="calibre28">Security in OpenShift</em>, </span><span>section <em class="calibre28">Security context constraints</em></span><span>.<br class="title-page-name"/></span></div>
+<p class="calibre2">Finally, log back in as <kbd class="calibre12">alice</kbd>:</p>
+<pre class="calibre18"><strong class="calibre1"># oc login -u alice</strong></pre></div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Tracking the version history of images using ImageStreams</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">Certain OpenShift resources, such as pods, deployments, DeploymentConfigs, ReplicationControllers, and ReplicaSets reference Docker images for deploying containers. Instead of referencing images directly, the common approach is to reference them through image streams, which serve as a layer of indirection between the internal/external repository and client resources, creating a virtual view of available images.</p>
+<div class="packt_infobox">In the official documentation and some blogs, you may come across comparing image streams to repositories. While it's true in the sense that resources reference images in image streams just like in repositories, this analogy lacks clarity; image streams don't store anything by themselves and are only abstractions for image management. So, in this chapter, we will talk of them as virtual views to give you a more accurate idea of what they actually are.</div>
+<p class="calibre2">Using image streams has the following advantages:</p>
+<ul class="calibre9">
+<li class="calibre10">Your application won't break unexpectedly if the upstream image's update introduced errors, because the image stream tags your pod points so that it will still be mapped to the working version of the image, effectively protecting you from outages</li>
+<li class="calibre10">Image-change triggers and periodic reimports of the image can be configured at the image stream's level</li>
+</ul>
+<p class="calibre2">You more than likely won't have to create ImageStreams from scratch, but it's important to understand their structure in order to understand their functions.</p>
+<p class="calibre2">Minishift and OpenShift, when installed by Ansible, include default image streams for some of the most popular images, such as PostgreSQL, HTTPD, and Python. They reside in the <kbd class="calibre12">openshift</kbd> project:</p>
+<pre class="calibre18"><strong class="calibre1"># oc get is -n openshift</strong><br class="title-page-name"/>NAME        DOCKER REPO                                            ...<br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...<br class="title-page-name"/>mongodb     docker-registry.default.svc:5000/openshift/mongodb     ...<br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...</pre>
+<p class="calibre2">In order to see what the words indirection layer from the beginning of this section mean, let's take a closer look at the <kbd class="calibre12">mongodb</kbd> image stream:</p>
+<pre class="calibre18"><strong class="calibre1"># oc describe is/mongodb -n openshift</strong><br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...<br class="title-page-name"/>Unique Images:   3<br class="title-page-name"/>Tags:            4<br class="title-page-name"/><br class="title-page-name"/>3.2 (latest)<br class="title-page-name"/>  tagged from centos/mongodb-32-centos7:latest<br class="title-page-name"/><br class="title-page-name"/>  Provides a MongoDB 3.2 database on CentOS 7. For more information about using this database image, including OpenShift considerations, see https://github.com/sclorg/mongodb-container/tree/master/3.2/README.md.<br class="title-page-name"/>  Tags: mongodb<br class="title-page-name"/><br class="title-page-name"/>  * centos/mongodb-32-centos7@sha256:d4dc006a25db1423caed1dcf0f253f352dbbe0914c20949a6302ccda55af72b1<br class="title-page-name"/>      22 hours ago<br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...</pre>
+<p class="calibre2">Image streams use a particular notation to reference images in repositories. Let's take a reference from the preceding example and break it down:</p>
+<pre class="calibre18"><strong class="calibre1">centos/mongodb-32-centos7@sha256:d4dc006a25db1423caed1dcf0f253f352dbbe0914c20949a6302ccda55af72b1</strong></pre>
+<p class="calibre2">The preceding image references have the following structure:</p>
+<ul class="calibre9">
+<li class="calibre10"><kbd class="calibre12">centos/mongodb-32-centos7</kbd>: Path to the image in the Docker repository</li>
+<li class="calibre10"><kbd class="calibre12">sha256</kbd>: Indicates that the image identifier is generated using the SHA256 hash algorithm</li>
+<li class="calibre10"><kbd class="calibre12">d4dc006a25db1423caed1dcf0f253f352dbbe0914c20949a6302ccda55af72b1</kbd>: The image hash/ID itself</li>
+</ul>
+<p class="calibre2">ImageStreams are not useful by themselves and only exist to support the life cycle of applications. They are usually created behind the scenes in the following scenarios:</p>
+<ul class="calibre9">
+<li class="calibre10">Creating applications from S2I builds</li>
+<li class="calibre10">Importing images</li>
+<li class="calibre10">Creating applications directly from Docker images</li>
+<li class="calibre10">Manually pushing images into the internal registry</li>
+</ul>
+<p class="calibre2">Since S2I builds will be discussed further in this book, we will consider three other methods.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Importing images</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">Image streams can be created by importing images from external registries in the internal registry:</p>
+<pre class="calibre18"><strong class="calibre1"># oc import-image nginx --confirm</strong><br class="title-page-name"/>The import completed successfully.<br class="title-page-name"/><br class="title-page-name"/>Name: nginx<br class="title-page-name"/>Namespace: advanced<br class="title-page-name"/>Created: Less than a second ago<br class="title-page-name"/>Labels: &lt;none&gt;<br class="title-page-name"/>Annotations: openshift.io/image.dockerRepositoryCheck=2018-07-18T20:02:07Z<br class="title-page-name"/><strong class="calibre1">Docker Pull Spec: docker-registry.default.svc:5000/advanced/nginx</strong><br class="title-page-name"/>Image Lookup: local=false<br class="title-page-name"/>Unique Images: 1<br class="title-page-name"/>Tags: 1<br class="title-page-name"/><br class="title-page-name"/>latest<br class="title-page-name"/>  tagged from nginx<br class="title-page-name"/><br class="title-page-name"/>  * nginx@sha256:42e8199b5eb4a9e4896308cabc547740a0c9fc1e1a1719abf31cd444d426fbc8<br class="title-page-name"/>      Less than a second ago<br class="title-page-name"/><br class="title-page-name"/>Image Name: nginx:latest<br class="title-page-name"/>Docker Image: nginx@sha256:42e8199b5eb4a9e4896308cabc547740a0c9fc1e1a1719abf31cd444d426fbc8<br class="title-page-name"/>Name: sha256:42e8199b5eb4a9e4896308cabc547740a0c9fc1e1a1719abf31cd444d426fbc8<br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...</pre>
+<p class="calibre2">You can see from the preceding output that the Nginx image was uploaded into the internal registry at</p>
+<p class="calibre2"><kbd class="calibre12">docker-registry.default.svc:5000/advanced/nginx</kbd>. As you will also notice, its name corresponds to the image reference structure we provided earlier.</p>
+<p class="calibre2">Let's delete the image stream to provide a clean slate for the next exercise:</p>
+<pre class="calibre18"><strong class="calibre1"># oc delete is/nginx</strong><br class="title-page-name"/>imagestream "nginx" deleted</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Creating applications directly from Docker images</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">Another way to create an image stream is to use the <kbd class="calibre12">new-app</kbd> command to create an application from a ready-to-use Docker image:</p>
+<pre class="calibre18"><strong class="calibre1"># oc new-app gists/lighttpd</strong><br class="title-page-name"/>--&gt; Found Docker image cd7b707 (11 days old) from Docker Hub for "gists/lighttpd"<br class="title-page-name"/><br class="title-page-name"/>    * An image stream will be created as "lighttpd:latest" that will track this image<br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...</pre>
+<div class="packt_infobox">Lighttpd is yet another web server, like Nginx or Apache. We used it in this example, because both Nginx and Apache image streams are supplied with OpenShift out-of-the-box.</div>
+<p class="calibre2">This creates a number of resources, one of which is an image stream.</p>
+<p class="calibre2">If you <kbd class="calibre12">describe</kbd> the newly created deployment config, you will see that it actually references the image stream, not the image itself:</p>
+<pre class="calibre18"><strong class="calibre1"># oc describe dc/lighttpd</strong><br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...<br class="title-page-name"/>  Containers:<br class="title-page-name"/>   lighttpd:<br class="title-page-name"/>    Image: gists/lighttpd@sha256:23c7c16d3c294e6595832dccc95c49ed56a5b34e03c8905b6db6fb8d66b8d950<br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...</pre>
+<p class="calibre2">In the preceding example, DeploymentConfig references a Lighttpd server image in the image stream according to the following scheme:</p>
+<ul class="calibre9">
+<li class="calibre10"><kbd class="calibre12">gists/lighttpd</kbd>: Image stream name</li>
+<li class="calibre10"><kbd class="calibre12">sha256</kbd>: Indicates that the image identifier is generated using the SHA256 hash algorithm</li>
+<li class="calibre10"><kbd class="calibre12">23c7c16d3c294e6595832dccc95c49ed56a5b34e03c8905b6db6fb8d66b8d950</kbd>: The image hash/ID itself</li>
+</ul>
+<p class="calibre2">This is how deployment configs and replication controllers usually reference images in OpenShift.</p>
+<p class="calibre2">Again, let's clean up the environment:</p>
+<pre class="calibre18"><strong class="calibre1"># oc delete all --all</strong><br class="title-page-name"/>deploymentconfig "lighttpd" deleted<br class="title-page-name"/>imagestream "lighttpd" deleted<br class="title-page-name"/>pod "lighttpd-1-hqjfg" deleted<br class="title-page-name"/>service "lighttpd" deleted</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Manually pushing images into the internal registry</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">The last method of creating image streams we will discuss is pushing images directly into the OpenShift internal registry.</p>
+<p class="calibre2"/>
+<p class="calibre2">Log in as <kbd class="calibre12">alice</kbd> unprivileged account, if you haven't already done so:</p>
+<pre class="calibre18"><strong class="calibre1"># oc login -u alice</strong></pre>
+<p class="calibre2">Then, run the following command to login to the internal registry:</p>
+<pre class="calibre18"><strong class="calibre1"># docker login -u $(oc whoami) -p $(oc whoami -t) docker-registry.default.svc:5000<br class="title-page-name"/></strong>Login Succeeded</pre>
+<p class="calibre2">In the preceding command, we used a bash feature called <strong class="calibre4">command expansion</strong>, which allowed us to supply the <kbd class="calibre12">login</kbd> command with the username, password/token, and registry <kbd class="calibre12">IP:port</kbd>, from left to right. You can run all these commands (<kbd class="calibre12">oc whoami</kbd> and <kbd class="calibre12">oc whoami -t</kbd>) separately to see what output they provide.</p>
+<p class="calibre2">Now that we are authenticated in the internal registry, we can push images into it directly, as if it were a general Docker registry. Let's see what we have in our OpenShift internal registry:</p>
+<pre class="calibre18"><strong class="calibre1"># docker images</strong><br class="title-page-name"/>REPOSITORY     TAG     IMAGE ID        CREATED                 SIZE<br class="title-page-name"/>docker.io/cockpit/kubernetes latest 110aeeca4b8c 7 days ago     425 MB<br class="title-page-name"/>docker.io/centos/nginx-112-centos7 &lt;none&gt; b6923820bf5b 7 days ago     313 MB<br class="title-page-name"/>docker.io/gists/lighttpd &lt;none&gt;  cd7b7073c0fc  11 days ago    12.1 MB<br class="title-page-name"/>docker.io/openshift/origin-web-console v3.9.0  aa12a2fc57f7      3 weeks ago    495 MB<br class="title-page-name"/>docker.io/openshift/origin-docker-registry v3.9.0  8e6f7a854d66  3 weeks ago    465 MB<br class="title-page-name"/>docker.io/openshift/origin-haproxy-router v3.9.0  448cc9658480   3 weeks ago    1.28 GB<br class="title-page-name"/>docker.io/openshift/origin-deployer v3.9.0 39ee47797d2e 3 weeks ago 1.26 GB<br class="title-page-name"/>docker.io/openshift/origin-service-catalog v3.9.0  96cf7dd047cb  3 weeks ago    296 MB<br class="title-page-name"/>docker.io/openshift/origin-template-service-broker v3.9.0  be41388b9fcb  3 weeks ago    308 MB<br class="title-page-name"/>docker.io/openshift/origin-pod v3.9.0  6e08365fbba9  3 weeks ago    223 MB<br class="title-page-name"/>docker.io/sebp/lighttpd &lt;none&gt;  6b681cc70957  20 months ago  8.53 MB</pre>
+<p class="calibre2">Let's delete the Lighttpd image left over from the previous exercise:</p>
+<pre class="calibre18"><strong class="calibre1"># </strong><strong class="calibre1">docker rmi cd7b7073c0fc</strong><br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...</pre>
+<p class="calibre2">Now use the same Lighttpd image, as in the previous subsection:</p>
+<pre class="calibre18"><strong class="calibre1"># docker pull gists/lighttpd<br class="title-page-name"/></strong>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...<br class="title-page-name"/>Status: Downloaded newer image for docker.io/gists/lighttpd:latest<strong class="calibre1"><br class="title-page-name"/></strong></pre>
+<p class="calibre2">Tag it with the registry's address and port included in the tag:</p>
+<pre class="calibre18"><strong class="calibre1"># docker tag docker.io/gists/lighttpd docker-registry.default.svc:5000/advanced/lighttpd</strong></pre>
+<div class="packt_infobox">We used the name of the project to create the image stream as part of the path to the image in the registry because the token we used grants developer user permission to create image streams in the <kbd class="calibre26">myproject</kbd> project only. OpenShift expects us to find images in particular locations so that it can create image streams from images.</div>
+<p class="calibre2">Let's see if the image with both tags referencing it is there:</p>
+<pre class="calibre18"><strong class="calibre1"># docker images</strong><br class="title-page-name"/>REPOSITORY    TAG   IMAGE  ID                                          ...<br class="title-page-name"/>docker-registry.default.svc:5000/advanced/lighttpd latest cd7b7073c0fc ...<br class="title-page-name"/>docker.io/gists/lighttpd                           latest cd7b7073c0fc ...<br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...</pre>
+<p class="calibre2">Finally, we need to push the image into the repository:</p>
+<pre class="calibre18"><strong class="calibre1"># docker push docker-registry.default.svc:5000/advanced/lighttpd</strong><br class="title-page-name"/>The push refers to a repository [docker-registry.default.svc:5000/advanced/lighttpd]<br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...</pre>
+<p class="calibre2">Now verify that the <kbd class="calibre12">lighttpd</kbd> image stream was created in OpenShift:</p>
+<pre class="calibre18"><strong class="calibre1"># oc get is</strong><br class="title-page-name"/>NAME     DOCKER REPO                                        TAGS   UPDATED<br class="title-page-name"/>lighttpd docker-registry.default.svc:5000/advanced/lighttpd latest 15 minutes ago</pre>
+<p class="calibre2">As expected, the image stream was created.</p>
+<p class="calibre2">Just as before, we need to delete everything before going on to the next section:</p>
+<pre class="calibre18"><strong class="calibre1">$ oc delete is/lighttpd</strong><br class="title-page-name"/>imagestream "lighttpd" deleted</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Separating configuration from application code using ConfigMaps</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">The ConfigMap resource is used to separate data from a pod running an application. These kinds of resource contain arbitrary data to be injected into a pod as configuration. Injection in this context means that the pod can use it in the following ways:</p>
+<ul class="calibre9">
+<li class="calibre10">Export its key/value pairs as environment variables</li>
+<li class="calibre10">Supply its values as command-line arguments to the application</li>
+<li class="calibre10">Mount it as a volume inside the pod to the location where the application expects to find its configuration file</li>
+</ul>
+<p class="calibre2">Before you begin, make sure you are logged in as an unprivileged user for the most representative experience:</p>
+<pre class="calibre18"><strong class="calibre1"># oc login -u alice</strong></pre>
+<p class="calibre2">Let's look at the process of exporting ConfigMap as an environment variable into a container. First, we have to create ConfigMap itself from a list of environment variables:</p>
+<pre class="calibre18"><strong class="calibre1"># cat example.env</strong> <br class="title-page-name"/>VAR_1=Hello<br class="title-page-name"/>VAR_2=World<br class="title-page-name"/><br class="title-page-name"/><strong class="calibre1"># oc create cm example-config-map --from-env-file=example.env</strong><br class="title-page-name"/>configmap "example-config-map" created</pre>
+<p class="calibre2">Use the following command to see what the actual resource looks like:</p>
+<pre class="calibre18"><strong class="calibre1"># oc describe configmap/example-config-map</strong><br class="title-page-name"/>Name: example-config-map<br class="title-page-name"/>Namespace: advanced<br class="title-page-name"/>Labels: &lt;none&gt;<br class="title-page-name"/>Annotations: &lt;none&gt;<br class="title-page-name"/><br class="title-page-name"/>Data<br class="title-page-name"/>====<br class="title-page-name"/>VAR_1:<br class="title-page-name"/>----<br class="title-page-name"/>Hello<br class="title-page-name"/>VAR_2:<br class="title-page-name"/>----<br class="title-page-name"/>World<br class="title-page-name"/>Events: &lt;none&gt;</pre>
+<p class="calibre2">Now we are ready to inject it into a pod. Create a simple <kbd class="calibre12">Pod</kbd> definition that references the newly created ConfigMap:</p>
+<pre class="calibre18"><strong class="calibre1"># cat example-pod-1.yml</strong> <br class="title-page-name"/>apiVersion: v1<br class="title-page-name"/>kind: Pod<br class="title-page-name"/>metadata:<br class="title-page-name"/>  name: example<br class="title-page-name"/>spec:<br class="title-page-name"/>  containers:<br class="title-page-name"/>    - name: example<br class="title-page-name"/>      image: cirros<br class="title-page-name"/>      command: ["/bin/sh", "-c", "env"]<br class="title-page-name"/>      envFrom:<br class="title-page-name"/>        - configMapRef:<br class="title-page-name"/>            name: example-config-map</pre>
+<p class="calibre2">And create the pod using the preceding definition:</p>
+<pre class="calibre18"><strong class="calibre1"># oc create -f example-pod-1.yml</strong><br class="title-page-name"/>pod "example" created</pre>
+<div class="packt_infobox">As you learned in <a target="_blank" href="part0071.html#23MNU0-78aafb146b304cdeb9b3261a70edabde" class="calibre6">Chapter 2</a>, <em class="calibre28">Kubernetes Overview</em>, OpenShift supports YAML and JSON notations for resource definitions; in this book, we rely primarily on the former. As a reminder of the YAML syntax, you can refer to the link at <a href="http://www.yaml.org/start.html" target="_blank" class="calibre6">http://www.yaml.org/start.html</a>.<br class="title-page-name"/>
+No matter if you use YAML or JSON, the OpenShift REST API supports very specific fields that vary between resource types and are documented in <a href="https://docs.openshift.org/latest/rest_api/api/" target="_blank" class="calibre6">https://docs.openshift.org/latest/rest_api/api/</a>.</div>
+<p class="calibre2">Since the command is a simple Linux command, <kbd class="calibre12">env</kbd>, not a process or listening server of any kind, the pod exits right after it's completed, but you can still see its logs:</p>
+<pre class="calibre18"><strong class="calibre1"># </strong><strong class="calibre1">oc logs po/example</strong><br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...<br class="title-page-name"/>VAR_1=Hello<br class="title-page-name"/>VAR_2=World</pre>
+<p class="calibre2">As you can see, the two environment variables we defined in ConfigMap were successfully injected into the container. If we were to run an application inside our container, it could read them.</p>
+<p class="calibre2">The same method can be used to supply these variables as command-line arguments to the container command. First, let's delete the old pod:</p>
+<pre class="calibre18"><strong class="calibre1"># oc delete po/example</strong><br class="title-page-name"/>pod "example" deleted</pre>
+<p class="calibre2">Then, create a new pod definition so that you can use the variables as command-line arguments to echo the command:</p>
+<pre class="calibre18"><strong class="calibre1"># cat example-pod-2.yml</strong><br class="title-page-name"/>apiVersion: v1<br class="title-page-name"/>kind: Pod<br class="title-page-name"/>metadata:<br class="title-page-name"/>  name: example2<br class="title-page-name"/>spec:<br class="title-page-name"/>  containers:<br class="title-page-name"/>    - name: example2<br class="title-page-name"/>      image: cirros<br class="title-page-name"/>      command: ["/bin/sh", "-c", "echo ${VAR_1} ${VAR_2}"]<br class="title-page-name"/>      envFrom:<br class="title-page-name"/>        - configMapRef:<br class="title-page-name"/>            name: example-config-map</pre>
+<p class="calibre2">Now, create a container from the updated definition:</p>
+<pre class="calibre18"><strong class="calibre1"># oc create -f example-pod-2.yml</strong><br class="title-page-name"/>pod "example2" created</pre>
+<p class="calibre2">As we mentioned previously, the container will exit right after the command returns, but its logs will contain the output of the command, constructed of two variables from our ConfigMap:</p>
+<pre class="calibre18"><strong class="calibre1"># oc logs po/example2</strong><br class="title-page-name"/>Hello World</pre>
+<p class="calibre2">Lastly, we will walk-through mounting ConfigMap as a configuration file into a pod. Again, let's delete the pod from the previous exercise:</p>
+<pre class="calibre18"><strong class="calibre1"># oc delete po/example2</strong><br class="title-page-name"/>pod "example2" deleted</pre>
+<p class="calibre2">In this example, we will supply the Nginx web server with our custom configuration file, which will make its default virtual host listen on port <kbd class="calibre12">8888</kbd> instead of <kbd class="calibre12">80</kbd>. Here's the simple configuration to achieve that:</p>
+<pre class="calibre18"><strong class="calibre1"># cat nginx_custom_default.conf</strong> <br class="title-page-name"/>server {<br class="title-page-name"/>    listen       8888;<br class="title-page-name"/>    server_name  localhost;<br class="title-page-name"/>    location / {<br class="title-page-name"/>        root   /usr/share/nginx/html;<br class="title-page-name"/>        index  index.html index.htm;<br class="title-page-name"/>    }<br class="title-page-name"/>}</pre>
+<p class="calibre2">Now, let's go ahead and create a ConfigMap from this configuration:</p>
+<pre class="calibre18"><strong class="calibre1"># oc create cm nginx --from-file nginx_custom_default.conf</strong> <br class="title-page-name"/>configmap "nginx" created</pre>
+<p class="calibre2">If we take a look at the raw resource definition of this ConfigMap, we will see the following:</p>
+<pre class="calibre18"><strong class="calibre1"># oc export configmap/nginx</strong><br class="title-page-name"/>apiVersion: v1<br class="title-page-name"/>data:<br class="title-page-name"/> <strong class="calibre1"> nginx_custom_default.conf</strong>: |<br class="title-page-name"/>    server {<br class="title-page-name"/>        listen 8888;<br class="title-page-name"/>        server_name localhost;<br class="title-page-name"/>        location / {<br class="title-page-name"/>            root /usr/share/nginx/html;<br class="title-page-name"/>            index index.html index.htm;<br class="title-page-name"/>        }<br class="title-page-name"/>    }<br class="title-page-name"/>kind: ConfigMap<br class="title-page-name"/>metadata:<br class="title-page-name"/>  creationTimestamp: null<br class="title-page-name"/>  name: nginx</pre>
+<p class="calibre2">As you can see, the entire contents of the configuration file was inserted as value into the config map definition with the key <kbd class="calibre12">nginx_custom_default.conf</kbd>, which can be used to reference the configuration in a pod.</p>
+<p class="calibre2">Now it's time to create a pod that will use this ConfigMap. Create yet another pod definition with the following structure:</p>
+<pre class="calibre18"><strong class="calibre1"># cat example-pod-3.yml</strong> <br class="title-page-name"/>apiVersion: v1<br class="title-page-name"/>kind: Pod<br class="title-page-name"/>metadata:<br class="title-page-name"/>  name: example3<br class="title-page-name"/>  labels:<br class="title-page-name"/>    role: web<br class="title-page-name"/>spec:<br class="title-page-name"/>  containers:<br class="title-page-name"/>  - name: example3<br class="title-page-name"/>    image: nginx<br class="title-page-name"/>    volumeMounts:<br class="title-page-name"/>    - name: conf<br class="title-page-name"/>      mountPath: /etc/nginx/conf.d<br class="title-page-name"/>  volumes:<br class="title-page-name"/>  - name: conf<br class="title-page-name"/>    configMap:<br class="title-page-name"/>      name: nginx<br class="title-page-name"/>      items:<br class="title-page-name"/>      - key: nginx_custom_default.conf<br class="title-page-name"/>        path: default.conf</pre>
+<div class="packt_infobox">You can specify a path parameter in <kbd class="calibre26">configMap.items</kbd> to provide the name for the file that the configuration will be stored in. Had we not done that in the preceding example, the file name would have been the same as the key from the <kbd class="calibre26">configMap–nginx_custom_default.conf</kbd>. We must specify the label for our pod in order to be able to create a service for it later on.</div>
+<p class="calibre2">Let's create the pod now:</p>
+<pre class="calibre18"><strong class="calibre1"># oc create -f example-pod-3.yml</strong> <br class="title-page-name"/>pod "example3" created</pre>
+<p class="calibre2">In order to see whether the server listens on the port specified in the ConfigMap, we could open a bash session inside the pod and see if the configuration file is in place, but let's use a better way that will let us practice with OpenShift resources more.</p>
+<p class="calibre2">We will need to create a service for this pod and then expose it. First, create a service:</p>
+<pre class="calibre18"><strong class="calibre1"># oc expose po/example3 --port 8888</strong><br class="title-page-name"/>service "example3" exposed</pre>
+<div class="packt_tip">We had to explicitly specify the port in the command because we didn't provide it in the <kbd class="calibre26">containerPort</kbd> parameter in the pod's definition.</div>
+<p class="calibre2">Then expose the service itself through <kbd class="calibre12">route</kbd>:</p>
+<pre class="calibre18"><strong class="calibre1"># oc expose svc/example3</strong><br class="title-page-name"/>route "example3" exposed<br class="title-page-name"/><strong class="calibre1"># oc get route</strong><br class="title-page-name"/>... example3-advanced.openshift.example.com ...</pre>
+<p class="calibre2">Finally, we can use the <kbd class="calibre12">curl</kbd> command to request a default web page from the server's default virtual host:</p>
+<pre class="calibre18"><strong class="calibre1"># curl -H 'Host: example3-advanced.openshift.example.com' 127.0.0.1</strong><br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...<br class="title-page-name"/>&lt;title&gt;Welcome to nginx!&lt;/title&gt;<br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...</pre>
+<div class="packt_infobox">We could have created a separate record for the route above in <kbd class="calibre26">/etc/hosts</kbd>, pointing to <kbd class="calibre26">127.0.0.1</kbd>, but in order to keep the environment as clean as possible, it's a good practice to use <kbd class="calibre26">Host</kbd> HTTP header instead to select a particular application.</div>
+<p class="calibre2">The preceding output indicates that Nginx indeed listens on port <kbd class="calibre12">8888/tcp</kbd>, as specified in the ConfigMap. This concludes our exercise with ConfigMaps, so let's clean up our lab:</p>
+<pre class="calibre18"><strong class="calibre1">$ oc delete all --all</strong><br class="title-page-name"/>route "example3" deleted<br class="title-page-name"/>pod "example3" deleted<br class="title-page-name"/>service "example3" deleted<strong class="calibre1"><br class="title-page-name"/></strong><br class="title-page-name"/><strong class="calibre1">$ oc delete configmap --all<br class="title-page-name"/></strong>configmap "example-config-map" deleted<br class="title-page-name"/>configmap "nginx" deleted<strong class="calibre1"><br class="title-page-name"/></strong></pre>
+<div class="packt_infobox">ConfigMaps are not considered similar to other resources such as pods or services and must be deleted separately.</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Controlling resource consumption using ResourceQuotas</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">One of the main ideas behind OpenShift projects in multi-tenant environments is the need to limit resource consumption at a more granular level than just a whole cluster, providing operations with the ability to scope such limitations to organizations and departments.</p>
+<p class="calibre2">OpenShift provides two mechanisms for setting limits on resource consumption in a cluster:</p>
+<ul class="calibre9">
+<li class="calibre10"><kbd class="calibre12">ResourceQuota</kbd></li>
+<li class="calibre10"><kbd class="calibre12">LimitRanges</kbd></li>
+</ul>
+<p class="calibre2">This section is dedicated solely to ResourceQuotas. LimitRanges will be discussed in the next section.</p>
+<p class="calibre2">ResourceQuota can be used to control the number of API resources that can be created, or the amount of CPU, memory, and storage consumed by pods in the same project the quotas were defined in. Essentially, they determine the capacity of a project. ResourceQuotas allows you to control the following types of resources:</p>
+<ul class="calibre9">
+<li class="calibre10">Pods</li>
+<li class="calibre10">ReplicationControllers</li>
+<li class="calibre10">Services</li>
+<li class="calibre10">Secrets</li>
+<li class="calibre10">ResourceQuotas</li>
+<li class="calibre10">ConfigMaps</li>
+<li class="calibre10">ImageStreams</li>
+<li class="calibre10">PersistentVolumeClaims</li>
+<li class="calibre10"><kbd class="calibre12">requests.storage</kbd></li>
+<li class="calibre10">cpu</li>
+<li class="calibre10">memory</li>
+<li class="calibre10">ephemeral-storage</li>
+<li class="calibre10">limits.ephemeral-storage</li>
+<li class="calibre10"><kbd class="calibre12">limits.cpu</kbd></li>
+<li class="calibre10"><kbd class="calibre12">limits.memory</kbd></li>
+</ul>
+<div class="packt_infobox">If CPU/memory or <kbd class="calibre26">limits.cpu</kbd>/<kbd class="calibre26">limits.memory</kbd> are managed by quotas, then all pods in the same project must specify requests/limits for the respective computing resources.</div>
+<p class="calibre2">In the context of quotas, all pods belong to the following scopes, to which quotas can be applied and that scope a certain set of resources:</p>
+<table border="1" class="calibre22">
+<tbody class="calibre23">
+<tr class="calibre24">
+<td class="calibre35"><strong class="calibre1">Scope</strong></td>
+<td class="calibre36"><strong class="calibre1">Description</strong></td>
+<td class="calibre37"><strong class="calibre1">Managed resources</strong></td>
+</tr>
+<tr class="calibre24">
+<td class="calibre35"><kbd class="calibre12">BestEffort</kbd></td>
+<td class="calibre36">Applies to all pods running with BestEffort quality of service, which means pods that have equal requests and limits for CPU, memory, or both. These pods can claim any resources they need, but they are most likely to be killed when nodes they run on are low on memory.</td>
+<td class="calibre37">
+<ul class="calibre9">
+<li class="calibre10">Pods</li>
+</ul>
+</td>
+</tr>
+<tr class="calibre24">
+<td class="calibre35"><kbd class="calibre12">NotBestEffort</kbd></td>
+<td class="calibre36">Applies to all pods running without BestEffort quality of service.</td>
+<td rowspan="3" class="calibre37">
+<ul class="calibre9">
+<li class="calibre10">Pods</li>
+<li class="calibre10">CPU</li>
+<li class="calibre10"><kbd class="calibre12">limits.cpu</kbd></li>
+<li class="calibre10">memory</li>
+<li class="calibre10">ephemeral-storage</li>
+<li class="calibre10">limits.ephemeral-storage</li>
+<li class="calibre10"><kbd class="calibre12">limits.memory</kbd></li>
+</ul>
+</td>
+</tr>
+<tr class="calibre24">
+<td class="calibre35"><kbd class="calibre12">Terminating</kbd></td>
+<td class="calibre36">Applies to all pods deployed by jobs with <kbd class="calibre12">spec.activeDeadlineSeconds &gt;= 0</kbd>, which means, for example, build pods that get deployed during S2I builds.</td>
+</tr>
+<tr class="calibre24">
+<td class="calibre35"><kbd class="calibre12">NotTerminating</kbd></td>
+<td class="calibre36">Applies to all pods deployed by jobs with <kbd class="calibre12">spec.activeDeadlineSeconds</kbd> is nil, which means the usual pods with applications.</td>
+</tr>
+</tbody>
+</table>
+<p class="calibre2"> </p>
+<p class="calibre2">Now, let's see how to create quotas for a project. Like any other resource, they can be created through an API, but you can also use CLI, which is what we are going to do. Let's switch back to <kbd class="calibre12">system:admin</kbd> user since managing quotas requires admin privileges:</p>
+<pre class="calibre18"><strong class="calibre1"># oc login -u system:admin<br class="title-page-name"/></strong></pre>
+<p class="calibre2">Then we will be able to create our first quota:</p>
+<pre class="calibre18"><strong class="calibre1"># oc create quota my-quota \<br class="title-page-name"/>--hard=cpu=500m,memory=256Mi,pods=1,resourcequotas=1</strong><br class="title-page-name"/>resourcequota "my-quota" created</pre>
+<p class="calibre2">As you can see, the quota was successfully created:</p>
+<pre class="calibre18"><strong class="calibre1"># oc describe quota/my-quota</strong><br class="title-page-name"/>Name:            my-quota<br class="title-page-name"/>Namespace:       advanced<br class="title-page-name"/>Resource         Used    Hard<br class="title-page-name"/>--------         ----    ----<br class="title-page-name"/>cpu              0       500m<br class="title-page-name"/>memory           0       256Mi<br class="title-page-name"/>pods             0       1<br class="title-page-name"/>resourcequotas   1       1</pre>
+<div class="packt_infobox">Interestingly enough, the number of quotas itself per project can be controlled by ResourceQuota. Even if you set a limit for quotas to <kbd class="calibre26">0</kbd>, you will still be able to create your first quota, provided there is no other already existing quota that limits this number.</div>
+<p class="calibre2">By creating this quota, we have set the limits of <kbd class="calibre12">500</kbd> CPU millicores (half-core), <kbd class="calibre12">256Mi</kbd> requested RAM, <kbd class="calibre12">1</kbd> pod, and <kbd class="calibre12">1</kbd> ResourceQuota on the current project. Let's see if the quota is in effect.</p>
+<p class="calibre2">First, create a simple pod definition:</p>
+<pre class="calibre18"><strong class="calibre1">$ cat nginx-pod.yml</strong><br class="title-page-name"/>apiVersion: v1<br class="title-page-name"/>kind: Pod<br class="title-page-name"/>metadata:<br class="title-page-name"/>  name: nginx<br class="title-page-name"/>  labels:<br class="title-page-name"/>    role: web<br class="title-page-name"/>spec:<br class="title-page-name"/>  containers:<br class="title-page-name"/>  - name: nginx<br class="title-page-name"/>    image: nginx</pre>
+<p class="calibre2">Let's try to create a pod from it:</p>
+<pre class="calibre18"><strong class="calibre1"># oc create -f nginx-pod.yml</strong> <br class="title-page-name"/>Error from server (Forbidden): error when creating "nginx-pod.yml": pods "nginx" is forbidden: failed quota: my-quota: must specify cpu,memory</pre>
+<p class="calibre2">As you can see, our definition didn't pass the check by the quota because it explicitly limits the requested amount of CPU and RAM, but we didn't specify them. Let's modify <kbd class="calibre12">nginx-pod.yml</kbd> and add <kbd class="calibre12">resources</kbd> section:</p>
+<pre class="calibre18"><strong class="calibre1"># cat nginx-pod.yml</strong> <br class="title-page-name"/>apiVersion: v1<br class="title-page-name"/>kind: Pod<br class="title-page-name"/>metadata:<br class="title-page-name"/>  name: nginx<br class="title-page-name"/>  labels:<br class="title-page-name"/>    role: web<br class="title-page-name"/>spec:<br class="title-page-name"/>  containers:<br class="title-page-name"/>  - name: nginx<br class="title-page-name"/>    image: nginx<br class="title-page-name"/>    <strong class="calibre1">resources:</strong><br class="title-page-name"/><strong class="calibre1">      requests:</strong><br class="title-page-name"/><strong class="calibre1">        cpu: 100m</strong><br class="title-page-name"/><strong class="calibre1">        memory: 128Mi</strong></pre>
+<p class="calibre2">Upon creation, the pod will request 1 CPU core and 128 MiB of RAM, which is well within the limits set by the quota. Let's try it again:</p>
+<pre class="calibre18"><strong class="calibre1"># oc create -f nginx-pod.yml</strong> <br class="title-page-name"/>pod "nginx" created</pre>
+<p class="calibre2">The pod was created successfully, as expected. At this point, we can take a look at how much of our quota was consumed:</p>
+<pre class="calibre18"><strong class="calibre1"># oc describe quota/my-quota</strong><br class="title-page-name"/>Name:            my-quota<br class="title-page-name"/>Namespace:       advanced<br class="title-page-name"/>Resource         Used    Hard<br class="title-page-name"/>--------         ----    ----<br class="title-page-name"/>cpu              100m    500m<br class="title-page-name"/>memory           128Mi   256Mi<br class="title-page-name"/>pods             1       1<br class="title-page-name"/>resourcequotas   1       1</pre>
+<p class="calibre2">Now, let's see what happens if we try to create one more pod. Prepare a new pod definition from the one used to create the first pod by replacing <kbd class="calibre12">nginx</kbd> with <kbd class="calibre12">httpd</kbd>:</p>
+<pre class="calibre18"><strong class="calibre1"># cat httpd-pod.yml</strong> <br class="title-page-name"/>apiVersion: v1<br class="title-page-name"/>kind: Pod<br class="title-page-name"/>metadata:<br class="title-page-name"/>  name: <strong class="calibre1">httpd</strong><br class="title-page-name"/>  labels:<br class="title-page-name"/>    role: web<br class="title-page-name"/>spec:<br class="title-page-name"/>  containers:<br class="title-page-name"/>  - name: <strong class="calibre1">httpd</strong><br class="title-page-name"/>    image: <strong class="calibre1">httpd</strong><br class="title-page-name"/>    resources:<br class="title-page-name"/>      requests:<br class="title-page-name"/>        cpu: 400m<br class="title-page-name"/>        memory: 128Mi</pre>
+<p class="calibre2">If we try to create the second pod, we will see the following:</p>
+<pre class="calibre18"><strong class="calibre1">$ oc create -f httpd-pod.yml</strong> <br class="title-page-name"/>Error from server (Forbidden): error when creating "httpd-pod.yml": pods "httpd" is forbidden: exceeded quota: my-quota, requested: pods=1, used: pods=1, limited: pods=1</pre>
+<p class="calibre2">Even though the amount of requested memory wouldn't violate the quota, pod creation was still denied because the quota limits the total number of pods to <kbd class="calibre12">1</kbd> for the current project.</p>
+<p class="calibre2">Edit the quota to allow 2 pods and 2 CPU cores:</p>
+<pre class="calibre18"><strong class="calibre1">$ oc edit quota/my-quota</strong><br class="title-page-name"/>spec:<br class="title-page-name"/>  hard:<br class="title-page-name"/>    cpu: 500m<br class="title-page-name"/>    memory: 256Mi<br class="title-page-name"/><strong class="calibre1">    pods: "2"</strong><br class="title-page-name"/>    resourcequotas: "1"</pre>
+<p class="calibre2">Try creating the second pod again:</p>
+<pre class="calibre18"><strong class="calibre1">$ oc create -f httpd-pod.yml</strong><br class="title-page-name"/>pod "httpd" created</pre>
+<p class="calibre2">It worked because the quota was set to allow <kbd class="calibre12">2</kbd> pods in the current project.</p>
+<p class="calibre2">Let's see how many resources are used from the total allowed by the quota again:</p>
+<pre class="calibre18"><strong class="calibre1">$ oc describe quota/my-quota</strong><br class="title-page-name"/>Name:            my-quota<br class="title-page-name"/>Namespace:       myproject<br class="title-page-name"/>Resource         Used    Hard<br class="title-page-name"/>--------         ----    ----<br class="title-page-name"/>cpu              500m    500m<br class="title-page-name"/>memory           256Mi   256Mi<br class="title-page-name"/>pods             2       2<br class="title-page-name"/>resourcequotas   1       1</pre>
+<p class="calibre2">As you can see, we have exhausted the entire quota and no new pods can be created.</p>
+<p class="calibre2">Now that this exercise is over, it's time to prepare for the next one by cleaning up our lab:</p>
+<pre class="calibre18"><strong class="calibre1">$ oc delete all --all</strong><br class="title-page-name"/>pod "httpd" deleted<br class="title-page-name"/>pod "nginx" deleted<br class="title-page-name"/><br class="title-page-name"/><strong class="calibre1">$ oc delete quota/my-quota</strong><br class="title-page-name"/>resourcequota "my-quota" delete</pre>
+<div class="packt_infobox">ConfigMaps and ResourceQuotas are considered separate kinds of resource and must be deleted as such.</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Controlling resource consumption using LimitRanges</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">This is another way of control resource allocation in OpenShift at the project level, but unlike ResourceQuotas, they are different in certain ways:</p>
+<ul class="calibre9">
+<li class="calibre10">They are applied to individual pods, containers, images, or image streams</li>
+<li class="calibre10">They don't control some resources such as secrets, ConfigMaps, ResourceQuotas, services, and ReplicationControllers</li>
+<li class="calibre10">They can be created from a raw definition only</li>
+</ul>
+<p class="calibre2">Depending on the type of resource they are applied to, LimitRanges control various computing resources and objects:</p>
+<table border="1" class="calibre22">
+<tbody class="calibre23">
+<tr class="calibre24">
+<td class="calibre25">
+<p class="calibre2"><strong class="calibre4">Resource type</strong></p>
+</td>
+<td class="calibre25">
+<p class="calibre2"><strong class="calibre4">Computing resources/attributes controlled</strong></p>
+</td>
+</tr>
+<tr class="calibre24">
+<td class="calibre25">
+<p class="calibre2">Pod</p>
+</td>
+<td class="calibre25">
+<ul class="calibre9">
+<li class="calibre10">CPU</li>
+<li class="calibre10">RAM</li>
+</ul>
+</td>
+</tr>
+<tr class="calibre24">
+<td class="calibre25">
+<p class="calibre2">Container</p>
+</td>
+<td class="calibre25">
+<ul class="calibre9">
+<li class="calibre10">CPU</li>
+<li class="calibre10">RAM</li>
+</ul>
+</td>
+</tr>
+<tr class="calibre24">
+<td class="calibre25">
+<p class="calibre2">Image</p>
+</td>
+<td class="calibre25">
+<p class="calibre2">Size of an image pushed into an internal registry</p>
+</td>
+</tr>
+<tr class="calibre24">
+<td class="calibre25">
+<p class="calibre2">ImageStream</p>
+</td>
+<td class="calibre25">
+<ul class="calibre9">
+<li class="calibre10">Number of unique image tags as per image stream's spec</li>
+<li class="calibre10">Number of unique image references as per the image stream's status</li>
+</ul>
+</td>
+</tr>
+<tr class="calibre24">
+<td class="calibre25">
+<p class="calibre2">PersistentVolumeClaim</p>
+</td>
+<td class="calibre25">
+<p class="calibre2">Amount of storage requested</p>
+</td>
+</tr>
+</tbody>
+</table>
+<p class="calibre2"><br class="calibre5"/>
+Pods and containers can explicitly state the amount of CPU and/or RAM they need and their limits, and LimitRanges takes care that they don't fall outside certain boundaries. Also, LimitRanges may provide defaults for a requested number of resources and their limits if they are not specified.</p>
+<p class="calibre2">Depending on the presence of, and differences between, requests and limits for computing resources declared by pods, they run with different <strong class="calibre4">Quality of Service</strong> (<strong class="calibre4">QoS</strong>) tiers that serve the purpose of prioritizing running pods when it comes to resource contention. The following table summarizes the available tiers and when they are applied:</p>
+<table border="1" class="calibre22">
+<tbody class="calibre23">
+<tr class="calibre24">
+<td class="calibre25"><strong class="calibre1">QoS tier</strong></td>
+<td class="calibre25"><strong class="calibre1">Description</strong></td>
+</tr>
+<tr class="calibre24">
+<td class="calibre25"><kbd class="calibre12">BestEffort</kbd></td>
+<td class="calibre25">This tier is assigned to pods that don't specify requests and limits explicitly. Such pods can consume as much CPU and RAM as they need, but if the node a pod runs on is short on either or both resources, these pods are the first to be terminated.</td>
+</tr>
+<tr class="calibre24">
+<td class="calibre25"><kbd class="calibre12">Burstable</kbd></td>
+<td class="calibre25">Pods that have limits higher than requests get assigned the Burstable QoS tier. They run with a lower priority than BestEffort pods, meaning that they are only terminated when there are no BestEffort pods to terminate.</td>
+</tr>
+<tr class="calibre24">
+<td class="calibre25"><kbd class="calibre12">Guaranteed</kbd></td>
+<td class="calibre25">This tier is applicable to pods that have equal requests and limits for computing resources. Each pod running with this QoS is entitled to the requested amount of resources, but no more. They have the highest priority, which means that they are only killed when there are no BestEffort or Burstable pods.</td>
+</tr>
+</tbody>
+</table>
+<p class="calibre2"><br class="calibre5"/>
+Just as in the previous section, setting LimitRanges requires administrative privileges, so make sure you are logged in as <kbd class="calibre12">system:admin</kbd> user:</p>
+<pre class="calibre18"><strong class="calibre1"># oc login -u system:admin</strong></pre>
+<p class="calibre2">Let's consider an example of creating a <kbd class="calibre12">LimitRange</kbd> from scratch:</p>
+<pre class="calibre18"><strong class="calibre1"># cat my-limits.yaml</strong> <br class="title-page-name"/>apiVersion: v1<br class="title-page-name"/>kind: LimitRange<br class="title-page-name"/>metadata:<br class="title-page-name"/>  name: my-limits<br class="title-page-name"/>spec:<br class="title-page-name"/>  limits:<br class="title-page-name"/>    - type: Pod<br class="title-page-name"/>      min:<br class="title-page-name"/>        cpu: 200m<br class="title-page-name"/>        memory: 256Mi<br class="title-page-name"/>      max:<br class="title-page-name"/>        cpu: 400m<br class="title-page-name"/>        memory: 512Mi<br class="title-page-name"/>    - type: Container<br class="title-page-name"/>      min:<br class="title-page-name"/>        cpu: 100m<br class="title-page-name"/>        memory: 128Mi<br class="title-page-name"/>      max:<br class="title-page-name"/>        cpu: 300m<br class="title-page-name"/>        memory: 256Mi</pre>
+<p class="calibre2">Create limits from the preceding definition:</p>
+<pre class="calibre18"><strong class="calibre1"># oc create -f my-limits.yaml</strong> <br class="title-page-name"/>limitrange "my-limits" created</pre>
+<p class="calibre2">Now, let's describe our newly created limits:</p>
+<pre class="calibre18"><strong class="calibre1"># oc describe limits/my-limits</strong><br class="title-page-name"/>Name:        my-limits<br class="title-page-name"/>Namespace:   advanced<br class="title-page-name"/>Type    Resource    Min    Max    Default Request    Default Limit    ...<br class="title-page-name"/>----    --------    ---    ---    ---------------    -------------    ...<br class="title-page-name"/>Pod         cpu     200m   400m   -                  -                ...<br class="title-page-name"/>Pod         memory  256Mi  512Mi  -                  -                ...<br class="title-page-name"/>Container   cpu     100m   300m   300m               300m             ...<br class="title-page-name"/>Container   memory  128Mi  256Mi  256Mi              256Mi            ...</pre>
+<div class="packt_infobox">There are also the <kbd class="calibre26">spec.limits[].default</kbd> and <kbd class="calibre26">spec.limits[].defaultRequest</kbd> parameters, which determine the amount of CPU/RAM a container is limited to use and the amount it requests by default, respectively. Since we didn't specify them explicitly, they default to the same maximum value.</div>
+<p class="calibre2">The next step is to create a pod that requests a specific amount of computing resources and sets limits on their usage for itself. Prepare the following pod definition:</p>
+<pre class="calibre18"><strong class="calibre1"># cat limits-example-pod.yml</strong> <br class="title-page-name"/>apiVersion: v1<br class="title-page-name"/>kind: Pod<br class="title-page-name"/>metadata:<br class="title-page-name"/>  name: limits-example<br class="title-page-name"/>  labels:<br class="title-page-name"/>    role: web<br class="title-page-name"/>spec:<br class="title-page-name"/>  containers:<br class="title-page-name"/>  - name: httpd<br class="title-page-name"/>    image: httpd<br class="title-page-name"/>    resources:<br class="title-page-name"/>      requests:<br class="title-page-name"/>        cpu: 100m<br class="title-page-name"/>        memory: 256Mi<br class="title-page-name"/>      limits:<br class="title-page-name"/>        cpu: 350m<br class="title-page-name"/>        memory: 256Mi</pre>
+<p class="calibre2">Next, create a pod from the definition:</p>
+<pre class="calibre18"><strong class="calibre1"># oc create -f limits-example-pod.yml</strong> <br class="title-page-name"/>Error from server (Forbidden): error when creating "limits-example-pod.yml": pods "limits-example" is forbidden: [minimum cpu usage per Pod is 200m, but request is 100m., maximum cpu usage per Container is 300m, but limit is 350m.]</pre>
+<p class="calibre2">As you might expect after looking at the pod's definition, the operation was rejected because the pod's request and limit ranges violate the policy defined earlier.</p>
+<div class="packt_infobox">Minimum boundaries are also enforced.</div>
+<p class="calibre2">Let's edit the pod's definition to comply with the defined LimitRange:</p>
+<pre class="calibre18"><strong class="calibre1"># cat limits-example-pod.yml</strong> <br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...<br class="title-page-name"/>    resources:<br class="title-page-name"/>      requests:<br class="title-page-name"/>        <strong class="calibre1">cpu: 200m</strong><br class="title-page-name"/>        memory: 256Mi<br class="title-page-name"/>      limits:<br class="title-page-name"/>        <strong class="calibre1">cpu: 250m</strong><br class="title-page-name"/>        memory: 256Mi</pre>
+<p class="calibre2">Try to create it again and observe that it works:</p>
+<pre class="calibre18"><strong class="calibre1"># oc create -f limits-example-pod.yml</strong> <br class="title-page-name"/>pod "limits-example" created<strong class="calibre1"><br class="title-page-name"/></strong><br class="title-page-name"/><strong class="calibre1"># oc get po</strong><br class="title-page-name"/>NAME          READY   STATUS    RESTARTS   AGE<br class="title-page-name"/>limits-example 1/1    Running    0         4s</pre>
+<p class="calibre2">Let's clean up the lab to prepare for the next section:</p>
+<pre class="calibre18"><strong class="calibre1"># oc delete po/limits-example</strong><br class="title-page-name"/>pod "limits-example" deleted<br class="title-page-name"/><br class="title-page-name"/><strong class="calibre1"># oc delete limits/my-limits</strong><br class="title-page-name"/>limitrange "my-limits" delete</pre>
+<div class="packt_infobox">LimitRanges are considered a separate kind of resource as well, like templates, ConfigMaps, and ResourceQuotas, so they must be deleted by issuing a separate command.</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Creating complex stacks of applications with templates</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">Another useful kind of OpenShift resource is a template. Instead of creating resources one-by-one <span class="calibre11">–</span> for example, a pod, service, and route <span class="calibre11">–</span> templates allow you to create multiple objects at once with a single CLI command. More than that —they may include parameters that can be optional, or default to values either static or generated in accordance with specific rules. In a sense, they are similar to Docker Compose or OpenStack Heat—all of these provide the facility to create entire application stacks from the ground up. With templates, the cluster administrator can provide developers with the ability to deploy multi-tier applications with all dependent services.</p>
+<p class="calibre2">By default, OpenShift comes installed with quite a few default templates, called <strong class="calibre4">Instant App</strong> and <strong class="calibre4">Quick Start</strong> templates. They can be used to deploy runtime environments based on various languages and frameworks, such as Ruby on Rails (Ruby), Django (Python), and CakePHP (PHP). They also include templates for SQL and NoSQL database engines with persistent storage, which includes <kbd class="calibre12">PersistentVolumeClaims</kbd> as one of the objects to provide persistence of data.</p>
+<p class="calibre2">For this exercise, you will not require admin privileges, so you can login as a regular user:</p>
+<pre class="calibre18"><strong class="calibre1"># oc login -u alice</strong></pre>
+<p class="calibre2">Default templates are created in the <kbd class="calibre12">openshift</kbd> project during installation. You can see them by running the following command:</p>
+<pre class="calibre18"><strong class="calibre1"># oc get template -n openshift | cut -d' ' -f1</strong><br class="title-page-name"/>NAME<br class="title-page-name"/>3scale-gateway<br class="title-page-name"/>amp-apicast-wildcard-router<br class="title-page-name"/>amp-pvc<br class="title-page-name"/>cakephp-mysql-example<br class="title-page-name"/>cakephp-mysql-persistent<br class="title-page-name"/>dancer-mysql-example<br class="title-page-name"/>dancer-mysql-persistent<br class="title-page-name"/>django-psql-example<br class="title-page-name"/>django-psql-persistent<br class="title-page-name"/>dotnet-example<br class="title-page-name"/>dotnet-pgsql-persistent<br class="title-page-name"/>dotnet-runtime-example<br class="title-page-name"/>httpd-example<br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...</pre>
+<p class="calibre2">We used the <kbd class="calibre12">cut</kbd> command to exclude descriptions and other information for the sake of brevity, but you can run this command without <kbd class="calibre12">cut</kbd> to see the full output.</p>
+<div class="packt_infobox">Both MiniShift and OpenShift, when installed by the Ansible installer, have default templates installed out-of-the-box but, in the case of containerized quick installation, you may have to create them manually from YAML definitions located in the <kbd class="calibre26">roles/openshift_examples/files/examples/</kbd> directory of the Ansible installer.</div>
+<p class="calibre2">To get a list of parameters that are supported by a particular template, use the <kbd class="calibre12">process</kbd> command:</p>
+<pre class="calibre18"><strong class="calibre1"># oc process --parameters mariadb-persistent -n openshift</strong> <br class="title-page-name"/>NAME                   DESCRIPTION       GENERATOR       VALUE<br class="title-page-name"/>MEMORY_LIMIT           ...                               512Mi<br class="title-page-name"/>NAMESPACE              ...                               openshift<br class="title-page-name"/>DATABASE_SERVICE_NAME  ...                               mariadb<br class="title-page-name"/>MYSQL_USER             ...               expression      user[A-Z0-9]{3}<br class="title-page-name"/>MYSQL_PASSWORD         ...               expression      [a-zA-Z0-9]{16}<br class="title-page-name"/>MYSQL_ROOT_PASSWORD    ...               expression      [a-zA-Z0-9]{16}<br class="title-page-name"/>MYSQL_DATABASE         ...                               sampledb<br class="title-page-name"/>MARIADB_VERSION        ...                               10.2<br class="title-page-name"/>VOLUME_CAPACITY        ...                               1Gi</pre>
+<div class="packt_infobox">We left out descriptions of the parameters to make the output more readable.</div>
+<p class="calibre2">As you may have noticed, some parameters have dynamic default values, generated by expressions loosely based on <strong class="calibre4">Perl Compatible Regular Expressions</strong> (<strong class="calibre4">PCREs</strong>).</p>
+<p class="calibre2">The <kbd class="calibre12">process</kbd> command generates default values from all dynamic expressions, making the template definition ready to be used for creating resources, which is done either by piping its output to the <kbd class="calibre12">create</kbd> command or by running the <kbd class="calibre12">new-app</kbd> command—we will get to that in a few moments. For now, let's use that command to see a <kbd class="calibre12">List</kbd> of objects to be created:</p>
+<pre class="calibre18"><strong class="calibre1"># oc process openshift//mariadb-persistent</strong><br class="title-page-name"/>{<br class="title-page-name"/>    "kind": "List",<br class="title-page-name"/>    "apiVersion": "v1",<br class="title-page-name"/>    "metadata": {},<br class="title-page-name"/>    "items": [<br class="title-page-name"/>        {<br class="title-page-name"/>            "apiVersion": "v1",<br class="title-page-name"/>            "kind": "Secret",<br class="title-page-name"/>            ...<br class="title-page-name"/>            &lt;output omitted&gt;<br class="title-page-name"/>            ...<br class="title-page-name"/>            "stringData": {<br class="title-page-name"/>                "database-name": "sampledb",<br class="title-page-name"/>                "database-password": "tYuwInpmocV1Q1uy",<br class="title-page-name"/>                "database-root-password": "icq5jd8bfFPWXbaK",<br class="title-page-name"/>                "database-user": "userC7A"<br class="title-page-name"/>            }<br class="title-page-name"/>        },<br class="title-page-name"/>        ...<br class="title-page-name"/>        &lt;output omitted&gt;<br class="title-page-name"/>        ...<br class="title-page-name"/>    ]<br class="title-page-name"/>}</pre>
+<div class="packt_infobox">The process command allows for an alternate syntax, <kbd class="calibre26">&lt;NAMESPACE&gt;//&lt;TEMPLATE&gt;</kbd>. We used it here for demonstration purposes, but you are free to use the more familiar <kbd class="calibre26">-n &lt;NAMESPACE&gt;</kbd> notation.</div>
+<p class="calibre2">The list is quite long, so we only provided an excerpt showing the <kbd class="calibre12">Secret</kbd> resource that contains all generated sensitive values that are to be used for template instantiation.</p>
+<p class="calibre2">To make things clearer, let's take a look at the expressions for generating those values in the raw template definition:</p>
+<pre class="calibre18"><strong class="calibre1"># oc export template mariadb-persistent -n openshift</strong><br class="title-page-name"/>apiVersion: v1<br class="title-page-name"/>kind: Template<br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...<br class="title-page-name"/>objects:<br class="title-page-name"/>- apiVersion: v1<br class="title-page-name"/>  kind: Secret<br class="title-page-name"/>  ...<br class="title-page-name"/>  &lt;output omitted&gt;<br class="title-page-name"/>  ... <br class="title-page-name"/>  stringData:<br class="title-page-name"/>    database-name: ${MYSQL_DATABASE}<br class="title-page-name"/>    database-password: ${MYSQL_PASSWORD}<br class="title-page-name"/>    database-root-password: ${MYSQL_ROOT_PASSWORD}<br class="title-page-name"/>    database-user: ${MYSQL_USER}<br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...<br class="title-page-name"/>parameters:<br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...<br class="title-page-name"/>- description: Username for MariaDB user that will be used for accessing the database.<br class="title-page-name"/>  displayName: MariaDB Connection Username<br class="title-page-name"/>  <strong class="calibre1">from: user[A-Z0-9]{3}</strong><br class="title-page-name"/>  generate: expression<br class="title-page-name"/>  name: MYSQL_USER<br class="title-page-name"/>  required: true<br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...<br class="title-page-name"/>- description: Name of the MariaDB database accessed.<br class="title-page-name"/>  displayName: MariaDB Database Name<br class="title-page-name"/>  name: MYSQL_DATABASE<br class="title-page-name"/>  required: true<br class="title-page-name"/>  <strong class="calibre1">value: sampledb</strong><br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...</pre>
+<p class="calibre2">You may have noticed, for example, that <kbd class="calibre12">MYSQL_DATABASE</kbd> is <kbd class="calibre12">sampledb</kbd>, while <kbd class="calibre12">MYSQL_USER</kbd> starts with the string <kbd class="calibre12">user</kbd> with three alphanumeric characters, just as we saw in the previous listing.</p>
+<div class="packt_infobox">To learn more about how to construct regular expressions for dynamic parameters, refer to <a href="http://perldoc.perl.org/perlre.html" target="_blank" class="calibre6">http://perldoc.perl.org/perlre.html</a>.</div>
+<p class="calibre2">Now, we will create our own simple template. Create a new template definition with the following contents:</p>
+<pre class="calibre18"><strong class="calibre1"># cat example-template.yml</strong> <br class="title-page-name"/>kind: Template<br class="title-page-name"/>apiVersion: v1<br class="title-page-name"/>metadata:<br class="title-page-name"/>  name: example-template<br class="title-page-name"/>labels:<br class="title-page-name"/>  role: web<br class="title-page-name"/>message: You chose to deploy ${WEB_SERVER}<br class="title-page-name"/>objects:<br class="title-page-name"/>  - kind: Pod<br class="title-page-name"/>    apiVersion: v1<br class="title-page-name"/>    metadata:<br class="title-page-name"/>      name: example-pod<br class="title-page-name"/>    spec:<br class="title-page-name"/>      containers:<br class="title-page-name"/>        - name: ${WEB_SERVER}<br class="title-page-name"/>          image: ${WEB_SERVER}<br class="title-page-name"/>  - kind: Service<br class="title-page-name"/>    apiVersion: v1<br class="title-page-name"/>    metadata:<br class="title-page-name"/>      name: example-svc<br class="title-page-name"/>    spec:<br class="title-page-name"/>      ports:<br class="title-page-name"/>        - port: 80<br class="title-page-name"/>      selector:<br class="title-page-name"/>        role: web<br class="title-page-name"/>  - kind: Route<br class="title-page-name"/>    apiVersion: v1<br class="title-page-name"/>    metadata:<br class="title-page-name"/>      name: example-route<br class="title-page-name"/>    spec:<br class="title-page-name"/>      to:<br class="title-page-name"/>        kind: Service<br class="title-page-name"/>        name: example-svc<br class="title-page-name"/>parameters:<br class="title-page-name"/>  - name: WEB_SERVER<br class="title-page-name"/>    displayName: Web Server<br class="title-page-name"/>    description: Web server image to use<br class="title-page-name"/>    value: nginx</pre>
+<div class="packt_infobox">Though in our case the message parameter is used in quite a rudimentary way, in more complex templates, its purpose is to tell the user how to use the template—what usernames, passwords, URLs, and so on were generated.</div>
+<p class="calibre2">This template can be used to create three resources:</p>
+<ul class="calibre9">
+<li class="calibre10">A pod running a web server, which you can choose by supplying the <kbd class="calibre12">WEB_SERVER</kbd> parameter. By default, it's <kbd class="calibre12">nginx</kbd>.</li>
+<li class="calibre10">A service proxying incoming traffic to the pod.</li>
+<li class="calibre10">A route for external access.</li>
+</ul>
+<p class="calibre2">We can process that definition right away and pass the resulting list of resources to the <kbd class="calibre12">create</kbd> command, but a common strategy is to create a template from its definition first:</p>
+<pre class="calibre18"><strong class="calibre1"># oc create -f example-template.yml</strong> <br class="title-page-name"/>template "example-template" created</pre>
+<p class="calibre2">Let's try to process it:</p>
+<pre class="calibre18"><strong class="calibre1"># oc process --parameters example-template</strong><br class="title-page-name"/>NAME       DESCRIPTION             GENERATOR         VALUE<br class="title-page-name"/>WEB_SERVER Web server image to use                   nginx</pre>
+<p class="calibre2">You can see the only parameter with the default value and description that you defined earlier.</p>
+<p class="calibre2">Now, it's time to create a stack of resources from our template. This can be done by either piping the output of the <kbd class="calibre12">process</kbd> command to the <kbd class="calibre12">create</kbd> command, which we mentioned previously, or by using the <kbd class="calibre12">new-app</kbd> command. Let's start with the former approach:</p>
+<pre class="calibre18"><strong class="calibre1"># oc process example-template | oc create -f -</strong><br class="title-page-name"/>pod "example-pod" created<br class="title-page-name"/>service "example-svc" created<br class="title-page-name"/>route "example-route" created</pre>
+<p class="calibre2">As you can see, the <kbd class="calibre12">create</kbd> command just takes the list of resources and submits requests for their creation one-by-one to the API, so the output is similar to what you would see if you created three separate resource definitions and created resources from them manually.</p>
+<p class="calibre2">But another way to instantiate a template gives you more information about what is going on. Let's delete the created resources first:</p>
+<pre class="calibre18"><strong class="calibre1"># oc delete all --all</strong><br class="title-page-name"/>route "example-route" deleted<br class="title-page-name"/>pod "example-pod" deleted<br class="title-page-name"/>service "example-svc" deleted</pre>
+<p class="calibre2">We don't have to delete the template as it's not going to change. Now, we can use the <kbd class="calibre12">new-app</kbd> command:</p>
+<pre class="calibre18"><strong class="calibre1"># oc new-app --template=example-template</strong><br class="title-page-name"/>--&gt; Deploying template "myproject/example-template" to project myproject<br class="title-page-name"/><br class="title-page-name"/>     example-template<br class="title-page-name"/>     ---------<br class="title-page-name"/>     <strong class="calibre1">You chose to deploy nginx</strong><br class="title-page-name"/><br class="title-page-name"/>     * With parameters:<br class="title-page-name"/>        * Web Server=nginx<br class="title-page-name"/><br class="title-page-name"/>--&gt; Creating resources ...<br class="title-page-name"/>    pod "example-pod" created<br class="title-page-name"/>    service "example-svc" created<br class="title-page-name"/>    route "example-route" created<br class="title-page-name"/>--&gt; Success<br class="title-page-name"/>    Access your application via route 'example-route-advanced.openshift.example.com' <br class="title-page-name"/>    Run 'oc status' to view your app.<strong class="calibre1"><br class="title-page-name"/></strong><br class="title-page-name"/><strong class="calibre1"># oc status</strong><br class="title-page-name"/>In project advanced on server https://172.24.0.11:8443<br class="title-page-name"/><br class="title-page-name"/>http://example-route-advanced.openshift.example.com (svc/example-svc)<br class="title-page-name"/>  pod/example-pod runs nginx<br class="title-page-name"/><br class="title-page-name"/><br class="title-page-name"/>1 info identified, use 'oc status -v' to see details.</pre>
+<p class="calibre2">As you can see, we created the pod, fronted it with the service, and exposed it through the route in just a single command. Notice that you don't need to run the <kbd class="calibre12">oc get route</kbd>  command to find out what URL your application is accessible through—it all shows in the output.</p>
+<p class="calibre2">Let's see if our web server is reachable through <kbd class="calibre12">curl</kbd>:</p>
+<pre class="calibre18"><strong class="calibre1"># curl -IH 'Host: example-route-advanced.openshift.example.com' 127.0.0.1</strong><br class="title-page-name"/>HTTP/1.1 200 OK<br class="title-page-name"/>Server: nginx/1.15.1<br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...</pre>
+<div class="packt_infobox">We used the <kbd class="calibre26">-I</kbd> parameter of the <kbd class="calibre26">curl</kbd> command to see only response headers, which is enough to check the responsiveness of the server and ensure that it doesn't dump raw HTML into the console. Also, just as before, we used -H option to request a specific application from OpenShift's router.</div>
+<p class="calibre2">You can easily delete all of the resources and instantiate the template again, but this time with another web server image, such as Apache:</p>
+<pre class="calibre18"><strong class="calibre1"># oc delete all --all</strong><br class="title-page-name"/>route "example-route" deleted<br class="title-page-name"/>pod "example-pod" deleted<br class="title-page-name"/>service "example-svc" deleted<br class="title-page-name"/><br class="title-page-name"/><strong class="calibre1"># oc new-app --template=example-template -p WEB_SERVER=httpd</strong><br class="title-page-name"/>--&gt; Deploying template "myproject/example-template" to project myproject<br class="title-page-name"/><br class="title-page-name"/>     example-template<br class="title-page-name"/>     ---------<br class="title-page-name"/>     <strong class="calibre1">You chose to deploy httpd</strong><br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...<br class="title-page-name"/>    Access your application via route 'example-route-advanced.openshift.example.com' <br class="title-page-name"/>    Run 'oc status' to view your app.<br class="title-page-name"/><br class="title-page-name"/><strong class="calibre1"># curl -H 'Host: example-route-advanced.openshift.example.com' 127.0.0.1</strong><br class="title-page-name"/>&lt;html&gt;&lt;body&gt;&lt;h1&gt;It works!&lt;/h1&gt;&lt;/body&gt;&lt;/html&gt;<br class="title-page-name"/><br class="title-page-name"/><strong class="calibre1"># curl -IH 'Host: example-route-advanced.openshift.example.com' 127.0.0.1</strong><br class="title-page-name"/>HTTP/1.1 200 OK<br class="title-page-name"/>Date: Thu, 19 Jul 2018 00:59:47 GMT<br class="title-page-name"/>Server: Apache/2.4.34 (Unix)<br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...</pre>
+<p class="calibre2">That's it—one parameter and you have a different web server deployed for you in a matter of seconds.</p>
+<p class="calibre2">You can also perform a reverse operation—creating a template from existing resources. To do that, use the <kbd class="calibre12">export</kbd> command:</p>
+<pre class="calibre18"><strong class="calibre1"># oc export all --as-template=exported-template &gt; exported-template.yml</strong></pre>
+<p class="calibre2">Let's delete our resources to prevent any conflicts:</p>
+<pre class="calibre18"><strong class="calibre1"># oc delete all --all</strong><br class="title-page-name"/>route "example-route" deleted<br class="title-page-name"/>pod "example-pod" deleted<br class="title-page-name"/>service "example-svc" deleted</pre>
+<p class="calibre2">And recreate them from the exported template:</p>
+<pre class="calibre18"><strong class="calibre1"># oc new-app -f exported-template.yml</strong> <br class="title-page-name"/>--&gt; Deploying template "advanced/exported-template" for "exported-template.yml" to project advanced<br class="title-page-name"/><br class="title-page-name"/>--&gt; Creating resources ...<br class="title-page-name"/>    route "example-route" created<br class="title-page-name"/>    pod "example-pod" created<br class="title-page-name"/>    service "example-svc" created<br class="title-page-name"/>--&gt; Success<br class="title-page-name"/>    Access your application via route 'example-route-advanced.openshift.example.com' <br class="title-page-name"/>    Run 'oc status' to view your app.</pre>
+<div class="packt_infobox">You might have noticed that the web server was exposed through the same URL as before. This is because the exported template was created from already instantiated resources with all parameters resolved to values, so OpenShift has no way of knowing which fields were parameterized. You can also infer this from the output of the <kbd class="calibre26">process</kbd> command, which will show you that all the fields are already initialized. So, strictly speaking, this isn't a fully reverse operation, but it can be used for backups.</div>
+<p class="calibre2">Now that we are finished, let's do a clean-up:</p>
+<pre class="calibre18"><strong class="calibre1"># oc delete all --all</strong><br class="title-page-name"/>route "example-route" deleted<br class="title-page-name"/>pod "example-pod" deleted<br class="title-page-name"/>service "example-svc" deleted<br class="title-page-name"/><br class="title-page-name"/><strong class="calibre1"># oc delete template/example-template</strong><br class="title-page-name"/>template "example-template" deleted</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Autoscaling your application depending on CPU and RAM utilization</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">You can scale pods in your application using the <kbd class="calibre12">oc scale</kbd> command, but it has two disadvantages:</p>
+<ul class="calibre9">
+<li class="calibre10">It has to be run manually every time you need to scale a pod up or down</li>
+<li class="calibre10">You have to take into account CPU and RAM utilization yourself</li>
+</ul>
+<p class="calibre2">This approach doesn't allow businesses to adapt quickly to constantly changing customers demands. There is a better way—<kbd class="calibre12">HorizontalPodAutoscaler</kbd>.</p>
+<div class="packt_infobox">At the time of writing, autoscaling can only track CPU and RAM usage. Traffic-based autoscaling, for instance, isn't supported.</div>
+<p class="calibre2">Let's login as <kbd class="calibre12">system:admin</kbd> and see if Hawkular, Cassandra, and Heapster pods are up and running:</p>
+<pre class="calibre18"><strong class="calibre1"># oc login -u system:admin<br class="title-page-name"/>...</strong><br class="title-page-name"/><strong class="calibre1">&lt;output omitted&gt;</strong><br class="title-page-name"/><strong class="calibre1">...<br class="title-page-name"/># oc get po -n openshift-infra</strong><br class="title-page-name"/>NAME                       READY STATUS  RESTARTS AGE<br class="title-page-name"/>hawkular-cassandra-1-ffszl 1/1   Running 0        10m<br class="title-page-name"/>hawkular-metrics-bl6jh     1/1   Running 0        10m<br class="title-page-name"/>heapster-brvfd             1/1   Running 0        10m</pre>
+<div class="packt_infobox">By the time you get to this section, all metrics pods will be ready, but usually it takes 8-10 minutes for them to get started after installation is done.</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">CPU-based autoscaling</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">CPU-based autoscaling also requires limit ranges to be set on CPU requests for the pods being scaled, so we can use the LimitRange definition from one of the previous sections.</p>
+<pre class="calibre18"><strong class="calibre1"># cat my-limits.yaml <br class="title-page-name"/></strong>apiVersion: v1<br class="title-page-name"/>kind: LimitRange<br class="title-page-name"/>metadata:<br class="title-page-name"/>  name: my-limits<br class="title-page-name"/>spec:<br class="title-page-name"/>  limits:<br class="title-page-name"/>    - type: Pod<br class="title-page-name"/>      min:<br class="title-page-name"/>        cpu: 50m<br class="title-page-name"/>        memory: 64Mi<br class="title-page-name"/>      max:<br class="title-page-name"/>        cpu: 150m<br class="title-page-name"/>        memory: 128Mi<br class="title-page-name"/>    - type: Container<br class="title-page-name"/>      min:<br class="title-page-name"/>        cpu: 50m<br class="title-page-name"/>        memory: 64Mi<br class="title-page-name"/>      max:<br class="title-page-name"/>        cpu: 150m<br class="title-page-name"/>        memory: 128Mi<br class="title-page-name"/><strong class="calibre1"><br class="title-page-name"/># </strong><strong class="calibre1">oc create -f my-limits.yaml</strong> <br class="title-page-name"/>limitrange "my-limits" created</pre>
+<div class="packt_infobox">Depending on your host machine's CPU, you might have to tweak the values in the file above in order for autoscaling to work, that is why in the listing above they are different than in the beginning of the chapter.</div>
+<p class="calibre2">The autoscaling feature can be applied to deployment configs, so the easiest way to create one is to use the already familiar <kbd class="calibre12">new-app</kbd> command:</p>
+<pre class="calibre18"><strong class="calibre1"># oc new-app httpd</strong><br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...<br class="title-page-name"/>--&gt; Creating resources ...<br class="title-page-name"/>    deploymentconfig "httpd" created<br class="title-page-name"/>    service "httpd" created<br class="title-page-name"/>--&gt; Success<br class="title-page-name"/>    Application is not exposed. You can expose services to the outside world by executing one or more of the commands below:<br class="title-page-name"/>     'oc expose svc/httpd' <br class="title-page-name"/>    Run 'oc status' to view your app.</pre>
+<p class="calibre2">For demonstration purposes, we used the Apache web server image to create an image stream, which, in turn, is used to create the application. Now that the <kbd class="calibre12">deploymentconfig</kbd> is ready to manage pods, we can create a <kbd class="calibre12">HorizontalPodAutoscaler</kbd> to manage the <kbd class="calibre12">deploymentconfig</kbd> itself:</p>
+<pre class="calibre18"><strong class="calibre1"># oc autoscale dc/httpd --min=2 --max=4 --cpu-percent=10</strong><br class="title-page-name"/>deploymentconfig "httpd" autoscaled</pre>
+<div class="packt_infobox">We specified <kbd class="calibre26">2</kbd> as the minimum number of pods that must be maintained at any time so that you can observe the effect of autoscaling quickly without having to generate CPU load on pods to trigger it. We will do that in a few moments as well.</div>
+<p class="calibre2">Let's make sure it was created:</p>
+<pre class="calibre18"><strong class="calibre1"># oc get hpa</strong><br class="title-page-name"/>NAME   REFERENCE              TARGETS   MINPODS MAXPODS REPLICAS  AGE<br class="title-page-name"/>httpd  DeploymentConfig/httpd 0% / 20%  2       4       2         3m</pre>
+<div class="packt_infobox">If you run this command right after creation, you will most likely see unknown instead of <kbd class="calibre26">0%</kbd> in the preceding output. That is expected because <kbd class="calibre26">HorizontalPodAutoscaler</kbd> usually needs a few minutes to collect enough metrics.</div>
+<p class="calibre2">In a few minutes, you may list running pods and notice that there are two of them now:</p>
+<pre class="calibre18"><strong class="calibre1"># oc get po</strong><br class="title-page-name"/>NAME            READY     STATUS    RESTARTS   AGE<br class="title-page-name"/>httpd-1-5845b   1/1       Running   0          7s<br class="title-page-name"/>httpd-1-scq85   1/1       Running   0          2m</pre>
+<p class="calibre2">Now, we have to simulate a large number of user requests to our pods to increase the CPU load so that autoscaling takes effect. But to do that, we need to create a route first:</p>
+<pre class="calibre18"><strong class="calibre1"># oc expose svc/httpd</strong><br class="title-page-name"/>route "httpd" exposed<br class="title-page-name"/><br class="title-page-name"/><strong class="calibre1"># oc get route</strong><br class="title-page-name"/>... httpd-advanced.openshift.example.com ...</pre>
+<p class="calibre2">At this point, we have everything we need, so let's start simulating CPU load with the <kbd class="calibre12">ab</kbd> Apache benchmarking utility:</p>
+<pre class="calibre18"><strong class="calibre1"># ab -c 100 -n 10000000 -H 'Host: httpd-advanced.openshift.example.com' \<br class="title-page-name"/></strong>http://127.0.0.1/<br class="title-page-name"/><br class="title-page-name"/>This is ApacheBench, Version 2.3 &lt;$Revision: 1430300 $&gt;<br class="title-page-name"/>Copyright 1996 Adam Twiss, Zeus Technology Ltd, http://www.zeustech.net/<br class="title-page-name"/>Licensed to The Apache Software Foundation, http://www.apache.org/<br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...<br class="title-page-name"/>^C<br class="title-page-name"/>Percentage of the requests served within a certain time (ms)<br class="title-page-name"/>  50% 46<br class="title-page-name"/>  66% 56<br class="title-page-name"/>  75% 66<br class="title-page-name"/>  80% 73<br class="title-page-name"/>  90% 95<br class="title-page-name"/>  95% 124<br class="title-page-name"/>  98% 171<br class="title-page-name"/>  99% 200<br class="title-page-name"/> 100% 528 (longest request)</pre>
+<p class="calibre2">When <kbd class="calibre12">httpd</kbd> DeploymentConfig is scaled up, you can just press <kbd class="calibre12">Ctrl+C</kbd> to stop generating the traffic, as is indicated by <kbd class="calibre12">^C</kbd> in the output above.</p>
+<p class="calibre2">Login in a separate terminal as <kbd class="calibre12">system:admin</kbd> and at some point you should be able to see that you have 4 pods running :</p>
+<pre class="calibre18"><strong class="calibre1"># oc get po</strong><br class="title-page-name"/>NAME            READY     STATUS    RESTARTS   AGE<br class="title-page-name"/>httpd-1-5wsb5   1/1       Running   0          6m<br class="title-page-name"/>httpd-1-gvqg2   1/1       Running   0          4m<br class="title-page-name"/>httpd-1-n92jp   1/1       Running   0          1m<br class="title-page-name"/>httpd-1-smqhb   1/1       Running   0          1m</pre>
+<p class="calibre2">Once you press <em class="calibre17">Ctrl</em> + <em class="calibre17">C</em> and benchmarking stops, then after a while, the number of pods will go back to normal:</p>
+<pre class="calibre18"><strong class="calibre1"># oc get po</strong><br class="title-page-name"/>NAME            READY     STATUS    RESTARTS   AGE<br class="title-page-name"/>httpd-1-5wsb5   1/1       Running   0          35m<br class="title-page-name"/>httpd-1-gvqg2   1/1       Running   0          34m</pre>
+<p class="calibre2">If you are interested, you can see the collected metrics and autoscaling taking place in the web console. O<span class="calibre11">pen the web</span> console <span class="calibre11">in a browser at <a href="https://openshift.example.com:8443/" class="calibre8">https://openshift.example.com:8443/</a>, confirm the security exception for the self-signed certificate, and login with the username</span> <kbd class="calibre12">alice</kbd> <span class="calibre11">and any password.</span></p>
+<p class="calibre2">As our OpenShift cluster uses self-signed TLS certificates for encrypting HTTP traffic, Hawkular metrics will not be accessible from the <span class="calibre11">Overview</span> tab of the web console at first—you will see an error above the list of pods instead. To fix this, click on the provided link to open the Hawkular URL in a separate tab/window in your browser and confirm the security exception for the certificate as well. After that, refresh the <span class="calibre11">Overview</span> tab and you will see the calculated metrics for each pod marked with different colors:</p>
+<p class="cdpaligncenter"><img class="alignnone45" src="../images/00054.jpeg"/></p>
+<p class="calibre2">You can also use the <span class="calibre11">Monitoring</span> tab to get a more detailed view:</p>
+<div class="cdpaligncenter2"><img src="../images/00055.jpeg" class="calibre38"/></div>
+<p class="calibre2">You can clearly see the spikes in CPU load and network traffic that correspond to the <kbd class="calibre12">ab</kbd> run.<br class="calibre5"/>
+We need to delete CPU-based autoscaler before the next exercise:</p>
+<pre class="calibre18"><strong class="calibre1"># oc delete hpa/httpd</strong><br class="title-page-name"/>horizontalpodautoscaler "httpd" deleted</pre>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Memory-based autoscaling</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">Unlike autoscaling based on CPU utilization, memory-based autoscaling can only be enabled by creating a <kbd class="calibre12">HorizontalPodAutoscaler</kbd> from a raw YAML/JSON definition:</p>
+<pre class="calibre18"><strong class="calibre1"># cat hpa-memory.yml</strong> <br class="title-page-name"/>kind: HorizontalPodAutoscaler<br class="title-page-name"/>apiVersion: autoscaling/v1<br class="title-page-name"/>metadata:<br class="title-page-name"/>  name: hpa-httpd-memory<br class="title-page-name"/>spec:<br class="title-page-name"/>  scaleTargetRef:<br class="title-page-name"/>    apiVersion: v1<br class="title-page-name"/>    kind: DeploymentConfig<br class="title-page-name"/>    name: httpd<br class="title-page-name"/>  minReplicas: 2<br class="title-page-name"/>  maxReplicas: 4<br class="title-page-name"/>  metrics:<br class="title-page-name"/>  - type: Resource<br class="title-page-name"/>    resource:<br class="title-page-name"/>      name: memory<br class="title-page-name"/>      targetAverageUtilization: 10</pre>
+<p class="calibre2">Let's enable autoscaling now:</p>
+<pre class="calibre18"><strong class="calibre1"># oc create -f </strong><strong class="calibre1">hpa-memory.yml</strong> <br class="title-page-name"/>horizontalpodautoscaler "hpa-httpd-memory" created</pre>
+<p class="calibre2">Give it a minute or two to pick up the metrics from Heapster and you will be able to see how the current memory utilization is different from the target:</p>
+<pre class="calibre18"><strong class="calibre1"># oc get hpa</strong><br class="title-page-name"/>NAME      REFERENCE  TARGETS   MINPODS MAXPODS          ... <br class="title-page-name"/>hpa-httpd-memory DeploymentConfig/httpd 7% / 10%  2  4  ...</pre>
+<div class="packt_infobox">If you run this command right after creation, you will most likely see unknown instead of <kbd class="calibre26">7%</kbd> in the preceding output. This is expected because <kbd class="calibre26">HorizontalPodAutoscaler</kbd> usually needs a few minutes to collect sufficient metrics.</div>
+<p class="calibre2">Let's go ahead and generate traffic for the application, just like in the previous section, but establish <kbd class="calibre12">1000</kbd> concurrent connections this time, instead of <kbd class="calibre12">100</kbd>:</p>
+<pre class="calibre18"><strong class="calibre1"># </strong><strong class="calibre1">ab -c 1000 -n 10000000 -H 'Host: httpd-advanced.openshift.example.com' http://127.0.0.1/</strong><br class="title-page-name"/>This is ApacheBench, Version 2.3 &lt;$Revision: 1430300 $&gt;<br class="title-page-name"/>Copyright 1996 Adam Twiss, Zeus Technology Ltd, http://www.zeustech.net/<br class="title-page-name"/>Licensed to The Apache Software Foundation, http://www.apache.org/<br class="title-page-name"/>...<br class="title-page-name"/>&lt;output omitted&gt;<br class="title-page-name"/>...<br class="title-page-name"/>^C<br class="title-page-name"/>Percentage of the requests served within a certain time (ms)<br class="title-page-name"/>  50% 382<br class="title-page-name"/>  66% 410<br class="title-page-name"/>  75% 429<br class="title-page-name"/>  80% 441</pre>
+<p class="calibre2"/>
+<p class="calibre2"/>
+<pre class="calibre18"> 90% 502<br class="title-page-name"/>  95% 737<br class="title-page-name"/>  98% 1439<br class="title-page-name"/>  99% 3181<br class="title-page-name"/> 100% 38031 (longest request)</pre>
+<div class="packt_infobox">Laeve  benchmark open for 5-10 minutes, and meanwhile open your browser at <a href="https://hawkular-metrics.openshift.example.com/hawkular/metrics" class="calibre6">https://hawkular-metrics.openshift.example.com/hawkular/metrics</a> to make sure that hawkular metrics are running, and then at <a href="https://openshift.example.com:8443/console/project/advanced/overview" class="calibre6">https://openshift.example.com:8443/console/project/advanced/overview</a></div>
+<p class="calibre2">You can observe autoscaling taking place from the web console. First it scales our web server to 3 replicas:</p>
+<p class="cdpaligncenter"><img class="alignnone46" src="../images/00056.jpeg"/></p>
+<p class="calibre2"/>
+<p class="calibre2"/>
+<p class="calibre2">And shortly after, to 4:</p>
+<p class="cdpaligncenter"><img class="alignnone47" src="../images/00057.jpeg"/></p>
+<p class="calibre2">After <kbd class="calibre12">ab</kbd> is finished generating traffic, the number of pods slowly goes down:</p>
+<p class="cdpaligncenter"><img class="alignnone48" src="../images/00058.jpeg"/></p>
+<div class="packt_infobox">It is possible to observe short bursts in the number of replicas if you put too much load on the service. This is normal and you may see from events that the <kbd class="calibre26">deploymentconfig</kbd> scales, for example, from 3 to 6 without transient states, then quickly detects the anomaly and corrects it by scaling back to the maximum value.<br class="title-page-name"/>
+<br class="title-page-name"/>
+<span>Due to the specifics of memory utilization by pods, it's common that the </span><kbd class="calibre26">deploymentconfig</kbd><span>/</span><kbd class="calibre26">replicationcontroller</kbd><span> doesn't fully scale back to the minimum number of replicas.</span></div>
+<p class="calibre2">The exercise is over, so it's time to clean-up:</p>
+<pre class="calibre18"><strong class="calibre1"># oc delete all --all</strong><br class="title-page-name"/>horizontalpodautoscaler "hpa-httpd-memory" deleted<br class="title-page-name"/>deploymentconfig "httpd" deleted<br class="title-page-name"/>imagestream "httpd" deleted<br class="title-page-name"/>route "httpd" deleted<br class="title-page-name"/>pod "httpd-1-97dnr" deleted<br class="title-page-name"/>pod "httpd-1-qgl9c" deleted<br class="title-page-name"/>service "httpd" deleted<br class="title-page-name"/><br class="title-page-name"/><strong class="calibre1"># oc delete limits/my-limits</strong><br class="title-page-name"/>limitrange "my-limits" deleted</pre>
+<div class="packt_infobox">It is not advisable to activate CPU- and RAM-based autoscalers at the same time as they may conflict with each other. Determine what resources your application relies on most of the time and use the appropriate autoscaling.</div>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Summary</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">In this chapter, we introduced you to the concept of image streams and methods of creating them, how config maps can be used to manage the configuration of your applications, mechanisms for limiting resource consumption per project using resource quotas and limit ranges, how to use templates to create multiple dependent resources, and how to configure autoscaling for your applications based on CPU or memory utilization.</p>
+<p class="calibre2">In the next chapter, we will work on security in OpenShift. We will be giving you an understanding of OpenShift security implementation, which is mandatory for any production environment.</p>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Questions</h1>
+                
+            
+            <article>
+                
+<ol class="calibre13">
+<li value="1" class="calibre10">What are ImageStreams used for? choose 2:</li>
+</ol>
+<ul class="calibre9">
+<li class="front-matter">
+<ol class="calibre14">
+<li value="1" class="calibre10">To protect applications from breaking unexpectedly when the image that an ImageStream points to changes.</li>
+<li value="2" class="calibre10">To implement rolling updates of applications.</li>
+<li value="3" class="calibre10">To store build images.</li>
+<li value="4" class="calibre10">To implement automatic build and deployments on image change.</li>
+</ol>
+</li>
+</ul>
+<ol start="2" class="calibre13">
+<li value="2" class="calibre10">What commands can be used to create a ConfigMap? choose 2:</li>
+</ol>
+<ul class="calibre9">
+<li class="front-matter">
+<ol class="calibre14">
+<li value="1" class="calibre10">oc create configmap my-configmap --from-file=nginx.conf</li>
+<li value="2" class="calibre10">oc create cm --from-env-file=environment.env</li>
+<li value="3" class="calibre10">oc create -f configmap_definition.yaml</li>
+<li value="4" class="calibre10">oc edit configmap/my-configmap</li>
+</ol>
+</li>
+</ul>
+<ol start="3" class="calibre13">
+<li value="3" class="calibre10">Which of the following valid commands to create a quota? choose 2:</li>
+</ol>
+<ul class="calibre9">
+<li class="front-matter">
+<ol class="calibre14">
+<li value="1" class="calibre10">oc create resourcequota example-quota --hard=cpus=2,memory=512Mi</li>
+<li value="2" class="calibre10">oc create quota example-quota --hard=cpu=4,ram=1Gi</li>
+<li value="3" class="calibre10">oc create resourcequota my-quota --hard=cpu=4,services=5</li>
+<li value="4" class="calibre10">oc create quota another-quota --hard=pods=8,secrets=4</li>
+</ol>
+</li>
+</ul>
+<ol start="4" class="calibre13">
+<li value="4" class="calibre10">What resources CAN'T be controlled by a LimitRange? choose 2:</li>
+</ol>
+<ul class="calibre9">
+<li class="front-matter">
+<ol class="calibre14">
+<li value="1" class="calibre10">Pod</li>
+<li value="2" class="calibre10">ConfigMap</li>
+<li value="3" class="calibre10">ImageStream</li>
+<li value="4" class="calibre10">Service</li>
+</ol>
+</li>
+</ul>
+<ol start="5" class="calibre13">
+<li value="5" class="calibre10">What is the correct syntax  for referencing the VARIABLE parameter in a template?</li>
+</ol>
+<ul class="calibre9">
+<li class="front-matter">
+<ol class="calibre14">
+<li value="1" class="calibre10">#{VARIABLE}</li>
+<li value="2" class="calibre10">&lt;VARIABLE&gt;</li>
+<li value="3" class="calibre10">${VARIABLE}</li>
+<li value="4" class="calibre10">%VARIABLE%</li>
+</ol>
+</li>
+</ul>
+<ol start="6" class="calibre13">
+<li value="6" class="calibre10">What must be specified by pods for CPU-based autoscaling?</li>
+</ol>
+<ul class="calibre9">
+<li class="front-matter">
+<ol class="calibre14">
+<li value="1" class="calibre10">Labels</li>
+<li value="2" class="calibre10">Limits</li>
+<li value="3" class="calibre10">Requests</li>
+<li value="4" class="calibre10">Selectors</li>
+</ol>
+</li>
+</ul>
+<ol start="7" class="calibre13">
+<li value="7" class="calibre10">What API version must be used to configure memory-based autoscaling?</li>
+</ol>
+<ul class="calibre9">
+<li class="front-matter">
+<ol class="calibre14">
+<li value="1" class="calibre10">v1</li>
+<li value="2" class="calibre10">v2</li>
+<li value="3" class="calibre10">v2alpha1</li>
+<li value="4" class="calibre10">v1beta1</li>
+</ol>
+</li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    
+
+        <section>
+
+                            <header>
+                    </header><h1 class="header-title" id="calibre_pb_0">Further reading</h1>
+                
+            
+            <article>
+                
+<p class="calibre2">In this chapter, we <span class="calibre11">covered advanced</span> concepts of the OpenShift container platform. Here's a list of links that may be helpful to look through so that you can learn more:</p>
+<ul class="calibre9">
+<li class="calibre10"><strong class="calibre1">OpenShift documentation on ImageStreams</strong>: <a href="https://docs.openshift.org/latest/architecture/core_concepts/builds_and_image_streams.html" target="_blank" class="calibre8">https://docs.openshift.org/latest/architecture/core_concepts/builds_and_image_streams.html</a></li>
+<li class="calibre10"><strong class="calibre1">OpenShift documentation on ConfigMaps</strong>: <a href="https://docs.openshift.org/latest/dev_guide/configmaps.html" target="_blank" class="calibre8">https://docs.openshift.org/latest/dev_guide/configmaps.html</a></li>
+<li class="calibre10"><strong class="calibre1">OpenShift documentation on ResourceQuotas</strong>: <a href="https://docs.openshift.org/latest/admin_guide/quota.html" target="_blank" class="calibre8">https://docs.openshift.org/latest/admin_guide/quota.html</a></li>
+<li class="calibre10"><strong class="calibre1">OpenShift documentation on LimitRanges</strong>: <a href="https://docs.openshift.org/latest/admin_guide/limits.html" target="_blank" class="calibre8">https://docs.openshift.org/latest/admin_guide/limits.html</a></li>
+<li class="calibre10"><strong class="calibre1">OpenShift documentation on templates</strong>: <a href="https://docs.openshift.org/latest/dev_guide/templates.html#dev-guide-templates" target="_blank" class="calibre8">https://docs.openshift.org/latest/dev_guide/templates.html#dev-guide-templates</a></li>
+<li class="calibre10"><strong class="calibre1">OpenShift documentation on HorizontalPodAutoscaler</strong>: <a href="https://docs.openshift.org/latest/dev_guide/pod_autoscaling.html" target="_blank" class="calibre8">https://docs.openshift.org/latest/dev_guide/pod_autoscaling.html</a></li>
+<li class="calibre10"><strong class="calibre1">Wikipedia article on YAML notation</strong>: <a href="https://en.wikipedia.org/wiki/YAML" target="_blank" class="calibre8">https://en.wikipedia.org/wiki/YAML</a></li>
+<li class="calibre10"><strong class="calibre1">YAML syntax validator</strong>: <a href="http://www.yamllint.com/" target="_blank" class="calibre8">http://www.yamllint.com/</a></li>
+<li class="calibre10"><strong class="calibre1">JSON notation</strong>: <a href="https://www.json.org/" target="_blank" class="calibre8">http://www.json.org</a> </li>
+<li class="calibre10"><strong class="calibre1">JSON syntax validator</strong>: <a href="https://jsonlint.com/" target="_blank" class="calibre8">https://jsonlint.com/</a></li>
+<li class="calibre10"><strong class="calibre1">YAML notation specification</strong>: <a href="http://www.yaml.org/start.html" target="_blank" class="calibre8">http://www.yaml.org/start.html</a></li>
+<li class="calibre10"><strong class="calibre1">OpenShift REST API reference</strong>: <a href="https://docs.openshift.org/latest/rest_api/api/" target="_blank" class="calibre8">https://docs.openshift.org/latest/rest_api/api/</a></li>
+<li class="calibre10"><strong class="calibre1">PCRE reference</strong>: <a href="http://perldoc.perl.org/perlre.html" target="_blank" class="calibre8">http://perldoc.perl.org/perlre.html</a></li>
+</ul>
+
+
+            </article>
+
+            
+        </section>
+    </body></html>

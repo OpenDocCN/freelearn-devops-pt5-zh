@@ -1,0 +1,692 @@
+<html><head></head><body>
+        <section>
+
+            <header>
+                <h1 class="header-title">Collecting Metrics and Monitoring the Cluster</h1>
+            </header>
+
+            <article>
+                
+<div class="packt_quote">Let us change our traditional attitude to the construction of programs. Instead of imagining that our main task is to instruct a computer what to do, let us concentrate rather on explaining to human beings what we want a computer to do.<br/>
+                                                                                                               –Donald Knuth</div>
+<p>We managed to add centralized logging to our cluster. Logs from any container running inside any of the nodes are shipped to a central location. They are stored in Elasticsearch and available through Kibana. However, the fact that we have easy access to all the logs does not mean that we have all the information we would need to debug a problem or prevent it from happening in the first place. We need to complement our logs with the rest of the information about the system. We need much more than what logs alone can provide.</p>
+
+
+            </article>
+
+            <footer style="margin-top: 5em;">
+                
+            </footer>
+
+        </section>
+    
+
+        <section>
+
+            <header>
+                <h1 class="header-title">The requirements of a cluster monitoring system</h1>
+            </header>
+
+            <article>
+                
+<p>With everything we've done until now, not to mention the tasks we'll do throughout the rest of the book, we are simultaneously decreasing and increasing the complexity of our system. Scaling a service is easier and less complex with Docker Swarm than it would be with containers alone. The fact is that Docker already simplified a lot the process we had before. Add to that the new networking with service discovery baked in, and the result is almost too simple to be true. On the other hand, there is complexity hidden below the surface. One of the ways such complexity manifests itself can be easily observed if we try to combine dynamic tools we have used so far, with those created in (and for) a different era.</p>
+<p>Take <em>Nagios</em> (<a href="https://www.nagios.org/">https://www.nagios.org/</a>) as an example. I won't say that we could not use it to monitor our system (we certainly can). What I will state is that it would clash with the new system architecture we've designed so far. Our system has gotten much more complex than it was. The number of replicas is fluctuating. While today we have four instances of a service, tomorrow morning there could be six, only to fall to three in the afternoon. They are distributed across multiple nodes of the cluster, and being moved around. Servers are being created and destroyed. Our cluster and everything inside it is truly dynamic and elastic.</p>
+<p>The dynamic nature of the system we are building would not fit into Nagios, which expects services and servers to be relatively static. It expects us to define things in advance. The problem with such an approach is that we do not have the information in advance. Swarm does. Even if we get the information we need, it will change soon.</p>
+<p>The system we're building is highly dynamic, and the tools we should use to monitor such a system need to be able to cope with this dynamism.</p>
+<p>It's more than that. Most of the "traditional" tools tend to treat the whole system as a black box. That, on the one hand, has a certain number of advantages. The main one is that it allows us to decouple our services from the rest of the system. In many (but not all) cases, white box monitoring means that we need to add to our services monitoring libraries and write some code around them so that they can expose the internals of our services.</p>
+<p>Think twice before choosing to add something to your service that is not strictly its job. When we adopt a microservices approach, we should strive towards services being functionally limited to their primary goal. If it's a shopping cart, it should be an API that will allow us to add and remove items. Adding libraries and code that will extend such a service so that it can register itself in a service discovery store, or expose its metrics to the monitoring tool, produces too much coupling. Once we do that, our future options will be very limited, and making a change in the system might require considerable time and effort.</p>
+<p>We already managed to avoid coupling service discovery with our services. The <kbd>go-demo</kbd> service does not have any knowledge of service discovery and yet, our system has all the information it needs. There are many other examples where organizations fall into a trap and start coupling their services with the system around them. In this case, our main preoccupation is whether we can accomplish the same with monitoring. Can we avoid coupling creation of metrics with the code we write for our services?</p>
+<p>Then again, being able to do white box monitoring provides a lot of benefits black box does not have. For one, understanding the internals of a service allows us to operate with a much finer level of detail. It gives us knowledge that we could not obtain if we were to treat the system as a black box.<br/>
+In a world of distributed systems designed for high availability and fast response time, it is not enough to be limited to health checks and CPU, memory, and disk usage monitoring. We already have Swarm that makes sure the services are healthy and we could easily make scripts that check essential resource usage. We need much more than that. We need white box monitoring that does not introduce unnecessary coupling. We need intelligent alerting that will notify us when something is wrong, or even automatically fix the problem. Ideally, we would have alerts and automated corrections executed before the problems even happen.</p>
+<p>Some of the requirements we'd need from a monitoring system would be as follows:</p>
+<ul>
+<li><em>A decentralized way of generating metrics</em> that will be able to cope with the highly dynamic nature of our cluster</li>
+<li><em>A multi-dimensional data model</em> that can be queried across as many dimensions as needed</li>
+<li><em>An efficient query language</em> that will allow us to exploit our monitoring data model and create effective alerting and visualization</li>
+<li><em>Simplicity</em> that will allow (almost) anyone to utilize the system without extensive training</li>
+</ul>
+<p>In this chapter, we'll continue the work we started in the previous. We'll explore ways to export a different set of metrics, a way to collect them, query them, and expose them through dashboards.</p>
+<p>Before we do all that, we should make some choices. Which tools shall we use for our monitoring solution?</p>
+
+
+            </article>
+
+            <footer style="margin-top: 5em;">
+                
+            </footer>
+
+        </section>
+    
+
+        <section>
+
+            <header>
+                <h1 class="header-title">Choosing the right database to store system metrics</h1>
+            </header>
+
+            <article>
+                
+<p>In <em>The DevOps 2.0 Toolkit</em>, I argued against "traditional" monitoring tools like <em>Nagios</em> (<a href="https://www.nagios.org/">https://www.nagios.org/</a>) and <em>Icinga</em> (<a href="https://www.icinga.org/">https://www.icinga.org/</a>). Instead, we chose to use Elasticsearch for both the logs and the system metrics. In the previous chapter, I reiterated the choice for using Elasticsearch as the logging solution. Can we extend its usage by storing metrics? Yes, we can. Should we do that? Should we use it as a place to store system metrics? Are there better solutions?<br/>
+The biggest problem with Elasticsearch, if used as a database to store system metrics, is that it is not a time series type of database. Logs benefit greatly from Elasticsearch ability to perform free text search and store data in an unstructured way. However, for system metrics, we might take advantage of a different type of data storage. We need a time series database.</p>
+<p>Time series databases are designed around optimized ways to store and retrieve time series data. One of their greatest benefits is that they store information in a very compact format allowing them to host a vast amount of data. If you compare storage needs for time-based data in other types of databases (Elasticsearch included), you'll discover that time series databases are much more efficient. In other words, if your data are time-based metrics, use a database designed for such data.</p>
+<p>The biggest problem with most (if not all) time series databases is distributed storage. Running them with replication is not possible, or a challenge at best. To put it bluntly, such databases are designed to run a single instance. Luckily we often do not need to store long term data in such databases and can clean them up periodically. If long term storage is a must, the solution would be to export aggregated data into some other type of database like Elasticsearch which, by the way, shines when it comes to replication and sharding. However, before you go "crazy" and start exporting data, make sure that you truly need to do something like that. Time series databases can easily store a vast amount of information in a single instance. The chances are that you won't need to scale them for capacity reasons. On the other hand, if a database fails, Swarm will reschedule it, and you'll lose only a few seconds of information. Such a scenario should not be a disaster since we are dealing with aggregated data, not individual transactions.</p>
+<p>One of the most prominent time series databases is <em>InfluxDB</em> (<a href="https://www.influxdata.com/">https://www.influxdata.com/</a>). <em>Prometheus</em> (<a href="https://prometheus.io/">https://prometheus.io/</a>) is a commonly used alternative. We'll skip the comparison of these two products except to note that we'll use the latter. Both are worthy candidates for your monitoring solution with Prometheus having a potential advantage we should not ignore. The community plan is to expose Docker metrics natively in Prometheus format. At the time of this writing, there is no fixed date when that'll happen, but we'll do our best to design the system around that plan. If you'd like to monitor the progress yourself, please watch <em>Docker issue 27307</em> (<a href="https://github.com/docker/docker/issues/27307">https://github.com/docker/docker/issues/27307</a>). We'll use Prometheus in such a way that we'll be able to switch to Docker native metrics once they are available.</p>
+<p>Let's convert words into actions and create the cluster that we'll use throughout this chapter.</p>
+
+
+            </article>
+
+            <footer style="margin-top: 5em;">
+                
+            </footer>
+
+        </section>
+    
+
+        <section>
+
+            <header>
+                <h1 class="header-title">Creating the cluster</h1>
+            </header>
+
+            <article>
+                
+<p>This time we'll create more services than before so we'll need a bit bigger cluster. It's not that the services will be very demanding but that our VMs have only one CPU and 1GB memory each. Such machines are not something to brag about. This time, we'll create a cluster that consists of five machines. Apart from increasing the capacity of the cluster, everything else will be the same as before, so there's no good reason to go through the process again. We'll simply execute <kbd>scripts/dm-swarm-5.sh</kbd> (<a href="https://github.com/vfarcic/cloud-provisioning/blob/master/scripts/dm-swarm-5.sh">https://github.com/vfarcic/cloud-provisioning/blob/master/scripts/dm-swarm-5.sh</a>):</p>
+<div class="packt_infobox">All the commands from this chapter are available in the <kbd>09-monitoring.sh</kbd> (<a href="https://gist.github.com/vfarcic/271fe5ab7eb6a3307b9f062eadcc3127">https://gist.github.com/vfarcic/271fe5ab7eb6a3307b9f062eadcc3127</a>) Gist.</div>
+<pre>
+<strong><span class="hljs-built_in">cd</span> cloud-provisioning<br/><br/>git pull<br/><br/>scripts/dm-swarm-<span class="hljs-number">5</span>.sh<br/><br/><span class="hljs-built_in">eval</span> $(docker-machine env swarm-<span class="hljs-number">1</span>)<br/><br/>docker node ls</strong>
+</pre>
+<p>The output of the <kbd>docker node ls</kbd> command is as follows (IDs are removed for brevity):</p>
+<pre>
+<strong>HOSTNAME  STATUS  AVAILABILITY  MANAGER STATUS<br/>swarm-<span class="hljs-number">4</span>   Ready   <span class="hljs-keyword">Active</span><br/>swarm-<span class="hljs-number">2</span>   Ready   <span class="hljs-keyword">Active</span>        Reachable<br/>swarm-<span class="hljs-number">1</span>   Ready   <span class="hljs-keyword">Active</span>        Leader<br/>swarm-<span class="hljs-number">5</span>   Ready   <span class="hljs-keyword">Active</span><br/>swarm-<span class="hljs-number">3</span>   Ready   <span class="hljs-keyword">Active</span>        Reachable</strong>
+</pre>
+<p>We created a Swarm cluster with five nodes, three of them acting as managers and the rest as workers.<br/>
+Now we can create the services we used before. Since this is also something we practiced quite a few times, we'll create stacks from Compose files <kbd>vfarcic/docker-flow-proxy/docker-compose-stack.yml</kbd> (<a href="https://github.com/vfarcic/docker-flow-proxy/blob/master/docker-compose-stack.yml">https://github.com/vfarcic/docker-flow-proxy/blob/master/docker-compose-stack.yml</a>) and <kbd>vfarcic/go-demo/docker-compose-stack.yml</kbd> (<a href="https://github.com/vfarcic/go-demo/blob/master/docker-compose-stack.yml">https://github.com/vfarcic/go-demo/blob/master/docker-compose-stack.yml</a>):</p>
+<div class="packt_tip"><strong>A note to Windows users</strong><br/>
+You might experience a problem with volumes not being mapped correctly with Docker Compose. If you see an <em>Invalid volume specification</em> error, please export the environment variable <kbd>COMPOSE_CONVERT_WINDOWS_PATHS</kbd> set to <kbd>0</kbd>:<br/>
+<kbd>export COMPOSE_CONVERT_WINDOWS_PATHS=0</kbd><br/>
+Please make sure that the variable is exported every time you run <kbd>docker-compose</kbd> or <kbd>docker stack deploy</kbd>.</div>
+<pre>
+<strong>docker network create --driver overlay proxy<br/><br/>curl -o proxy-stack.yml \<br/>    https://raw.githubusercontent.com/\<br/>vfarcic/docker-flow-proxy/master/docker-compose-stack.yml<br/><br/>docker stack deploy \<br/>    -c proxy-stack.yml proxy<br/><br/>curl -o go-demo-stack.yml \<br/>    https://raw.githubusercontent.com/\<br/>vfarcic/go-demo/master/docker-compose-stack.yml<br/><br/>docker stack deploy \<br/>    -c go-demo-stack.yml go-demo<br/><br/>docker service create --name util \<br/>    --network proxy \<br/>    --mode global \<br/>    alpine sleep <span class="hljs-number">1000000000</span><br/><br/>docker service ls</strong>
+</pre>
+<p>After a while, the output of the <kbd>docker service ls</kbd> command is as follows (IDs are removed for brevity):</p>
+<pre>
+<strong>NAME           REPLICAS IMAGE                             COMMAND<br/>swarm<span class="hljs-attribute">-listener</span> <span class="hljs-number">1</span>/<span class="hljs-number">1</span>      vfarcic/docker<span class="hljs-attribute">-flow</span><span class="hljs-attribute">-swarm</span><span class="hljs-attribute">-listener</span><br/>go<span class="hljs-attribute">-demo</span>        <span class="hljs-number">3</span>/<span class="hljs-number">3</span>      vfarcic/go<span class="hljs-attribute">-demo</span>:<span class="hljs-number">1.2</span><br/>util           <span class="hljs-built_in">global</span>   alpine                            sleep <span class="hljs-number">1000000000</span><br/>go<span class="hljs-attribute">-demo</span><span class="hljs-attribute">-db</span>     <span class="hljs-number">1</span>/<span class="hljs-number">1</span>      mongo:<span class="hljs-number">3.2</span><span class="hljs-number">.10</span><br/>proxy          <span class="hljs-number">3</span>/<span class="hljs-number">3</span>      vfarcic/docker<span class="hljs-attribute">-flow</span><span class="hljs-attribute">-proxy</span></strong>
+</pre>
+<p>We used stacks downloaded from GitHub repositories to create all the services except util. Right now, our cluster is hosting the demo services <kbd>go-demo</kbd> and <kbd>go-demo-db</kbd>, the <kbd>proxy</kbd>, the <kbd>swarm-listener</kbd>, and the globally scheduled util service that we'll use to experiment with monitoring metrics.</p>
+<p>We're ready to start generating some metrics.</p>
+
+
+            </article>
+
+            <footer style="margin-top: 5em;">
+                
+            </footer>
+
+        </section>
+    
+
+        <section>
+
+            <header>
+                <h1 class="header-title">Prometheus metrics</h1>
+            </header>
+
+            <article>
+                
+<p>Prometheus stores all data as time series. It is a stream of timestamped values that belong to the same metric and the same labels. The labels provide multiple dimensions to the metrics.</p>
+<p>For example, if we'd like to export data based on HTTP requests from the <kbd>proxy</kbd>, we might create a metric called <kbd>proxy_http_requests_total</kbd>. Such a metric could have labels with the <kbd>request</kbd> method, <kbd>status</kbd>, and <kbd>path</kbd>. These three could be specified as follows:</p>
+<pre>
+<strong>{<span class="hljs-keyword">method</span>=<span class="hljs-string">"GET"</span>, url=<span class="hljs-string">"/demo/person"</span>, status=<span class="hljs-string">"200"</span>}<br/>{<span class="hljs-keyword">method</span>=<span class="hljs-string">"PUT"</span>, url=<span class="hljs-string">"/demo/person"</span>, status=<span class="hljs-string">"200"</span>}<br/>{<span class="hljs-keyword">method</span>=<span class="hljs-string">"GET"</span>, url=<span class="hljs-string">"/demo/person"</span>, status=<span class="hljs-string">"403"</span>}</strong>
+</pre>
+<p>Finally, we need a value of the metric, which, in our example, would be the total number of requests.</p>
+<p>When we combine metric names with the labels and values, the example result could be as follows:</p>
+<pre>
+<strong>proxy_http_requests_total{<span class="hljs-keyword">method</span>=<span class="hljs-string">"GET"</span>, url=<span class="hljs-string">"/demo/person"</span>, status=<span class="hljs-string">"200"</span>} <span class="hljs-number">654</span><br/>proxy_http_requests_total{<span class="hljs-keyword">method</span>=<span class="hljs-string">"PUT"</span>, url=<span class="hljs-string">"/demo/person"</span>, status=<span class="hljs-string">"200"</span>} <span class="hljs-number">143</span><br/>proxy_http_requests_total{<span class="hljs-keyword">method</span>=<span class="hljs-string">"GET"</span>, url=<span class="hljs-string">"/demo/person"</span>, status=<span class="hljs-string">"403"</span>} <span class="hljs-number">13</span></strong>
+</pre>
+<p>Through these three metrics, we can see that there were <kbd>654</kbd> successful <kbd>GET</kbd> requests, <kbd>143</kbd> successful <kbd>PUT</kbd> requests, and <kbd>13</kbd> failed <kbd>GET</kbd> requests <kbd>HTTP 403</kbd>.</p>
+<p>Now that the format is more or less clear, we can discuss different ways to generate metrics and feed them to Prometheus.</p>
+<p>Prometheus is based on a <em>pull</em> mechanism that scrapes metrics from the configured targets. There are two ways we can generate Prometheus-friendly data. One is to instrument our own services. Prometheus offers client libraries for <em>Go </em>(<a href="https://github.com/prometheus/client_golang">https://github.com/prometheus/client_golang</a>), <em>Python </em>(<a href="https://github.com/prometheus/client_python">https://github.com/prometheus/client_python</a>), <em>Ruby</em> (<a href="https://github.com/prometheus/client_ruby">https://github.com/prometheus/client_ruby</a>), and <em>Java</em> (<a href="https://github.com/prometheus/client_java">https://github.com/prometheus/client_java</a>). On top of those, there are quite a few unofficial libraries available for other languages. Exposing metrics of our services is called instrumentation. Instrumenting your code is, in a way, similar to logging.</p>
+<p>Even though instrumentation is the preferred way of providing data that will be stored in Prometheus, I advise against it. That is, unless the same data cannot be obtained by different means. The reasons for such a suggestion lie in my preference for keeping microservices decoupled from the rest of the system. If we managed to keep service discovery outside our services, maybe we can do the same with metrics.</p>
+<p>When our service cannot be instrumented or, even better, when we do not want to instrument it, we can utilize Prometheus exporters. Their purpose is to collect already existing metrics and convert them to Prometheus format. As you'll see, our system already exposes quite a lot of metrics. Since it would be unrealistic to expect all our solutions to provide metrics in Prometheus format, we'll use exporters to do the transformation.</p>
+<p>When scraping (pulling) data is not enough, we can change direction and push them. Even though scraping is the preferred way for Prometheus to get metrics, there are cases when such an approach is not appropriate. An example would be short-lived batch jobs. They might be so short lived that Prometheus might not be able to pull the data before the job is finished and destroyed. In such cases, the batch job can push data to the <em>Push Gateway </em>(<a href="https://github.com/prometheus/pushgateway">https://github.com/prometheus/pushgateway</a>) from which Prometheus can scrape metrics.</p>
+<p>For the list of currently supported exporters, please consult the <em>Exporters and Integrations</em> (<a href="https://prometheus.io/docs/instrumenting/exporters/">https://prometheus.io/docs/instrumenting/exporters/</a>) section of the Prometheus documentation.</p>
+<p>Now, after a short introduction to metrics, we're ready to create services that will host the exporters.</p>
+
+
+            </article>
+
+            <footer style="margin-top: 5em;">
+                
+            </footer>
+
+        </section>
+    
+
+        <section>
+
+            <header>
+                <h1 class="header-title">Exporting system wide metrics</h1>
+            </header>
+
+            <article>
+                
+<p>We'll start with the <em>Node Exporter</em> (<a href="https://github.com/prometheus/node_exporter">https://github.com/prometheus/node_exporter</a>) service. It'll export different types of metrics related to our servers:</p>
+<div class="packt_tip"><strong>A note to Windows users</strong><br/>
+For mounts used in the next command to work, you have to stop Git Bash from altering file system paths. Set this environment variable:<br/>
+<kbd>export MSYS_NO_PATHCONV=1</kbd><br/>
+This chapter contains many <kbd>docker service create</kbd> commands that use mounts. Before you execute those commands, please ensure that the environment variable <kbd>MSYS_NO_PATHCONV</kbd> exists and is set to <kbd>1</kbd>:<br/>
+<kbd>echo $MSYS_NO_PATHCONV</kbd></div>
+<pre>
+<strong>docker service create \<br/>    --name node-exporter \<br/>    --mode global \<br/>    --network proxy \ <br/>    --mount <span class="hljs-string">"type=bind,source=/proc,target=/host/proc"</span> \<br/>    --mount <span class="hljs-string">"type=bind,source=/sys,target=/host/sys"</span> \<br/>    --mount <span class="hljs-string">"type=bind,source=/,target=/rootfs"</span> \<br/>    prom/node-exporter:<span class="hljs-number">0.12</span>.<span class="hljs-number">0</span> \<br/>    -collector.procfs /host/proc \<br/>    -collector.sysfs /host/proc \<br/>    -collector.filesystem.ignored-mount-points \<br/><span class="hljs-string">    "^/(sys|proc|dev|host|etc)($|/)"</span></strong>
+</pre>
+<p>Since we need the <kbd>node-exporter</kbd> to be available on each server, we specified that the service should be global. Normally, we'd attach it to a separate network dedicated to monitoring tools (example:monitoring). However, Docker machines running locally might have problems with more than two networks. Since we already created the <kbd>go-demo</kbd> and <kbd>proxy</kbd> networks through <kbd>scripts/dm-swarm-services-3.sh</kbd> (<a href="https://github.com/vfarcic/cloud-provisioning/blob/master/scripts/dm-swarm-services-3.sh">https://github.com/vfarcic/cloud-provisioning/blob/master/scripts/dm-swarm-services-3.sh</a>) we've reached the safe limit. For that reason, we'll use the existing <kbd>proxy</kbd> network for monitoring services as well. When operating the "real" cluster, you should create a separate network for monitoring services.</p>
+<p>We mounted a few volumes as well.</p>
+<p>The <kbd>/proc</kbd> directory is very special in that it is also a virtual filesystem. It's sometimes referred to as a process information pseudo-file system. It doesn't contain "real" files but runtime system information (example: system memory, devices mounted, hardware configuration, and so on).<br/>
+For this reason, it can be regarded as a control and information center for the kernel. In fact, quite a lot of system utilities are simply calls to files in this directory. For example, <kbd>lsmod</kbd> is the same as <kbd>cat /proc/modules</kbd> while <kbd>lspci</kbd> is a synonym for <kbd>cat /proc/pci</kbd>. By altering files located in that directory, you can even <kbd>read/change</kbd> kernel parameters <kbd>sysctl</kbd> while the system is running. The <kbd>node-exporter</kbd> service will use it to find all the processes running inside our system.</p>
+<p>Modern Linux distributions include a <kbd>/sys</kbd> directory as a virtual filesystem (<kbd>sysfs</kbd>, comparable to <kbd>/proc</kbd>, which is a <kbd>procfs</kbd>), which stores and allows modification of the devices connected to the system, whereas many traditional UNIX and Unix-like operating systems use <kbd>/sys</kbd> as a symbolic link to the kernel source tree.</p>
+<p>The <kbd>sys</kbd> directory is a virtual file system provided by Linux. It provides a set of virtual files by exporting information about various kernel subsystems, hardware devices and associated device drivers from the kernel's device model to user space. By exposing it as a volume, the service will be able to gather information about the kernel.</p>
+<p>Finally, we defined the image <kbd>prom/node-exporter</kbd> and passed a few command arguments. We specified the target volumes for <kbd>/proc</kbd> and <kbd>/sys</kbd> followed with the instruction to ignore mount points inside the container.</p>
+<p>Please visit the <em>Node Exporter project</em> (<a href="https://github.com/prometheus/node_exporter">https://github.com/prometheus/node_exporter</a>) for more information.</p>
+<p>By this time, the service should be running inside the cluster. Let's confirm that:</p>
+<pre>
+<strong>docker service ps node-exporter</strong>
+</pre>
+<p>The output of the <kbd>service ps</kbd> command is as follows (IDs are removed for brevity):</p>
+<pre>
+<strong>NAME             IMAGE                     NODE    DESIRED STATE          <br/>node<span class="hljs-attribute">-exporter</span><span class="hljs-attribute">...</span> prom/node<span class="hljs-attribute">-exporter</span>:<span class="hljs-number">0.12</span><span class="hljs-number">.0</span> swarm<span class="hljs-subst">-</span><span class="hljs-number">5</span> Running       <br/>node<span class="hljs-attribute">-exporter</span><span class="hljs-attribute">...</span> prom/node<span class="hljs-attribute">-exporter</span>:<span class="hljs-number">0.12</span><span class="hljs-number">.0</span> swarm<span class="hljs-subst">-</span><span class="hljs-number">4</span> Running       <br/>node<span class="hljs-attribute">-exporter</span><span class="hljs-attribute">...</span> prom/node<span class="hljs-attribute">-exporter</span>:<span class="hljs-number">0.12</span><span class="hljs-number">.0</span> swarm<span class="hljs-subst">-</span><span class="hljs-number">3</span> Running       <br/>node<span class="hljs-attribute">-exporter</span><span class="hljs-attribute">...</span> prom/node<span class="hljs-attribute">-exporter</span>:<span class="hljs-number">0.12</span><span class="hljs-number">.0</span> swarm<span class="hljs-subst">-</span><span class="hljs-number">2</span> Running       <br/>node<span class="hljs-attribute">-exporter</span><span class="hljs-attribute">...</span> prom/node<span class="hljs-attribute">-exporter</span>:<span class="hljs-number">0.12</span><span class="hljs-number">.0</span> swarm<span class="hljs-subst">-</span><span class="hljs-number">1</span> Running       <br/>------------------------------------------------<br/>CURRENT STATE         ERROR PORTS<br/>Running <span class="hljs-number">6</span> seconds ago<br/>Running <span class="hljs-number">7</span> seconds ago<br/>Running <span class="hljs-number">7</span> seconds ago<br/>Running <span class="hljs-number">7</span> seconds ago<br/>Running <span class="hljs-number">7</span> seconds ago<br/></strong>
+</pre>
+<p>Let's have a quick look at the metrics provided by the <kbd>node-exporter</kbd> service. We'll use the <kbd>util</kbd> service to retrieve the metrics:</p>
+<pre>
+<strong>UTIL_ID=$(docker ps -q --filter \<br/>    label=com.docker.swarm.service.name=util)<br/><br/>docker <span class="hljs-keyword">exec</span> -it <span class="hljs-variable">$UTIL_ID</span> \<br/>    apk add --update curl drill<br/><br/>docker <span class="hljs-keyword">exec</span> -it <span class="hljs-variable">$UTIL_ID</span> \<br/>    curl http://node-exporter:<span class="hljs-number">9100</span>/metrics</strong>
+</pre>
+<p>A sample of the <kbd>curl</kbd> output is as follows:</p>
+<pre>
+<strong><span class="hljs-comment"># HELP go_gc_duration_seconds A summary of the GC invocation durations.</span><br/><span class="hljs-comment"># TYPE go_gc_duration_seconds summary</span><br/>go_gc_duration_seconds{quantile=<span class="hljs-string">"0"</span>} <span class="hljs-number">0</span><br/>go_gc_duration_seconds{quantile=<span class="hljs-string">"0.25"</span>} <span class="hljs-number">0</span><br/>go_gc_duration_seconds{quantile=<span class="hljs-string">"0.5"</span>} <span class="hljs-number">0</span><br/>go_gc_duration_seconds{quantile=<span class="hljs-string">"0.75"</span>} <span class="hljs-number">0</span><br/>go_gc_duration_seconds{quantile=<span class="hljs-string">"1"</span>} <span class="hljs-number">0</span><br/>go_gc_duration_seconds_sum <span class="hljs-number">0</span><br/>go_gc_duration_seconds_count <span class="hljs-number">0</span><br/><span class="hljs-keyword">...</span></strong>
+</pre>
+<p>As you can see, the metrics are in the Prometheus-friendly format. Please explore the <em>Node Exporter collectors</em> (<a href="https://github.com/prometheus/node_exporter#collectors">https://github.com/prometheus/node_exporter#collectors</a>) for more information about the meaning of each metric. For now, you should know that most of the node information you would need is available and will be, later on, scraped by Prometheus.</p>
+<p>Since we sent a request through Docker networking, we got a load-balanced response and cannot be sure which node produced the output. When we reach the Prometheus configuration, we'll have to be more specific and skip networks load balancing.</p>
+<p>Now that we have the information about servers, we should add metrics specific to containers. We'll use <kbd>cAdvisor</kbd> also known as <strong>container Advisor</strong>.</p>
+<p>The <kbd>cAdvisor</kbd> provides container users an understanding of the resource usage and performance characteristics of their running containers. It is a running daemon that collects, aggregates, processes, and exports information about running containers. Specifically, for each container it keeps resource isolation parameters, historical resource usage, histograms of complete historical resource usage and network statistics. This data is exported container and machine-wide. It has native support for Docker containers.</p>
+<p>Let's create the service:</p>
+<pre>
+<strong>docker service create --name cadvisor \<br/>    -p <span class="hljs-number">8080</span>:<span class="hljs-number">8080</span> \<br/>    --mode global \<br/>    --network proxy \<br/>    --mount <span class="hljs-string">"type=bind,source=/,target=/rootfs"</span> \<br/>    --mount <span class="hljs-string">"type=bind,source=/var/run,target=/var/run"</span> \<br/>    --mount <span class="hljs-string">"type=bind,source=/sys,target=/sys"</span> \<br/>    --mount <span class="hljs-string">"type=bind,source=/var/lib/docker,target=/var/lib/docker"</span> \<br/>    google/cadvisor:v0.<span class="hljs-number">24.1</span></strong>
+</pre>
+<p>Just as with the <kbd>node-exporter</kbd>, the <kbd>cadvisor</kbd> service is global and attached to the <kbd>proxy</kbd> network. It mounts a few directories that allows it to monitor Docker stats and events on the host. Since <kbd>cAdvisor</kbd> comes with a web UI, we opened port <kbd>8080</kbd> that will allow us to open it in a browser.</p>
+<p>Before we proceed, we should confirm that the service is indeed running:</p>
+<pre>
+<strong>docker service ps cadvisor</strong>
+</pre>
+<p>The output of the <kbd>service ps</kbd> is as follows (IDs are removed for brevity):</p>
+<pre>
+<strong>NAME        IMAGE                   NODE    DESIRED STATE         <br/>cadvisor... google/cadvisor:v0<span class="hljs-number">.24</span><span class="hljs-number">.1</span> swarm-<span class="hljs-number">3</span> Running       <br/>cadvisor... google/cadvisor:v0<span class="hljs-number">.24</span><span class="hljs-number">.1</span> swarm-<span class="hljs-number">2</span> Running       <br/>cadvisor... google/cadvisor:v0<span class="hljs-number">.24</span><span class="hljs-number">.1</span> swarm-<span class="hljs-number">1</span> Running      <br/>cadvisor... google/cadvisor:v0<span class="hljs-number">.24</span><span class="hljs-number">.1</span> swarm-<span class="hljs-number">5</span> Running       <br/>cadvisor... google/cadvisor:v0<span class="hljs-number">.24</span><span class="hljs-number">.1</span> swarm-<span class="hljs-number">4</span> Running       <br/>--------------------------------------------------------<br/>CURRENT STATE           ERROR PORTS<br/>Running <span class="hljs-number">3</span> <span class="hljs-built_in">seconds</span> ago<br/>Running <span class="hljs-number">3</span> <span class="hljs-built_in">seconds</span> ago<br/>Running <span class="hljs-number">3</span> <span class="hljs-built_in">seconds</span> ago<br/>Running <span class="hljs-number">8</span> <span class="hljs-built_in">seconds</span> ago<br/>Running <span class="hljs-number">3</span> <span class="hljs-built_in">seconds</span> ago<br/></strong>
+</pre>
+<p>Now we can open the UI:</p>
+<div class="packt_tip"><strong>A note to Windows users</strong><br/>
+Git Bash might not be able to use the open command. If that's the case, execute <kbd>docker-machine ip &lt;SERVER_NAME&gt;</kbd> to find out the IP of the machine and open the URL directly in your browser of choice. For example, the command below should be replaced with the command that follows:<br/>
+<kbd>docker-machine ip swarm-1</kbd><br/>
+If the output would be <kbd>1.2.3.4</kbd>, you should open <kbd>http://1.2.3.4:8080</kbd> in your browser.</div>
+<pre>
+<strong>open <span class="hljs-string">"http://<span class="hljs-variable">$(docker-machine ip swarm-1)</span>:8080"</span></strong>
+</pre>
+<div class="CDPAlignCenter CDPAlign"><img class="image-border" height="243" src="assets/cadvisor.png" width="458"/></div>
+<div class="packt_figref CDPAlignCenter CDPAlign">Figure 9-1: cAdvisor UI</div>
+<p>Feel free to scroll down and explore different graphs and metrics provided by <kbd>cAdvisor</kbd>. If they are not enough, information about running containers can be obtained by clicking the Docker Containers link at the top of the screen.</p>
+<p>Even though it might seem impressive on the first look, the UI is, more or less, useless for anything but a single server. Since it is designed as a tool to monitor a single node, it does not have much usage inside a Swarm cluster.<br/>
+For one, the page and all the requests it makes are load-balanced by the ingress network. That means not only that we do not know which server returned the UI, but requests that return data used by metrics and graphs are load balanced as well. In other words, different data from all the servers is mixed, giving us a very inaccurate picture. We could skip using the service and run the image with  <kbd>docker run</kbd> command (repeated for each server). However, even though that would allow us to see a particular server, the solution would still be insufficient since we would be forced to go from one server to another. Our goal is different. We need to gather and visualize data from the whole cluster, not individual servers. Therefore, the UI must go.</p>
+<p>As a side note, certain types of metrics overlap between the <kbd>node-exporter</kbd> and <kbd>cadvisor</kbd> services. You might be tempted to choose only one of those. However, their focus is different, and the full picture can be accomplished only with the combination of the two.<br/>
+Since we established that the UI is useless when hosted inside a Swarm cluster, there is no good reason to expose port <kbd>8080</kbd>. Therefore, we should remove it from the service. You might be tempted to remove the service and create it again without exposing the port. There is no need for such an action. Instead, we can eliminate the port by updating the service:</p>
+<pre>
+<strong>docker service update \<br/>    --publish-rm <span class="hljs-number">8080</span> cadvisor<br/><br/>docker service inspect cadvisor --pretty</strong>
+</pre>
+<p>By examining the output of the <kbd>service inspect</kbd> command, you'll notice that the port is not opened (it does not exist).</p>
+<p>Now that the <kbd>cadvisor</kbd> service is running, and we do not generate noise from the useless UI, we can take a quick look at the metrics <kbd>cAdvisor</kbd> exports:</p>
+<pre>
+<strong>docker <span class="hljs-keyword">exec</span> -it <span class="hljs-variable">$UTIL_ID</span> \<br/>    curl http://cadvisor:<span class="hljs-number">8080</span>/metrics</strong>
+</pre>
+<p>A sample of the <kbd>curl</kbd> output is as follows:</p>
+<pre>
+<strong><span class="hljs-preprocessor"># TYPE container_cpu_system_seconds_total counter</span><br/>container_cpu_system_seconds_total{<span class="hljs-keyword">id</span>=<span class="hljs-string">"/"</span>} <span class="hljs-number">22.91</span><br/>container_cpu_system_seconds_total{<span class="hljs-keyword">id</span>=<span class="hljs-string">"/docker"</span>} <span class="hljs-number">0.32</span></strong>
+</pre>
+<p>We're making excellent progress. We are exporting server and container metrics. We might continue adding metrics indefinitely and extend this chapter to an unbearable size. I'll leave the creation of services that will provide additional info as an exercise you should perform later on. Right now we'll move onto Prometheus. After all, having metrics is not of much use without being able to query and visualize them.</p>
+
+
+            </article>
+
+            <footer style="margin-top: 5em;">
+                
+            </footer>
+
+        </section>
+    
+
+        <section>
+
+            <header>
+                <h1 class="header-title">Scraping, querying, and visualizing Prometheus metrics</h1>
+            </header>
+
+            <article>
+                
+<p>Prometheus server is designed to pull the metrics from instrumented services. However, since we wanted to avoid unnecessary coupling, we used exporters that provide the metrics we need. Those exporters are already running as Swarm services, and now we are ready to exploit them through Prometheus.<br/>
+To instantiate the Prometheus service, we should create a configuration file with the exporters running in our cluster. Before we do that, we need to retrieve the IPs of all the instances of an exporter service. If you recall the <a href="014d8ab7-c047-47ff-a5af-ef6325ae9519.xhtml">Chapter 4</a>, <em>Service Discovery inside a Swarm Cluster</em>, we can retrieve all the IPs by appending the tasks. prefix to the service name.</p>
+<p>To retrieve the list of all the replicas of the <kbd>node-exporter</kbd> service, we could, for example, drill it from one of the instances of the <kbd>util</kbd> service:</p>
+<pre>
+<strong>docker <span class="hljs-keyword">exec</span> -it <span class="hljs-variable">$UTIL_ID</span> \<br/>    drill tasks.node-exporter</strong>
+</pre>
+<p>The relevant part of the output is as follows:</p>
+<pre>
+<strong><span class="hljs-comment">;; ANSWER SECTION:</span><br/>tasks<span class="hljs-preprocessor">.node</span>-exporter.    <span class="hljs-number">600</span> <span class="hljs-keyword">IN</span>  A   <span class="hljs-number">10.0</span><span class="hljs-number">.0</span><span class="hljs-number">.21</span><br/>tasks<span class="hljs-preprocessor">.node</span>-exporter.    <span class="hljs-number">600</span> <span class="hljs-keyword">IN</span>  A   <span class="hljs-number">10.0</span><span class="hljs-number">.0</span><span class="hljs-number">.23</span><br/>tasks<span class="hljs-preprocessor">.node</span>-exporter.    <span class="hljs-number">600</span> <span class="hljs-keyword">IN</span>  A   <span class="hljs-number">10.0</span><span class="hljs-number">.0</span><span class="hljs-number">.22</span><br/>tasks<span class="hljs-preprocessor">.node</span>-exporter.    <span class="hljs-number">600</span> <span class="hljs-keyword">IN</span>  A   <span class="hljs-number">10.0</span><span class="hljs-number">.0</span><span class="hljs-number">.19</span><br/>tasks<span class="hljs-preprocessor">.node</span>-exporter.    <span class="hljs-number">600</span> <span class="hljs-keyword">IN</span>  A   <span class="hljs-number">10.0</span><span class="hljs-number">.0</span><span class="hljs-number">.20</span></strong>
+</pre>
+<p>We retrieved the IPs of all currently running replicas of the service.</p>
+<p>The list of the IPs themselves is not enough. We need to tell Prometheus that it should use them in a dynamic fashion. It should consult tasks.<kbd>&lt;SERVICE_NAME&gt;</kbd> every time it wants to pull new data. Fortunately, Prometheus can be configured through <kbd>dns_sd_configs</kbd> to use an address as service discovery. For more information about the available options, please consult the <em>Configuration </em>(<a href="https://prometheus.io/docs/operating/configuration/">https://prometheus.io/docs/operating/configuration/</a>) section of the documentation.</p>
+<p>Equipped with the knowledge of the existence of the <kbd>dns_sd_configs</kbd> option, we can move forward and define a Prometheus configuration. We'll use the one I prepared for this chapter. It is located in <kbd>conf/prometheus.yml</kbd> (<a href="https://github.com/vfarcic/cloud-provisioning/blob/master/conf/prometheus.yml">https://github.com/vfarcic/cloud-provisioning/blob/master/conf/prometheus.yml</a>)</p>
+<p>Let us quickly go through it:</p>
+<pre>
+<strong>cat conf/prometheus.yml</strong>
+</pre>
+<p>The output is as follows:</p>
+<pre>
+<strong>global:<br/>  scrape_interval: 5s<br/><br/>scrape_configs:<br/>  -<span class="ruby"> <span class="hljs-symbol">job_name:</span> <span class="hljs-string">'node'</span><br/></span>    dns_sd_configs:<br/>      -<span class="ruby"> <span class="hljs-symbol">names:</span> [<span class="hljs-string">'tasks.node-exporter'</span>]<br/></span>        type: A<br/>        port: 9100<br/>  -<span class="ruby"> <span class="hljs-symbol">job_name:</span> <span class="hljs-string">'cadvisor'</span><br/></span>    dns_sd_configs:<br/>      -<span class="ruby"> <span class="hljs-symbol">names:</span> [<span class="hljs-string">'tasks.cadvisor'</span>]<br/></span>        type: A<br/>        port: 8080<br/>  -<span class="ruby"> <span class="hljs-symbol">job_name:</span> <span class="hljs-string">'prometheus'</span><br/></span>    static_configs:<br/>      -<span class="ruby"> <span class="hljs-symbol">targets:</span> [<span class="hljs-string">'prometheus:9090'</span>]</span></strong>
+</pre>
+<p>We defined three jobs. The first two <kbd>node</kbd> and <kbd>cadvisor</kbd> are using the <kbd>dns_sd_configs</kbd> (DNS service discovery configs) option. Both have the tasks.<kbd>&lt;SERVICE_NAME&gt;</kbd> defined as the name, are of type A (you'll notice the type from the <kbd>drill</kbd> output), and have the internal ports defined. The last one <kbd>prometheus</kbd> will provide the internal metrics.</p>
+<p>Please note that we set <kbd>scrape_interval</kbd> to five seconds. In production, you might want more granular data and change it to, for example, one-second interval. Beware! The shorter the interval, the higher the cost. The more often we scrape metrics, the more resources will be required to do that, as well as to query those results, and even store the data. Try to find a balance between data granularity and resource usage. Creating the Prometheus service is easy (as is almost any other Swarm service).</p>
+<p>We'll start by creating a directory where we'll persist Prometheus data:</p>
+<pre>
+<strong>mkdir -p docker/prometheus</strong>
+</pre>
+<p>Now we can create the service:</p>
+<pre>
+<strong>docker service create \<br/>    --name prometheus \<br/>    --network proxy \<br/>    -p <span class="hljs-number">9090</span>:<span class="hljs-number">9090</span> \<br/>    --mount <span class="hljs-string">"type=bind,source=<span class="hljs-variable">$PWD</span>/conf/prometheus.yml, \<br/>    target=/etc/prometheus/prometheus.yml"</span> <br/>    --mount <span class="hljs-string">"type=bind,source=<span class="hljs-variable">$PWD</span>/docker/\<br/>    prometheus,target=/prometheus"</span> <br/>    prom/prometheus:v1.<span class="hljs-number">2.1</span><br/>docker service ps prometheus</strong>
+</pre>
+<p>We created the <kbd>docker/prometheus</kbd> directory where we'll persist Prometheus state.</p>
+<p>The service is quite ordinary. It is attached to the <kbd>proxy</kbd> network, exposes the port <kbd>9090</kbd>, and mounts the configuration file and the state directory.</p>
+<p>The output of the <kbd>service ps</kbd> command is as follows (IDs and ERROR columns are removed for brevity):</p>
+<pre>
+<strong>NAME          IMAGE                   NODE     DESIRED STATE             <br/><span class="hljs-filename">prometheus.1  prom/prometheus</span>:<span class="hljs-filename">v1.2.1  swarm-3  Running        <br/>-----------------------------------------<br/>CURRENT STATE<br/>Running 59 seconds ago<br/></span></strong>
+</pre>
+<p>Please note that it would be pointless to scale this service. Prometheus is designed to work as a single instance. In most cases, that's not a problem since it can easily store and process a vast amount of data. If it fails, Swarm will reschedule it somewhere else and, in that case, we would lose only a few seconds of data.</p>
+<p>Let's open its UI and explore what can be done with it:</p>
+<div class="packt_tip"><strong>A note to Windows users</strong><br/>
+Git Bash might not be able to use the open command. If that's the case, execute <kbd>docker-machine ip &lt;SERVER_NAME&gt;</kbd> to find out the IP of the machine and open the URL directly in your browser of choice. For example, the command below should be replaced with the command that follows:<br/>
+<kbd>docker-machine ip swarm-1</kbd><br/>
+If the output would be <kbd>1.2.3.4</kbd>, you should open  <kbd>http://1.2.3.4:9090</kbd> in your browser.</div>
+<pre>
+o<strong>pen <span class="hljs-string">"http://<span class="hljs-variable">$(docker-machine ip swarm-1)</span>:9090"</span></strong>
+</pre>
+<p>The first thing we should do is check whether it registered all the exported targets.<br/>
+Please click the <span class="packt_screen">Status</span> button in the top menu and select <span class="packt_screen">Targets</span>. You should see that five <em><span class="packt_screen">cadvisor</span></em> targets match the five servers that form the cluster. Similarly, there are five <span class="packt_screen">node</span> targets. Finally, one <span class="packt_screen">prometheus</span> target is registered as well:</p>
+<div class="CDPAlignCenter CDPAlign"><img class="image-border" height="300" src="assets/prometheus-status-targets.png" width="421"/></div>
+<div class="packt_figref CDPAlignCenter CDPAlign">Figure 9-2: Targets registered in Prometheus</div>
+<p>Now that we confirmed that all the targets are indeed registered and that Prometheus started scraping metrics they provide, we can explore ways to retrieve data and visualize them through <kbd>ad-hoc</kbd> queries.</p>
+<p>Please click the <em>Graph</em> button from the top menu, select <kbd>node_memory_MemAvailable</kbd> from the <kbd>- insert metric at cursor <em>-</em></kbd> list, and click the <span class="packt_screen">Execute</span> button.</p>
+<p>You should see a table with the list of metrics and a value associated with each. Many prefer a visual representation of the data which can be obtained by clicking the <span class="packt_screen">Graph</span> tab located above the list. Please click it.</p>
+<p>You should see the available memory for each of the five servers. It is displayed as evolution over the specified period which can be adjusted with the fields and buttons located above the graph. Not much time passed since we created the <kbd>prometheus</kbd> service so you should probably reduce the period to five or fifteen minutes.<br/>
+The same result can be accomplished by typing the query (or in this case the name of the metric) in the <span class="packt_screen">Expression</span> field. Later on, we'll do a bit more complicated queries that cannot be defined by selecting a single metric from the <kbd><em>-</em>insert metric at cursor <em>-</em></kbd> list:</p>
+<div class="packt_figref CDPAlignCenter CDPAlign"><img class="image-border" height="333" src="assets/prometheus-memory-graph.png" width="420"/></div>
+<div class="packt_figref CDPAlignCenter CDPAlign">Figure 9-3: Prometheus graph with available memory</div>
+<p>Now might be a good time to discuss one of the main shortcomings of the system we set up so far. We do not have the information that would allow us to relate data with a particular server easily. Since the list of addresses is retrieved through Docker networking which creates a virtual IP for each replica, the addresses are not those of the servers. There is no easy way around this (as far as I know) so we are left with two options. One would be to run the exporters as "normal" containers (example: <kbd>docker run</kbd>) instead of as services. The advantage of such an approach is that we could set network type as <kbd>host</kbd> and get the IP of the server. The problem with such an approach is that we'd need to run exporters separately for each server.<br/>
+That wouldn't be so bad except for the fact that each time we add a new server to the cluster, we'd need to run all the exporters again. To make things more complicated, it would also mean that we'd need to change the Prometheus configuration as well, or add a separate service registry only for that purpose. The alternative is to wait. The inability to retrieve a host IP from a service replica is a known limitation. It is recorded in several places, one of them being <em>issue 25526</em> (<a href="https://github.com/docker/docker/issues/25526">https:</a><a href="https://github.com/docker/docker/issues/25526">//github.com/docker/docker/issues/25526</a>). At the same time, the community has already decided to expose Prometheus metrics natively from Docker Engine. That would remove the need for some, if not all, of the exporters we created as services. I'm confident that one of those two will happen soon. Until then, you'll have to make a decision to ignore the fact that IPs are virtual or replace services with containers run separately on each server in the cluster. No matter the choice you make, I'll show you, later on, how to find the relation between virtual IPs and hosts.</p>
+<p>Let's go back to querying Prometheus metrics.</p>
+<p>The example with <kbd>node_memory_MemAvailable</kbd> used only the metric and, as a result, we got all its time series.</p>
+<p>Let's spice it up a bit and create a graph that will return idle CPU. The query would be <kbd>node_cpu{mode="idle"}</kbd>. Using <kbd>mode="idle"</kbd> will limit the <kbd>node_cpu</kbd> metric only to data labeled as idle. Try it out and you'll discover that the graph should consist of five almost straight lines going upwards. That does not look correct.</p>
+<p>Let's create a bit more accurate picture by introducing the <kbd>irate</kbd> function. It calculates the per-second instant rate of increase of the time series. That is based on the last two data points. To use the <kbd>irate</kbd> function, we also need to specify the measurement duration. The modified query is as follows:</p>
+<pre>
+<strong><span class="hljs-function"><span class="hljs-title">irate</span><span class="hljs-params">(node_cpu<span class="hljs-tuple">{mode=<span class="hljs-string">"idle"</span>}</span>[<span class="hljs-number">5</span>m])</span></span></strong>
+</pre>
+<p><span>Since we are scraping metrics from the</span> <kbd>cadvisor</kbd> <span>service, we can query different</span> container metrics as well. For example, we can see the memory usage of each container.</p>
+<p>Please execute the query that follows:<span><br/></span></p>
+<pre>
+<strong>container_memory_usage_bytes</strong>
+</pre>
+<p>Please execute the query and see the result for yourself. You should see the idle CPU rate per node measured over 5 minute intervals:</p>
+<div class="CDPAlignCenter CDPAlign packt_figref"><img class="image-border" height="330" src="assets/prometheus-cpu-graph.png" width="459"/></div>
+<div class="packt_figref CDPAlignCenter CDPAlign">Figure 9-4: Prometheus graph with CPU idle rate</div>
+<p>If you explore the results through the graph, you'll discover that <kbd>cAdvisor</kbd> uses the most memory (around <kbd>800M</kbd> on my machine). That does not look correct. The service should have a much smaller footprint. If you look at its labels, you'll notice that the ID is <kbd>/</kbd>. That's the cumulative result of the total memory of all containers passing through <kbd>cAdvisor</kbd>. We should exclude it from the results with the <kbd>!=</kbd> operator.</p>
+<p>Please execute the query that follows:</p>
+<pre>
+<strong>container_memory_usage_bytes{<span class="hljs-keyword">id</span>!=<span class="hljs-string">"/"</span>}</strong>
+</pre>
+<p>This time, the result makes much more sense. The service that uses the most memory is Prometheus itself.</p>
+<p>The previous query used label id to filter data. When combined with the <kbd>!=</kbd> operator, it excluded all metrics that have the id set to <kbd>/</kbd>.</p>
+<p>Even with such a small cluster, the number of containers might be too big for a single graph so we might want to see the results limited to a single service. That can be accomplished by filtering the data with the <kbd>container_label_com_docker_swarm_service_name</kbd>.</p>
+<p>Let's see the memory usage of all <kbd>cadvisor</kbd> replicas:</p>
+<pre>
+<strong>container_memory_usage_bytes{container_label_com_docker_swarm_service_\<br/>name=<span class="hljs-string">"cadvisor"</span>}</strong>
+</pre>
+<p>All this looks great but is not very useful as a monitoring system. Prometheus is geared more towards <kbd>ad-hoc</kbd> queries than as a tool we can use to create dashboards that would give us a view of the whole system. For that, we need to add one more service to the mix.</p>
+
+
+            </article>
+
+            <footer style="margin-top: 5em;">
+                
+            </footer>
+
+        </section>
+    
+
+        <section>
+
+            <header>
+                <h1 class="header-title">Using Grafana to create dashboards</h1>
+            </header>
+
+            <article>
+                
+<p>Prometheus offers a dashboard builder called <em>PromDash</em> (<a href="https://github.com/prometheus/promdash">https://github.com/prometheus/promdash</a>). However, it is deprecated for Grafana, so we won't consider it as worthy of running inside our cluster.</p>
+<p>Grafana (<a href="http://grafana.org/">http://grafana.org/</a>) is one of the leading tools for querying and visualization of time series metrics. It features interactive and editable graphs and supports multiple data sources. Graphite, Elasticsearch, InfluxDB, OpenTSDB, KairosDB, and, most importantly, Prometheus are supported out of the box. If that's not enough, additional data sources can be added through plugins. Grafana is truly a rich UI that has established itself as a market leader. Best of all, it's free.</p>
+<p>Let's create a <kbd>grafana</kbd> service:</p>
+<pre>
+<strong>docker service create \<br/>    --name grafana \<br/>    --network proxy \<br/>    -p <span class="hljs-number">3000</span>:<span class="hljs-number">3000</span> \<br/>    grafana/grafana:<span class="hljs-number">3.1</span>.<span class="hljs-number">1</span></strong>
+</pre>
+<p>A few moments later, the status of the replica should be running:</p>
+<pre>
+<strong>docker service ps grafana</strong>
+</pre>
+<p>The output of the <kbd>service ps</kbd> command is as follows (IDs are removed for brevity):</p>
+<pre>
+<strong>NAME       IMAGE                NODE     DESIRED STATE CURRENT STATE <br/>grafana<span class="hljs-number">.1</span>  grafana/grafana3<span class="hljs-number">.1</span><span class="hljs-number">.1</span> swarm-<span class="hljs-number">1</span>  Running       Running <span class="hljs-number">24</span> <span class="hljs-built_in">seconds</span> ago</strong>
+</pre>
+<p>Now that the service is running, we can open the UI:</p>
+<div class="packt_tip"><strong>A note to Windows users</strong><br/>
+Git Bash might not be able to use the <kbd>open</kbd> command. If that's the case, execute <kbd>docker-machine ip &lt;SERVER_NAME&gt;</kbd> to find out the IP of the machine and open the URL directly in your browser of choice. For example, the command below should be replaced with the command that follows:<br/>
+<kbd>docker-machine ip swarm-1</kbd><br/>
+If the output would be <kbd>1.2.3.4</kbd>, you should open <kbd>http://1.2.3.4:3000</kbd> in your browser.</div>
+<pre>
+<strong>open <span class="hljs-string">"http://<span class="hljs-variable">$(docker-machine ip swarm-1)</span>:3000"</span></strong>
+</pre>
+<p>You will be presented with the login screen. The default username and password are <span class="packt_screen">admin</span>. Go ahead and log in.</p>
+<p>The username and password, as well as many other settings, can be adjusted through configuration files and environment variables. Since we are running Grafana inside a Docker container, environment variables are a better option. For more info, please visit the <em>Configuration</em> (<a href="http://docs.grafana.org/installation/configuration/">http://docs.grafana.org/installation/configuration/</a>) section of the official documentation.</p>
+<p>The first thing we should do is add Prometheus as a data source.</p>
+<p>Please click the <em>Grafana</em> logo located in the top-left part of the screen, select <span class="packt_screen">Data Sources</span>, and click the <span class="packt_screen">+</span> <span class="packt_screen">Add data source</span> button.</p>
+<p>We'll name it <kbd>Prometheus</kbd> and choose the same for the Type. Enter <kbd>http://prometheus:9090</kbd> as the <kbd>Url</kbd> and click the <span class="packt_screen">Add</span> button. That's it. From now on, we can visualize and query any metric stored in Prometheus.</p>
+<p>Let's create the first dashboard.</p>
+<p>Please click the <em>Grafana</em> logo, select <span class="packt_screen">Dashboards</span>, and click <span class="packt_screen"><span class="packt_screen">+</span> New</span>. In the top-left part of the screen, there is a green vertical button. Click it, select <span class="packt_screen">Add Panel</span>, and choose <span class="packt_screen">Graph</span>. You'll see the default graph with test metrics. It's not very useful unless you'd like to admire pretty lines going up and down. We'll change the Panel data source from default to Prometheus. Enter <kbd>irate(node_cpu{mode="idle"}[5m])</kbd> as Query. A few moments later you should see a graph with CPU usage.</p>
+<p>By default, graphs display six hours of data. In this case, that might be <em>OK</em> if you are a slow reader and it took you that much time to create the prometheus service and read the text that followed. I will assume that you have only half an hour worth of data and want to change the graph's timeline.</p>
+<p>Please click the <span class="packt_screen">Last 6 hours</span> button located in the top-right corner of the screen, followed by the <span class="packt_screen">Last 30 minutes</span> link. The graph should be similar to <em>Figure 9-5:</em></p>
+<div class="CDPAlignCenter CDPAlign"><img height="349" src="assets/grafana-cpu-graph.png" width="540"/></div>
+<div class="CDPAlignCenter CDPAlign packt_figref">Figure 9-5: Grafana graph with CPU rate fetched from Prometheus</div>
+<p>There are quite a few things you can customize to make a graph fit your needs. I'll leave that to you. Go ahead and play with the new toy. Explore different options it offers.<br/>
+If you are lazy as I am, you might want to skip creating all the graphs and dashboards you might need and just leverage someone else's effort. Fortunately, the Grafana community is very active and has quite a few dashboards made by its members.<br/>
+Please open the <em>dashboards</em> (<a href="https://grafana.net/dashboards">https://grafana.net/dashboards</a>) section in <em>grafana.net</em> (<a href="https://grafana.net">https://grafana.net</a>). You'll see a few filters on the left-hand side as well as the general <span class="packt_screen">search</span> field. We can, for example, search for     <kbd>node exporter</kbd>.</p>
+<p>I encourage you to explore all the offered <span class="packt_screen">node exporter</span> dashboards at some later time. For now, we'll select the <em>Node Exporter Server Metrics</em> (<a href="https://grafana.net/dashboards/405">https://grafana.net/dashboards/405</a>). Inside the page, you'll see the <span class="packt_screen">Download Dashboard</span> button. Use it to download the JSON file with dashboard definition.</p>
+<p>Let's get back to our <kbd>grafana</kbd> service:</p>
+<div class="packt_tip"><strong>A note to Windows users</strong><br/>
+Git Bash might not be able to use the <kbd>open</kbd> command. If that's the case, execute <kbd>docker-machine ip &lt;SERVER_NAME&gt;</kbd> to find out the IP of the machine and open the URL directly in your browser of choice. For example, the command below should be replaced with the command that follows:<br/>
+<kbd>docker-machine ip swarm-1</kbd><br/>
+If the output would be <kbd>1.2.3.4</kbd>, you should open <kbd>http://1.2.3.4:3000</kbd> in your browser.</div>
+<pre>
+<strong>open <span class="hljs-string">"http://<span class="hljs-variable">$(docker-machine ip swarm-1)</span>:3000"</span></strong>
+</pre>
+<p>Open, one more time, the <span class="packt_screen">Dashboards</span> option is hidden behind the Grafana logo and select <span class="packt_screen">Import</span>. Click the <span class="packt_screen">Upload .json file</span> button and open the file you just downloaded. We'll leave the <span class="packt_screen">Name</span> intact and choose <span class="packt_screen">Prometheus</span> as datasource. Finally, click the <span class="packt_screen">Save &amp; Open</span> button to finish.</p>
+<p>The magic happened, and we got quite a few graphs belonging to one of the nodes. However, the graphs are mostly empty since the default duration is seven days and we have only an hour or so worth of data. Change the time range to, let's say, one hour. The graphs should start making sense.<br/>
+Let's spice it up a bit and add more servers to the mix. Please click the <kbd>IP/port</kbd> of the selected node and choose a few more. You should see metrics from each of the nodes:</p>
+<div class="CDPAlignCenter CDPAlign"><img class="image-border" height="481" src="assets/grafana-nodes-dashboard.png" width="630"/></div>
+<div class="packt_figref CDPAlignCenter CDPAlign">Figure 9-6: Grafana dashboard with metrics from selected nodes from Prometheus</div>
+<p>While this dashboard is useful when we want to compare metrics between the selected nodes, I think it is not so useful if we'd like to focus on a single node. In that case, the <em>Node Exporter Server Stats</em> (<a href="https://grafana.net/dashboards/704">https://grafana.net/dashboards/704</a>) dashboard might be a better option. Please follow the same steps to import it into the <kbd>grafana</kbd> service.</p>
+<p>You can still change the node presented in the dashboard (IP in the top-left corner of the screen). However, unlike the other dashboard, this one displays only one node at the time.<br/>
+Both dashboards are very useful depending on the case. If we need to compare multiple nodes then the <em>Node Exporter Server Metrics</em> (<a href="https://grafana.net/dashboards/405">https://grafana.net/dashboards/405</a>) might be a better option. On the other hand, when we want to concentrate on a specific server, the <em>Node Exporter Server Stats</em> (<a href="https://grafana.net/dashboards/704">https://grafana.net/dashboards/704</a>) dashboard is probably a better option. You should go back and import the rest of the <em>Node Exporter</em> dashboards and try them as well. You might find them more useful than those I suggested.</p>
+<p>Sooner or later, you'll want to create your own dashboards that fit your needs better. Even in that case, I still advise you to start by importing one of those made by the community and modifying it instead of starting from scratch. That is, until you get more familiar with Prometheus and Grafana, refer to the following image:</p>
+<p><img src="assets/grafana-node-dashboard.png"/></p>
+<div class="packt_figref CDPAlignCenter CDPAlign">Figure 9-7: Grafana dashboard with a single node metrics from Prometheus</div>
+<p>The next dashboard we'll create will need logs from Elasticsearch so let's set up logging as well.<br/>
+We won't go into details of the logging services since we already explored them in the <a href="3be31bb8-e0b6-4395-ab76-624ba5d30d26.xhtml">Chapter 9</a>, <em>Defining Logging Strategy</em>:</p>
+<pre>
+<strong>docker service create \<br/>    --name elasticsearch \<br/>    --network proxy \<br/>    --reserve-memory <span class="hljs-number">300</span>m \<br/>    -p <span class="hljs-number">9200</span>:<span class="hljs-number">9200</span> \<br/>    elasticsearch:<span class="hljs-number">2.4</span></strong>
+</pre>
+<p>Before we proceed with a <kbd>LogStash</kbd> service, we should confirm that <kbd>elasticsearch</kbd> is running:</p>
+<pre>
+<strong>docker service ps elasticsearch</strong>
+</pre>
+<p>The output of the <kbd>service ps</kbd> command should be similar to the one that follows (IDs &amp; Error Ports column are removed for brevity):</p>
+<pre>
+<strong><span class="hljs-tag">NAME</span>            <span class="hljs-tag">IMAGE</span>             <span class="hljs-tag">NODE</span>    <span class="hljs-tag">DESIRED</span> <span class="hljs-tag">STATE</span> <span class="hljs-tag">CURRENT</span> <span class="hljs-tag">STATE</span>    <br/><span class="hljs-tag">elasticsearch</span><span class="hljs-class">.1</span> <span class="hljs-tag">elasticsearch</span><span class="hljs-pseudo">:2</span><span class="hljs-class">.4</span> <span class="hljs-tag">swarm-2</span> <span class="hljs-tag">Running</span>       <span class="hljs-tag">Running</span> 1 <span class="hljs-tag">seconds</span> <span class="hljs-tag">ago</span></strong>
+</pre>
+<p>Now we can create a <kbd>logstash</kbd> service:</p>
+<pre>
+<strong>docker service create \<br/>    --name logstash \<br/>    --mount <span class="hljs-string">"type=bind,source=<span class="hljs-variable">$PWD</span>/conf,target=/conf"</span> \<br/>    --network proxy \<br/><span class="hljs-operator">    -e</span> LOGSPOUT=ignore \<br/>    logstash:<span class="hljs-number">2.4</span> \<br/>    logstash <span class="hljs-operator">-f</span> /conf/logstash.conf</strong>
+</pre>
+<p>Let's confirm it's running before moving onto the last logging service:</p>
+<pre>
+<strong>docker service ps logstash</strong>
+</pre>
+<p>The output of the <kbd>service ps</kbd> command should be similar to the one that follows (IDs  and ERROR PORTS columns are removed for brevity):</p>
+<pre>
+<strong><span class="hljs-tag">NAME</span>       <span class="hljs-tag">IMAGE</span>        <span class="hljs-tag">NODE</span>    <span class="hljs-tag">DESIRED</span> <span class="hljs-tag">STATE</span> <span class="hljs-tag">CURRENT</span> <span class="hljs-tag">STATE</span>    <br/><span class="hljs-tag">logstash</span><span class="hljs-class">.1</span> <span class="hljs-tag">logstash</span><span class="hljs-pseudo">:2</span><span class="hljs-class">.4</span> <span class="hljs-tag">swarm-2</span> <span class="hljs-tag">Running</span>       <span class="hljs-tag">Running</span> 2 <span class="hljs-tag">minutes</span> <span class="hljs-tag">ago</span></strong>
+</pre>
+<p>Finally, we'll create a <kbd>logspout</kbd> service as well:</p>
+<pre>
+<strong>docker service create \<br/>    --name logspout \<br/>    --network proxy \ <br/>    --mode global \<br/>    --mount <span class="hljs-string">"type=bind,source=/var/run/docker.sock,\<br/>    target=/var/run/docker.sock"</span> \<br/><span class="hljs-operator">    -e</span> SYSLOG_FORMAT=rfc3164 \<br/>    gliderlabs/logspout \<br/>    syslog://logstash:<span class="hljs-number">51415</span></strong>
+</pre>
+<p>… and confirm it's running:</p>
+<pre>
+<strong>docker service ps logspout</strong>
+</pre>
+<p>The output of the <kbd>service ps</kbd> command should be similar to the one that follows (IDs and ERROR PORTS columns are removed for brevity):</p>
+<pre>
+<strong>NAME        IMAGE                      NODE    DESIRED STATE CURRENT STATE          <br/>logspout... gliderlabs/logspout:latest swarm-<span class="hljs-number">1</span> Running       Running <span class="hljs-number">9</span> <span class="hljs-built_in">seconds</span> ago<br/>logspout... gliderlabs/logspout:latest swarm-<span class="hljs-number">5</span> Running       Running <span class="hljs-number">9</span> <span class="hljs-built_in">seconds</span> ago<br/>logspout... gliderlabs/logspout:latest swarm-<span class="hljs-number">4</span> Running       Running <span class="hljs-number">9</span> <span class="hljs-built_in">seconds</span> ago<br/>logspout... gliderlabs/logspout:latest swarm-<span class="hljs-number">3</span> Running       Running <span class="hljs-number">9</span> <span class="hljs-built_in">seconds</span> ago<br/>logspout... gliderlabs/logspout:latest swarm-<span class="hljs-number">2</span> Running       Running <span class="hljs-number">10</span> <span class="hljs-built_in">seconds</span> ago</strong>
+</pre>
+<p>Now that logging is operational, we should add Elasticsearch as one more Grafana data source:</p>
+<div class="packt_tip"><strong>A note to Windows users</strong><br/>
+Git Bash might not be able to use the open command. If that's the case, execute                         <kbd>docker-machine ip &lt;SERVER_NAME&gt;</kbd> to find out the IP of the machine and open the URL directly in your browser of choice. For example, the command below should be replaced with the command that follows:<br/>
+<kbd>docker-machine ip swarm-1</kbd><br/>
+If the output would be <kbd>1.2.3.4</kbd>, you should open <kbd>http://1.2.3.4:3000</kbd> in your browser.</div>
+<pre>
+<strong>open <span class="hljs-string">"http://<span class="hljs-variable">$(docker-machine ip swarm-1)</span>:3000"</span></strong>
+</pre>
+<p>Please click on the Grafana logo, and select <span class="packt_screen">Data Sources</span>. A new screen will open with the currently defined sources (at the moment only Prometheus). Click the <span class="packt_screen">+ Add data source</span> button.</p>
+<p>We'll use <kbd>Elasticsearch</kbd> as both the <span class="packt_screen">name</span> and the <span class="packt_screen">type</span>. The Url should be <a href="http://elasticsearch:9200">http://e</a><a href="http://elasticsearch:9200">lasticsearch:9200</a> and the value of the <span class="packt_screen">Index name</span> should be set to <kbd>"logstash-*"</kbd>. Click the <span class="packt_screen">Add</span> button when finished.</p>
+<p>Now we can create or, to be more precise, import our third dashboard. This time, we'll import a dashboard that will be primarily focused on Swarm services.</p>
+<p>Please open the Docker Swarm &amp; Container Overview (<a href="https://grafana.net/dashboards/609">https://grafana.net/dashboards/609</a>) dashboard page, download it, and import it into Grafana. In the <span class="packt_screen">Import Dashboard</span> screen for Grafana , you will be asked to set one <em><span class="packt_screen">Prometheus</span></em> and two <span class="packt_screen">Elasticsearch</span> data sources. After you click the <span class="packt_screen">Save &amp; Open</span> button, you will be presented with a dashboard full of metrics related to Docker Swarm and containers in general.</p>
+<p>You will notice that some of the graphs from the dashboard are empty. That's not an error but an indication that our services are not prepared to be monitored. Let's update them with some additional information that the dashboard expects.</p>
+
+
+            </article>
+
+            <footer style="margin-top: 5em;">
+                
+            </footer>
+
+        </section>
+    
+
+        <section>
+
+            <header>
+                <h1 class="header-title">Exploring Docker Swarm and container overview dashboard in Grafana</h1>
+            </header>
+
+            <article>
+                
+<p>One of the things missing from the dashboard are host names. If you select the <span class="packt_screen">Hostnames</span> list, you'll notice that it is empty. The reason behind that lies in the <kbd>node-exporter</kbd> service. Since it is running inside containers, it is oblivious of the name of the underlying host.</p>
+<p>We already commented that IPs from the <kbd>node-exporter</kbd> are not very valuable since they represent addresses of network endpoints. What we truly need are either "real" host IPs or host names. Since we cannot get the real IPs from Docker services, the alternative is to use host names instead. However, the official <kbd>Node Exporter</kbd> container does not provide that so we'll need to resort to an alternative.<br/>
+We'll change our <kbd>node-exporter</kbd> service with the image created by GitHub user <kbd>bvis</kbd>. The project can be found in the <kbd>bvis/docker-node-exporter</kbd> (<a href="https://github.com/bvis/docker-node-exporter">https://github.com/bvis/docker-node-exporter</a>) GitHub repository. Therefore, we'll remove the <kbd>node-exporter</kbd> service and create a new one based on the <kbd>basi/node-exporter</kbd> (<a href="https://hub.docker.com/r/basi/node-exporter/">https://hub.docker.com/r/basi/node-exporter/</a>) image:</p>
+<pre>
+<strong>docker service rm node-exporter<br/><br/>docker service create \<br/>    --name node-exporter \<br/>    --mode global \<br/>    --network proxy \ <br/>    --mount <span class="hljs-string">"type=bind,source=/proc,target=/host/proc"</span> \<br/>    --mount <span class="hljs-string">"type=bind,source=/sys,target=/host/sys"</span> \<br/>    --mount <span class="hljs-string">"type=bind,source=/,target=/rootfs"</span> \<br/>    --mount <span class="hljs-string">"type=bind,source=/etc/hostname,target=/etc/\<br/>    host_hostname" \</span><br/><span class="hljs-operator">    -e</span> HOST_HOSTNAME=/etc/host_hostname \<br/>    basi/node-exporter:v0.<span class="hljs-number">1.1</span> \<br/>    -collector.procfs /host/proc \<br/>    -collector.sysfs /host/proc \<br/>    -collector.filesystem.ignored-mount-points \<br/><span class="hljs-string">    "^/(sys|proc|dev|host|etc)($|/)"</span> \<br/>    -collector.textfile.directory /etc/node-exporter/ \<br/>    -collectors.enabled=<span class="hljs-string">"conntrack,diskstats,\<br/>    entropy,filefd,filesystem,loadavg,\<br/>    mdadm,meminfo,netdev,netstat,stat,textfile,time,vmstat,ipvs"</span></strong>
+</pre>
+<p>Apart from using a different image <kbd>basi/node-exporter</kbd>, we mounted the <kbd>/etc/hostname</kbd> directory from which the container can retrieve the name of the underlying host. We also added the environment variable <kbd>HOST_HOSTNAME</kbd> as well as a few additional collectors.</p>
+<p>We won't go into details of the command since it is similar to the one we used previously. The meaning of the additional arguments can be found in the project's <kbd>README</kbd> (<a href="https://github.com/bvis/docker-node-exporter">https://github.com/bvis/docker-node-exporter</a>) file.</p>
+<p>The important thing to note is that the new <kbd>node-exporter</kbd> service will include the <kbd>hostname</kbd> together with the virtual IP created by Docker networking. We'll be able to use that to establish the relation between the two.</p>
+<p>Instead of creating the new service, we could have updated the one that was running before. I decided against that so that you can see the complete command in case you choose to use node metrics in your production cluster.<br/>
+Please go back to the <span class="packt_screen">Grafana</span> dashboard that is already opened in your browser and refresh the screen <em>Ctrl</em>+<em>R</em> or <em>Cmd</em>+<em>R</em>. You'll notice that some of the graphs that were empty are now colorful with metrics coming from the new <kbd>node-exporter</kbd>.</p>
+<p>The <span class="packt_screen">Hostnames</span> list holds all the nodes with their IPs on the left side and their host names on the right. We can now select any combination of the <span class="packt_screen">hosts</span> and the <span class="packt_screen">CPU Usage by Node</span>, <span class="packt_screen">Free Disk by Node</span>, <span class="packt_screen">Available Memory by Node</span>, and <span class="packt_screen">Disk I/O by Node</span> graphs will be updated accordingly, as shown in the following image:</p>
+<div class="CDPAlignCenter CDPAlign"><img class="image-border" src="assets/grafana-swarm-nodes-dashboard.png"/></div>
+<div class="packt_figref CDPAlignCenter CDPAlign">Figure 9-8: Docker Swarm Grafana dashboard with node metrics</div>
+<p>Not only have we obtained part of the data required for the dashboard, but we also established the relation between virtual IPs and host names. Now you will be able to find out the relation between virtual IPs used in other dashboards and <kbd>hostnames</kbd>. In particular, if you monitor <span class="packt_screen">Node Exporter</span> dashboards and detect a problem that should be fixed, you can go back to the Swarm dashboard and find out the host that requires your attention.</p>
+<p>The solution with host names is still not the best one but should be a decent workaround <em>until issue 27307</em> (<a href="https://github.com/docker/docker/issues/27307">https://github.com/docker/docker/issues/27307</a>) is fixed. The choice is yours. With the ability to relate virtual IPs with host names, I chose to stick with Docker services instead resorting to non-Swarm solutions.</p>
+<p>The next thing that needs fixing are service groups.</p>
+<p>If you open the <span class="packt_screen">Service Group</span> list, you'll notice that it is empty. The reason behind that lies in the way the dashboard is configured. It expects that we distinguish services through the container label <kbd>com.docker.stack.namespace</kbd>. Since we did not specify any, the list contains only the <span class="packt_screen">All</span> option.<br/>
+Which groups should we have? The answer to that question varies from one use case to another. With time, you'll define the groups that best fit your organization. For now, we'll split our services into databases, backend, and infrastructure. We'll put <kbd>go-demo-db</kbd> into the <kbd>db group</kbd>, <kbd>go-demo</kbd> into <kbd>backend</kbd>, and all the rest into infra. Even though <kbd>elasticsearch</kbd> is a database, it is part of our infrastructure services, so we'll treat it as such.</p>
+<p>We can add labels to existing services. There is no need to remove them and create new ones. Instead, we'll execute <kbd>docker service update</kbd> commands to add <kbd>com.docker.stack.namespace</kbd> labels by leveraging the <kbd>--container-label-add</kbd> argument.</p>
+<p>The first service we'll put into a group is <kbd>go-demo_db</kbd>:</p>
+<pre>
+<strong>docker service update \<br/>    --container-label-add \<br/>    com.docker.stack.namespace=db \<br/>    go-demo_db</strong>
+</pre>
+<p>Let's confirm that the label was indeed added:</p>
+<pre>
+<strong>docker service inspect go-demo_db \<br/>    --format \<br/><span class="hljs-string">    "{{.Spec.TaskTemplate.ContainerSpec.Labels}}"</span></strong>
+</pre>
+<p>The <kbd>--format</kbd> argument allowed us to avoid lengthy output and display only what interests us.</p>
+<p>The output of the <kbd>service inspect</kbd> command is as follows:</p>
+<pre>
+<strong>map[<span class="hljs-keyword">com</span><span class="hljs-preprocessor">.docker</span><span class="hljs-preprocessor">.stack</span><span class="hljs-preprocessor">.namespace</span>:db]</strong>
+</pre>
+<p>As you can see, the <kbd>com.docker.stack.namespace</kbd> label was added and holds the value <kbd>db</kbd>.</p>
+<p>We should do the same with the <kbd>go-demo</kbd> service and put it to the <kbd>backend</kbd> group:</p>
+<pre>
+<strong>docker service update \<br/>    --container-label-add \<br/>    com.docker.stack.namespace=backend \<br/>    go-demo_main</strong>
+</pre>
+<p>The last group is <kbd>infra</kbd>. Since quite a few services should belong to it, we'll update them all with a single command:</p>
+<pre>
+<strong><span class="hljs-keyword">for</span> s <span class="hljs-keyword">in</span> \<br/>    proxy_proxy \<br/>    logspout \<br/>    logstash \<br/>    util \<br/>    prometheus \<br/>    elasticsearch<br/><span class="hljs-keyword">do</span><br/>    docker service update \<br/>        --container-label-add \<br/>        com.docker.stack.namespace=infra \<br/><span class="hljs-variable">        $s</span><br/><span class="hljs-keyword">done</span></strong>
+</pre>
+<p>We iterated over the names of all the services and executed the <kbd>service update</kbd> command for each.</p>
+<p>Please note that the <kbd>service update</kbd> command reschedules replicas. That means that the containers will be stopped and run again with new parameters. It might take a while until all services are fully operational. Please list the services with <kbd>docker service ls</kbd> and confirm that they are all running before proceeding. Once all the replicas are up, we should go back to the Grafana dashboard and refresh the screen (<em>Ctrl</em>+<em>R</em> or <em>cmd</em>+<em>R</em>).</p>
+<p>This time, when you open the <span class="packt_screen">Service Group</span> list, you'll notice that the three groups we created are now available. Go ahead, and select a group or two. You'll see that the graphs related to services are changing accordingly.</p>
+<p>We can also filter the result by <kbd>Service Name</kbd> and limit the metrics displayed in some of the graphs to a selected set of services.</p>
+<p>If you scroll down towards the middle of the dashboard, you'll notice that network graphs related to the <kbd>proxy</kbd> have too many services while those that exclude <kbd>proxy</kbd> are empty. We can correct that through the <span class="packt_screen">Proxy</span> selector. It allows us to define which services should be treated as a <kbd>proxy</kbd>. Please open the list and select <kbd>proxy</kbd>.</p>
+<div class="CDPAlignCenter CDPAlign"><img height="254" src="assets/grafana-swarm-cpu-graph.png" width="430"/></div>
+<div class="packt_figref CDPAlignCenter CDPAlign">Figure 9-10: Grafana dashboard with network traffic graphs</div>
+<p>The two network graphs related to a <kbd>proxy</kbd> are now limited to the <kbd>proxy</kbd> service or, to be more concrete, the service we identified as such. The bottom now contains metrics from all other services. Separating monitoring of the external and internal traffic is useful. Through the proxy graphs, you can see the traffic coming from and going to external sources while the other two are reserved for internal communication between services.</p>
+<p>Let's generate a bit of traffic and confirm that the change is reflected in proxy graphs. We'll generate a hundred requests:</p>
+<pre>
+<strong><span class="hljs-keyword">for</span> i <span class="hljs-keyword">in</span> {<span class="hljs-number">1</span>..<span class="hljs-number">100</span>}<br/><span class="hljs-keyword">do</span><br/>    curl <span class="hljs-string">"<span class="hljs-variable">$(docker-machine ip swarm-1)</span>/demo/hello"</span><br/><span class="hljs-keyword">done</span></strong>
+</pre>
+<p>If you go back to <kbd>proxy</kbd> network graphs, you should see a spike in traffic. Please note that the dashboard refreshes data every minute. If the spike is still not visible, you might need to wait, click the <span class="packt_screen">Refresh</span> button located in the top-right corner of the screen, or change the refresh frequency, refer the following image:</p>
+<div class="CDPAlignCenter CDPAlign"><img class="image-border" src="assets/grafana-swarm-network-dashboard.png"/></div>
+<div class="packt_figref CDPAlignCenter CDPAlign">Figure 9-10: Grafana dashboard with network traffic graphs</div>
+<p>We'll move on towards the next option in the dashboard menu and click the <span class="packt_screen">Errors</span> checkbox. This checkbox is connected to Elasticsearch. Since there are no logged errors, the graphs stayed the same.</p>
+<p>Let's generate a few errors and see how they visualize in the dashboard.</p>
+<p>The <kbd>go-demo</kbd> service has an API that will allow us to create random errors. On average, one out of ten requests will produce an error. We'll need them to demonstrate one of the integrations between Prometheus metrics and data from Elasticsearch:</p>
+<pre>
+<strong><span class="hljs-keyword">for</span> i <span class="hljs-keyword">in</span> {<span class="hljs-number">1</span>..<span class="hljs-number">100</span>}<br/><span class="hljs-keyword">do</span><br/>    curl <span class="hljs-string">"<span class="hljs-variable">$(docker-machine ip swarm-1)</span>/demo/random-error"</span><br/><span class="hljs-keyword">done</span></strong>
+</pre>
+<p>A sample of the output should be as follows:</p>
+<pre>
+<strong>Everything <span class="hljs-keyword">is</span> still OK<br/>Everything <span class="hljs-keyword">is</span> still OK<br/><span class="hljs-keyword">ERROR</span>: Something, somewhere, went wrong!<br/>Everything <span class="hljs-keyword">is</span> still OK<br/>Everything <span class="hljs-keyword">is</span> still OK</strong>
+</pre>
+<p>If you go back to the dashboard, you'll notice red lines representing the point of time when the errors occurred. When such a thing happens, you can investigate system metrics and try to deduce whether the errors were caused by some hardware failure, saturated network, or some other reason. If all that fails, you should go to your Kibana UI, browse through logs and try to deduce the cause from them.Refer to the following image:</p>
+<div class="CDPAlignCenter CDPAlign packt_figref"><img class="image-border" src="assets/grafana-swarm-errors-graphs.png"/></div>
+<div class="packt_figref CDPAlignCenter CDPAlign">Figure 9-11: Grafana dashboard with network traffic graphs</div>
+<p>It is important that your system does not report false positives as errors. If you notice that there is an error reported through logs, but there's nothing to do, it would be better to change the code, so that particular case is not treated as an error. Otherwise, with false positives, you'll start seeing too many errors and start ignoring them. As a result, when a real error occurs, the chances are that you will not notice it.</p>
+<p>We'll skip the <span class="packt_screen">Alerts Fired</span> and <span class="packt_screen">Alerts Resolved</span> options since they are related to <em>X-Pack</em> (<a href="https://www.elastic.co/products/x-pack">https://www.elastic.co/products/x-pack</a>), which is a commercial product. Since the book is aimed at open source solutions, we'll skip it. That does not mean that you should not consider purchasing it. Quite the contrary. Under certain circumstances, <em>X-Pack</em> is a valuable addition to the tool set.</p>
+<p>That concludes our quick exploration of the <span class="packt_screen">Docker Swarm &amp; Container Overview</span> dashboard options. The graphs themselves should be self-explanatory. Take a few moments to explore them yourself.</p>
+
+
+            </article>
+
+            <footer style="margin-top: 5em;">
+                
+            </footer>
+
+        </section>
+    
+
+        <section>
+
+            <header>
+                <h1 class="header-title">Adjusting services through dashboard metrics</h1>
+            </header>
+
+            <article>
+                
+<p>Our services are not static. Swarm will reschedule them with each release, when a replica fails, when a node becomes unhealthy, or as a result of a myriad of other causes. We should do our best to provide Swarm as much information as we can. The better we describe our desired service state, the better will Swarm do its job.</p>
+<p>We won't go into all the information we can provide through <kbd>docker service create</kbd> and <kbd>docker service update</kbd> commands. Instead, we'll concentrate on the <kbd>--reserve-memory</kbd> argument. Later on, you can apply similar logic to <kbd>--reserve-cpu</kbd>, <kbd>--limit-cpu</kbd>, <kbd>--limit-memory</kbd>, and other arguments.</p>
+<p>We'll observe the memory metrics in Grafana and update our services accordingly.</p>
+<p>Please click on the <span class="packt_screen">Memory Usage per Container (Stacked)</span> graph in Grafana and choose <span class="packt_screen">View</span>. You'll see a screen with a zoomed graph that displays the memory consumption of the top twenty containers. Let's filter the metrics by selecting <span class="packt_screen">prometheus</span> from the <span class="packt_screen">Service Name</span> list.</p>
+<p>Prometheus uses approximately 175 MB of memory. Let's add that information to the service:</p>
+<div class="CDPAlignCenter CDPAlign"><img class="image-border" height="278" src="assets/grafana-swarm-memory-graph.png" width="471"/></div>
+<div class="packt_figref CDPAlignCenter CDPAlign">Figure 9-12: Grafana graph with containers memory consumption filtered with Prometheus service</div>
+<pre>
+<strong>docker service update \<br/>    --reserve-memory <span class="hljs-number">200</span>m \<br/>    prometheus</strong>
+</pre>
+<p>We updated the <kbd>prometheus</kbd> service by reserving <kbd>200m</kbd> of memory. We can assume that its memory usage will increase with time, so we reserved a bit more than what it currently needs.</p>
+<p>Please note that <kbd>--reserve-memory</kbd> does not truly reserve memory, but gives a hint to Swarm how much we expect the service should use. With that information, Swarm will make a better distribution of services inside the cluster.</p>
+<p>Let's confirm that Swarm rescheduled the service:</p>
+<pre>
+<strong>docker service ps prometheus</strong>
+</pre>
+<p>The output of the <kbd>service ps</kbd> command is as follows (IDs and Error columns are removed for brevity):</p>
+<pre>
+<strong>NAME             IMAGE                  NODE    DESIRED STATE          <br/><span class="hljs-filename">prometheus.1     prom/prometheus</span>:<span class="hljs-filename">v1.2.1 swarm-3 Running       <br/>_ prometheus.1   prom/prometheus</span>:<span class="hljs-filename">v1.2.1 swarm-1 Shutdown      <br/>_ prometheus.1   prom/prometheus</span>:<span class="hljs-filename">v1.2.1 swarm-5 Shutdown      <br/>-------------------------------------------------<br/>CURRENT STATE <br/>Running 5 minutes ago<br/>Shutdown 6 minutes ago<br/>Shutdown 5 hours ago<br/></span></strong>
+</pre>
+<p>We can also confirm that the <kbd>--reserve-memory</kbd> argument is indeed applied:</p>
+<pre>
+<strong>docker service inspect prometheus --pretty</strong>
+</pre>
+<p>The output is as follows:</p>
+<pre>
+<strong><span class="hljs-label">ID:</span>     <span class="hljs-number">6</span>yez6se1oejvfhkvyuqg0ljfy<br/><span class="hljs-label">Name:</span>       prometheus<br/><span class="hljs-label">Mode:</span>       Replicated<br/> Replicas:  <span class="hljs-number">1</span><br/>Update status:<br/> State:     completed<br/> Started:   <span class="hljs-number">10</span> minutes ago<br/> Completed: <span class="hljs-number">9</span> minutes ago<br/> Message:   update completed<br/><span class="hljs-label">Placement:</span><br/><span class="hljs-label">UpdateConfig:</span><br/> Parallelism:   <span class="hljs-number">1</span><br/> On failure:    pause<br/><span class="hljs-label">ContainerSpec:</span><br/> Image:     prom/prometheus:v1<span class="hljs-number">.2</span><span class="hljs-number">.1</span><br/> Mounts:<br/>  Target = /etc/prometheus/prometheus<span class="hljs-preprocessor">.yml</span><br/>  Source = /Users/vfarcic/IdeaProjects/cloud-provisioning/conf/prometheus<span class="hljs-preprocessor">.yml</span><br/>  ReadOnly = false<br/>  Type = bind<br/>  Target = /prometheus<br/>  Source = /Users/vfarcic/IdeaProjects/cloud-provisioning/docker/prometheus<br/>  ReadOnly = false<br/>  Type = bind<br/><span class="hljs-label">Resources:</span><br/> Reservations:<br/>  Memory:   <span class="hljs-number">200</span> MiB<br/><span class="hljs-label">Networks:</span> <span class="hljs-number">51</span>rht5mtx58tg5gxdzo2rzirw<br/><span class="hljs-label">Ports:</span><br/> Protocol = tcp<br/> TargetPort = <span class="hljs-number">9090</span><br/> PublishedPort = <span class="hljs-number">9090</span></strong>
+</pre>
+<p>As you can observe from the <kbd>Resources</kbd> section, the service now has <kbd>200 MiB</kbd> reserved. We should repeat a similar set of actions for <kbd>logstash</kbd>, <kbd>go-demo</kbd>, <kbd>go-demo-db</kbd>, <kbd>elasticsearch</kbd>, and <kbd>proxy</kbd> services.</p>
+<p>The results might be different on your laptop. In my case, the commands that reserve memory based on Grafana metrics are as follows:</p>
+<pre>
+<strong>docker service update \<br/>    --reserve-memory <span class="hljs-number">250</span>m logstash<br/><br/>docker service update \<br/>    --reserve-memory <span class="hljs-number">10</span>m go-demo_main<br/><br/>docker service update \<br/>    --reserve-memory <span class="hljs-number">100</span>m go-demo_db<br/><br/>docker service update \<br/>    --reserve-memory <span class="hljs-number">300</span>m elasticsearch<br/><br/>docker service update \<br/>    --reserve-memory <span class="hljs-number">10</span>m proxy_proxy</strong>
+</pre>
+<p>After each update, Swarm will reschedule containers that belong to the service. As a result, it'll place them inside a cluster in such a way that none is saturated with memory consumption. You should extend the process with CPU and other metrics and repeat it periodically.</p>
+<p>Please note that increasing memory and CPU limits and reservations is not always the right thing to do. In quite a few cases, you might want to scale services so that resource utilization is distributed among multiple replicas.</p>
+<p>We used ready-to-go dashboards throughout this chapter. I think that they are an excellent starting point and provide a good learning experience. With time, you will discover what works best for your organization and probably start modifying those dashboards or create new ones specifically tailored to your needs. Hopefully, you will contribute them back to the community.</p>
+<p>Please let me know if you create a dashboard that complements those we used in this chapter or even replaces them. I'd be happy to feature them in the book.</p>
+<p>Before we move on to the next chapter, let us discuss some of the monitoring best practices.</p>
+
+
+            </article>
+
+            <footer style="margin-top: 5em;">
+                
+            </footer>
+
+        </section>
+    
+
+        <section>
+
+            <header>
+                <h1 class="header-title">Monitoring best practices</h1>
+            </header>
+
+            <article>
+                
+<p>You might be tempted to put as much information in a dashboard as you can. There are so many metrics, so why not visualize them? Right? Wrong! Too much data makes important information hard to find. It makes us ignore what we see since too much of it is noise.</p>
+<p>What you really need is to have a quick glance of the central dashboard and deduce in an instant whether there is anything that might require your attention. If there is something to be fixed or adjusted, you can use more specialized Grafana dashboards or ad-hoc queries in Prometheus to drill into details.</p>
+<p>Create the central dashboard with just enough information to fit a screen and provide a good overview of the system. Further on, create additional dashboards with more details. They should be organized similar to how we organize code. There is usually a main function that is an entry point towards more specific classes. When we start coding, we tend to open the main function and drill down from it until we reach a piece of code that will occupy our attention. Dashboards should be similar. We start with a dashboard that provides critical and very generic information. Such a dashboard should be our home and provide just enough metrics to deduce whether there is a reason to go deeper into more specific dashboards.</p>
+<p>A single dashboard should have no more than six graphs. That's usually just the size that fits a single screen. You are not supposed to scroll up and down to see all the graphs while in the central dashboard. Everything essential or critical should be visible.</p>
+<p>Each graph should be limited to no more than six plots. In many cases, more than that only produces noise that is hard to decipher.</p>
+<p>Do allow different teams to have different dashboards, especially those that are considered as primary or main. Trying to create a dashboard that fits everyone's needs is a bad practice. Each team has different priorities that should be fulfilled with different metrics visualizations.</p>
+<p>Do the dashboards we used in this chapter fulfill those rules? They don't. They have too many graphs with too many plots. That begs the question: Why did we use them? The answer is simple. I wanted to show you a quick and dirty way to get a monitoring system up-and-running in no time. I also wanted to show you as many different graphs as I could without overloading your brain. See for yourself which graphs do not provide value and remove them. Keep those that are truly useful and modify those that provide partial value. Create your own dashboards. See what works best for you.</p>
+
+
+            </article>
+
+            <footer style="margin-top: 5em;">
+                
+            </footer>
+
+        </section>
+    
+
+        <section>
+
+            <header>
+                <h1 class="header-title">What now?</h1>
+            </header>
+
+            <article>
+                
+<p>Put the monitoring system into practice. Don't try to make it perfect from the first attempt. You'll fail if you do. Iterate over dashboards. Start small, grow with time. If you are a bigger organization, let each team create their own set of dashboards and share what worked well, as well as what failed to provide enough value.</p>
+<p>Monitoring is not a simple thing to do unless you want to spend all your time in front of a dashboard. The solution should be designed in such a way that you need only a glance to discover whether a part of the system requires your attention.</p>
+<p>Now let us destroy everything we did. The next chapter will be a new subject with a new set of challenges and solutions:</p>
+<pre>
+<strong>docker-machine rm <span class="hljs-operator">-f</span> swarm-<span class="hljs-number">1</span> \<br/>    swarm-<span class="hljs-number">2</span> swarm-<span class="hljs-number">3</span> swarm-<span class="hljs-number">4</span> swarm-<span class="hljs-number">5</span></strong>
+</pre>
+
+
+            </article>
+
+            <footer style="margin-top: 5em;">
+                
+            </footer>
+
+        </section>
+    </body></html>

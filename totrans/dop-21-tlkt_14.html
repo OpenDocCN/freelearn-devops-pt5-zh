@@ -1,0 +1,1069 @@
+<html><head></head><body>
+        <section>
+
+            <header>
+                <h1 class="header-title">Creating and Managing Stateful Services in a Swarm Cluster</h1>
+            </header>
+
+            <article>
+                
+<div class="packt_figref packt_quote CDPAlignLeft CDPAlign">                             Any sufficiently advanced technology is indistinguishable from magic.<br/>
+                                                                                                               - Arthur C. Clarke</div>
+<p>If you're attending conferences, listening to podcasts, reading forums, or you are involved in any other form of a debate related to containers and cloud-native applications, you must have heard the mantra stateless services. It's almost like a cult. Only stateless services are worthy. Everything else is heresy. The solution to any problem is to remove the state. How do we scale this application? Make it stateless. How do we put this into a container? Make it stateless. How do we make it fault tolerant? Make it stateless. No matter the problem, the solution is to be stateless.</p>
+<p>Are all the services we used until now stateless? They're not. Therefore, the logic dictates, we did not yet solve all the problems.</p>
+<p>Before we start exploring stateless services, we should go back in time and discuss The twelve-factor app methodology.</p>
+
+
+            </article>
+
+            <footer style="margin-top: 5em;">
+                
+            </footer>
+
+        </section>
+    
+
+        <section>
+
+            <header>
+                <h1 class="header-title">Exploring the twelve-factor app methodology</h1>
+            </header>
+
+            <article>
+                
+<p>Assuming that my memory still serves me well, <em>Heroku</em> (<a href="https://www.heroku.com/">https://www.heroku.com/</a>) became popular somewhere around 2010. It showed us how to leverage <em>Software-as-a-Service</em> principles. It freed developers from thinking too much about underlying infrastructure. It allowed them to concentrate on development and leave the rest to others. All we had to do is push our code to Heroku. It would detect the programming language we use, create a VM and install all the dependencies, build, launch, and so on. The result would be our application running on a server.</p>
+<p>Sure, in some cases Heroku would not manage to figure out everything by itself. When that happens, all we'd have to do is create a simple config that would give it a few extra pieces of information. Still very easy and efficient.</p>
+<p>Startups loved it (some still do). It allowed them to concentrate on developing new features and leave everything else to Heroku. We write software, and someone else runs it. This is <strong>Software-as-a-Service (SaaS)</strong> at its best. The idea and the principles behind it become so popular that many decided to clone the idea and create their own Heroku-like services.</p>
+<p>Shortly after Heroku received a broad adoption, its creators realized that many applications did not perform as expected. It's one thing to have a platform that frees developers from operations, but quite another thing to actually write code that fares well under SaaS providers. So, Heroku folks and a few others came up with <em>The Twelve-Factor App</em> (<a href="https://12factor.net/">https://12factor.net/</a>) principles. If your application fulfills all twelve factors, it will work well as SaaS. Most of those factors are valid for any modern application, no matter whether it will run inside on-premise servers or through a cloud computing provider, inside PaaS, SaaS, a container, or none of the above. Every modern application should be made using The twelve-factor app methodology. Or, at least, that's what many are saying.</p>
+<p>Let us explore each of those factors and see how well we fare against it. Maybe, just maybe, what we learned so far will make us twelve-factor compliant. We'll go through all the factors and compare them with the services we used through this book.</p>
+<ol>
+<li><strong>Codebase</strong></li>
+</ol>
+<p style="padding-left: 60px">One codebase tracked in revision control, many deploys. The <kbd>go-demo</kbd> service is in a single Git repository. Every commit is deployed to testing and production environments. All other services we created are released by someone else. – Passed</p>
+<ol start="2">
+<li><strong>Dependencies</strong></li>
+</ol>
+<p style="padding-left: 60px">Explicitly declare and isolate dependencies. All the dependencies are inside Dockers images. Excluding Docker Engine, there is no system-wide dependency. Docker images fulfill this principle by default.<em>– Passed</em></p>
+<ol start="3">
+<li><strong>Config</strong></li>
+</ol>
+<p style="padding-left: 60px">Store config in the environment.</p>
+<p style="padding-left: 60px">The <kbd>go-demo</kbd> service does not have any configuration file. Everything is set through environment variables. The same can be said for all other services we created. Service discovery through networking was a huge help accomplishing this, by allowing us to find services without any configuration. Please note that this principle applies only to configurations that vary between deployments. Everything else can continue being a file as long as it stays the same no matter when and where the service is deployed. <em>-</em> Passed</p>
+<ol start="4">
+<li><strong>Backing services</strong></li>
+</ol>
+<p style="padding-left: 60px">Treat backing services as attached resources.</p>
+<p style="padding-left: 60px">In our case, MongoDB is a backing service. It is attached to the primary service <kbd>go-demo</kbd> through networking. <em>– Passed</em></p>
+<ol start="5">
+<li><strong>Build, release, run</strong></li>
+</ol>
+<p style="padding-left: 60px">Strictly separate build and run stages.</p>
+<p style="padding-left: 60px">In this context, everything except running services is considered the build phase. In our case, the build phase is clearly separated from run stages. Jenkins is building our services while Swarm is running them. Building and running are performed in separate clusters. <em>–</em> Passed</p>
+<ol start="6">
+<li><strong>Processes</strong></li>
+</ol>
+<p style="padding-left: 60px">Execute the app as one or more stateless processes.</p>
+<p style="padding-left: 60px">We are failing this principle big time. Even though the <kbd>go-demo</kbd> service is stateless, almost everything else (<kbd>docker-flow-proxy</kbd>, <kbd>jenkins</kbd>, <kbd>prometheus</kbd>, and so on) is not. – Failed</p>
+<ol start="7">
+<li><strong>Port binding</strong></li>
+</ol>
+<p style="padding-left: 60px">Export services via port binding.</p>
+<p style="padding-left: 60px">Docker networking and the <kbd>docker-flow-proxy</kbd> are taking care of port bindings. In many cases, the only service that will bind any port is the <kbd>proxy</kbd>. Everything else should be inside one or more networks and made accessible through the <kbd>proxy</kbd>. – Passed</p>
+<ol start="8">
+<li><strong>Concurrency</strong></li>
+</ol>
+<p style="padding-left: 60px">Scale out via the process model.</p>
+<p style="padding-left: 60px">This factor is directly related to statelessness. Stateless services (example: <kbd>go-demo</kbd>) are easy to scale. Some non-stateless services (example: <kbd>docker-flow-proxy</kbd>) are designed to be scalable, so they fulfill this principle as well. Many other stateful services (example: Jenkins, Prometheus, and so on) cannot be scaled horizontally. Even when they can, the process is often too complicated and prone to errors. – Failed</p>
+<ol start="9">
+<li><strong>Disposability</strong></li>
+</ol>
+<p style="padding-left: 60px">Maximize robustness with fast startup and graceful shutdown.</p>
+<p style="padding-left: 60px">Stateless services are disposable by default. They can be started and stopped at a moments notice, and they tend to be fault tolerant. In case an instance fails, Swarm will reschedule it in one of the healthy nodes. The same cannot be said for all the services we used. Jenkins and MongoDB, just to name a few, will lose their state in case of a failure. That makes them anything but disposable. – Failed</p>
+<ol start="10">
+<li><strong>Dev/prod parity</strong></li>
+</ol>
+<p style="padding-left: 60px">Keep development, staging, and production as similar as possible.</p>
+<p style="padding-left: 60px">That is one of the main benefits Docker provides. Since containers are created from immutable images, a service will be the same no matter whether it runs on our laptop, testing environment, or production. – Passed</p>
+<ol start="11">
+<li><strong>Logs</strong></li>
+</ol>
+<p style="padding-left: 60px">Treat logs as event streams.</p>
+<p style="padding-left: 60px">The <em>ELK</em> stack together with <em>LogSpout</em> fulfills this principle. All the logs from all the containers are streamed into <em>ElasticSearch</em> as long as applications inside the containers are outputting them to <kbd>stdout</kbd>. Jenkins, as we run it, is the exception since it writes some of the logs to files. However, that is configurable, so we won't fault it for that. – Passed</p>
+<ol start="12">
+<li><strong>Admin processes</strong></li>
+</ol>
+<p style="padding-left: 60px">Run <kbd>admin/management</kbd> tasks as one-off processes. In our case, all the processes are executed as Docker containers, apparently fulfilling this factor. – Passed</p>
+<p style="padding-left: 60px">We passed nine out of twelve factors. Should we aim for all twelve? Actually, the question is wrong. A better-phrased question would be whether we can aim for all twelve factors. We often can't. The world was not built yesterday, and we cannot throw away all the legacy code and start fresh. Even if we could, twelve-factor app principles have one big fallacy. They assume that there is such a thing as a system comprised completely of stateless services.</p>
+<p style="padding-left: 60px">No matter which architecture style we adopt (microservices included), applications have a state! In a microservices style architecture, each service can have multiple instances, and each service instance should be designed to be stateless. What that means, is that a service instance does not store any data across operations. Hence, being stateless means that any service instance can retrieve all application state required to execute a behavior, from somewhere else. That is a significant architectural constraint of microservices style applications, as it enables resiliency, elasticity, and allows any available service instance to execute any task. Even though the state is not inside a service we are developing, it still exists and needs to be managed somehow. The fact that we did not develop the database where the state is stored does not mean that it should not follow the same principles and be scalable, fault tolerant, resilient, and so on.</p>
+<p style="padding-left: 60px">So, all systems have a state, but a service can be stateless if it cleanly separates behaviors from data, and can fetch data required to perform any behavior.</p>
+<p style="padding-left: 60px">Could the authors of twelve-factor app principles be so shortsighted as to assume that state does not exist? They indeed aren't. They assume that everything but the code we write will be a service maintained by someone else. Take MongoDB as an example. Its primary purpose is to store state, so it is, of course, stateful. The twelve-factor app authors assume that we are willing to let someone else manage stateful services and focus only on those we are developing.</p>
+<p style="padding-left: 60px">While, in some cases, we might choose to use Mongo as a service maintained by one of the cloud providers, in many others such a choice is not the most efficient. If anything else, such services tend to be very expensive. That cost is often worth paying when we do not have the knowledge or the capacity to maintain our backing services. However, when we do, we can expect better and cheaper results if we run a database ourselves. In such a case, it is one of our services, and it is obviously stateful. The fact that we did not write all the services does not mean we are not running them and are, therefore, responsible for them.</p>
+<p style="padding-left: 60px">The good news is that all three principles we failed are related to statefulness. If we manage to create services in a way that their state is preserved on shutdown and shared between all instances, we'll manage to make the whole system <em>cloud native</em>. We'll be able to run it anywhere, scale its services as needed, and make the system fault tolerant.</p>
+<p style="padding-left: 60px">Creating and managing stateful services is the only major piece of the puzzle we are missing. After this chapter, you will be on your way to running any type of services inside your Swarm cluster.</p>
+<p style="padding-left: 60px">We will start the practical part of this chapter by creating a Swarm cluster. We'll use AWS only as a demonstration. The principles explored here can be applied to almost any cloud computing provider as well as to on-premise servers.</p>
+
+
+            </article>
+
+            <footer style="margin-top: 5em;">
+                
+            </footer>
+
+        </section>
+    
+
+        <section>
+
+            <header>
+                <h1 class="header-title">Setting up a Swarm cluster and the proxy</h1>
+            </header>
+
+            <article>
+                
+<p>We'll use <em>Packer</em> (<a href="https://www.packer.io/">https://www.packer.io/</a>) and <em>Terraform</em> (<a href="https://www.terraform.io/">https://www.terraform.io/</a>) to create a Swarm cluster in AWS. For now, the configuration we'll use will be (almost) the same as the one we explored in the <a href="">Chapter 12</a>, <em>Creating and Managing a Docker Swarm Cluster in Amazon Web Services (AWS)</em>. We'll extend it later on when we reach more complex scenarios.</p>
+<div class="packt_infobox">All the commands from this chapter are available in the <kbd>13-volumes.sh</kbd> (<a href="https://gist.github.com/vfarcic/338e8f2baf2f0c9aa1ebd70daac31899">https://gist.github.com/vfarcic/338e8f2baf2f0c9aa1ebd70daac31899</a>) Gist.</div>
+<p>We'll continue using the <kbd>vfarcic/cloud-provisioning</kbd> (<a href="https://github.com/vfarcic/cloud-provisioning">https://github.com/vfarcic/cloud-provisioning</a>) repository. It contains configurations and scripts that'll help us out. You already have it cloned. To be on the safe side, we'll <kbd>pull</kbd> the latest version:</p>
+<pre>
+<strong><span class="hljs-built_in">cd</span> cloud-provisioning<br/><br/>git pull</strong>
+</pre>
+<p>Packer and Terraform configurations are in the <kbd>terraform/aws-full</kbd> (<a href="https://github.com/vfarcic/cloud-provisioning/tree/master/terraform/aws-full">https://github.com/vfarcic/cloud-provisioning/tree/master/terraform/aws-full</a>) directory:</p>
+<pre>
+<strong><span class="hljs-built_in">cd</span> terraform/aws-full</strong>
+</pre>
+<p>We'll define a few environment variables that will provide Packer the information it needs when working with AWS:</p>
+<pre>
+<strong><span class="hljs-keyword">export</span> AWS_ACCESS_KEY_ID=[...]<br/><br/><span class="hljs-keyword">export</span> AWS_SECRET_ACCESS_KEY=[...]<br/><br/><span class="hljs-keyword">export</span> AWS_DEFAULT_REGION=us-east-<span class="hljs-number">1</span></strong>
+</pre>
+<p>Please replace <kbd>[...]</kbd> with the actual values. Consult the <a href="">Chapter 12</a>, <em>Creating And Managing A Docker Swarm Cluster in Amazon Web Services</em> if you lost the keys and forgot how to create them.</p>
+<p>We are ready to create the first image we'll use in this chapter. The Packer configuration we'll use is in <kbd>terraform/aws-full/packer-ubuntu-docker-compose.json</kbd> (<a href="https://github.com/vfarcic/cloud-provisioning/blob/master/terraform/aws-full/packer-ubuntu-docker-compose.json">https://github.com/vfarcic/cloud-provisioning/blob/master/terraform/aws-full/packer-ubuntu-docker-compose.json</a>). It is almost the same as the one we used before so we'll comment only the relevant differences. They are as follows:</p>
+<pre>
+<strong>  <span class="hljs-string">"provisioners"</span>: [{<br/><span class="hljs-keyword">...</span><br/>  }, {<br/><span class="hljs-string">"type"</span>: <span class="hljs-string">"file"</span>,<br/><span class="hljs-string">"source"</span>: <span class="hljs-string">"docker.service"</span>,<br/><span class="hljs-string">"destination"</span>: <span class="hljs-string">"/tmp/docker.service"</span><br/>  }, {<br/><span class="hljs-string">"type"</span>: <span class="hljs-string">"shell"</span>,<br/><span class="hljs-string">"inline"</span>: [<br/><span class="hljs-string">"sudo mv /tmp/docker.service /lib/systemd/system/docker.service"</span>,<br/><span class="hljs-string">"sudo chmod 644 /lib/systemd/system/docker.service"</span>,<br/><span class="hljs-string">"sudo systemctl daemon-reload"</span>,<br/><span class="hljs-string">"sudo systemctl restart docker"</span><br/>    ]<br/>  }]</strong>
+</pre>
+<p>The file provisioner copies the docker.service file into the VM. The commands from the shell provisioner will move the uploaded file to the correct directory, give it correct permissions, and restart the <kbd>docker service</kbd>.</p>
+<p>The <kbd>docker.service</kbd> (<a href="https://github.com/vfarcic/cloud-provisioning/blob/master/terraform/aws-full/docker.service">https://github.com/vfarcic/cloud-provisioning/blob/master/terraform/aws-full/docker.service</a>) file is as follows:</p>
+<pre>
+<strong><span class="hljs-title">[Unit]</span><br/><span class="hljs-setting">Description=<span class="hljs-value">Docker Application Container Engine</span></span><br/><span class="hljs-setting">Documentation=<span class="hljs-value">https://docs.docker.com</span></span><br/><span class="hljs-setting">After=<span class="hljs-value">network.target docker.socket</span></span><br/><span class="hljs-setting">Requires=<span class="hljs-value">docker.socket</span></span><br/><br/><span class="hljs-title">[Service]</span><br/><span class="hljs-setting">Type=<span class="hljs-value">notify</span></span><br/><span class="hljs-setting">ExecStart=<span class="hljs-value">/usr/bin/dockerd -H fd:// -H tcp://<span class="hljs-number">0.0</span>.<span class="hljs-number">0.0</span>:<span class="hljs-number">2375</span></span></span><br/><span class="hljs-setting">ExecReload=<span class="hljs-value">/bin/kill -s HUP $MAINPID</span></span><br/><span class="hljs-setting">LimitNOFILE=<span class="hljs-value">infinity</span></span><br/><span class="hljs-setting">LimitNPROC=<span class="hljs-value">infinity</span></span><br/><span class="hljs-setting">LimitCORE=<span class="hljs-value">infinity</span></span><br/><span class="hljs-setting">TasksMax=<span class="hljs-value">infinity</span></span><br/><span class="hljs-setting">TimeoutStartSec=<span class="hljs-value"><span class="hljs-number">0</span></span></span><br/><span class="hljs-setting">Delegate=<span class="hljs-value"><span class="hljs-keyword">yes</span></span></span><br/><span class="hljs-setting">KillMode=<span class="hljs-value">process</span></span><br/><br/><span class="hljs-title">[Install]</span><br/><span class="hljs-setting">WantedBy=<span class="hljs-value">multi-user.target</span></span></strong>
+</pre>
+<p>The Docker service configuration is almost identical to the default one. The only difference is <kbd>-H tcp://0.0.0.0:2375</kbd> in <kbd>ExecStart</kbd>.</p>
+<p>By default, Docker Engine does not allow remote connections. If its configuration is left unchanged, we cannot send commands from one server to another. By adding <kbd>-H tcp://0.0.0.0:2375</kbd>, we are telling Docker to accept requests from any address <kbd>0.0.0.0</kbd>. Normally, that would be a big security risk. However, all AWS ports are closed by default. Later on, we'll open <kbd>2375</kbd> only to servers that belong to the same security group. As a result, we will be able to control any Docker Engine as long as we are inside one of our servers. As you will see soon, this will come in handy in quite a few examples that follow.</p>
+<p>Let's build the AMI defined in <kbd>packer-ubuntu-docker-compose.json</kbd>:</p>
+<pre>
+<strong>packer build -machine-readable \ <br/>    packer-ubuntu-docker.json \<br/>    | tee packer-ubuntu-docker.log</strong>
+</pre>
+<p>Now we can turn our attention to Terraform that'll create our cluster. We'll copy the SSH key <kbd>devops21.pem</kbd> that we created earlier and declare a few environment variables that will allow Terraform to access our AWS account:</p>
+<pre>
+<strong><span class="hljs-keyword">export</span> TF_VAR_aws_access_key=<span class="hljs-variable">$AWS_ACCESS_KEY_ID</span><br/><br/><span class="hljs-keyword">export</span> TF_VAR_aws_secret_key=<span class="hljs-variable">$AWS_SECRET_ACCESS_KEY</span><br/><br/><span class="hljs-keyword">export</span> TF_VAR_aws_default_region=<span class="hljs-variable">$AWS_DEFAULT_REGION</span><br/><br/><span class="hljs-keyword">export</span> KEY_PATH=<span class="hljs-variable">$HOME</span>/.ssh/devops21.pem<br/><br/>cp <span class="hljs-variable">$KEY_PATH</span> devops21.pem<br/><br/><span class="hljs-keyword">export</span> TF_VAR_swarm_ami_id=$( \<br/>    grep <span class="hljs-string">'artifact,0,id'</span> \<br/>    packer-ubuntu-docker.log \<br/>    | cut <span class="hljs-operator">-d</span>: <span class="hljs-operator">-f</span>2)</strong>
+</pre>
+<p>Terraform expects environment variables to be prefixed with <kbd>TF_VAR</kbd>, so we had to create new ones, even though their values are the same as those we used for Packer. The value of the environment variable <kbd>KEY_PATH</kbd> is only an example. You might have it stored somewhere else. If that's the case, please change the value to the correct path.</p>
+<p>The last command filters the <kbd>packer-ubuntu-docker.log</kbd> and stores the AMI ID as the environment variable <kbd>TF_VAR_swarm_ami_id</kbd>.</p>
+<p>Now we can create a Swarm cluster. Three VMs should suffice for the exercises that follow, so we'll only create managers. Since the commands will be the same as those we executed in the previous chapters, we'll just skip the explanation and run them:</p>
+<pre>
+<strong>terraform apply \<br/>    -target aws_instance.swarm-manager \<br/>    -var swarm_init=<span class="hljs-literal">true</span> \<br/>    -var swarm_managers=<span class="hljs-number">1</span><br/><br/><span class="hljs-keyword">export</span> TF_VAR_swarm_manager_token=$(ssh \<br/>    -i devops21.pem \<br/>    ubuntu@$(terraform output \<br/>    swarm_manager_1_public_ip) \<br/>    docker swarm join-token -q manager)<br/><br/><span class="hljs-keyword">export</span> TF_VAR_swarm_manager_ip=$(terraform \<br/>    output swarm_manager_1_private_ip)<br/><br/>terraform apply \<br/>    -target aws_instance.swarm-manager</strong>
+</pre>
+<p>We created the first server and initialized the Swarm cluster. Later on, we retrieved the token and the IP of one of the managers and used that data to create and join two additional nodes.</p>
+<p>To be on the safe side, we'll enter one of the managers and list the nodes that form the cluster:</p>
+<pre>
+<strong>ssh -i devops21.pem \<br/>    ubuntu@$(terraform output \<br/>    swarm_manager_1_public_ip) \<br/><br/>docker node ls</strong>
+</pre>
+<p>The output is as follows (IDs are removed for brevity):</p>
+<pre>
+<strong>HOSTNAME         STATUS AVAILABILITY MANAGER STATUS<br/>ip-<span class="hljs-number">172</span>-<span class="hljs-number">31</span>-<span class="hljs-number">16</span>-<span class="hljs-number">158</span> Ready  <span class="hljs-keyword">Active</span>       Leader<br/>ip-<span class="hljs-number">172</span>-<span class="hljs-number">31</span>-<span class="hljs-number">31</span>-<span class="hljs-number">201</span> Ready  <span class="hljs-keyword">Active</span>       Reachable<br/>ip-<span class="hljs-number">172</span>-<span class="hljs-number">31</span>-<span class="hljs-number">27</span>-<span class="hljs-number">205</span> Ready  <span class="hljs-keyword">Active</span>       Reachable</strong>
+</pre>
+<div class="packt_tip"><strong>Where are the workers?</strong><br/>
+We did not create any worker nodes. The reason is simple. For the exercises in this chapter, three nodes are more than enough. That should not prevent you from adding worker nodes when you start using a similar cluster setup in your organization.<br/>
+To add worker nodes, please execute the commands that follow:<br/>
+<kbd>export TF_VAR_swarm_worker_token=$(ssh\ '-i devops21.pem ''ubuntu@$(terraform output ''swarm_manager_1_public_ip)' 'docker swarm join-token -q worker) terraform apply\'-target aws_instance.swarm-worker'</kbd><br/>
+If the output would be <kbd>1.2.3.4</kbd>, you should open <kbd>http://1.2.3.4/jenkins</kbd> in your browser.</div>
+<p>We are almost done. The only thing left, before we move into statefulness, is to run the <kbd>docker-flow-proxy</kbd> and <kbd>docker-flow-swarm-listener</kbd> services. Since we already created them quite a few times, there's no need for an explanation so we can speed up the process by deploying the <kbd>vfarcic/docker-flow-proxy/docker-compose-stack.yml</kbd> (<a href="https://github.com/vfarcic/docker-flow-proxy/blob/master/docker-compose-stack.yml">https://github.com/vfarcic/docker-flow-proxy/blob/master/docker-compose-stack.yml</a>) stack:</p>
+<pre>
+<strong>docker network create --driver overlay proxy<br/><br/>curl -o proxy-stack.yml \<br/>    https://raw.githubusercontent.com/\<br/>vfarcic/docker-flow-proxy/master/docker-compose-stack.yml<br/><br/>docker stack deploy \<br/>    -c proxy-stack.yml proxy<br/><br/><span class="hljs-keyword">exit</span></strong>
+</pre>
+
+
+            </article>
+
+            <footer style="margin-top: 5em;">
+                
+            </footer>
+
+        </section>
+    
+
+        <section>
+
+            <header>
+                <h1 class="header-title">Running stateful services without data persistence</h1>
+            </header>
+
+            <article>
+                
+<p>We'll start the exploration of stateful services in a Swarm cluster by taking a look at what would happen if we deploy them as any other service.</p>
+<p>A good example is Jenkins. Every job we create is an XML file. Every plugin we install is an HPI file. Every configuration change is stored as XML. You get the picture. Everything we do in Jenkins ends up being a file. All those files form its state. Without it, Jenkins would not be able to operate. Jenkins is also a good example of the problems we have with legacy applications. If we were to design it today, it would probably use a database to store its state. That would allow us to scale it since all instances would share the same state by being connected to the same database. There are quite a few other design choices we would probably make if we were to design it today from scratch. Being legacy is not necessarily a bad thing. Sure, having the experience we have today would help us avoid some of the pitfalls of the past. On the other hand, being around for a long time means that it is battle tested, has a high rate of adoption, a huge number of contributors, a big user base, and so on. Everything is a trade-off, and we cannot have it all.</p>
+<p>We'll put aside the pros and cons of having a well established and battle-tested versus young and modern, but often unproven application. Instead, let's take a look at how Jenkins, as a representative of a stateful service, behaves when running inside the Swarm cluster we created with Terraform:</p>
+<pre>
+<strong>ssh -i devops21.pem \<br/>    ubuntu@$(terraform output \<br/>    swarm_manager_1_public_ip)<br/><br/>docker service create --name jenkins \<br/><span class="hljs-operator">-e</span> JENKINS_OPTS=<span class="hljs-string">"--prefix=/jenkins"</span> \<br/>    --label com.df.notify=<span class="hljs-literal">true</span> \<br/>    --label com.df.distribute=<span class="hljs-literal">true</span> \<br/>    --label com.df.servicePath=/jenkins \<br/>    --label com.df.port=<span class="hljs-number">8080</span> \<br/>    --network proxy \<br/>    --reserve-memory <span class="hljs-number">300</span>m \<br/>    jenkins:<span class="hljs-number">2.7</span>.<span class="hljs-number">4</span>-alpine</strong>
+</pre>
+<p>We entered one of the managers and created the <kbd>jenkins</kbd> service.</p>
+<p>Please wait a few moments until <kbd>jenkins</kbd> service is running. You can use docker <kbd>service ps jenkins</kbd> to check the current state.</p>
+<p>Now that Jenkins is running, we should open it in a browser:</p>
+<pre>
+<strong><span class="hljs-keyword">exit</span><br/><br/>open <span class="hljs-string">"http://<span class="hljs-variable">$(terraform output swarm_manager_1_public_ip)</span>/jenkins"</span></strong>
+</pre>
+<div class="packt_tip"><strong>A note to Windows users<br/></strong><span>Git Bash might not be able to use the</span> <kbd>open</kbd> <span>command. If that's the case, execute</span> <kbd>terraform output</kbd> <kbd>swarm_manager_1_public_ip</kbd> <span>to find out the IP of the manager and open the URL directly in your browser of choice. For example, the command above should be replaced with the command that follows:<br/>
+<kbd>terraform output swarm_manager_1_public_ip</kbd><br/></span> <span>If the output would be</span> <kbd>1.2.3.4</kbd><span>, you should open</span> <kbd>http://1.2.3.4/jenkins</kbd> <span>in your browser.</span></div>
+<p>As you remember from the <a href="600ac100-1492-4de3-9607-5ad11b628bbb.xhtml">Chapter 6</a>, <em>Automating Continuous Deployment Flow with Jenkins</em>, we need to retrieve the password from logs or its file system. However, this time, doing that is a bit more complicated. Docker Machine mounts local (laptop's) directory into every VM it creates so we could retrieve the <kbd>initialAdminPassword</kbd> without even entering VMs.<br/>
+<br/>
+There is no such thing with AWS <em>at least not yet</em>, so we need to find out which EC2 instance hosts Jenkins, find the ID of the container, and enter into it to get the file. Such a thing would be easy to do manually but, since we are committed to automation, we'll do it the hard way.</p>
+<p>We'll start the quest of finding the password by entering one of the managers and list service tasks:</p>
+<pre>
+<strong>ssh -i devops21.pem \<br/>    ubuntu@$(terraform output \<br/>    swarm_manager_1_public_ip) \<br/><br/>docker service ps jenkins</strong>
+</pre>
+<p>The output is as follows (IDs and ERROR coloumn are removed for brevity):</p>
+<pre>
+<strong>NAME       IMAGE                 NODE              DESIRED STATE           <br/>jenkins.<span class="hljs-number">1</span>  jenkins:<span class="hljs-number">2.7</span>.<span class="hljs-number">4</span>-alpine  ip-<span class="hljs-number">172</span>-<span class="hljs-number">31</span>-<span class="hljs-number">16</span>-<span class="hljs-number">158</span>  Running       <br/>---------------------------------------------------------------<br/>CURRENT STATE<br/>Running <span class="hljs-number">8</span> minutes ago<br/></strong>
+</pre>
+<p>Luckily, AWS EC2 instances contain internal IP in their names. We can use that to our advantage:</p>
+<pre>
+<strong>JENKINS_IP=$(docker service ps jenkins \<br/>    | tail -n <span class="hljs-number">1</span> \<br/>    | awk <span class="hljs-string">'{ print $4 }'</span> \<br/>    | cut -c <span class="hljs-number">4</span>- \<br/>    | tr <span class="hljs-string">"-"</span> <span class="hljs-string">"."</span>)</strong>
+</pre>
+<p>We listed the service tasks and piped it to tail so that only the last line is returned. Then we used <kbd>awk</kbd> to get the fourth column. The cut command printed the result from the fourth byte effectively removing <kbd>ip-</kbd>. All that was piped to tr that replaced - with Finally, the result was stored in the environment variable <kbd>JENKINS_IP</kbd>.</p>
+<p>If this was too freaky for you, feel free to assign the value manually (in my case it was <kbd>172.31.16.159).</kbd></p>
+<p>Now that we know which node is hosting Jenkins, we need to retrieve the ID of the container. Since we modified the <kbd>docker.service</kbd> config to allow us to send commands to a remote engine, we can use the <kbd>-H</kbd> argument.</p>
+<p>The command that retrieves the ID of the Jenkins container is as follows:</p>
+<pre>
+<strong>JENKINS_ID=$(docker -H tcp://<span class="hljs-variable">$JENKINS_IP</span>:<span class="hljs-number">2375</span> \<br/>    ps -q \<br/>    --filter label=com.docker.swarm.service.name=jenkins)</strong>
+</pre>
+<p>We used <kbd>-H</kbd> to tell the local client to connect to the remote engine running in <kbd>tcp://$JENKINS_IP:2375</kbd>. We listed all running containers <kbd>ps</kbd> in quiet mode <kbd>-q</kbd> so that only IDs are returned. We also applied a filter, so that only the service named Jenkins is retrieved. The result was stored in the environment variable <kbd>JENKINS_ID</kbd>.</p>
+<p>Now we can use the IP and the ID to enter the container and output the password stored in the file <kbd>/var/jenkins_home/secrets/initialAdminPassword</kbd>.</p>
+<pre>
+<strong>docker -H tcp://<span class="hljs-variable">$JENKINS_IP</span>:<span class="hljs-number">2375</span> \<br/><span class="hljs-keyword">    exec</span> -it <span class="hljs-variable">$JENKINS_ID</span> \<br/>    cat /var/jenkins_home/secrets/initialAdminPassword</strong>
+</pre>
+<p>The output is, in my case, as follows:</p>
+<pre>
+<strong>cb7483ce39894c44a48b761c4708dc7d</strong>
+</pre>
+<p>Please copy the password, return to the Jenkins UI, and paste it.</p>
+<p>Complete the Jenkins setup before proceeding further. You already know the drill from the <a href="600ac100-1492-4de3-9607-5ad11b628bbb.xhtml">Chapter 6</a>, <em>Automating Continuous Deployment Flow with Jenkins</em>, so I'll let you do it in peace.</p>
+<p>The result should be the screen similar to the one in the <em>figure 13-1:</em></p>
+<div class="CDPAlignCenter CDPAlign"><img class="image-border" height="387" src="assets/jenkins-home.png" width="690"/></div>
+<div class="packt_figref CDPAlignCenter CDPAlign">Figure 13-1: Jenkins home screen after the initial setup</div>
+<p>Here comes the easy question which I'm sure you'll know how to answer. What would happen if, for whatever reason, Jenkins instance fails?</p>
+<p>Let's simulate the failure and observe the outcome:</p>
+<pre>
+<strong>docker -H tcp://<span class="hljs-variable">$JENKINS_IP</span>:<span class="hljs-number">2375</span> \<br/>    rm <span class="hljs-operator">-f</span> <span class="hljs-variable">$JENKINS_ID</span></strong>
+</pre>
+<p>We used the environment variables <kbd>JENKINS_IP</kbd> and <kbd>JENKINS_ID</kbd> to send the forced remove <kbd>rm -f</kbd> command to the remote node that hosts Jenkins.</p>
+<p>Nothing lasts forever. Sooner or later, the service would fail. If it doesn't, the node where it runs will. By removing the container, we simulated what would happen in a real-world situation.</p>
+<p>After a while, Swarm will detect that the jenkins replica failed and instantiate a new one. We can confirm that by listing jenkins tasks:</p>
+<pre>
+<strong>docker service ps jenkins</strong>
+</pre>
+<p>The output is as follows (IDs are removed for brevity):</p>
+<pre>
+<strong>NAME        IMAGE                NODE               DESIRED STATE CURRENT STATE                                    <br/>jenkins<span class="hljs-number">.1</span>   jenkins:<span class="hljs-number">2.7</span><span class="hljs-number">.4</span>-alpine ip-<span class="hljs-number">172</span>-<span class="hljs-number">31</span>-<span class="hljs-number">31</span>-<span class="hljs-number">201</span>   Running       Running about 1 min <br/>_ jenkins<span class="hljs-number">.1</span> jenkins:<span class="hljs-number">2.7</span><span class="hljs-number">.4</span>-alpine ip-<span class="hljs-number">172</span>-<span class="hljs-number">31</span>-<span class="hljs-number">16</span>-<span class="hljs-number">158</span>   Shutdown      Failed about 1 <span class="hljs-built_in">min</span>   <br/>-------------------------------------------------------------<br/>ERROR PORT<br/>"task: non-zero exit (137)"<br/></strong>
+</pre>
+<p>So far, so good. Swarm is doing what we want it to do. It is making sure that our services are (almost) always running.</p>
+<p>The only thing left is to go back to the UI and refresh the screen.</p>
+<p>The screen should look similar to the one in <em>figure 13-2:</em></p>
+<div class="CDPAlignCenter CDPAlign"><img class="image-border" height="222" src="assets/jenkins-setup.png" width="461"/></div>
+<div class="packt_figref CDPAlignCenter CDPAlign">Figure 13-2: Jenkins initial setup screen</div>
+<p>That's embarrassing. Everything we did is lost, and we are back to square one. Since Jenkins state was not persisted outside the container, when Swarm created a new one, it started with a blank slate.</p>
+<p>How can we solve this problem? Which solutions can we employ to address the persistence issue?</p>
+<p>Please remove the <kbd>jenkins</kbd> service before proceeding:</p>
+<pre>
+<strong>docker service rm jenkins<br/><br/><span class="hljs-keyword">exit</span></strong>
+</pre>
+
+
+            </article>
+
+            <footer style="margin-top: 5em;">
+                
+            </footer>
+
+        </section>
+    
+
+        <section>
+
+            <header>
+                <h1 class="header-title">Persisting stateful services on the host</h1>
+            </header>
+
+            <article>
+                
+<p>Host-based persistence was very common in the early Docker days when people were running containers on predefined nodes without schedulers like Docker Swarm, Kubernetes, or Mesos. Back then, we would choose a node where we'll run a container and put it there. Upgrades were performed on the same server. In other words, we packaged applications as containers and, for the most part, treated them as any other traditional service. If a node fails... tough luck! It's a disaster with or without containers.</p>
+<p>Since serves were prederfined, we could persist the state on the host and rely on backups when that host dies. Depending on the backup frequency, we could lose a minute, an hour, a day, or even a whole week worth of data. Life is hard.</p>
+<p>The only positive thing about this approach is that persistence is easy. We would mount a host volume inside a container. Files are persisted outside the container so no data would be lost under "normal" circumstances. If the container is restarted as a result of a failure or an upgrade, data would still be there when we run a new container.</p>
+<p>There are other single-host variations of the model. Data volumes, data only containers, and so on. All of them share the same drawback. They remove portability. Without portability, there is no fault tolerance, nor is there scaling. There is no Swarm.</p>
+<p>Host-based persistence is unacceptable, so I won't waste any more of your time.</p>
+<p>If you have a sysadmin background, you are probably wondering why I haven’t mentioned N<strong>etwork File System </strong>(<strong>NFS</strong>). The reason is simple. I wanted you to feel the pain before diving into the obvious solution.</p>
+
+
+            </article>
+
+            <footer style="margin-top: 5em;">
+                
+            </footer>
+
+        </section>
+    
+
+        <section>
+
+            <header>
+                <h1 class="header-title">Persisting stateful services on a Network File System</h1>
+            </header>
+
+            <article>
+                
+<p>We need to find a way to retain state outside containers that run our services.</p>
+<p>We could mount a volume on the host. That would allow us to preserve state if a container fails and is rescheduled on the same node. The problem is that such a solution is too limited. There is no guarantee that Swarm will reschedule the service to the same node unless we constrain it. If we would do something like that, we'd prevent Swarm from ensuring service availability. When that node would fail (every node fails sooner or later), Swarm could not reschedule the service. We would be fault tolerant only as long as our servers are running.</p>
+<p>We can solve the problem of a node failure by mounting a NFS to each of the servers. That way, every server would have access to the same data, and we could mount a Docker volume to it.</p>
+<p>We'll use <strong>Amazon Elastic File System</strong> (<strong>EFS</strong>) (<a href="https://aws.amazon.com/efs/">https://aws.amazon.com/efs/</a>). Since this book is not dedicated to AWS, I’ll skip the comparison of different AWS file systems and only note that the choice of EFS is based on its ability to be used across multiple availability zones.</p>
+<p>Please open the <em>EFS home </em>(<a href="https://console.aws.amazon.com/efs/home">https://console.aws.amazon.com/efs/home</a>) screen:</p>
+<pre>
+<strong>open <span class="hljs-string">"https://console.aws.amazon.com/efs/home?region=<span class="hljs-variable">$AWS_DEFAULT_REGION</span>"</span></strong>
+</pre>
+<div class="packt_tip"><strong>A note to Windows users</strong><br/>
+Git Bash might not be able to use the <kbd>open</kbd> command. If that's the case, please replace <kbd>$AWS_DEFAULT_REGION</kbd> with the region where your cluster is running (for example, <kbd>us-east-1</kbd>) and open it in a browser.</div>
+<p>Click the <span class="packt_screen">Create file system</span> button. For each of the availability zones, replace the default security group with <em>docker</em> (we created it earlier with Terraform). Click the button <span class="packt_screen">Next Step</span> twice, followed by <span class="packt_screen">Create File System</span>.</p>
+<p>We should wait until Life cycle state is set to <span class="packt_screen">Available</span> for each of the zones.</p>
+<p>Now we are ready to mount the EFS in each of the nodes. The easiest way to do that is by clicking the <span class="packt_screen">Amazon EC2 mount instructions</span> link. We are interested only in the command from the third point of the Mounting your file system section. Please copy it.</p>
+<p>All that's left is to enter each of the nodes and execute the command that will mount the EFS volume:</p>
+<pre>
+<strong>ssh -i devops21.pem \<br/>    ubuntu@$(terraform output \<br/>    swarm_manager_1_public_ip)<br/><br/><span class="hljs-built_in">sudo</span> mkdir -p /mnt/efs</strong>
+</pre>
+<p>We entered the first manager and created <kbd>/mnt/efs</kbd> directory.</p>
+<p>Paste the command you copied from the <span class="packt_screen">EC2 mount instructions</span> screen. We'll make a tiny modification before executing it. Please change the destination path from <kbd>efs</kbd> to <kbd>/mnt/efs</kbd> and execute it.</p>
+<p>In my case, the command is as follows (yours will be different):</p>
+<pre>
+<strong><span class="hljs-built_in">sudo</span> mount -t nfs4 \<br/>    -o nfsvers=<span class="hljs-number">4.1</span>,rsize=<span class="hljs-number">1048576</span>,wsize=<span class="hljs-number">1048576</span>,hard,timeo=<span class="hljs-number">600</span>,\<br/>    retrans=<span class="hljs-number">2</span> fs-<span class="hljs-number">07538</span>d4e.efs.us-east-<span class="hljs-number">1</span>.amazonaws.com:/ \<br/>    /mnt/efs</strong>
+</pre>
+<p>We should also create a sub-directory where we'll store Jenkins state:</p>
+<pre>
+<strong><span class="hljs-built_in">sudo</span> mkdir -p /mnt/efs/jenkins<br/><br/><span class="hljs-built_in">sudo</span> chmod <span class="hljs-number">777</span> /mnt/efs/jenkins<br/><br/><span class="hljs-keyword">exit</span></strong>
+</pre>
+<p>We created the directory <kbd>/mnt/efs/jenkins,</kbd> gave full permissions to everyone, and exited the server. Since Swarm might decide to create the service on any of the nodes, we should repeat the same process on the rest of the servers. Please note that your mount will be different, so do not simply paste the <kbd>sudo mount</kbd> command that follows:</p>
+<pre>
+<strong>ssh -i devops21.pem \<br/>    ubuntu@$(terraform output \<br/>    swarm_manager_2_public_ip)<br/><br/><span class="hljs-built_in">sudo</span> mkdir -p /mnt/efs<br/><br/><span class="hljs-built_in">sudo</span> mount -t nfs4 \<br/>    -o nfsvers=<span class="hljs-number">4.1</span>,rsize=<span class="hljs-number">1048576</span>,wsize=<span class="hljs-number">1048576</span>,hard,timeo=<span class="hljs-number">600</span>, \<br/>    retrans=<span class="hljs-number">2</span> fs-<span class="hljs-number">07538</span>d4e.efs.us-east-<span class="hljs-number">1</span>.amazonaws.com:/ \<br/>    /mnt/efs<br/><br/><span class="hljs-keyword">exit</span><br/><br/>ssh -i devops21.pem \<br/>    ubuntu@$(terraform output \<br/>    swarm_manager_3_public_ip)<br/><br/><span class="hljs-built_in">sudo</span> mkdir -p /mnt/efs<br/><br/><span class="hljs-built_in">sudo</span> mount -t nfs4 \<br/>    -o nfsvers=<span class="hljs-number">4.1</span>,rsize=<span class="hljs-number">1048576</span>,wsize=<span class="hljs-number">1048576</span>,hard,timeo=<span class="hljs-number">600</span>,\<br/>    retrans=<span class="hljs-number">2</span> fs-<span class="hljs-number">07538</span>d4e.efs.us-east-<span class="hljs-number">1</span>.amazonaws.com:/ \<br/>    /mnt/efs<br/><br/><span class="hljs-keyword">exit</span></strong>
+</pre>
+<p>Now we can, finally, try again to create the <kbd>jenkins</kbd> service. Hopefully, this time the state will be preserved in case of a failure:</p>
+<pre>
+<strong>ssh -i devops21.pem \<br/>    ubuntu@$(terraform output \<br/>    swarm_manager_1_public_ip) \<br/><br/>docker service create --name jenkins \<br/><span class="hljs-operator">-e</span> JENKINS_OPTS=<span class="hljs-string">"--prefix=/jenkins"</span> \<br/>    --mount <span class="hljs-string">"type=bind,source=/mnt/efs/jenkins,target=/var/jenkins_home"</span> \<br/>    --label com.df.notify=<span class="hljs-literal">true</span> \<br/>    --label com.df.distribute=<span class="hljs-literal">true</span> \<br/>    --label com.df.servicePath=/jenkins \<br/>    --label com.df.port=<span class="hljs-number">8080</span> \<br/>    --network proxy \<br/>    --reserve-memory <span class="hljs-number">300</span>m \<br/>    jenkins:<span class="hljs-number">2.7</span>.<span class="hljs-number">4</span>-alpine</strong>
+</pre>
+<p>The only difference between this command and the one we used before is in the <kbd>--mount</kbd> argument. It tells Docker to mount host directory <kbd>/mnt/efs/jenkins</kbd> as <kbd>/var/jenkins_home</kbd> inside the container. Since we mounted <kbd>/mnt/efs</kbd> as EFS volume on all nodes, the <kbd>jenkins</kbd> service will have access to the same files no matter which server it will run in.</p>
+<p>Now we should wait until the service is running. Please execute the <kbd>service ps</kbd> command to see the current state:</p>
+<pre>
+<strong>docker service ps jenkins</strong>
+</pre>
+<p>Let's open Jenkins UI in a browser:</p>
+<pre>
+<strong><span class="hljs-keyword">exit</span><br/><br/>open <span class="hljs-string">"http://<span class="hljs-variable">$(terraform output swarm_manager_1_public_ip)</span>/jenkins"</span></strong>
+</pre>
+<div class="packt_tip"><strong>A note to Windows users</strong><br/>
+Git Bash might not be able to use the <kbd>open</kbd> command. If that's the case, execute <kbd>terraform output swarm_manager_1_public_ip</kbd> to find out the IP of the manager and open the URL directly in your browser of choice. For example, the preceding command should be replaced with the command that follows:<br/>
+<kbd>terraform output swarm_manager_1_public_ip</kbd><strong><br/></strong>If the output would be <kbd>1.2.3.4</kbd>, you should open <kbd>http://1.2.3.4/jenkins</kbd> in your browser.</div>
+<p>This time, since Jenkins home directory is mounted as <kbd>/mnt/efs/jenkins,</kbd> finding the password will be much easier. All we have to to is output the contents of the file <kbd>/mnt/efs/jenkins/secrets/initialAdminPassword</kbd> from one of the servers:</p>
+<pre>
+<strong>ssh -i devops21.pem \<br/>    ubuntu@$(terraform output \<br/>    swarm_manager_1_public_ip)<br/><br/>cat /mnt/efs/jenkins/secrets/initialAdminPassword</strong>
+</pre>
+<p>Please copy the password and paste it to the <span class="packt_screen">Administrator password</span> field in the Jenkins UI. Complete the setup:</p>
+<div class="CDPAlignCenter CDPAlign"><img class="image-border" height="283" src="assets/jenkins-home.png" width="528"/></div>
+<div class="CDPAlignCenter CDPAlign packt_figref">Figure 13-3: Jenkins home screen after the initial setup</div>
+<p>We'll simulate a failure one more time and observe the results. The commands that follow are the same as those we executed previously so there should be no reason to comment them:</p>
+<pre>
+<strong>JENKINS_IP=$(docker service ps jenkins \<br/>    | tail -n <span class="hljs-number">1</span> \<br/>    | awk <span class="hljs-string">'{ print $4 }'</span> \<br/>    | cut -c <span class="hljs-number">4</span>- \<br/>    | tr <span class="hljs-string">"-"</span> <span class="hljs-string">"."</span>)<br/><br/>JENKINS_ID=$(docker -H tcp://<span class="hljs-variable">$JENKINS_IP</span>:<span class="hljs-number">2375</span> \<br/>    ps -q \<br/>    --filter label=com.docker.swarm.service.name=jenkins)<br/><br/>docker -H tcp://<span class="hljs-variable">$JENKINS_IP</span>:<span class="hljs-number">2375</span> \<br/>    rm <span class="hljs-operator">-f</span> <span class="hljs-variable">$JENKINS_ID</span><br/><br/>docker service ps jenkins</strong>
+</pre>
+<p>Please wait until Swarm instantiates a new replica and refresh the Jenkins UI screen in your browser. This time, we are presented with the login page instead of going back to the initial setup. The state was preserved, making our <kbd>jenkins</kbd> service fault tolerant. In the worst case scenario, when the service or the entire node fails, we'll have a short period of downtime until Swarm recreates the failed replica. You might be wondering: why did I force you to go through manual steps to create an EFS and mount it? Shouldn't that be done automatically through Terraform? The reason is simple. This solution is not worth automating. It has quite a few downsides.</p>
+<p>We would need to place states from all the services into the same EFS drive. A better solution would be to create an EFS volume for each service. The problem with such an approach is that we would need to alter the Terraform config every time someone adds a new stateful service to the cluster. In that case, Terraform would not be of much help since it is not meant to have service-specific configs. It should act as a method to setup a cluster that could host any service. Even if we accept a single EFS volume for all services, we would still need to create a new sub-directory for each service. Wouldn't it be much better if we leave Terraform as a tool for creating infrastructure and Docker for all tasks related to services?</p>
+<p>Fortunately, there are better ways to create and mount EFS volumes.</p>
+<p>Before we explore alternatives, please remove the <kbd>jenkins</kbd> service and <kbd>exit</kbd> the server:</p>
+<pre>
+<strong>docker service rm jenkins<br/><br/><span class="hljs-keyword">exit</span></strong>
+</pre>
+<p>There is no reason to keep the EFS volume we created earlier, so please head back to <em>EFS console</em> (<a href="https://console.aws.amazon.com/efs">https://console.aws.amazon.com/efs</a>), select the file system, and click <span class="packt_screen">Actions</span> followed with the <span class="packt_screen">Delete file system</span> button. For the rest of the steps, please follow the instructions on the screen.</p>
+
+
+            </article>
+
+            <footer style="margin-top: 5em;">
+                
+            </footer>
+
+        </section>
+    
+
+        <section>
+
+            <header>
+                <h1 class="header-title">Data volume orchestration</h1>
+            </header>
+
+            <article>
+                
+<p>There are quite a few storage orchestration solutions that integrate with Docker through its volume plugins. We won’t compare them. Such an attempt would require a whole chapter, maybe even a book.</p>
+<p>Even if you choose a different solution, the principles that will be explained shortly apply to (almost) all others. For a complete list of currently supported plugins, please visit the <em>Volume plugins</em> (<a href="https://docs.docker.com/engine/extend/legacy_plugins/#/volume-plugins">https://docs.docker.com/engine/extend/legacy_plugins/#/volume-plugins</a>) section of the <em>Use Docker Engine Plugins</em> (<a href="https://docs.docker.com/engine/extend/legacy_plugins/">https://docs.docker.com/engine/extend/legacy_plugins/</a>) documentation.</p>
+<p><em>REX-Ray</em> (<a href="https://github.com/codedellemc/rexray">https://github.com/codedellemc/rexray</a>) is a vendor agnostic storage orchestration engine. It is built on top of the <em>libStorage</em> (<a href="http://libstorage.readthedocs.io">http://libstorage.readthedocs.io</a>) framework. It supports <em>EMC</em>, <em>Oracle VirtualBox</em>, and <em>Amazon EC2</em>. At the time of this writing, support for <em>GCE</em>, <em>Open Stack</em>, <em>Rackspace</em>, and <em>DigitalOcean</em> is under way.</p>
+<p>I find it easier to grasp something when I see it in action. In that spirit, instead of debating for a long time what REX-Ray does and how it works, we'll jump right into a practical demonstration.</p>
+
+
+            </article>
+
+            <footer style="margin-top: 5em;">
+                
+            </footer>
+
+        </section>
+    
+
+        <section>
+
+            <header>
+                <h1 class="header-title">Persisting stateful services with REX-Ray</h1>
+            </header>
+
+            <article>
+                
+<p>We'll start by setting up REX-Ray manually. If it turns out to be a good solution for our stateful services, we'll move it to Packer and Terraform configurations. Another reason for starting with a manual setup is to give you a better understanding how it works.</p>
+<p>Let's get going.</p>
+<p>Besides the AWS access keys and the region that we already used quite a few times, we'll also need the ID of the security group we created previously with Terraform:</p>
+<pre>
+<strong>terraform output security_group_id</strong>
+</pre>
+<p>The output should be similar to the one that follows (yours will be different):</p>
+<pre>
+<strong>sg<span class="hljs-operator">-d</span>9d4d1a4</strong>
+</pre>
+<p>Please copy the value. We'll need it soon.</p>
+<p>We'll enter one of the nodes where we'll install and configure REX-Ray:</p>
+<pre>
+<strong>ssh -i devops21.pem \<br/>    ubuntu@$(terraform output \<br/>    swarm_manager_1_public_ip)</strong>
+</pre>
+<p>REX-Ray is fairly simple to set up. That's one of the reasons I prefer it over some other solutions:</p>
+<pre>
+<strong>curl <span class="hljs-operator">-s</span>SL https://dl.bintray.com/emccode/rexray/install | sh <span class="hljs-operator">-s</span> -- stable</strong>
+</pre>
+<p>The output is as follows:</p>
+<pre>
+<strong><span class="hljs-header">REX-Ray<br/>-------</span><br/>Binary: /usr/bin/rexray<br/>SemVer: 0.6.3<br/>OsArch: Linux-x86<span class="hljs-emphasis">_64<br/>Branch: v0.6.3<br/>Commit: 69b1f5c2d86a2103c792bec23b5855babada1c0a<br/>Formed: Wed, 07 Dec 2016 23:22:14 UTC<br/><br/></span><span class="hljs-header">libStorage<br/>----------</span><br/>SemVer: 0.3.5<br/>OsArch: Linux-x86<span class="hljs-emphasis">_64<br/>Branch: v0.6.3<br/>Commit: 456dd68123dd6b49da0275d9bbabd6c800583f61<br/>Formed: Wed, 07 Dec 2016 23:21:36 UTC</span></strong>
+</pre>
+<p>We installed <em>REX-Ray version 0.6.3</em>, as well as its dependency <em>libStorage version 0.3.5</em>. In your case, versions might be newer.</p>
+<p>Next, we'll create environment variables with values required for REX-Ray configuration:</p>
+<pre>
+<strong><span class="hljs-keyword">export</span> AWS_ACCESS_KEY_ID=[...]<br/><br/><span class="hljs-keyword">export</span> AWS_SECRET_ACCESS_KEY=[...]<br/><br/><span class="hljs-keyword">export</span> AWS_DEFAULT_REGION=[...]<br/><br/><span class="hljs-keyword">export</span> AWS_SECURITY_GROUP=[...]</strong>
+</pre>
+<p>Please replace <kbd>[...]</kbd> with the actual values. The value of the security group should be the same as the one we previously retrieved with the <kbd>terraform output security_group_id</kbd> command.</p>
+<p>Now we are ready to configure REX-Ray through its YML configuration file stored in <kbd>/etc/rexray/config.yml</kbd>:</p>
+<pre>
+<strong><span class="hljs-built_in">echo</span> <span class="hljs-string">"<br/>libstorage:<br/>  service: efs<br/>  server:<br/>    services:<br/>      efs:<br/>        driver: efs<br/>        efs:<br/>          accessKey:      <span class="hljs-variable">${AWS_ACCESS_KEY_ID}</span><br/>          secretKey:      <span class="hljs-variable">${AWS_SECRET_ACCESS_KEY}</span><br/>          securityGroups: <span class="hljs-variable">${AWS_SECURITY_GROUP}</span><br/>          region:         <span class="hljs-variable">${AWS_DEFAULT_REGION}</span><br/>          tag:            rexray"</span> \</strong><br/><strong>    | <span class="hljs-built_in">sudo</span> tee /etc/rexray/config.yml</strong>
+</pre>
+<p>We set the driver to <kbd>efs</kbd> and provided it with the AWS data. The result was output to the <kbd>/etc/rexray/config.yml</kbd> file.</p>
+<p>Now we can start the service:</p>
+<pre>
+<strong><span class="hljs-built_in">sudo</span> rexray service start</strong>
+</pre>
+<p>The output is as follows:</p>
+<pre>
+<strong>rexray<span class="hljs-preprocessor">.service</span> - rexray<br/>   Loaded: loaded (/etc/systemd/system/rexray<span class="hljs-preprocessor">.service</span><span class="hljs-comment">; enabled; \<br/>vendor preset: enabled)</span><br/>   Active: active (running) since Thu <span class="hljs-number">2016</span>-<span class="hljs-number">12</span>-<span class="hljs-number">22</span> <span class="hljs-number">19</span>:<span class="hljs-number">34</span>:<span class="hljs-number">51</span> UTC<span class="hljs-comment">; 245ms ago</span><br/> Main PID: <span class="hljs-number">7238</span> (rexray)<br/>    Tasks: <span class="hljs-number">4</span><br/>   Memory: <span class="hljs-number">10.6</span>M<br/>      CPU: <span class="hljs-number">109</span>ms<br/>   CGroup: /system<span class="hljs-preprocessor">.slice</span>/rexray<span class="hljs-preprocessor">.service/\</span><br/>           _7238 /usr/bin/rexray start -f<br/><br/><span class="hljs-keyword">Dec</span> <span class="hljs-number">22</span> <span class="hljs-number">19</span>:<span class="hljs-number">34</span>:<span class="hljs-number">51</span> ip-<span class="hljs-number">172</span>-<span class="hljs-number">31</span>-<span class="hljs-number">20</span>-<span class="hljs-number">98</span> systemd[<span class="hljs-number">1</span>]: Started rexray.</strong>
+</pre>
+<p>REX-Ray is running, and we can <kbd>exit</kbd> the node:</p>
+<pre>
+<strong><span class="hljs-keyword">exit</span></strong>
+</pre>
+<p>Since we do not know which node will host our stateful services, we need to set up REX-Ray on every node of the cluster. Please repeat the setup steps on Swarm manager nodes 2 and 3.</p>
+<p>Once REX-Ray is running on all the nodes, we can give it a spin. Please enter one of the managers:</p>
+<pre>
+<strong>ssh -i devops21.pem \<br/>    ubuntu@$(terraform output \<br/>    swarm_manager_1_public_ip)</strong>
+</pre>
+<p>REX-Ray can be used directly through the <kbd>rexray</kbd> binary we installed. For example, we can list all the volumes:</p>
+<pre>
+<strong><span class="hljs-built_in">sudo</span> rexray volume get</strong>
+</pre>
+<p>The output is as follows:</p>
+<pre>
+<strong>ID  Name  Status  Size</strong>
+</pre>
+<p>There's not much to see since we have not created any volumes yet. We can do that with the <kbd>rexray</kbd> volume create command. However, there is no need for such a thing. Thanks to its integration with Docker, there is not much need to use the binary directly for any operation.</p>
+<p>Let's try one more time to create the <kbd>jenkins</kbd> service. This time, we'll use REX-Ray as the volume driver:</p>
+<pre>
+<strong>docker service create --name jenkins \<br/><span class="hljs-operator">-e</span> JENKINS_OPTS=<span class="hljs-string">"--prefix=/jenkins"</span> \<br/>    --mount <span class="hljs-string">"type=volume,source=jenkins,target=/var/jenkins_home, \<br/>volume-driver=rexray"</span> \<br/>    --label com.df.notify=<span class="hljs-literal">true</span> \<br/>    --label com.df.distribute=<span class="hljs-literal">true</span> \<br/>    --label com.df.servicePath=/jenkins \<br/>    --label com.df.port=<span class="hljs-number">8080</span> \<br/>    --network proxy \<br/>    --reserve-memory <span class="hljs-number">300</span>m \<br/>    jenkins:<span class="hljs-number">2.7</span>.<span class="hljs-number">4</span>-alpine</strong>
+</pre>
+<p>The only difference between the command we just executed and the previous attempt to create the <kbd>jenkins</kbd> service is in the <kbd>--mount</kbd> argument. The source is now simply a name <kbd>jenkins</kbd>. It represents the name of the volume. The target is still the same and represents Jenkins home inside a container. The important difference is the addition of the <kbd>volume-driver</kbd> argument. That was the instruction that Docker should use <kbd>rexray</kbd> to mount a volume.</p>
+<p>If integration between REX-Ray and Docker worked, we should see a <kbd>jenkins</kbd> volume:</p>
+<pre>
+<strong><span class="hljs-built_in">sudo</span> rexray volume get</strong>
+</pre>
+<p>The output is as follows:</p>
+<pre>
+<strong>ID          Name    Status   Size<br/>fs-0a64ba43 jenkins attached 6144</strong>
+</pre>
+<p>This time, the output of the <kbd>rexray</kbd> volume get command is not empty. We can see the <kbd>jenkins</kbd> volume. As I already mentioned, there's not much need to use the <kbd>rexray</kbd> binary. We can accomplish many of its features directly through Docker. For example, we can execute <kbd>docker volume ls</kbd> command to list all the volumes:</p>
+<pre>
+<strong>docker volume ls</strong>
+</pre>
+<p>The output is as follows:</p>
+<pre>
+<strong>DRIVER  VOLUME NAME<br/>rexray  jenkins</strong>
+</pre>
+<p>Listing volumes proves only that Docker and REX-Ray registered a new mount. Let's take a look at what happened in AWS:</p>
+<pre>
+<strong><span class="hljs-keyword">exit</span><br/><br/>open <span class="hljs-string">"https://console.aws.amazon.com/efs/home?region=<span class="hljs-variable">$AWS_DEFAULT_REGION</span>"</span></strong>
+</pre>
+<div class="packt_tip"><strong>A note to Windows users</strong><br/>
+Git Bash might not be able to use the <kbd>open</kbd> command. If that's the case, please replace <kbd>$AWS_DEFAULT_REGION</kbd> with the region where your cluster is running (for example, <kbd>us-east-1</kbd>) and open it in a browser.</div>
+<p>You should see a screen similar to the one presented in <em>Figure 13-4</em>:</p>
+<div class="CDPAlignCenter CDPAlign"><img class="image-border" height="458" src="assets/efs-rexray.png" width="619"/></div>
+<div class="packt_figref CDPAlignCenter CDPAlign">Figure 13-4: AWS EFS volume created and mounted with REX-Ray</div>
+<p>As you can see, REX-Ray created a new EFS volume called <kbd>rexray/jenkins</kbd> and mounted a target in the same availability zone as the node that hosts the <kbd>jenkins</kbd> service.</p>
+<p>The only thing missing to satisfy my paranoid nature is to kill Jenkins and confirm that REX-Ray mounted the EFS volume on a new container that will be re-scheduled by Swarm.</p>
+<p>As before, we’ll start by setting up Jenkins:</p>
+<pre>
+<strong>open <span class="hljs-string">"http://<span class="hljs-variable">$(terraform output swarm_manager_1_public_ip)</span>/jenkins"</span></strong>
+</pre>
+<div class="packt_tip"><strong>A note to Windows users</strong><br/>
+Git Bash might not be able to use the <kbd>open</kbd> command. If that’s the case, execute <kbd>terraform output</kbd> <kbd>swarm_manager_1_public_ip</kbd> to find out the IP of the manager and open the URL directly in your browser of choice. For example, the preceding command should be replaced with the command that follows:<br/>
+<kbd>terraform output swarm_manager_1_public_ip</kbd><strong><br/></strong>If the output would be <kbd>1.2.3.4</kbd>, you should open <kbd>http://1.2.3.4/jenkins</kbd> in your browser.</div>
+<p>We are faced with a recurring challenge. How to find the initial Jenkins administrator password. On the bright side, the challenge is useful as a demonstration of different ways to access content inside containers.</p>
+<p>This time, we'll leverage REX-Ray to access data stored in the EFS volume instead of trying to find the node and the ID of the container that hosts the <kbd>jenkins</kbd> service:</p>
+<pre>
+<strong>ssh -i devops21.pem \<br/>    ubuntu@$(terraform output \<br/>    swarm_manager_1_public_ip)<br/><br/>docker run -it --rm \<br/>    --volume-driver rexray \<br/>    -v jenkins:/var/jenkins_home \<br/>    alpine cat /var/jenkins_home/secrets/initialAdminPassword</strong>
+</pre>
+<p>The output should be similar to the one that follows:</p>
+<pre>
+<strong>9c5e8e51af954d7988b310d862c3d38c</strong>
+</pre>
+<p>We created a new alpine container that also used the rexray volume driver to attach to the jenkins EFS volume. The command output the contents of the <kbd>/var/jenkins_home/secrets/initialAdminPassword</kbd> file that contains the password. Since we specified the <kbd>--rm</kbd> argument, Docker removed the container after the process <kbd>cat</kbd> exited. The final result is the password output to the screen. Please copy it and paste it to the <span class="packt_screen">Administrator password</span> field in the Jenkins UI. Complete the setup.</p>
+<p>Now we need to go through the painful processes of finding the node that hosts Jenkins, getting the ID of the container, and executing the <kbd>docker rm</kbd> command on the remote engine. In other words, we'll run the same set of commands we executed during previous murderous attempts:</p>
+<pre>
+<strong>JENKINS_IP=$(docker service ps jenkins | tail -n <span class="hljs-number">1</span> \<br/>    | awk <span class="hljs-string">'{ print $4 }'</span> | cut -c <span class="hljs-number">4</span>- | tr <span class="hljs-string">"-"</span> <span class="hljs-string">"."</span>)<br/><br/>JENKINS_ID=$(docker -H tcp://<span class="hljs-variable">$JENKINS_IP</span>:<span class="hljs-number">2375</span> \<br/>    ps -q \<br/>    --filter label=com.docker.swarm.service.name=jenkins)<br/><br/>docker -H tcp://<span class="hljs-variable">$JENKINS_IP</span>:<span class="hljs-number">2375</span> \<br/>    rm <span class="hljs-operator">-f</span> <span class="hljs-variable">$JENKINS_ID</span></strong>
+</pre>
+<p>A few moments later, Swarm will re-schedule the container, and Jenkins will be running again.</p>
+<p>Please wait until the service current state is running:</p>
+<pre>
+<strong>docker service ps jenkins</strong>
+</pre>
+<p>Reload Jenkins UI and observe that you are redirected to the login screen instead to the initial setup. The state was preserved.</p>
+<p>We're finished with this cluster. Now we need to remove the volume manually. Otherwise, since it was not created by Terraform, it would be preserved even after we destroy the cluster and AWS would continue charging us for it. The problem is that a volume cannot be removed as long as one or more services are using it, so we'll need to destroy <kbd>jenkins</kbd> service as well:</p>
+<pre>
+<strong>docker service rm jenkins<br/><br/>docker volume rm jenkins<br/><br/><span class="hljs-keyword">exit</span><br/><br/>terraform destroy -force</strong>
+</pre>
+
+
+            </article>
+
+            <footer style="margin-top: 5em;">
+                
+            </footer>
+
+        </section>
+    
+
+        <section>
+
+            <header>
+                <h1 class="header-title">Choosing the persistence method for stateful services</h1>
+            </header>
+
+            <article>
+                
+<p>There are quite a few other tools we could use to persist state. Most of them fall into one of the groups we explored. Among different approaches we can take, the three most commonly taken are as follows:</p>
+<ol>
+<li>Do not persist the state.</li>
+<li>Persist the state on the host.</li>
+<li>Persist the state somewhere outside the cluster.</li>
+</ol>
+<p>There’s no reason to debate why persisting data from stateful services is critical, so the first option is automatically discarded.</p>
+<p>Since we are operating a cluster, we cannot rely on any given host to be always available. It might fail at any given moment. Even if a node does not fail, sooner or later a service will, and Swarm will reschedule it. When that happens, there is no guarantee that Swarm will run a new replica on the same host. Even if, against all odds, the node never fails, and the service is unbreakable, the first time we execute an update of that service (example: a new release), Swarm will, potentially, create the new replica somewhere else. All in all, we don’t know where the service will run nor how long it will stay there. The only way to invalidate that statement is to use constraints that would tie a service to a particular host. However, if we do that, there would be no purpose in using Swarm nor reading this book. All in all, the state should not be persisted on a specific host.</p>
+<p>That leaves us with the third option. The state should be persisted somewhere outside the cluster, probably on a network drive. Traditionally, sysadmins would mount a network drive on all hosts, thus making the state available to services no matter where they’re running. There are quite a few problems with that approach, the main one being the need to mount a single drive and expect all stateful services to persist their state to it. We could, theoretically, mount a new drive for every single service. Such a requirement would quickly become a burden. If, for example, we used Terraform to manage our infrastructure, we’d need to update it every time there is a new service. Do you remember the first principle of twelve-factor apps? One service should have one codebase. Everything that a service needs should be in a single repository. Therefore, Terraform or any other infrastructure configuration tool should not contain any details specific to a service.</p>
+<p>The solution to the problem is to manage volumes using similar principles as those we're using to manage services. Just as we adopted schedulers (example: Swarm) that are managing our services, we should adopt volume schedulers that should handle our mounts. <br/>
+Since we adopted Docker containers as a way to run our services, a volume scheduler should be able to integrate with it and provide a seamless experience. In other words, managing volumes should be an integral part of managing services. Docker volume plugins allow us precisely that. Their purpose is to integrate third party solutions into the Docker ecosystem and make volume management transparent.</p>
+<p>REX-Ray is one of the solutions we explored. There are many others, and I'll leave it to you to compare them and make your decision which volume scheduler works the best in your use case.</p>
+<p>If we are presented only with the choices we explored in this chapter, REX-Ray is a clear winner. It allows us to persist data across the cluster in a transparent way. The only extra requirement is to make sure that REX-Ray is installed. After that, we mount volumes with its driver as if they are regular host volumes. Behind the scenes, REX-Ray does the heavy lifting. It creates a network drive, mounts it, and manages it.</p>
+<p>Long story short, we'll use REX-Rey for all our stateful services. That is not entirely accurate so let me rephrase. We'll use REX-Ray for all our stateful services that do not use replication and synchronization between instances. If you are wondering what that means, all I can say is that patience is a virtue. We’ll get there soon.</p>
+<p>Now that we decided that REX-Ray will be part of our stack, it is worthwhile adding it to our Packer and Terraform configs.</p>
+
+
+            </article>
+
+            <footer style="margin-top: 5em;">
+                
+            </footer>
+
+        </section>
+    
+
+        <section>
+
+            <header>
+                <h1 class="header-title">Adding REX-Ray to packer and terraform</h1>
+            </header>
+
+            <article>
+                
+<p>We already went through REX-Ray manual setup so it should be relatively easy to add it to Packer and Terraform configurations. We'll add to Packer the static parts that do not depend on runtime resources and the rest to Terraform. What that means is that Packer will create AMIs with REX-Ray installed and Terraform will create its configuration and start the service.</p>
+<p>Let's take a look at the <kbd>terraform/aws-full/packer-ubuntu-docker-rexray.json</kbd> (<a href="https://github.com/vfarcic/cloud-provisioning/blob/master/terraform/aws-full/packer-ubuntu-docker-rexray.json">https://github.com/vfarcic/cloud-provisioning/blob/master/terraform/aws-full/packer-ubuntu-docker-rexray.json</a>) file:</p>
+<pre>
+<strong>cat packer-ubuntu-docker-rexray.json</strong>
+</pre>
+<p>The only difference when compared with the <kbd>terraform/aws-full/packer-ubuntu-docker.json</kbd> (<a href="https://github.com/vfarcic/cloud-provisioning/blob/master/terraform/aws-full/packer-ubuntu-docker.json">https://github.com/vfarcic/cloud-provisioning/blob/master/terraform/aws-full/packer-ubuntu-docker.json</a>) config we used before is an additional command in the shell <kbd>provisioner</kbd>:</p>
+<pre>
+<strong><span class="hljs-string">"provisioners"</span>: [{<br/><span class="hljs-string">  "type"</span>: <span class="hljs-string">"shell"</span>,<br/><span class="hljs-string">  "inline"</span>: [<br/><span class="hljs-keyword">   ...</span><br/><span class="hljs-string">   "curl -sSL https://dl.bintray.com/emccode/rexray/install | sh -s -- stable"</span><br/><span class="hljs-keyword">   ...</span><br/>  }]</strong>
+</pre>
+<p>When creating a VM which will later become an AMI, Packer will execute the same command that we ran when we installed REX-Ray manually.</p>
+<p>Let's build the AMI:</p>
+<pre>
+<strong>packer build -machine-readable \<br/>    packer-ubuntu-docker-rexray.json \<br/>    | tee packer-ubuntu-docker-rexray.log<br/><br/><span class="hljs-keyword">export</span> TF_VAR_swarm_ami_id=$(\<br/>    grep <span class="hljs-string">'artifact,0,id'</span> \<br/>    packer-ubuntu-docker-rexray.log \<br/>    | cut <span class="hljs-operator">-d</span>: <span class="hljs-operator">-f</span>2)</strong>
+</pre>
+<p>We built the AMI and stored the ID in the environment variable <kbd>TF_VAR_swarm_ami_id.</kbd> It'll be used by Terraform soon.</p>
+<p>Defining the Terraform part of the REX-Ray setup is a bit more complex since its configuration needs to be dynamic and decided at runtime.</p>
+<p>The configuration is defined in the <kbd>terraform/aws-full/rexray.tpl</kbd> (<a href="https://github.com/vfarcic/cloud-provisioning/blob/master/terraform/aws-full/rexray.tpl">https://github.com/vfarcic/cloud-provisioning/blob/master/terraform/aws-full/rexray.tpl</a>) template:</p>
+<pre>
+<strong>cat rexray.tpl</strong>
+</pre>
+<p>The output is as follows:</p>
+<pre>
+<strong>libstorage:<br/>  service: efs<br/>  server:<br/>    services:<br/>      efs:<br/>        driver: efs<br/>        efs:<br/>          accessKey:      <span class="hljs-variable">${aws_access_key}</span><br/>          secretKey:      <span class="hljs-variable">${aws_secret_key}</span><br/>          region:         <span class="hljs-variable">${aws_default_region}</span><br/>          securityGroups: <span class="hljs-variable">${aws_security_group}</span><br/>          tag:            rexray</strong>
+</pre>
+<p>As you can see, the AWS keys, the region, and the security groups are defined as variables. The magic happens in the <kbd>terraform/aws-full/common.tf</kbd> (<a href="https://github.com/vfarcic/cloud-provisioning/blob/master/terraform/aws-full/common.tf">https://github.com/vfarcic/cloud-provisioning/blob/master/terraform/aws-full/common.tf</a>) file:</p>
+<pre>
+<strong>cat common.tf</strong>
+</pre>
+<p>The relevant part of the output is the <kbd>template_file</kbd> datasource. It is as follows:</p>
+<pre>
+<strong>data <span class="hljs-string">"template_file"</span> <span class="hljs-string">"rexray"</span> {<br/>  template = <span class="hljs-string">"<span class="hljs-subst">${file(<span class="hljs-string">"rexray.tpl"</span>)}</span>"</span><br/><br/>  vars {<br/>    aws_access_key = <span class="hljs-string">"<span class="hljs-subst">${var.aws_access_key}</span>"</span><br/>    aws_secret_key = <span class="hljs-string">"<span class="hljs-subst">${var.aws_secret_key}</span>"</span><br/>    aws_default_region = <span class="hljs-string">"<span class="hljs-subst">${var.aws_default_region}</span>"</span><br/>    aws_security_group = <span class="hljs-string">"<span class="hljs-subst">${aws_security_group.docker.id}</span>"</span><br/>  }<br/>}</strong>
+</pre>
+<p>Contents of the template are in the <kbd>rexray.tpl</kbd> (<a href="https://github.com/vfarcic/cloud-provisioning/blob/master/terraform/aws-full/rexray.tpl">https://github.com/vfarcic/cloud-provisioning/blob/master/terraform/aws-full/rexray.tpl</a>) file we explored earlier. The variables from the template are defined in the vars section. The value of the last variable <kbd>aws_security_group</kbd> will be decided at runtime once the <kbd>aws_security_group</kbd> called docker is created.</p>
+<p>Finally, the last piece of the puzzle is in the <kbd>terraform/aws-full/swarm.tf</kbd> (<a href="https://github.com/vfarcic/cloud-provisioning/blob/master/terraform/aws-full/swarm.tf">https://github.com/vfarcic/cloud-provisioning/blob/master/terraform/aws-full/swarm.tf</a>) file:</p>
+<pre>
+<strong>cat swarm.tf</strong>
+</pre>
+<p>Both <kbd>swarm-manager</kbd> and <kbd>swarm-worker</kbd> AWS instances have two extra lines in the <kbd>remote-exec provisioners</kbd>. They are as follows:</p>
+<pre>
+<strong><span class="hljs-string">"if <span class="hljs-variable">${var.rexray}</span>; then echo \"<span class="hljs-variable">${data.template_file.rexray.rendered}\</span>"\<br/> | sudo tee /etc/rexray/config.yml; fi"</span>,<br/><span class="hljs-string">"if <span class="hljs-variable">${var.rexray}</span>; then sudo rexray service start &gt;/dev/null 2&gt;/dev/null; fi"</span></strong>
+</pre>
+<p>Commands are inside an <kbd>if</kbd> statement. That allows us to decide at runtime whether REX-Ray should be configured and started or not. Normally, you would not need the if statement. You'll either choose to use REX-Ray, or not. However, at the beginning of this chapter we needed a cluster with REX-Ray and I did not want to maintain two almost identical copies of the configuration (one with, and the other without REX-Ray).</p>
+<p>The important part is inside the if statement. The first line puts the content of the template into the <kbd>/etc/rexray/config.yml</kbd> (<a href="https://github.com/vfarcic/cloud-provisioning/blob/master/terraform/aws-full/swarm.tf">https://github.com/vfarcic/cloud-provisioning/blob/master/terraform/aws-full/swarm.tf</a>) file. The second starts the service.</p>
+<p>Now that it is evident how we defined REX-Ray inside Terraform configs, it is time to create a cluster with it automatically:</p>
+<pre>
+<strong>terraform apply \<br/>    -target aws_instance.swarm-manager \<br/>    -var swarm_init=<span class="hljs-literal">true</span> \<br/>    -var swarm_managers=<span class="hljs-number">1</span> \<br/>    -var rexray=<span class="hljs-literal">true</span></strong>
+</pre>
+<p>The first node that initializes the Swarm cluster was created and we can proceed by adding two more manager nodes:</p>
+<pre>
+<strong><span class="hljs-keyword">export</span> TF_VAR_swarm_manager_token=$(ssh \<br/>    -i devops21.pem \<br/>    ubuntu@$(terraform output \<br/>    swarm_manager_1_public_ip) \<br/>    docker swarm join-token -q manager)<br/><br/><span class="hljs-keyword">export</span> TF_VAR_swarm_manager_ip=$(terraform \<br/>    output swarm_manager_1_private_ip)<br/><br/>terraform apply \<br/>    -target aws_instance.swarm-manager \<br/>    -var rexray=<span class="hljs-literal">true</span></strong>
+</pre>
+<p>We retrieved the token and the IP of the first manager and used that info to create the rest of the nodes.</p>
+<p>Let's enter one of the servers and confirm that REX-Ray is installed:</p>
+<pre>
+<strong>ssh -i devops21.pem \<br/>    ubuntu@$(terraform output \<br/>    swarm_manager_1_public_ip)<br/><br/>rexray version</strong>
+</pre>
+<p>The output of the <kbd>rexray version</kbd> command is as follows:</p>
+<pre>
+<strong><span class="hljs-header">REX-Ray<br/>-------</span><br/>Binary: /usr/bin/rexray<br/>SemVer: 0.6.3<br/>OsArch: Linux-x86<span class="hljs-emphasis">_64<br/>Branch: v0.6.3<br/>Commit: 69b1f5c2d86a2103c792bec23b5855babada1c0a<br/>Formed: Wed, 07 Dec 2016 23:22:14 UTC<br/><br/></span><span class="hljs-header">libStorage<br/>----------</span><br/>SemVer: 0.3.5<br/>OsArch: Linux-x86<span class="hljs-emphasis">_64<br/>Branch: v0.6.3<br/>Commit: 456dd68123dd6b49da0275d9bbabd6c800583f61<br/>Formed: Wed, 07 Dec 2016 23:21:36 UTC</span></strong>
+</pre>
+<p>Both REX-Ray and libStorage are installed. Finally, before we check whether it is working, let's have a quick look at the config.</p>
+<pre>
+<strong>cat /etc/rexray/config.yml</strong>
+</pre>
+<p>The output is as follows:</p>
+<pre>
+<strong><span class="hljs-attribute">libstorage</span>:<br/><span class="hljs-attribute">service</span>: efs<br/><span class="hljs-attribute">server</span>:<br/><span class="hljs-attribute">  services</span>:<br/><span class="hljs-attribute">  efs</span>:<br/><span class="hljs-attribute">    driver</span>: efs<br/><span class="hljs-attribute">    efs</span>:<br/><span class="hljs-attribute">      accessKey</span>:      <span class="hljs-comment">######</span><span class="hljs-comment">####<br/>      secretKey:      ###</span><span class="hljs-comment">######</span><span class="hljs-comment">#</span><br/><span class="hljs-attribute">      region</span>:         <span class="hljs-comment">######</span><span class="hljs-comment">####<br/>      securityGroups: ###</span><span class="hljs-comment">######</span><span class="hljs-comment">#</span><br/><span class="hljs-attribute">      tag</span>:            rexray</strong>
+</pre>
+<p>I obscured my AWS account details for obvious reasons. Nevertheless, the config looks <em>OK</em> and we can give REX-Ray a spin.</p>
+<p>We’ll deploy the <kbd>vfarcic/docker-flow-proxy/docker-compose-stack.yml</kbd> (<a href="https://github.com/vfarcic/docker-flow-proxy/blob/master/docker-compose-stack.yml">https://github.com/vfarcic/docker-flow-proxy/blob/master/docker-compose-stack.yml</a>) stack and create the <kbd>jenkins</kbd> service in the same way we did while we were experimenting with REX-Ray installed manually:</p>
+<pre>
+<strong>docker network create --driver overlay proxy<br/><br/>curl -o proxy-stack.yml \<br/>    https://raw.githubusercontent.com/ \<br/>vfarcic/docker-flow-proxy/master/docker-compose-stack.yml<br/><br/>docker stack deploy \<br/>    -c proxy-stack.yml proxy<br/><br/>docker service create --name jenkins \<br/><span class="hljs-operator">-e</span> JENKINS_OPTS=<span class="hljs-string">"--prefix=/jenkins"</span> \<br/>    --mount <span class="hljs-string">"type=volume,source=jenkins,target=/var/jenkins_home,\<br/>volume-driver=rexray"</span> \<br/>    --label com.df.notify=<span class="hljs-literal">true</span> \<br/>    --label com.df.distribute=<span class="hljs-literal">true</span> \<br/>    --label com.df.servicePath=/jenkins \<br/>    --label com.df.port=<span class="hljs-number">8080</span> \<br/>    --network proxy \<br/>    --reserve-memory <span class="hljs-number">300</span>m \<br/>    jenkins:<span class="hljs-number">2.7</span>.<span class="hljs-number">4</span>-alpine</strong>
+</pre>
+<p>It should take only a few moments until the script is finished. Now we can check the Docker volumes:</p>
+<pre>
+<strong>docker volume ls</strong>
+</pre>
+<p>The output is as follows:</p>
+<pre>
+<strong>DRIVER              VOLUME NAME<br/>rexray              jenkins</strong>
+</pre>
+<p>As expected, the <kbd>jenkins</kbd> service created the <kbd>rexray</kbd> volume with the same name. We should wait until Jenkins is running and open it in a browser:</p>
+<pre>
+<strong>docker service ps jenkins <span class="hljs-comment"># Wait until finished</span><br/><br/><span class="hljs-keyword">exit</span><br/><br/>open <span class="hljs-string">"http://<span class="hljs-variable">$(terraform output swarm_manager_1_public_ip)</span>/jenkins"</span></strong>
+</pre>
+<div class="packt_tip"><strong>A note to Windows users</strong><br/>
+Git Bash might not be able to use the open command. If that’s the case, execute  <kbd>terraform output swarm_manager_1_public_ip</kbd> to find out the IP of the manager and open the URL directly in your browser of choice. For example, the command above should be replaced with the command that follows:<br/>
+<kbd>terraform output swarm_manager_1_public_ip</kbd><br/>
+If the output would be <kbd>1.2.3.4</kbd>, you should open <kbd>http://1.2.3.4/jenkins</kbd> in your browser.</div>
+<p>The only thing left is to recuperate the initial administrative password and use it to setup Jenkins:</p>
+<pre>
+<strong>ssh -i devops21.pem \<br/>    ubuntu@$(terraform output \<br/>    swarm_manager_1_public_ip)<br/><br/>docker run -it --rm \<br/>    --volume-driver rexray \<br/>    -v jenkins:/var/jenkins_home \<br/>    alpine cat /var/jenkins_home/secrets/initialAdminPassword</strong>
+</pre>
+<p>I'll leave the rest to you. Finish the setup, destroy the container, wait until Swarm reschedules it, confirm that the state is preserved, and so on and so forth. Spend some time playing with it.</p>
+<p>Unless you developed an emotional attachment with Jenkins and REX-Ray, please remove the service and the volume. We won't need it anymore:</p>
+<pre>
+<strong>docker service rm jenkins<br/><br/>docker volume rm jenkins<br/><br/><span class="hljs-keyword">exit</span></strong>
+</pre>
+<p>Prometheus, ElasticSearch, and Mongo are only a few examples of services that store the state. Should we add REX-Ray mounts for all of them? Not necessarily. Some stateful services already have a mechanism to preserve their state. Before we start attaching REX-Ray mount like there is no tomorrow, we should first check whether a service already has a data replication mechanism.</p>
+
+
+            </article>
+
+            <footer style="margin-top: 5em;">
+                
+            </footer>
+
+        </section>
+    
+
+        <section>
+
+            <header>
+                <h1 class="header-title">Persisting stateful services without replication</h1>
+            </header>
+
+            <article>
+                
+<p>Jenkins is a good example of a stateful service that forces us to preserve its state. Moreover, it is incapable of sharing or synchronizing state between multiple instances. As a result, it cannot scale. There cannot be two Jenkins masters with the same or replicated state. Sure, you can create as many masters as you want but each will be an entirely separate service without any relation to other instances.</p>
+<p>The most obvious negative side-effect of Jenkins inability to scale horizontally is performance. If a master is under heavy load, we cannot create a new instance and thus reduce the burden from the original.</p>
+<p>There are only three types of services that can be scaled. They need to be stateless, stateful and capable of using shared state, or stateful and capable of synchronizing state. Jenkins is none of those and, therefore, it cannot be scaled horizontally. The only thing we can do to increase Jenkins capacity is to add more resources (for example: CPU and memory). Such an action would improve its performance but would not provide high-availability. When Jenkins fails, Swarm will re-schedule it. Still, there is a period between a failure and a new replica being fully operational.</p>
+<p>During that time, Jenkins would not be functional. Without the ability to scale, there is no high-availability.</p>
+<p>A big part of Jenkins workload is performed by its agents, so many organizations will not need to deal with the fact that it is not scalable.</p>
+<p>The reason for this transgression into Jenkins statefulness is to demonstrate one of the ways stateful services can be designed. When running stateful services that do not have a synchronization mechanism, there is no better option we can employ than to mount a volume from an external drive. That does not mean that mounting a volume is the only option we can use to deploy stateful services, but that is a preferable way to treat those that cannot share or synchronize their state across multiple replicas.</p>
+<p>Let's explore stateful services that do implement state synchronization.</p>
+
+
+            </article>
+
+            <footer style="margin-top: 5em;">
+                
+            </footer>
+
+        </section>
+    
+
+        <section>
+
+            <header>
+                <h1 class="header-title">Persisting stateful services with synchronization and replication</h1>
+            </header>
+
+            <article>
+                
+<p>When creating stateful services, the natural reaction is to think of a way to preserve their state. While in many cases that is the correct thing to do, in some others it isn't. It depends on service’s architecture.</p>
+<p>Throughout this book, we explored at least two stateful services that can synchronize their state across all instances. Those are <em>Docker Flow Proxy</em> and <em>MongoDB</em>. In a nutshell, the ability to synchronize state means that when data inside one instance changes, it is capable of propagating that change to all other instances. The biggest problem with that process is how to guarantee that everyone has the same data without sacrificing availability. We'll leave that discussion for some other time and place. Instead, let us go through the <kbd>docker-flow-proxy</kbd> and <kbd>mongo</kbd> services and decide which changes (if any) we need to apply to accomplish high availability and performance. We'll use them as examples how to treat stateful services capable of data replication and synchronization.</p>
+<p>Not everyone uses Mongo for storing data, nor everyone thinks that <em>Docker Flow Proxy</em> is the best choice for routing requests. The chances are that your choice of a database and the proxy is different. Even in that case, I strongly suggest you read the text that follows since it uses those two services only as examples of how you could design your replication and how to set up third-party stateful service that already has it incorporated. Most DBs use the same principles for replication and synchronization, and you should have no problem taking MongoDB examples as a blueprint for creating your database services.</p>
+
+
+            </article>
+
+            <footer style="margin-top: 5em;">
+                
+            </footer>
+
+        </section>
+    
+
+        <section>
+
+            <header>
+                <h1 class="header-title">Persisting docker flow proxy state</h1>
+            </header>
+
+            <article>
+                
+<p><em>Docker Flow Proxy</em> is a stateful service. However, that did not prevent us from scaling it. Its architecture is made in a way that, even though it is stateful, all instances have the same data. The mechanism to accomplish that has quite a few names. I prefer calling it state replication and synchronization.</p>
+<p>When one of the instances receives a new instruction that changes its state, it should find all the other replicas and propagate the change.</p>
+<p>The replication flow is usually as follows:</p>
+<ol>
+<li>An instance receives a request that changes its state.</li>
+<li>It finds the addresses of all the other instances of the same service.</li>
+<li>It re-sends the request to all other instances of the same service.</li>
+</ol>
+<p>The ability to propagate changes is not enough. When a new instance is created, a stateful service with data replication needs to be capable of requesting a complete state from one of the other instances. The first action it needs to perform when initialized is to reach the same state as other replicas. That can be accomplished through a pull mechanism. While propagation of a change of state of one instance often entails a push to all other instances, initialization of a new instance is often followed by a data pull.</p>
+<p>The synchronization flow is often as follows:</p>
+<ol>
+<li>A new instance of a service is created.</li>
+<li>It finds the address of one of the other instances of the same service.</li>
+<li>It pulls data from the other instance of the same service.</li>
+</ol>
+<p>You already saw <em>Docker Flow Proxy</em> in action quite a few times. We scaled it, and we simulated a failure which resulted in re-scheduling. In both cases, all replicas always had the same state or, to be more precise, the same configuration. You saw it before, so there's no need to go into another round of a practical demonstration of proxy's capabilities.</p>
+<p>Understanding how replication and synchronization works does not mean that we should write our services as stateful and employ those mechanisms ourselves. Quite the contrary. When appropriate, design your services to be stateless and store their state in a database. Otherwise, you might quickly run into problems and realize that you'll have to reinvent the wheel. For example, you might be faced with consensus problems that are already solved in protocols like Raft and Paxos. You might need to implement a variation of a Gossip protocol. And so on, and so forth. Concentrate on what brings value to your project and use proven solutions for everything else.</p>
+<p>Recommending the usage of an external database instead of storing the state inside our services might sound conflicting knowing that <em>Docker Flow Proxy</em> did the opposite. It is a stateful application without any external data store (at least when running in Swarm mode). The reason is simple. The proxy was not written from scratch. It uses HAProxy in the background which, in turn, does not have the ability to store its configs (state) externally. If I were to write a proxy from scratch, it would save its state externally. I might do that one day. Until then, HAProxy is stateful and so is <em>Docker Flow Proxy</em>. From a user's perspective, that should not be an issue since it employs data replication and synchronization between all instances. The problem is for developers working on the project.</p>
+<p>Let's take a look at another example of a stateful service with data replication.</p>
+
+
+            </article>
+
+            <footer style="margin-top: 5em;">
+                
+            </footer>
+
+        </section>
+    
+
+        <section>
+
+            <header>
+                <h1 class="header-title">Persisting MongoDB state</h1>
+            </header>
+
+            <article>
+                
+<p>We used <kbd>go-demo</kbd> service throughout the book. It helped us understand better how Swarm works. Among other things, we scaled the service quite a few times. That was easy to do since it is stateless. We can create as many replicas as we want without having to worry about data. It is stored somewhere else.</p>
+<p>The <kbd>go-demo</kbd> service externalizes its state to MongoDB. If you paid attention, we never scaled the database. The reason is simple. MongoDB cannot be scaled with a simple <kbd>docker service scale</kbd> command.</p>
+<p>Unlike <em>Docker Flow Proxy</em> that was designed from the ground up to leverage Swarm's networking to find other instances before replicating data, MongoDB is network agnostic. It cannot auto-discover its replicas. To make things more complicated, only one instance can be primary meaning that only one instance can receive write requests. All that means that we cannot scale Mongo using Swarm. We need a different approach. Let's try to set up three MongoDBs with data replication by creating a replica set. We'll start with a manual process that will provide us with an understanding of the problems we might face and solutions we might employ. Later on, once we reach a satisfactory outcome, we'll try to automate the process.</p>
+<p>We'll start by entering one of the manager nodes:</p>
+<pre>
+<strong>ssh -i devops21.pem \<br/>    ubuntu@$(terraform output \<br/>    swarm_manager_1_public_ip)</strong>
+</pre>
+<p>All members of a Mongo replica set need to be able to communicate with each other, so we'll create the same old <kbd>go-demo</kbd> network:</p>
+<pre>
+<strong>docker network create --driver overlay go-demo</strong>
+</pre>
+<p>If we were to create a single service with three replicas, Swarm would create a single network endpoint for the service and load balance requests among all instances. The problem with that approach is in MongoDB configuration. It needs a fixed address of every DB that will belong to the replica set.</p>
+<p>Instead of creating three replicas of a service, we'll create three services:</p>
+<pre>
+<strong><span class="hljs-keyword">for</span> i <span class="hljs-keyword">in</span> <span class="hljs-number">1</span> <span class="hljs-number">2</span> <span class="hljs-number">3</span>; <span class="hljs-keyword">do</span><br/>    docker service create --name go-demo-db-rs<span class="hljs-variable">$i</span> \<br/>        --reserve-memory <span class="hljs-number">100</span>m \<br/>        --network go-demo \<br/>        mongo:<span class="hljs-number">3.2</span>.<span class="hljs-number">10</span> mongod --replSet <span class="hljs-string">"rs0"</span><br/><span class="hljs-keyword">done</span></strong>
+</pre>
+<p>The command we executed created services <kbd>go-demo-db-rs1</kbd>, <kbd>go-demo-db-rs2</kbd>, and <kbd>go-demo-db-rs3</kbd>. They all belong to the <kbd>go-demo</kbd> network so that they can communicate with each other freely. The command specified for all services <kbd>mongod --replSet "rs0"</kbd>, making them all belong to the same Mongo replica set called <kbd>rs0.</kbd> Please don't confuse Swarm replicas with Mongo replica sets. While they have a similar objective, the logic behind them is quite different.</p>
+<p>We should wait until all the services are running:</p>
+<pre>
+<strong>docker service ls</strong>
+</pre>
+<p>The relevant part of the output is as follows (IDs are removed for brevity):</p>
+<pre>
+<strong>NAME           REPLICAS IMAGE        COMMAND<br/><span class="hljs-keyword">...</span><br/>go-demo-db-rs2 <span class="hljs-number">1</span>/<span class="hljs-number">1</span>      mongo:<span class="hljs-number">3.2</span><span class="hljs-number">.10</span> mongod --replSet rs0<br/>go-demo-db-rs1 <span class="hljs-number">1</span>/<span class="hljs-number">1</span>      mongo:<span class="hljs-number">3.2</span><span class="hljs-number">.10</span> mongod --replSet rs0<br/>go-demo-db-rs3 <span class="hljs-number">1</span>/<span class="hljs-number">1</span>      mongo:<span class="hljs-number">3.2</span><span class="hljs-number">.10</span> mongod --replSet rs0<br/><span class="hljs-keyword">...</span></strong>
+</pre>
+<p>Now we should configure Mongo's replica set. We'll do that by creating one more <kbd>mongo</kbd> service:</p>
+<pre>
+<strong>docker service create --name go-demo-db-util \<br/>    --reserve-memory <span class="hljs-number">100</span>m \<br/>    --network go-demo \<br/>    --mode global \<br/>    mongo:<span class="hljs-number">3.2</span>.<span class="hljs-number">10</span> sleep <span class="hljs-number">100000</span></strong>
+</pre>
+<p>We made the service global so that we ensure it will run on the same node we're in. That makes the process easier than trying to figure out the IP of a node it runs in. It belongs to the same <kbd>go-demo</kbd> network so that it can access the other DB services.</p>
+<p>We do not want to run Mongo server inside this service. The purpose of <kbd>go-demo-db-util</kbd> is to give us a Mongo client that we can use to connect to other DBs and configure them. Therefore, we replaced the default command <kbd>mongod</kbd> with a very long sleep.</p>
+<p>To enter into one of the containers of the <kbd>go-demo-db-util</kbd> service, we need to find its ID:</p>
+<pre>
+<strong>UTIL_ID=$(docker ps -q \<br/>    --filter label=com.docker.swarm.service.name=go-demo-db-util)</strong>
+</pre>
+<p>Now that we have the ID of the <kbd>go-demo-db-util</kbd> replica running on the same server, we can enter inside the container:</p>
+<pre>
+<strong>docker <span class="hljs-keyword">exec</span> -it <span class="hljs-variable">$UTIL_ID</span> sh</strong>
+</pre>
+<p>The next step is to execute a command that will initiate Mongo's replica set:</p>
+<pre>
+<strong>mongo --host go-demo-db-rs1 --eval <span class="hljs-string">'<br/>    rs.initiate({<br/>        _id: "rs0",<br/>        version: 1,<br/>        members: [<br/>            {_id: 0, host: "go-demo-db-rs1" },<br/>            {_id: 1, host: "go-demo-db-rs2" },<br/>            {_id: 2, host: "go-demo-db-rs3" }<br/>        ]<br/>    })<br/>'</span></strong>
+</pre>
+<p>We used the local <kbd>mongo</kbd> client to issue the command on the server running inside <kbd>go-demo-db-rs1</kbd>. It initiated the replica set with the ID <kbd>rs0</kbd> and specified that the three services we created previously should be its members. Thanks to Docker Swarm networking, we do not need to know the IPs. It was enough to specify the names of the services.</p>
+<p>The response is as follows:</p>
+<pre>
+<strong>MongoDB shell version: <span class="hljs-number">3.2</span><span class="hljs-number">.10</span><br/>connecting <span class="hljs-keyword">to</span>: go<span class="hljs-attribute">-demo</span><span class="hljs-attribute">-db</span><span class="hljs-attribute">-rs1</span>:<span class="hljs-number">27017</span>/test<br/>{ <span class="hljs-string">"ok"</span> : <span class="hljs-number">1</span> }</strong>
+</pre>
+<p>We should not trust the acknowledgment alone. Let's take a look at the config:</p>
+<pre>
+<strong>mongo --host go-demo-db-rs1 --eval <span class="hljs-string">'rs.conf()'</span></strong>
+</pre>
+<p>We issued another command to the remote server running in <kbd>go-demo-db-rs1</kbd>. It retrieved the replica set configuration. Part of the output is as follows:</p>
+<pre>
+<strong>MongoDB shell version: <span class="hljs-number">3.2</span><span class="hljs-number">.10</span><br/>connecting to: go-demo-db-rs1:<span class="hljs-number">27017</span>/test<br/>{<br/><span class="hljs-string">      "_id"</span> : <span class="hljs-string">"rs0"</span>,<br/><span class="hljs-string">      "version"</span> : <span class="hljs-number">1</span>,<br/><span class="hljs-string">      "protocolVersion"</span> : NumberLong(<span class="hljs-number">1</span>),<br/><span class="hljs-string">      "members"</span> : [<br/>              {<br/><span class="hljs-string">                    "_id"</span> : <span class="hljs-number">0</span>,<br/><span class="hljs-string">                    "host"</span> : <span class="hljs-string">"go-demo-db-rs1:27017"</span>,<br/><span class="hljs-string">                    "arbiterOnly"</span> : false,<br/><span class="hljs-string">                    "buildIndexes"</span> : true,<br/><span class="hljs-string">                    "hidden"</span> : false,<br/><span class="hljs-string">                    "priority"</span> : <span class="hljs-number">1</span>,<br/><span class="hljs-string">                    "tags"</span> : {<br/><br/>                    },<br/><span class="hljs-string">                    "slaveDelay"</span> : NumberLong(<span class="hljs-number">0</span>),<br/><span class="hljs-string">                    "votes"</span> : <span class="hljs-number">1</span><br/>              },<br/><span class="hljs-keyword">              ...</span><br/>    ],<br/><span class="hljs-string">    "settings"</span> : {<br/><span class="hljs-string">            "chainingAllowed"</span> : true,<br/><span class="hljs-string">            "heartbeatIntervalMillis"</span> : <span class="hljs-number">2000</span>,<br/><span class="hljs-string">            "heartbeatTimeoutSecs"</span> : <span class="hljs-number">10</span>,<br/><span class="hljs-string">            "electionTimeoutMillis"</span> : <span class="hljs-number">10000</span>,<br/><span class="hljs-string">            "getLastErrorModes"</span> : {<br/><br/>            },<br/><span class="hljs-string">           "getLastErrorDefaults"</span> : {<br/><span class="hljs-string">                   "w"</span> : <span class="hljs-number">1</span>,<br/><span class="hljs-string">                   "wtimeout"</span> : <span class="hljs-number">0</span><br/>            },<br/><span class="hljs-string">            "replicaSetId"</span> : ObjectId(<span class="hljs-string">"585d643276899856d1dc5f36"</span>)<br/>    }<br/>}</strong>
+</pre>
+<p>We can see that the replica set has three members (two were removed for brevity).</p>
+<p>Let's send one more command to the remote Mongo running in <kbd>go-demo-db-rs1</kbd>. This time, we'll check the status of the replica set:</p>
+<pre>
+<strong>mongo --host go-demo-db-rs1 --eval <span class="hljs-string">'rs.status()'</span></strong>
+</pre>
+<p>Part of the output is as follows:</p>
+<pre>
+<strong>connecting to: go-demo-db-rs1:<span class="hljs-number">27017</span>/test<br/>{<br/><span class="hljs-string">        "set"</span> : <span class="hljs-string">"rs0"</span>,<br/><span class="hljs-string">        "date"</span> : ISODate(<span class="hljs-string">"2016-12-23T17:52:36.822Z"</span>),<br/><span class="hljs-string">        "myState"</span> : <span class="hljs-number">1</span>,<br/><span class="hljs-string">        "term"</span> : NumberLong(<span class="hljs-number">1</span>),<br/><span class="hljs-string">        "heartbeatIntervalMillis"</span> : NumberLong(<span class="hljs-number">2000</span>),<br/><span class="hljs-string">        "members"</span> : [<br/>                {<br/><span class="hljs-string">                        "_id"</span> : <span class="hljs-number">0</span>,<br/><span class="hljs-string">                        "name"</span> : <span class="hljs-string">"go-demo-db-rs1:27017"</span>,<br/><span class="hljs-string">                        "health"</span> : <span class="hljs-number">1</span>,<br/><span class="hljs-string">                        "state"</span> : <span class="hljs-number">1</span>,<br/><span class="hljs-string">                        "stateStr"</span> : <span class="hljs-string">"PRIMARY"</span>,<br/><span class="hljs-string">                        "uptime"</span> : <span class="hljs-number">254</span>,<br/><span class="hljs-string">                        "optime"</span> : {<br/><span class="hljs-string">                                "ts"</span> : Timestamp(<span class="hljs-number">1482515517</span>, <span class="hljs-number">2</span>),<br/><span class="hljs-string">                                "t"</span> : NumberLong(<span class="hljs-number">1</span>)<br/>              },<br/><span class="hljs-string">              "optimeDate"</span> : ISODate(<span class="hljs-string">"2016-12-23T17:51:57Z"</span>),<br/><span class="hljs-string">              "infoMessage"</span> : <span class="hljs-string">"could not find member to sync from"</span>,<br/><span class="hljs-string">              "electionTime"</span> : Timestamp(<span class="hljs-number">1482515517</span>, <span class="hljs-number">1</span>),<br/><span class="hljs-string">              "electionDate"</span> : ISODate(<span class="hljs-string">"2016-12-23T17:51:57Z"</span>),<br/><span class="hljs-string">              "configVersion"</span> : <span class="hljs-number">1</span>,<br/><span class="hljs-string">              "self"</span> : true<br/>        },<br/><span class="hljs-keyword">        ...</span><br/>    ],<br/><span class="hljs-string">    "ok"</span> : <span class="hljs-number">1</span><br/>}</strong>
+</pre>
+<p>Info about two replicas is removed for brevity.</p>
+<p>We can see that all the Mongo replicas are running. The <kbd>go-demo-db-rs1</kbd> service is acting as the primary, while the other two are secondary nodes.</p>
+<p>Setting up a Mongo replica set means that data will be replicated to all its members. One is always a primary, while the rest are secondary servers. With the current configuration, we can read and write data only to the primary server. Replica set can be configured to allow read access to all the servers. Writing is always restricted to the primary.</p>
+<p>Let us generate some sample data:</p>
+<pre>
+<strong>mongo --host go-demo-db-rs1</strong>
+</pre>
+<p>We entered into the remote Mongo running on <kbd>go-demo-db-rs1</kbd>.</p>
+<p>The output is as follows:</p>
+<pre>
+<strong>MongoDB <span class="hljs-built_in">shell</span> <span class="hljs-built_in">version</span>: <span class="hljs-number">3.2</span><span class="hljs-number">.10</span><br/>connecting <span class="hljs-built_in">to</span>: go-demo-db-rs1:<span class="hljs-number">27017</span>/test<br/>Welcome <span class="hljs-built_in">to</span> <span class="hljs-operator">the</span> MongoDB <span class="hljs-built_in">shell</span>.<br/>For interactive help, type <span class="hljs-string">"help"</span>.<br/>For more comprehensive documentation, see<br/><span class="hljs-keyword">       http</span>://docs.mongodb.org/<br/>Questions? Try <span class="hljs-operator">the</span> support group<br/><span class="hljs-keyword">       http</span>://groups.google.com/group/mongodb-user<br/>rs0:PRIMARY&gt;</strong>
+</pre>
+<p>As you can see from the prompt, we are inside the primary database server.</p>
+<p>We'll create a few records in the database test:</p>
+<pre>
+<strong><span class="hljs-tag">use</span> <span class="hljs-tag">test</span><br/><br/><span class="hljs-tag">db</span><span class="hljs-class">.books</span><span class="hljs-class">.insert</span>(<br/><span class="hljs-rules">   {<br/><span class="hljs-rule"><span class="hljs-attribute">      title</span>:<span class="hljs-value"><span class="hljs-string">"The DevOps 2.0 Toolkit"</span><br/></span></span></span>   }<br/>)<br/><br/><span class="hljs-tag">db</span><span class="hljs-class">.books</span><span class="hljs-class">.insert</span>(<br/><span class="hljs-rules">   {<br/><span class="hljs-rule"><span class="hljs-attribute">      title</span>:<span class="hljs-value"><span class="hljs-string">"The DevOps 2.1 Toolkit"</span><br/></span></span></span>   }<br/>)<br/><br/><span class="hljs-tag">db</span><span class="hljs-class">.books</span><span class="hljs-class">.find</span>()</strong>
+</pre>
+<p>The previous command retrieved all the records from the database test.</p>
+<p>The output is as follows:</p>
+<pre>
+<strong>{ "<span class="hljs-attribute">_id</span>" : <span class="hljs-value">ObjectId(<span class="hljs-string">"585d6491660a574f80478cb6"</span>)</span>, "<span class="hljs-attribute">title</span>" : \<br/><span class="hljs-value"><span class="hljs-string">"The DevOps 2.0 Toolkit"</span> </span>}<br/>{ "<span class="hljs-attribute">_id</span>" : <span class="hljs-value">ObjectId(<span class="hljs-string">"585d6491660a574f80478cb7"</span>)</span>, "<span class="hljs-attribute">title</span>" : \<br/><span class="hljs-value"><span class="hljs-string">"The DevOps 2.1 Toolkit"</span> </span>}</strong>
+</pre>
+<p>Now that we have the replica set configured and a few sample records, we can simulate failure of one of the servers and observe the result:</p>
+<pre>
+<strong><span class="hljs-keyword">exit</span> <span class="hljs-comment"># Mongo</span><br/><br/><span class="hljs-keyword">exit</span> <span class="hljs-comment"># go-demo-db-util</span><br/><br/>RS1_IP=$(docker service ps go-demo-db-rs1 \<br/>    | tail -n <span class="hljs-number">1</span> \<br/>    | awk <span class="hljs-string">'{ print $4 }'</span> \<br/>    | cut -c <span class="hljs-number">4</span>- \<br/>    | tr <span class="hljs-string">"-"</span> <span class="hljs-string">"."</span>)<br/><br/>docker -H tcp://<span class="hljs-variable">$RS1_IP</span>:<span class="hljs-number">2375</span> ps</strong>
+</pre>
+<p>We exited MongoDB and the <kbd>go-demo-db-util</kbd> service replica. Then we found the IP of <kbd>go-demo-db-rs1</kbd> (primary member of the Mongo replica set) and listed all the containers running on the server.</p>
+<p>The output is as follows (IDs and STATUS columns are removed for brevity):</p>
+<pre>
+<strong>IMAGE                            COMMAND                CREATED                                 <br/>mongo:<span class="hljs-number">3.2</span><span class="hljs-number">.10</span>                     <span class="hljs-string">"/entrypoint.sh sleep" </span><span class="hljs-number">3</span> minutes ago                   <br/>mongo:<span class="hljs-number">3.2</span><span class="hljs-number">.10</span>                     <span class="hljs-string">"/entrypoint.sh mongo"</span> <span class="hljs-number">6</span> minutes ago                   <br/>vfarcic/docker<span class="hljs-attribute">-flow</span><span class="hljs-attribute">-proxy</span>:latest <span class="hljs-string">"/docker-entrypoint.s"</span> <span class="hljs-number">13</span> minutes ago <br/>-----------------------------------------------------------------------<br/>NAMES                                        PORTS <br/>go<span class="hljs-attribute">-demo</span><span class="hljs-attribute">-db</span><span class="hljs-attribute">-util</span><span class="hljs-number">.0</span><span class="hljs-number">.8</span>qcsmlzioohn3j6p78hntskj1  <span class="hljs-number">27017</span>/tcp <br/>go<span class="hljs-attribute">-demo</span><span class="hljs-attribute">-db</span><span class="hljs-attribute">-rs1</span><span class="hljs-number">.1</span><span class="hljs-number">.86</span>sg93z9oasd43dtgoax53nuw   <span class="hljs-number">27017</span>/tcp proxy<span class="hljs-number">.2</span><span class="hljs-number">.3</span>tlpr1xyiu8wm70lmrffod7ui            80/tcp,443/tcp/,8080/tcp                                          <br/></strong>
+</pre>
+<p>Now we can find the ID of the <kbd>go-demo-db-rs1</kbd> service replica and simulate failure by removing it:</p>
+<pre>
+<strong>RS1_ID=$(docker -H tcp://<span class="hljs-variable">$RS1_IP</span>:<span class="hljs-number">2375</span> \<br/>    ps -q \<br/>    --filter label=com.docker.swarm.service.name=go-demo-db-rs1) \<br/><br/>docker -H tcp://<span class="hljs-variable">$RS1_IP</span>:<span class="hljs-number">2375</span> rm <span class="hljs-operator">-f</span> <span class="hljs-variable">$RS1_ID</span></strong>
+</pre>
+<p>Let's take a look at the <kbd>go-demo-db-rs1</kbd> tasks:</p>
+<pre>
+<strong>docker service ps go-demo-db-rs1</strong>
+</pre>
+<p>Swarm discovered that one of the replicas failed and re-scheduled it. A new instance will be running a few moments later.</p>
+<p>The output of the <kbd>service ps</kbd> command is as follows (IDs are removed for brevity):</p>
+<pre>
+<strong>NAME                 IMAGE        NODE               DESIRED STATE          <br/>go<span class="hljs-attribute">-demo</span><span class="hljs-attribute">-db</span><span class="hljs-attribute">-rs1</span><span class="hljs-number">.1</span>     mongo:<span class="hljs-number">3.2</span><span class="hljs-number">.10</span> ip<span class="hljs-subst">-</span><span class="hljs-number">172</span><span class="hljs-subst">-</span><span class="hljs-number">31</span><span class="hljs-subst">-</span><span class="hljs-number">16</span><span class="hljs-subst">-</span><span class="hljs-number">215</span>   Running       <br/>_ go<span class="hljs-attribute">-demo</span><span class="hljs-attribute">-db</span><span class="hljs-attribute">-rs1</span><span class="hljs-number">.1</span>   mongo:<span class="hljs-number">3.2</span><span class="hljs-number">.10</span> ip<span class="hljs-subst">-</span><span class="hljs-number">172</span><span class="hljs-subst">-</span><span class="hljs-number">31</span><span class="hljs-subst">-</span><span class="hljs-number">16</span><span class="hljs-subst">-</span><span class="hljs-number">215</span>   Shutdown       <br/>-----------------------------------------------------------------------<br/>CURRENT STATE           ERROR<br/><span class="hljs-string">Running <span class="hljs-number">28</span> seconds ago   <br/>Failed <span class="hljs-number">35</span> seconds ago   "task: non-zero exit (137)"</span></strong>
+</pre>
+<p>We'll enter the <kbd>go-demo-db-util</kbd> service replica one more time and output the status of the Mongo replica set:</p>
+<pre>
+<strong>docker <span class="hljs-keyword">exec</span> -it <span class="hljs-variable">$UTIL_ID</span> sh<br/><br/>mongo --host go-demo-db-rs1 --eval <span class="hljs-string">'rs.status()'</span></strong>
+</pre>
+<p>The relevant part of the output is as follows:</p>
+<pre>
+<strong>MongoDB shell version: <span class="hljs-number">3.2</span><span class="hljs-number">.10</span><br/>connecting to: go-demo-db-rs1:<span class="hljs-number">27017</span>/test<br/>{<br/><span class="hljs-string">       "set"</span> : <span class="hljs-string">"rs0"</span>,<br/><span class="hljs-string">       "date"</span> : ISODate(<span class="hljs-string">"2016-12-23T17:56:08.543Z"</span>),<br/><span class="hljs-string">       "myState"</span> : <span class="hljs-number">2</span>,<br/><span class="hljs-string">       "term"</span> : NumberLong(<span class="hljs-number">2</span>),<br/><span class="hljs-string">       "heartbeatIntervalMillis"</span> : NumberLong(<span class="hljs-number">2000</span>),<br/><span class="hljs-string">       "members"</span> : [<br/>               {<br/><span class="hljs-string">                   "_id"</span> : <span class="hljs-number">0</span>,<br/><span class="hljs-string">                   "name"</span> : <span class="hljs-string">"go-demo-db-rs1:27017"</span>,<br/><span class="hljs-keyword">                   ...</span><br/><span class="hljs-string">                   "stateStr"</span> : <span class="hljs-string">"SECONDARY"</span>,<br/><span class="hljs-keyword">                   ...</span><br/>               },<br/>               {<br/><span class="hljs-string">                   "_id"</span> : <span class="hljs-number">1</span>,<br/><span class="hljs-string">                   "name"</span> : <span class="hljs-string">"go-demo-db-rs2:27017"</span>,<br/><span class="hljs-keyword">                   ...</span><br/><span class="hljs-string">                   "stateStr"</span> : <span class="hljs-string">"PRIMARY"</span>,<br/><span class="hljs-keyword">                   ...</span><br/>               },<br/>               {<br/><span class="hljs-string">                  "_id"</span> : <span class="hljs-number">2</span>,<br/><span class="hljs-string">                  "name"</span> : <span class="hljs-string">"go-demo-db-rs3:27017"</span>,<br/><span class="hljs-keyword">                  ...</span><br/><span class="hljs-string">                  "stateStr"</span> : <span class="hljs-string">"SECONDARY"</span>,<br/><span class="hljs-keyword">                  ...</span><br/>               }<br/>    ],<br/><span class="hljs-string">    "ok"</span> : <span class="hljs-number">1</span><br/>}</strong>
+</pre>
+<p>We can see that the <kbd>go-demo-db-rs2</kbd> become the primary Mongo replica. A simplified flow of what happened is as follows:</p>
+<ul>
+<li>Mongo replica <kbd>go-demo-db-rs1</kbd> failed</li>
+<li>The remaining members noticed its absence and promoted <kbd>go-demo-db-rs2</kbd> to the PRIMARY status</li>
+<li>In the meantime, Swarm rescheduled the failed service replica</li>
+<li>The primary Mongo replica noticed that the <kbd>go-demo-db-rs1</kbd> server came back online and joined the Mongo replica set as secondary</li>
+<li>The newly created <kbd>go-demo-db-rs1</kbd> synchronized its data from one of the other members of the Mongo replica set</li>
+</ul>
+<p>One of the key elements for all this to work is Docker networking. When the rescheduled service replica came back online, it maintained the same address <kbd>go-demo-db-rs1</kbd>, and we did not need to change the configuration of the Mongo replica set.</p>
+<p>If we used VMs and, in the case of AWS, <em>Auto Scaling Groups</em> to host Mongo, when a node fails, a new one would be created in its place. However, the new node would receive a new IP and would not be able to join the Mongo replica set without modifications to the configuration. The are ways we could accomplish the same in AWS without containers, but none would be so simple and elegant as with Docker Swarm and networking.</p>
+<p>What happened to the sample data we created? Remember, we wrote data to the primary Mongo replica <kbd>go-demo-db-rs1</kbd> and, later on, removed it. We did not use REX-Ray or any other solution to persist data.</p>
+<p>Let’s enter the new primary Mongo replica:</p>
+<pre>
+<strong>mongo --host go-demo-db-rs2</strong>
+</pre>
+<div class="packt_tip">In your cluster, the new primary might be <kbd>go-demo-db-rs3</kbd>. If that's the case, please change the above command.</div>
+<p>Next, we'll specify that we want to use the test database and retrieve all data:</p>
+<pre>
+<strong>use test<br/><br/>db<span class="hljs-preprocessor">.books</span><span class="hljs-preprocessor">.find</span>()</strong>
+</pre>
+<p>The output is as follows:</p>
+<pre>
+<strong>{ "<span class="hljs-attribute">_id</span>" : <span class="hljs-value">ObjectId(<span class="hljs-string">"585d6491660a574f80478cb6"</span>)</span>, "<span class="hljs-attribute">title</span>" : \<br/><span class="hljs-value"><span class="hljs-string">"The DevOps 2.0 Toolkit"</span> </span>}<br/>{ "<span class="hljs-attribute">_id</span>" : <span class="hljs-value">ObjectId(<span class="hljs-string">"585d6491660a574f80478cb7"</span>)</span>, "<span class="hljs-attribute">title</span>" : \<br/><span class="hljs-value"><span class="hljs-string">"The DevOps 2.1 Toolkit"</span> </span>}</strong>
+</pre>
+<p>Even though we did not setup up data persistence, all data is there.</p>
+<p>The main purpose of Mongo replica sets is to provide fault tolerance. If a DB fails, other members will take over. Any change to data (state) is replicated among all members of a replica set.</p>
+<p>Does that mean that we do not need to preserve the state to an external drive? That depends on the use case. If data we are operating with is massive, we might employ some form of disk persistence to speed up the synchronization process. In any other circumstances, using volumes is a waste since most databases are designed to provide data replication and synchronization.</p>
+<p>The current solution worked well, and we should seek a way to set it up in a more automated (and simpler) way.</p>
+<p>We'll exit the MongoDB and the <kbd>go-demo-db-util</kbd> service replica, remove all the DB services, and start over:</p>
+<pre>
+<strong><span class="hljs-keyword">exit</span> <span class="hljs-comment"># Mongo</span><br/><br/><span class="hljs-keyword">exit</span> <span class="hljs-comment"># go-demo-db-util</span><br/><br/>docker service rm go-demo-db-rs1 \<br/>    go-demo-db-rs2 go-demo-db-rs3 \<br/>    go-demo-db-util</strong>
+</pre>
+
+
+            </article>
+
+            <footer style="margin-top: 5em;">
+                
+            </footer>
+
+        </section>
+    
+
+        <section>
+
+            <header>
+                <h1 class="header-title">Initializing MongoDB replica set through a swarm service</h1>
+            </header>
+
+            <article>
+                
+<p>Let's try to define a better and easier way to set up a MongoDB replica set.</p>
+<p>We'll start by creating three <kbd>mongo</kbd> services. Later on, each will become a member of a Mongo replica set:</p>
+<pre>
+<strong><span class="hljs-keyword">for</span> i <span class="hljs-keyword">in</span> <span class="hljs-number">1</span> <span class="hljs-number">2</span> <span class="hljs-number">3</span>; <span class="hljs-keyword">do</span><br/>    docker service create --name go-demo-db-rs<span class="hljs-variable">$i</span> \<br/>        --reserve-memory <span class="hljs-number">100</span>m \<br/>        --network go-demo \<br/>        mongo:<span class="hljs-number">3.2</span>.<span class="hljs-number">10</span> mongod --replSet <span class="hljs-string">"rs0"</span><br/><br/>    MEMBERS=<span class="hljs-string">"<span class="hljs-variable">$MEMBERS</span> go-demo-db-rs<span class="hljs-variable">$i</span>"</span><br/><span class="hljs-keyword">done</span></strong>
+</pre>
+<p>The only difference, when compared with the previous command we used to create <kbd>mongo</kbd> services, is the addition of the environment variable <kbd>MEMBERS.</kbd> It holds service names of all MongoDBs. We'll use that as the argument for the next service.</p>
+<p>Since the official <kbd>mongo</kbd> image does not have a mechanism to configure Mongo replica sets, we'll use a custom one. Its purpose will be only to configure Mongo replica sets.</p>
+<p>The definition of the image is in the <kbd>conf/Dockerfile.mongo</kbd> (<a href="https://github.com/vfarcic/cloud-provisioning/blob/master/conf/Dockerfile.mongo">https://github.com/vfarcic/cloud-provisioning/blob/master/conf/Dockerfile.mongo</a>) file. Its content is as follows:</p>
+<pre>
+<strong>FROM mongo:<span class="hljs-number">3.2</span><span class="hljs-number">.10</span></strong><br/><br/><strong>COPY init<span class="hljs-attribute">-mongo</span><span class="hljs-attribute">-rs</span><span class="hljs-built_in">.</span>sh /init<span class="hljs-attribute">-mongo</span><span class="hljs-attribute">-rs</span><span class="hljs-built_in">.</span>sh</strong><br/><strong>RUN chmod <span class="hljs-subst">+</span>x /init<span class="hljs-attribute">-mongo</span><span class="hljs-attribute">-rs</span><span class="hljs-built_in">.</span>sh</strong><br/><strong>ENTRYPOINT <span class="hljs-preprocessor">[</span><span class="hljs-string">"/init-mongo-rs.sh"</span><span class="hljs-preprocessor">]</span></strong>
+</pre>
+<p><kbd>Dockerfile.mongo</kbd> extends the official <kbd>mongo</kbd> image, adds a custom <kbd>init-mongo-rs.sh</kbd> script, gives it execute permissions, and sets it as the entry point.</p>
+<p><kbd>ENTRYPOINT</kbd> defines the executable that will run whenever a container is run. Any command arguments we specify will be appended to it.</p>
+<p>The <kbd>conf/init-mongo-rs.sh</kbd> (<a href="https://github.com/vfarcic/cloud-provisioning/blob/master/conf/init-mongo-rs.sh">https://github.com/vfarcic/cloud-provisioning/blob/master/conf/init-mongo-rs.sh</a>) script is as follows:</p>
+<pre>
+<strong><span class="hljs-shebang">#!/usr/bin/env bash<br/></span><br/><span class="hljs-keyword">for</span> rs <span class="hljs-keyword">in</span> <span class="hljs-string">"<span class="hljs-variable">$@</span>"</span>; <span class="hljs-keyword">do</span><br/>    mongo --host <span class="hljs-variable">$rs</span> --eval <span class="hljs-string">'db'</span><br/><span class="hljs-keyword">    while</span> [$? <span class="hljs-operator">-ne</span> <span class="hljs-number">0</span> ]; <span class="hljs-keyword">do</span><br/><span class="hljs-built_in">      echo</span> <span class="hljs-string">"Waiting for <span class="hljs-variable">$rs</span> to become available"</span><br/>      sleep <span class="hljs-number">3</span><br/>        mongo --host <span class="hljs-variable">$rs</span> --eval <span class="hljs-string">'db'</span><br/><span class="hljs-keyword">    done</span><br/><span class="hljs-keyword">done</span><br/><br/>i=<span class="hljs-number">0</span><br/><span class="hljs-keyword">for</span> rs <span class="hljs-keyword">in</span> <span class="hljs-string">"<span class="hljs-variable">$@</span>"</span>; <span class="hljs-keyword">do</span><br/><span class="hljs-keyword">    if</span> [ <span class="hljs-string">"<span class="hljs-variable">$rs</span>"</span> != <span class="hljs-string">"<span class="hljs-variable">$1</span>"</span> ]; <span class="hljs-keyword">then</span><br/>       MEMBERS=<span class="hljs-string">"<span class="hljs-variable">$MEMBERS</span> ,"</span><br/><span class="hljs-keyword">    fi</span><br/>    MEMBERS=<span class="hljs-string">"<span class="hljs-variable">$MEMBERS</span> {_id: <span class="hljs-variable">$i</span>, host: \"<span class="hljs-variable">$rs\"</span> }"</span><br/>    i=$((i+<span class="hljs-number">1</span>))<br/><span class="hljs-keyword">done</span><br/><br/>mongo --host <span class="hljs-variable">$1</span> --eval <span class="hljs-string">"rs.initiate({_id: \"rs0\", version: 1, \<br/>members: [<span class="hljs-variable">$MEMBERS</span>]})"</span><br/>sleep <span class="hljs-number">3</span><br/>mongo --host <span class="hljs-variable">$1</span> --eval <span class="hljs-string">'rs.status()'</span></strong>
+</pre>
+<p>The first section loops over all <kbd>DB</kbd> addresses (defined as script arguments) and checks whether they are available. If they're not, it waits for three seconds before repeating the loop.</p>
+<p>The second section formats a JSON string that defines the list of all members (id and host). Finally, we initiate the replica set, wait for three seconds, and output its status.</p>
+<p>This script is a slightly more elaborate version of the commands we executed previously when we set up the replica set manually. Instead of hard-coding values (for example: <kbd>service names</kbd>), it is written in a way that it can be reused for multiple Mongo replica sets with varying number of members.</p>
+<p>All that's left is to run the container as a Swarm service. I already built the image as <kbd>vfarcic/mongo-devops21</kbd> and pushed it to Docker Hub:</p>
+<pre>
+<strong>docker service create --name go-demo-db-init \<br/>    --restart-condition none \<br/>    --network go-demo \<br/>    vfarcic/mongo-devops21 <span class="hljs-variable">$MEMBERS</span></strong>
+</pre>
+<p>When the script is finished, the container will stop. Typically, Swarm would interpret a stopped container as a failure and re-schedule it. That's not the behavior we need. We want this service to perform some tasks (configure replica set) and stop when finished. We accomplished that with the <kbd>--restart-condition none</kbd> argument. Otherwise, Swarm would enter into an endless loop of continuously re-scheduling a service replica that keeps failing a few moments later.</p>
+<p>The command of the service is <kbd>$MEMBERS.</kbd> When appended to the <kbd>ENTRYPOINT</kbd>, the full command was <kbd>init-mongo-rs.sh</kbd> <kbd>go-demo-db-rs1 go-demo-db-rs2 go-demo-db-rs3</kbd>.</p>
+<p>Let's confirm that all services (except <kbd>go-demo-db-init</kbd>) are running:</p>
+<pre>
+<strong>docker service ls</strong>
+</pre>
+<p>The output is as follows:</p>
+<pre>
+<strong>ID            NAME             REPLICAS  IMAGE                     <br/><span class="hljs-number">1</span>lpus9pvxoj6  go<span class="hljs-attribute">-demo</span><span class="hljs-attribute">-db</span><span class="hljs-attribute">-rs1</span>   <span class="hljs-number">1</span>/<span class="hljs-number">1</span>       mongo:<span class="hljs-number">3.2</span><span class="hljs-number">.10</span>             <br/><span class="hljs-number">59</span>eox5zqfhf8  go<span class="hljs-attribute">-demo</span><span class="hljs-attribute">-db</span><span class="hljs-attribute">-rs2</span>   <span class="hljs-number">1</span>/<span class="hljs-number">1</span>       mongo:<span class="hljs-number">3.2</span><span class="hljs-number">.10</span>              <br/><span class="hljs-number">5</span>tchuajhi05e  go<span class="hljs-attribute">-demo</span><span class="hljs-attribute">-db</span><span class="hljs-attribute">-init</span>  <span class="hljs-number">0</span>/<span class="hljs-number">1</span>       vfarcic/mongo<span class="hljs-attribute">-devops21</span>    <br/><span class="hljs-number">6</span>cmd34ezpun9  go<span class="hljs-attribute">-demo</span><span class="hljs-attribute">-db</span><span class="hljs-attribute">-rs3</span>   <span class="hljs-number">1</span>/<span class="hljs-number">1</span>       mongo:<span class="hljs-number">3.2</span><span class="hljs-number">.10</span>                        <br/>bvfrbwdi5li3  swarm<span class="hljs-attribute">-listener</span>   <span class="hljs-number">1</span>/<span class="hljs-number">1</span>       vfarcic/docker<span class="hljs-attribute">-flow</span><span class="hljs-attribute">-swarm</span><span class="hljs-attribute">-listener</span><br/>djy5p4re3sbh  proxy            <span class="hljs-number">3</span>/<span class="hljs-number">3</span>       vfarcic/docker<span class="hljs-attribute">-flow</span><span class="hljs-attribute">-proxy<br/>----------------------------------------------------------------------<br/>COMMAND<br/>mongod <span class="hljs-subst">--</span>replSet rs0<br/>mongod <span class="hljs-subst">--</span>replSet rs0<br/>go-demo-db-rs1 go-demo-db-rs2 go-demo-db-rs3<br/>mongod <span class="hljs-subst">--</span>replSet rs0<br/><br/></span></strong>
+</pre>
+<p>The only service that is not running is <kbd>go-demo-db-init</kbd>. By this time, it finished executing and, since we used the <kbd>--restart-condition none</kbd> argument, Swarm did not re-schedule it.</p>
+<p>We already developed a level of trust, and you probably believe me that the <kbd>go-demo-db-init</kbd> did its job correctly. Nevertheless, it doesn't hurt to double-check it. Since the last command of the script output the replica set status, we can check its logs to see whether everything is configured correctly. That means we'll need to go one more time into trouble of finding the IP and the ID of the container:</p>
+<pre>
+<strong>DB_INIT_IP=$(docker service ps go-demo-db-init \<br/>    | tail -n <span class="hljs-number">1</span> \<br/>    | awk <span class="hljs-string">'{ print $4 }'</span> \<br/>    | cut -c <span class="hljs-number">4</span>- \<br/>    | tr <span class="hljs-string">"-"</span> <span class="hljs-string">"."</span>)<br/><br/>DB_INIT_ID=$(docker -H tcp://<span class="hljs-variable">$DB_INIT_IP</span>:<span class="hljs-number">2375</span> \<br/>    ps -aq \<br/>    --filter label=com.docker.swarm.service.name=go-demo-db-init)<br/><br/>docker -H tcp://<span class="hljs-variable">$DB_INIT_IP</span>:<span class="hljs-number">2375</span> logs <span class="hljs-variable">$DB_INIT_ID</span></strong>
+</pre>
+<p>The relevant parts of the output of the <kbd>logs</kbd> command are as follows:</p>
+<pre>
+<strong>MongoDB shell version: <span class="hljs-number">3.2</span><span class="hljs-number">.10</span><br/>connecting to: go-demo-db-rs1:<span class="hljs-number">27017</span>/test<br/>{<br/><span class="hljs-string">        "set"</span> : <span class="hljs-string">"rs0"</span>,<br/><span class="hljs-string">        "date"</span> : ISODate(<span class="hljs-string">"2016-12-23T18:18:30.723Z"</span>),<br/><span class="hljs-string">        "myState"</span> : <span class="hljs-number">1</span>,<br/><span class="hljs-string">        "term"</span> : NumberLong(<span class="hljs-number">1</span>),<br/><span class="hljs-string">        "heartbeatIntervalMillis"</span> : NumberLong(<span class="hljs-number">2000</span>),<br/><span class="hljs-string">        "members"</span> : [<br/>               {<br/><span class="hljs-string">                    "_id"</span> : <span class="hljs-number">0</span>,<br/><span class="hljs-string">                    "name"</span> : <span class="hljs-string">"go-demo-db-rs1:27017"</span>,<br/><span class="hljs-keyword">                    ...</span><br/><span class="hljs-string">                    "stateStr"</span> : <span class="hljs-string">"PRIMARY"</span>,<br/><span class="hljs-keyword">                    ...</span><br/>               },<br/>               {<br/><span class="hljs-string">                   "_id"</span> : <span class="hljs-number">1</span>,<br/><span class="hljs-string">                   "name"</span> : <span class="hljs-string">"go-demo-db-rs2:27017"</span>,<br/><span class="hljs-string">                   "...<br/>                   "</span>stateStr<span class="hljs-string">" : "</span>SECONDARY<span class="hljs-string">",<br/>                   ...<br/>              },<br/>              {<br/>                   "</span>_id<span class="hljs-string">" : 2,<br/>                   "</span>name<span class="hljs-string">" : "</span>go-demo-db-rs3:<span class="hljs-number">27017</span><span class="hljs-string">",<br/>                   ...<br/>                   "</span>stateStr<span class="hljs-string">" : "</span>SECONDARY<span class="hljs-string">",<br/>                   ...<br/>              }<br/>    ],<br/>    "</span>ok<span class="hljs-string">" : 1<br/>}</span></strong>
+</pre>
+<p>Mongo replica set is indeed configured with all three members. We have a working group of fault tolerant set of MongoDBs that provide high availability. We can use them with our <kbd>go-demo</kbd> (or any other) service:</p>
+<pre>
+<strong>docker service create --name go-demo \<br/><span class="hljs-operator">-e</span> DB=<span class="hljs-string">"go-demo-db-rs1,go-demo-db-rs2,go-demo-db-rs3"</span> \<br/>    --reserve-memory <span class="hljs-number">10</span>m \<br/>    --network go-demo \<br/>    --network proxy \<br/>    --replicas <span class="hljs-number">3</span> \<br/>    --label com.df.notify=<span class="hljs-literal">true</span> \<br/>    --label com.df.distribute=<span class="hljs-literal">true</span> \<br/>    --label com.df.servicePath=/demo \<br/>    --label com.df.port=<span class="hljs-number">8080</span> \<br/>    vfarcic/go-demo:<span class="hljs-number">1.2</span></strong>
+</pre>
+<p>There is only one difference between this command and those we used in the previous chapters. If we continued using a single address of the primary MongoDB, we would not have high availability. When that DB fails, the service would not be able to serve requests. Even though Swarm would re-schedule it, the address of the primary would become different since the replica set would elect a new one.</p>
+<p>This time we specified all three MongoDBs as the value of the environment variable <kbd>DB</kbd>. The code of the service will pass that string to the MongoDB driver. In turn, the driver will use those addresses to deduce which DB is primary and use it to send requests. All Mongo drivers have the same mechanism to specify members of a replica set.</p>
+<p>Finally, let's confirm that all three replicas of the <kbd>go-demo</kbd> service are indeed running. Remember, the service is coded in a way that it would fail if the connection to the database could not be established. If all service replicas are running, it is the proof that we set up everything correctly:</p>
+<pre>
+<strong>docker service ps go-demo</strong>
+</pre>
+<p>The output is as follows (IDs and ERROR columns are removed for brevity):</p>
+<pre>
+<strong>NAME      IMAGE               NODE             DESIRED STATE          <br/>go<span class="hljs-attribute">-demo</span><span class="hljs-number">.1</span> vfarcic/go<span class="hljs-attribute">-demo</span>:<span class="hljs-number">1.2</span> ip<span class="hljs-subst">-</span><span class="hljs-number">172</span><span class="hljs-subst">-</span><span class="hljs-number">31</span><span class="hljs-subst">-</span><span class="hljs-number">23</span><span class="hljs-subst">-</span><span class="hljs-number">206</span> Running       <br/>go<span class="hljs-attribute">-demo</span><span class="hljs-number">.2</span> vfarcic/go<span class="hljs-attribute">-demo</span>:<span class="hljs-number">1.2</span> ip<span class="hljs-subst">-</span><span class="hljs-number">172</span><span class="hljs-subst">-</span><span class="hljs-number">31</span><span class="hljs-subst">-</span><span class="hljs-number">25</span><span class="hljs-subst">-</span><span class="hljs-number">35</span>  Running       <br/>go<span class="hljs-attribute">-demo</span><span class="hljs-number">.3</span> vfarcic/go<span class="hljs-attribute">-demo</span>:<span class="hljs-number">1.2</span> ip<span class="hljs-subst">-</span><span class="hljs-number">172</span><span class="hljs-subst">-</span><span class="hljs-number">31</span><span class="hljs-subst">-</span><span class="hljs-number">25</span><span class="hljs-subst">-</span><span class="hljs-number">35</span>  Running       <br/>---------------------------------------------------<br/>ERROR<br/>Running <span class="hljs-number">11</span> seconds ago<br/>Running <span class="hljs-number">9</span> seconds ago<br/>Running <span class="hljs-number">9</span> seconds ago<br/></strong>
+</pre>
+
+
+            </article>
+
+            <footer style="margin-top: 5em;">
+                
+            </footer>
+
+        </section>
+    
+
+        <section>
+
+            <header>
+                <h1 class="header-title">What now?</h1>
+            </header>
+
+            <article>
+                
+<p>Not all stateful services should be treated in the same way. Some might need an external drive mounted, while others already have some kind of a replication and synchronization incorporated. In some cases, you might want to combine both mounting and replication, while in others replication itself is enough.</p>
+<p>Please keep in mind that there are many other combinations we did not explore.</p>
+<p>The important thing is to understand how a service works and how it was designed to persist its state. In many cases, the logic of the solution is the same no matter whether we use containers or not. Containers often do not make things different, only easier.</p>
+<p>With the right approach, there is no reason why stateful services would not be cloud-friendly, fault tolerant, with high availability, scalable, and so on. The major question is whether you want to manage them yourself or you'd prefer leaving it to your cloud computing provider (if you use one). The important thing is that you got a glimpse how to manage stateful services yourself.</p>
+<p>Let's destroy the cluster before we move on:</p>
+<pre>
+<strong><span class="hljs-keyword">exit</span><br/><br/>terraform destroy -force</strong>
+</pre>
+
+
+            </article>
+
+            <footer style="margin-top: 5em;">
+                
+            </footer>
+
+        </section>
+    </body></html>
