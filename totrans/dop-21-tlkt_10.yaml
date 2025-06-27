@@ -1,0 +1,1654 @@
+- en: Collecting Metrics and Monitoring the Cluster
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Let us change our traditional attitude to the construction of programs. Instead
+    of imagining that our main task is to instruct a computer what to do, let us concentrate
+    rather on explaining to human beings what we want a computer to do.
+  prefs: []
+  type: TYPE_NORMAL
+- en: –Donald Knuth
+  prefs: []
+  type: TYPE_NORMAL
+- en: We managed to add centralized logging to our cluster. Logs from any container
+    running inside any of the nodes are shipped to a central location. They are stored
+    in Elasticsearch and available through Kibana. However, the fact that we have
+    easy access to all the logs does not mean that we have all the information we
+    would need to debug a problem or prevent it from happening in the first place.
+    We need to complement our logs with the rest of the information about the system.
+    We need much more than what logs alone can provide.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The requirements of a cluster monitoring system
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: With everything we've done until now, not to mention the tasks we'll do throughout
+    the rest of the book, we are simultaneously decreasing and increasing the complexity
+    of our system. Scaling a service is easier and less complex with Docker Swarm
+    than it would be with containers alone. The fact is that Docker already simplified
+    a lot the process we had before. Add to that the new networking with service discovery
+    baked in, and the result is almost too simple to be true. On the other hand, there
+    is complexity hidden below the surface. One of the ways such complexity manifests
+    itself can be easily observed if we try to combine dynamic tools we have used
+    so far, with those created in (and for) a different era.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Take *Nagios* ([https://www.nagios.org/](https://www.nagios.org/)) as an example.
+    I won't say that we could not use it to monitor our system (we certainly can).
+    What I will state is that it would clash with the new system architecture we've
+    designed so far. Our system has gotten much more complex than it was. The number
+    of replicas is fluctuating. While today we have four instances of a service, tomorrow
+    morning there could be six, only to fall to three in the afternoon. They are distributed
+    across multiple nodes of the cluster, and being moved around. Servers are being
+    created and destroyed. Our cluster and everything inside it is truly dynamic and
+    elastic.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The dynamic nature of the system we are building would not fit into Nagios,
+    which expects services and servers to be relatively static. It expects us to define
+    things in advance. The problem with such an approach is that we do not have the
+    information in advance. Swarm does. Even if we get the information we need, it
+    will change soon.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The system we're building is highly dynamic, and the tools we should use to
+    monitor such a system need to be able to cope with this dynamism.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It's more than that. Most of the "traditional" tools tend to treat the whole
+    system as a black box. That, on the one hand, has a certain number of advantages.
+    The main one is that it allows us to decouple our services from the rest of the
+    system. In many (but not all) cases, white box monitoring means that we need to
+    add to our services monitoring libraries and write some code around them so that
+    they can expose the internals of our services.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Think twice before choosing to add something to your service that is not strictly
+    its job. When we adopt a microservices approach, we should strive towards services
+    being functionally limited to their primary goal. If it's a shopping cart, it
+    should be an API that will allow us to add and remove items. Adding libraries
+    and code that will extend such a service so that it can register itself in a service
+    discovery store, or expose its metrics to the monitoring tool, produces too much
+    coupling. Once we do that, our future options will be very limited, and making
+    a change in the system might require considerable time and effort.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We already managed to avoid coupling service discovery with our services. The
+    `go-demo` service does not have any knowledge of service discovery and yet, our
+    system has all the information it needs. There are many other examples where organizations
+    fall into a trap and start coupling their services with the system around them.
+    In this case, our main preoccupation is whether we can accomplish the same with
+    monitoring. Can we avoid coupling creation of metrics with the code we write for
+    our services?
+  prefs: []
+  type: TYPE_NORMAL
+- en: Then again, being able to do white box monitoring provides a lot of benefits
+    black box does not have. For one, understanding the internals of a service allows
+    us to operate with a much finer level of detail. It gives us knowledge that we
+    could not obtain if we were to treat the system as a black box.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In a world of distributed systems designed for high availability and fast response
+    time, it is not enough to be limited to health checks and CPU, memory, and disk
+    usage monitoring. We already have Swarm that makes sure the services are healthy
+    and we could easily make scripts that check essential resource usage. We need
+    much more than that. We need white box monitoring that does not introduce unnecessary
+    coupling. We need intelligent alerting that will notify us when something is wrong,
+    or even automatically fix the problem. Ideally, we would have alerts and automated
+    corrections executed before the problems even happen.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Some of the requirements we''d need from a monitoring system would be as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*A decentralized way of generating metrics* that will be able to cope with
+    the highly dynamic nature of our cluster'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*A multi-dimensional data model* that can be queried across as many dimensions
+    as needed'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*An efficient query language* that will allow us to exploit our monitoring
+    data model and create effective alerting and visualization'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*Simplicity* that will allow (almost) anyone to utilize the system without
+    extensive training'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: In this chapter, we'll continue the work we started in the previous. We'll explore
+    ways to export a different set of metrics, a way to collect them, query them,
+    and expose them through dashboards.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Before we do all that, we should make some choices. Which tools shall we use
+    for our monitoring solution?
+  prefs: []
+  type: TYPE_NORMAL
+- en: Choosing the right database to store system metrics
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In *The DevOps 2.0 Toolkit*, I argued against "traditional" monitoring tools
+    like *Nagios* ([https://www.nagios.org/](https://www.nagios.org/)) and *Icinga* ([https://www.icinga.org/](https://www.icinga.org/)).
+    Instead, we chose to use Elasticsearch for both the logs and the system metrics.
+    In the previous chapter, I reiterated the choice for using Elasticsearch as the
+    logging solution. Can we extend its usage by storing metrics? Yes, we can. Should
+    we do that? Should we use it as a place to store system metrics? Are there better
+    solutions?
+  prefs: []
+  type: TYPE_NORMAL
+- en: The biggest problem with Elasticsearch, if used as a database to store system
+    metrics, is that it is not a time series type of database. Logs benefit greatly
+    from Elasticsearch ability to perform free text search and store data in an unstructured
+    way. However, for system metrics, we might take advantage of a different type
+    of data storage. We need a time series database.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Time series databases are designed around optimized ways to store and retrieve
+    time series data. One of their greatest benefits is that they store information
+    in a very compact format allowing them to host a vast amount of data. If you compare
+    storage needs for time-based data in other types of databases (Elasticsearch included),
+    you'll discover that time series databases are much more efficient. In other words,
+    if your data are time-based metrics, use a database designed for such data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The biggest problem with most (if not all) time series databases is distributed
+    storage. Running them with replication is not possible, or a challenge at best.
+    To put it bluntly, such databases are designed to run a single instance. Luckily
+    we often do not need to store long term data in such databases and can clean them
+    up periodically. If long term storage is a must, the solution would be to export
+    aggregated data into some other type of database like Elasticsearch which, by
+    the way, shines when it comes to replication and sharding. However, before you
+    go "crazy" and start exporting data, make sure that you truly need to do something
+    like that. Time series databases can easily store a vast amount of information
+    in a single instance. The chances are that you won't need to scale them for capacity
+    reasons. On the other hand, if a database fails, Swarm will reschedule it, and
+    you'll lose only a few seconds of information. Such a scenario should not be a
+    disaster since we are dealing with aggregated data, not individual transactions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: One of the most prominent time series databases is *InfluxDB* ([https://www.influxdata.com/](https://www.influxdata.com/)).
+    *Prometheus* ([https://prometheus.io/](https://prometheus.io/)) is a commonly
+    used alternative. We'll skip the comparison of these two products except to note
+    that we'll use the latter. Both are worthy candidates for your monitoring solution
+    with Prometheus having a potential advantage we should not ignore. The community
+    plan is to expose Docker metrics natively in Prometheus format. At the time of
+    this writing, there is no fixed date when that'll happen, but we'll do our best
+    to design the system around that plan. If you'd like to monitor the progress yourself,
+    please watch *Docker issue 27307* ([https://github.com/docker/docker/issues/27307](https://github.com/docker/docker/issues/27307)).
+    We'll use Prometheus in such a way that we'll be able to switch to Docker native
+    metrics once they are available.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's convert words into actions and create the cluster that we'll use throughout
+    this chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Creating the cluster
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'This time we''ll create more services than before so we''ll need a bit bigger
+    cluster. It''s not that the services will be very demanding but that our VMs have
+    only one CPU and 1GB memory each. Such machines are not something to brag about.
+    This time, we''ll create a cluster that consists of five machines. Apart from
+    increasing the capacity of the cluster, everything else will be the same as before,
+    so there''s no good reason to go through the process again. We''ll simply execute
+    `scripts/dm-swarm-5.sh` ([https://github.com/vfarcic/cloud-provisioning/blob/master/scripts/dm-swarm-5.sh](https://github.com/vfarcic/cloud-provisioning/blob/master/scripts/dm-swarm-5.sh)):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: All the commands from this chapter are available in the `09-monitoring.sh` ([https://gist.github.com/vfarcic/271fe5ab7eb6a3307b9f062eadcc3127](https://gist.github.com/vfarcic/271fe5ab7eb6a3307b9f062eadcc3127))
+    Gist.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output of the `docker node ls` command is as follows (IDs are removed for
+    brevity):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: We created a Swarm cluster with five nodes, three of them acting as managers
+    and the rest as workers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now we can create the services we used before. Since this is also something
+    we practiced quite a few times, we''ll create stacks from Compose files `vfarcic/docker-flow-proxy/docker-compose-stack.yml` ([https://github.com/vfarcic/docker-flow-proxy/blob/master/docker-compose-stack.yml](https://github.com/vfarcic/docker-flow-proxy/blob/master/docker-compose-stack.yml))
+    and `vfarcic/go-demo/docker-compose-stack.yml` ([https://github.com/vfarcic/go-demo/blob/master/docker-compose-stack.yml](https://github.com/vfarcic/go-demo/blob/master/docker-compose-stack.yml)):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**A note to Windows users**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You might experience a problem with volumes not being mapped correctly with
+    Docker Compose. If you see an *Invalid volume specification* error, please export
+    the environment variable `COMPOSE_CONVERT_WINDOWS_PATHS` set to `0`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`export COMPOSE_CONVERT_WINDOWS_PATHS=0`'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Please make sure that the variable is exported every time you run `docker-compose`
+    or `docker stack deploy`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'After a while, the output of the `docker service ls` command is as follows
+    (IDs are removed for brevity):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: We used stacks downloaded from GitHub repositories to create all the services
+    except util. Right now, our cluster is hosting the demo services `go-demo` and
+    `go-demo-db`, the `proxy`, the `swarm-listener`, and the globally scheduled util
+    service that we'll use to experiment with monitoring metrics.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We're ready to start generating some metrics.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Prometheus metrics
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Prometheus stores all data as time series. It is a stream of timestamped values
+    that belong to the same metric and the same labels. The labels provide multiple
+    dimensions to the metrics.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For example, if we''d like to export data based on HTTP requests from the `proxy`,
+    we might create a metric called `proxy_http_requests_total`. Such a metric could
+    have labels with the `request` method, `status`, and `path`. These three could
+    be specified as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: Finally, we need a value of the metric, which, in our example, would be the
+    total number of requests.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'When we combine metric names with the labels and values, the example result
+    could be as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: Through these three metrics, we can see that there were `654` successful `GET`
+    requests, `143` successful `PUT` requests, and `13` failed `GET` requests `HTTP
+    403`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that the format is more or less clear, we can discuss different ways to
+    generate metrics and feed them to Prometheus.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Prometheus is based on a *pull* mechanism that scrapes metrics from the configured
+    targets. There are two ways we can generate Prometheus-friendly data. One is to
+    instrument our own services. Prometheus offers client libraries for *Go *([https://github.com/prometheus/client_golang](https://github.com/prometheus/client_golang)),
+    *Python *([https://github.com/prometheus/client_python](https://github.com/prometheus/client_python)),
+    *Ruby* ([https://github.com/prometheus/client_ruby](https://github.com/prometheus/client_ruby)),
+    and *Java* ([https://github.com/prometheus/client_java](https://github.com/prometheus/client_java)).
+    On top of those, there are quite a few unofficial libraries available for other
+    languages. Exposing metrics of our services is called instrumentation. Instrumenting
+    your code is, in a way, similar to logging.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Even though instrumentation is the preferred way of providing data that will
+    be stored in Prometheus, I advise against it. That is, unless the same data cannot
+    be obtained by different means. The reasons for such a suggestion lie in my preference
+    for keeping microservices decoupled from the rest of the system. If we managed
+    to keep service discovery outside our services, maybe we can do the same with
+    metrics.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When our service cannot be instrumented or, even better, when we do not want
+    to instrument it, we can utilize Prometheus exporters. Their purpose is to collect
+    already existing metrics and convert them to Prometheus format. As you'll see,
+    our system already exposes quite a lot of metrics. Since it would be unrealistic
+    to expect all our solutions to provide metrics in Prometheus format, we'll use
+    exporters to do the transformation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When scraping (pulling) data is not enough, we can change direction and push
+    them. Even though scraping is the preferred way for Prometheus to get metrics,
+    there are cases when such an approach is not appropriate. An example would be
+    short-lived batch jobs. They might be so short lived that Prometheus might not
+    be able to pull the data before the job is finished and destroyed. In such cases,
+    the batch job can push data to the *Push Gateway *([https://github.com/prometheus/pushgateway](https://github.com/prometheus/pushgateway))
+    from which Prometheus can scrape metrics.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For the list of currently supported exporters, please consult the *Exporters
+    and Integrations* ([https://prometheus.io/docs/instrumenting/exporters/](https://prometheus.io/docs/instrumenting/exporters/))
+    section of the Prometheus documentation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now, after a short introduction to metrics, we're ready to create services that
+    will host the exporters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Exporting system wide metrics
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'We''ll start with the *Node Exporter* ([https://github.com/prometheus/node_exporter](https://github.com/prometheus/node_exporter))
+    service. It''ll export different types of metrics related to our servers:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**A note to Windows users**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For mounts used in the next command to work, you have to stop Git Bash from
+    altering file system paths. Set this environment variable:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`export MSYS_NO_PATHCONV=1`'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This chapter contains many `docker service create` commands that use mounts.
+    Before you execute those commands, please ensure that the environment variable
+    `MSYS_NO_PATHCONV` exists and is set to `1`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`echo $MSYS_NO_PATHCONV`'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: Since we need the `node-exporter` to be available on each server, we specified
+    that the service should be global. Normally, we'd attach it to a separate network
+    dedicated to monitoring tools (example:monitoring). However, Docker machines running
+    locally might have problems with more than two networks. Since we already created
+    the `go-demo` and `proxy` networks through `scripts/dm-swarm-services-3.sh` ([https://github.com/vfarcic/cloud-provisioning/blob/master/scripts/dm-swarm-services-3.sh](https://github.com/vfarcic/cloud-provisioning/blob/master/scripts/dm-swarm-services-3.sh))
+    we've reached the safe limit. For that reason, we'll use the existing `proxy`
+    network for monitoring services as well. When operating the "real" cluster, you
+    should create a separate network for monitoring services.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We mounted a few volumes as well.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `/proc` directory is very special in that it is also a virtual filesystem.
+    It''s sometimes referred to as a process information pseudo-file system. It doesn''t
+    contain "real" files but runtime system information (example: system memory, devices
+    mounted, hardware configuration, and so on).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: For this reason, it can be regarded as a control and information center for
+    the kernel. In fact, quite a lot of system utilities are simply calls to files
+    in this directory. For example, `lsmod` is the same as `cat /proc/modules` while
+    `lspci` is a synonym for `cat /proc/pci`. By altering files located in that directory,
+    you can even `read/change` kernel parameters `sysctl` while the system is running.
+    The `node-exporter` service will use it to find all the processes running inside
+    our system.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Modern Linux distributions include a `/sys` directory as a virtual filesystem
+    (`sysfs`, comparable to `/proc`, which is a `procfs`), which stores and allows
+    modification of the devices connected to the system, whereas many traditional
+    UNIX and Unix-like operating systems use `/sys` as a symbolic link to the kernel
+    source tree.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `sys` directory is a virtual file system provided by Linux. It provides
+    a set of virtual files by exporting information about various kernel subsystems,
+    hardware devices and associated device drivers from the kernel's device model
+    to user space. By exposing it as a volume, the service will be able to gather
+    information about the kernel.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finally, we defined the image `prom/node-exporter` and passed a few command
+    arguments. We specified the target volumes for `/proc` and `/sys` followed with
+    the instruction to ignore mount points inside the container.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Please visit the *Node Exporter project* ([https://github.com/prometheus/node_exporter](https://github.com/prometheus/node_exporter))
+    for more information.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'By this time, the service should be running inside the cluster. Let''s confirm
+    that:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output of the `service ps` command is as follows (IDs are removed for brevity):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let''s have a quick look at the metrics provided by the `node-exporter` service.
+    We''ll use the `util` service to retrieve the metrics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'A sample of the `curl` output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: As you can see, the metrics are in the Prometheus-friendly format. Please explore
+    the *Node Exporter collectors* ([https://github.com/prometheus/node_exporter#collectors](https://github.com/prometheus/node_exporter#collectors))
+    for more information about the meaning of each metric. For now, you should know
+    that most of the node information you would need is available and will be, later
+    on, scraped by Prometheus.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Since we sent a request through Docker networking, we got a load-balanced response
+    and cannot be sure which node produced the output. When we reach the Prometheus
+    configuration, we'll have to be more specific and skip networks load balancing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we have the information about servers, we should add metrics specific
+    to containers. We'll use `cAdvisor` also known as **container Advisor**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `cAdvisor` provides container users an understanding of the resource usage
+    and performance characteristics of their running containers. It is a running daemon
+    that collects, aggregates, processes, and exports information about running containers.
+    Specifically, for each container it keeps resource isolation parameters, historical
+    resource usage, histograms of complete historical resource usage and network statistics.
+    This data is exported container and machine-wide. It has native support for Docker
+    containers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s create the service:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: Just as with the `node-exporter`, the `cadvisor` service is global and attached
+    to the `proxy` network. It mounts a few directories that allows it to monitor
+    Docker stats and events on the host. Since `cAdvisor` comes with a web UI, we
+    opened port `8080` that will allow us to open it in a browser.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Before we proceed, we should confirm that the service is indeed running:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output of the `service ps` is as follows (IDs are removed for brevity):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now we can open the UI:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**A note to Windows users**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Git Bash might not be able to use the open command. If that''s the case, execute `docker-machine
+    ip <SERVER_NAME>` to find out the IP of the machine and open the URL directly
+    in your browser of choice. For example, the command below should be replaced with
+    the command that follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`docker-machine ip swarm-1`'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If the output would be `1.2.3.4`, you should open `http://1.2.3.4:8080` in your
+    browser.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: '![](img/cadvisor.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 9-1: cAdvisor UI'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Feel free to scroll down and explore different graphs and metrics provided by
+    `cAdvisor`. If they are not enough, information about running containers can be
+    obtained by clicking the Docker Containers link at the top of the screen.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Even though it might seem impressive on the first look, the UI is, more or less,
+    useless for anything but a single server. Since it is designed as a tool to monitor
+    a single node, it does not have much usage inside a Swarm cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For one, the page and all the requests it makes are load-balanced by the ingress
+    network. That means not only that we do not know which server returned the UI,
+    but requests that return data used by metrics and graphs are load balanced as
+    well. In other words, different data from all the servers is mixed, giving us
+    a very inaccurate picture. We could skip using the service and run the image with
+     `docker run` command (repeated for each server). However, even though that would
+    allow us to see a particular server, the solution would still be insufficient
+    since we would be forced to go from one server to another. Our goal is different.
+    We need to gather and visualize data from the whole cluster, not individual servers.
+    Therefore, the UI must go.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As a side note, certain types of metrics overlap between the `node-exporter`
+    and `cadvisor` services. You might be tempted to choose only one of those. However,
+    their focus is different, and the full picture can be accomplished only with the
+    combination of the two.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Since we established that the UI is useless when hosted inside a Swarm cluster,
+    there is no good reason to expose port `8080`. Therefore, we should remove it
+    from the service. You might be tempted to remove the service and create it again
+    without exposing the port. There is no need for such an action. Instead, we can
+    eliminate the port by updating the service:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: By examining the output of the `service inspect` command, you'll notice that
+    the port is not opened (it does not exist).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now that the `cadvisor` service is running, and we do not generate noise from
+    the useless UI, we can take a quick look at the metrics `cAdvisor` exports:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'A sample of the `curl` output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: We're making excellent progress. We are exporting server and container metrics.
+    We might continue adding metrics indefinitely and extend this chapter to an unbearable
+    size. I'll leave the creation of services that will provide additional info as
+    an exercise you should perform later on. Right now we'll move onto Prometheus.
+    After all, having metrics is not of much use without being able to query and visualize
+    them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Scraping, querying, and visualizing Prometheus metrics
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Prometheus server is designed to pull the metrics from instrumented services.
+    However, since we wanted to avoid unnecessary coupling, we used exporters that
+    provide the metrics we need. Those exporters are already running as Swarm services,
+    and now we are ready to exploit them through Prometheus.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To instantiate the Prometheus service, we should create a configuration file
+    with the exporters running in our cluster. Before we do that, we need to retrieve
+    the IPs of all the instances of an exporter service. If you recall the [Chapter
+    4](014d8ab7-c047-47ff-a5af-ef6325ae9519.xhtml), *Service Discovery inside a Swarm
+    Cluster*, we can retrieve all the IPs by appending the tasks. prefix to the service
+    name.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To retrieve the list of all the replicas of the `node-exporter` service, we
+    could, for example, drill it from one of the instances of the `util` service:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The relevant part of the output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: We retrieved the IPs of all currently running replicas of the service.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The list of the IPs themselves is not enough. We need to tell Prometheus that
+    it should use them in a dynamic fashion. It should consult tasks.`<SERVICE_NAME>`
+    every time it wants to pull new data. Fortunately, Prometheus can be configured
+    through `dns_sd_configs` to use an address as service discovery. For more information
+    about the available options, please consult the *Configuration *([https://prometheus.io/docs/operating/configuration/](https://prometheus.io/docs/operating/configuration/))
+    section of the documentation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Equipped with the knowledge of the existence of the `dns_sd_configs` option,
+    we can move forward and define a Prometheus configuration. We'll use the one I
+    prepared for this chapter. It is located in `conf/prometheus.yml` ([https://github.com/vfarcic/cloud-provisioning/blob/master/conf/prometheus.yml](https://github.com/vfarcic/cloud-provisioning/blob/master/conf/prometheus.yml))
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let us quickly go through it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: We defined three jobs. The first two `node` and `cadvisor` are using the `dns_sd_configs`
+    (DNS service discovery configs) option. Both have the tasks.`<SERVICE_NAME>` defined
+    as the name, are of type A (you'll notice the type from the `drill` output), and
+    have the internal ports defined. The last one `prometheus` will provide the internal
+    metrics.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Please note that we set `scrape_interval` to five seconds. In production, you
+    might want more granular data and change it to, for example, one-second interval.
+    Beware! The shorter the interval, the higher the cost. The more often we scrape
+    metrics, the more resources will be required to do that, as well as to query those
+    results, and even store the data. Try to find a balance between data granularity
+    and resource usage. Creating the Prometheus service is easy (as is almost any
+    other Swarm service).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We''ll start by creating a directory where we''ll persist Prometheus data:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now we can create the service:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: We created the `docker/prometheus` directory where we'll persist Prometheus
+    state.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The service is quite ordinary. It is attached to the `proxy` network, exposes
+    the port `9090`, and mounts the configuration file and the state directory.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The output of the `service ps` command is as follows (IDs and ERROR columns
+    are removed for brevity):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: Please note that it would be pointless to scale this service. Prometheus is
+    designed to work as a single instance. In most cases, that's not a problem since
+    it can easily store and process a vast amount of data. If it fails, Swarm will
+    reschedule it somewhere else and, in that case, we would lose only a few seconds
+    of data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s open its UI and explore what can be done with it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**A note to Windows users**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Git Bash might not be able to use the open command. If that''s the case, execute `docker-machine
+    ip <SERVER_NAME>` to find out the IP of the machine and open the URL directly
+    in your browser of choice. For example, the command below should be replaced with
+    the command that follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`docker-machine ip swarm-1`'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If the output would be `1.2.3.4`, you should open  `http://1.2.3.4:9090` in
+    your browser.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: The first thing we should do is check whether it registered all the exported
+    targets.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Please click the Status button in the top menu and select Targets. You should
+    see that five *cadvisor* targets match the five servers that form the cluster.
+    Similarly, there are five node targets. Finally, one prometheus target is registered
+    as well:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/prometheus-status-targets.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 9-2: Targets registered in Prometheus'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we confirmed that all the targets are indeed registered and that Prometheus
+    started scraping metrics they provide, we can explore ways to retrieve data and
+    visualize them through `ad-hoc` queries.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Please click the *Graph* button from the top menu, select `node_memory_MemAvailable`
+    from the `- insert metric at cursor *-*` list, and click the Execute button.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You should see a table with the list of metrics and a value associated with
+    each. Many prefer a visual representation of the data which can be obtained by
+    clicking the Graph tab located above the list. Please click it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You should see the available memory for each of the five servers. It is displayed
+    as evolution over the specified period which can be adjusted with the fields and
+    buttons located above the graph. Not much time passed since we created the `prometheus`
+    service so you should probably reduce the period to five or fifteen minutes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The same result can be accomplished by typing the query (or in this case the
+    name of the metric) in the Expression field. Later on, we''ll do a bit more complicated
+    queries that cannot be defined by selecting a single metric from the `*-*insert
+    metric at cursor *-*` list:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/prometheus-memory-graph.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 9-3: Prometheus graph with available memory'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now might be a good time to discuss one of the main shortcomings of the system
+    we set up so far. We do not have the information that would allow us to relate
+    data with a particular server easily. Since the list of addresses is retrieved
+    through Docker networking which creates a virtual IP for each replica, the addresses
+    are not those of the servers. There is no easy way around this (as far as I know)
+    so we are left with two options. One would be to run the exporters as "normal"
+    containers (example: `docker run`) instead of as services. The advantage of such
+    an approach is that we could set network type as `host` and get the IP of the
+    server. The problem with such an approach is that we''d need to run exporters
+    separately for each server.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: That wouldn't be so bad except for the fact that each time we add a new server
+    to the cluster, we'd need to run all the exporters again. To make things more
+    complicated, it would also mean that we'd need to change the Prometheus configuration
+    as well, or add a separate service registry only for that purpose. The alternative
+    is to wait. The inability to retrieve a host IP from a service replica is a known
+    limitation. It is recorded in several places, one of them being *issue 25526* ([https:](https://github.com/docker/docker/issues/25526)[//github.com/docker/docker/issues/25526](https://github.com/docker/docker/issues/25526)).
+    At the same time, the community has already decided to expose Prometheus metrics
+    natively from Docker Engine. That would remove the need for some, if not all,
+    of the exporters we created as services. I'm confident that one of those two will
+    happen soon. Until then, you'll have to make a decision to ignore the fact that
+    IPs are virtual or replace services with containers run separately on each server
+    in the cluster. No matter the choice you make, I'll show you, later on, how to
+    find the relation between virtual IPs and hosts.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's go back to querying Prometheus metrics.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The example with `node_memory_MemAvailable` used only the metric and, as a result,
+    we got all its time series.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's spice it up a bit and create a graph that will return idle CPU. The query
+    would be `node_cpu{mode="idle"}`. Using `mode="idle"` will limit the `node_cpu`
+    metric only to data labeled as idle. Try it out and you'll discover that the graph
+    should consist of five almost straight lines going upwards. That does not look
+    correct.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s create a bit more accurate picture by introducing the `irate` function.
+    It calculates the per-second instant rate of increase of the time series. That
+    is based on the last two data points. To use the `irate` function, we also need
+    to specify the measurement duration. The modified query is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: Since we are scraping metrics from the `cadvisor` service, we can query different
+    container metrics as well. For example, we can see the memory usage of each container.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Please execute the query that follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Please execute the query and see the result for yourself. You should see the
+    idle CPU rate per node measured over 5 minute intervals:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/prometheus-cpu-graph.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 9-4: Prometheus graph with CPU idle rate'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you explore the results through the graph, you'll discover that `cAdvisor`
+    uses the most memory (around `800M` on my machine). That does not look correct.
+    The service should have a much smaller footprint. If you look at its labels, you'll
+    notice that the ID is `/`. That's the cumulative result of the total memory of
+    all containers passing through `cAdvisor`. We should exclude it from the results
+    with the `!=` operator.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Please execute the query that follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: This time, the result makes much more sense. The service that uses the most
+    memory is Prometheus itself.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The previous query used label id to filter data. When combined with the `!=`
+    operator, it excluded all metrics that have the id set to `/`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Even with such a small cluster, the number of containers might be too big for
+    a single graph so we might want to see the results limited to a single service.
+    That can be accomplished by filtering the data with the `container_label_com_docker_swarm_service_name`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s see the memory usage of all `cadvisor` replicas:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: All this looks great but is not very useful as a monitoring system. Prometheus
+    is geared more towards `ad-hoc` queries than as a tool we can use to create dashboards
+    that would give us a view of the whole system. For that, we need to add one more
+    service to the mix.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using Grafana to create dashboards
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Prometheus offers a dashboard builder called *PromDash* ([https://github.com/prometheus/promdash](https://github.com/prometheus/promdash)).
+    However, it is deprecated for Grafana, so we won't consider it as worthy of running
+    inside our cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Grafana ([http://grafana.org/](http://grafana.org/)) is one of the leading tools
+    for querying and visualization of time series metrics. It features interactive
+    and editable graphs and supports multiple data sources. Graphite, Elasticsearch,
+    InfluxDB, OpenTSDB, KairosDB, and, most importantly, Prometheus are supported
+    out of the box. If that's not enough, additional data sources can be added through
+    plugins. Grafana is truly a rich UI that has established itself as a market leader.
+    Best of all, it's free.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s create a `grafana` service:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'A few moments later, the status of the replica should be running:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output of the `service ps` command is as follows (IDs are removed for brevity):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now that the service is running, we can open the UI:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**A note to Windows users**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Git Bash might not be able to use the `open` command. If that''s the case,
+    execute `docker-machine ip <SERVER_NAME>` to find out the IP of the machine and
+    open the URL directly in your browser of choice. For example, the command below
+    should be replaced with the command that follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`docker-machine ip swarm-1`'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If the output would be `1.2.3.4`, you should open `http://1.2.3.4:3000` in your
+    browser.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: You will be presented with the login screen. The default username and password
+    are admin. Go ahead and log in.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The username and password, as well as many other settings, can be adjusted through
+    configuration files and environment variables. Since we are running Grafana inside
+    a Docker container, environment variables are a better option. For more info,
+    please visit the *Configuration* ([http://docs.grafana.org/installation/configuration/](http://docs.grafana.org/installation/configuration/))
+    section of the official documentation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The first thing we should do is add Prometheus as a data source.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Please click the *Grafana* logo located in the top-left part of the screen,
+    select Data Sources, and click the + Add data source button.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We'll name it `Prometheus` and choose the same for the Type. Enter `http://prometheus:9090`
+    as the `Url` and click the Add button. That's it. From now on, we can visualize
+    and query any metric stored in Prometheus.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's create the first dashboard.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Please click the *Grafana* logo, select Dashboards, and click + New. In the
+    top-left part of the screen, there is a green vertical button. Click it, select
+    Add Panel, and choose Graph. You'll see the default graph with test metrics. It's
+    not very useful unless you'd like to admire pretty lines going up and down. We'll
+    change the Panel data source from default to Prometheus. Enter `irate(node_cpu{mode="idle"}[5m])`
+    as Query. A few moments later you should see a graph with CPU usage.
+  prefs: []
+  type: TYPE_NORMAL
+- en: By default, graphs display six hours of data. In this case, that might be *OK*
+    if you are a slow reader and it took you that much time to create the prometheus
+    service and read the text that followed. I will assume that you have only half
+    an hour worth of data and want to change the graph's timeline.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Please click the Last 6 hours button located in the top-right corner of the
+    screen, followed by the Last 30 minutes link. The graph should be similar to *Figure
+    9-5:*
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/grafana-cpu-graph.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 9-5: Grafana graph with CPU rate fetched from Prometheus'
+  prefs: []
+  type: TYPE_NORMAL
+- en: There are quite a few things you can customize to make a graph fit your needs.
+    I'll leave that to you. Go ahead and play with the new toy. Explore different
+    options it offers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you are lazy as I am, you might want to skip creating all the graphs and
+    dashboards you might need and just leverage someone else's effort. Fortunately,
+    the Grafana community is very active and has quite a few dashboards made by its
+    members.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Please open the *dashboards* ([https://grafana.net/dashboards](https://grafana.net/dashboards))
+    section in *grafana.net* ([https://grafana.net](https://grafana.net)). You'll
+    see a few filters on the left-hand side as well as the general search field. We
+    can, for example, search for     `node exporter`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I encourage you to explore all the offered node exporter dashboards at some
+    later time. For now, we'll select the *Node Exporter Server Metrics* ([https://grafana.net/dashboards/405](https://grafana.net/dashboards/405)).
+    Inside the page, you'll see the Download Dashboard button. Use it to download
+    the JSON file with dashboard definition.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s get back to our `grafana` service:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**A note to Windows users**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Git Bash might not be able to use the `open` command. If that''s the case,
+    execute `docker-machine ip <SERVER_NAME>` to find out the IP of the machine and
+    open the URL directly in your browser of choice. For example, the command below
+    should be replaced with the command that follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`docker-machine ip swarm-1`'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If the output would be `1.2.3.4`, you should open `http://1.2.3.4:3000` in your
+    browser.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: Open, one more time, the Dashboards option is hidden behind the Grafana logo
+    and select Import. Click the Upload .json file button and open the file you just
+    downloaded. We'll leave the Name intact and choose Prometheus as datasource. Finally,
+    click the Save & Open button to finish.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The magic happened, and we got quite a few graphs belonging to one of the nodes.
+    However, the graphs are mostly empty since the default duration is seven days
+    and we have only an hour or so worth of data. Change the time range to, let's
+    say, one hour. The graphs should start making sense.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s spice it up a bit and add more servers to the mix. Please click the
+    `IP/port` of the selected node and choose a few more. You should see metrics from
+    each of the nodes:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/grafana-nodes-dashboard.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 9-6: Grafana dashboard with metrics from selected nodes from Prometheus'
+  prefs: []
+  type: TYPE_NORMAL
+- en: While this dashboard is useful when we want to compare metrics between the selected
+    nodes, I think it is not so useful if we'd like to focus on a single node. In
+    that case, the *Node Exporter Server Stats* ([https://grafana.net/dashboards/704](https://grafana.net/dashboards/704))
+    dashboard might be a better option. Please follow the same steps to import it
+    into the `grafana` service.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can still change the node presented in the dashboard (IP in the top-left
+    corner of the screen). However, unlike the other dashboard, this one displays
+    only one node at the time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Both dashboards are very useful depending on the case. If we need to compare
+    multiple nodes then the *Node Exporter Server Metrics* ([https://grafana.net/dashboards/405](https://grafana.net/dashboards/405))
+    might be a better option. On the other hand, when we want to concentrate on a
+    specific server, the *Node Exporter Server Stats* ([https://grafana.net/dashboards/704](https://grafana.net/dashboards/704))
+    dashboard is probably a better option. You should go back and import the rest
+    of the *Node Exporter* dashboards and try them as well. You might find them more
+    useful than those I suggested.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Sooner or later, you''ll want to create your own dashboards that fit your needs
+    better. Even in that case, I still advise you to start by importing one of those
+    made by the community and modifying it instead of starting from scratch. That
+    is, until you get more familiar with Prometheus and Grafana, refer to the following
+    image:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/grafana-node-dashboard.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 9-7: Grafana dashboard with a single node metrics from Prometheus'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The next dashboard we'll create will need logs from Elasticsearch so let's set
+    up logging as well.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We won''t go into details of the logging services since we already explored
+    them in the [Chapter 9](3be31bb8-e0b6-4395-ab76-624ba5d30d26.xhtml), *Defining
+    Logging Strategy*:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Before we proceed with a `LogStash` service, we should confirm that `elasticsearch`
+    is running:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output of the `service ps` command should be similar to the one that follows
+    (IDs & Error Ports column are removed for brevity):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now we can create a `logstash` service:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE38]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let''s confirm it''s running before moving onto the last logging service:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE39]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output of the `service ps` command should be similar to the one that follows
+    (IDs  and ERROR PORTS columns are removed for brevity):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE40]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Finally, we''ll create a `logspout` service as well:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE41]'
+  prefs: []
+  type: TYPE_PRE
+- en: '… and confirm it''s running:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE42]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output of the `service ps` command should be similar to the one that follows
+    (IDs and ERROR PORTS columns are removed for brevity):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE43]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now that logging is operational, we should add Elasticsearch as one more Grafana
+    data source:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**A note to Windows users**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Git Bash might not be able to use the open command. If that''s the case, execute
+                            `docker-machine ip <SERVER_NAME>` to find out the IP of
+    the machine and open the URL directly in your browser of choice. For example,
+    the command below should be replaced with the command that follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`docker-machine ip swarm-1`'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If the output would be `1.2.3.4`, you should open `http://1.2.3.4:3000` in your
+    browser.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE44]'
+  prefs: []
+  type: TYPE_PRE
+- en: Please click on the Grafana logo, and select Data Sources. A new screen will
+    open with the currently defined sources (at the moment only Prometheus). Click
+    the + Add data source button.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We'll use `Elasticsearch` as both the name and the type. The Url should be [http://e](http://elasticsearch:9200)[lasticsearch:9200](http://elasticsearch:9200)
+    and the value of the Index name should be set to `"logstash-*"`. Click the Add
+    button when finished.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now we can create or, to be more precise, import our third dashboard. This time,
+    we'll import a dashboard that will be primarily focused on Swarm services.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Please open the Docker Swarm & Container Overview ([https://grafana.net/dashboards/609](https://grafana.net/dashboards/609))
+    dashboard page, download it, and import it into Grafana. In the Import Dashboard
+    screen for Grafana , you will be asked to set one *Prometheus* and two Elasticsearch
+    data sources. After you click the Save & Open button, you will be presented with
+    a dashboard full of metrics related to Docker Swarm and containers in general.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You will notice that some of the graphs from the dashboard are empty. That's
+    not an error but an indication that our services are not prepared to be monitored.
+    Let's update them with some additional information that the dashboard expects.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Exploring Docker Swarm and container overview dashboard in Grafana
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: One of the things missing from the dashboard are host names. If you select the
+    Hostnames list, you'll notice that it is empty. The reason behind that lies in
+    the `node-exporter` service. Since it is running inside containers, it is oblivious
+    of the name of the underlying host.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We already commented that IPs from the `node-exporter` are not very valuable
+    since they represent addresses of network endpoints. What we truly need are either
+    "real" host IPs or host names. Since we cannot get the real IPs from Docker services,
+    the alternative is to use host names instead. However, the official `Node Exporter`
+    container does not provide that so we'll need to resort to an alternative.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We''ll change our `node-exporter` service with the image created by GitHub
+    user `bvis`. The project can be found in the `bvis/docker-node-exporter` ([https://github.com/bvis/docker-node-exporter](https://github.com/bvis/docker-node-exporter))
+    GitHub repository. Therefore, we''ll remove the `node-exporter` service and create
+    a new one based on the `basi/node-exporter` ([https://hub.docker.com/r/basi/node-exporter/](https://hub.docker.com/r/basi/node-exporter/))
+    image:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE45]'
+  prefs: []
+  type: TYPE_PRE
+- en: Apart from using a different image `basi/node-exporter`, we mounted the `/etc/hostname`
+    directory from which the container can retrieve the name of the underlying host.
+    We also added the environment variable `HOST_HOSTNAME` as well as a few additional
+    collectors.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We won't go into details of the command since it is similar to the one we used
+    previously. The meaning of the additional arguments can be found in the project's
+    `README` ([https://github.com/bvis/docker-node-exporter](https://github.com/bvis/docker-node-exporter))
+    file.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The important thing to note is that the new `node-exporter` service will include
+    the `hostname` together with the virtual IP created by Docker networking. We'll
+    be able to use that to establish the relation between the two.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Instead of creating the new service, we could have updated the one that was
+    running before. I decided against that so that you can see the complete command
+    in case you choose to use node metrics in your production cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Please go back to the Grafana dashboard that is already opened in your browser
+    and refresh the screen *Ctrl*+*R* or *Cmd*+*R*. You'll notice that some of the
+    graphs that were empty are now colorful with metrics coming from the new `node-exporter`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The Hostnames list holds all the nodes with their IPs on the left side and
+    their host names on the right. We can now select any combination of the hosts
+    and the CPU Usage by Node, Free Disk by Node, Available Memory by Node, and Disk
+    I/O by Node graphs will be updated accordingly, as shown in the following image:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/grafana-swarm-nodes-dashboard.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 9-8: Docker Swarm Grafana dashboard with node metrics'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Not only have we obtained part of the data required for the dashboard, but we
+    also established the relation between virtual IPs and host names. Now you will
+    be able to find out the relation between virtual IPs used in other dashboards
+    and `hostnames`. In particular, if you monitor Node Exporter dashboards and detect
+    a problem that should be fixed, you can go back to the Swarm dashboard and find
+    out the host that requires your attention.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The solution with host names is still not the best one but should be a decent
+    workaround *until issue 27307* ([https://github.com/docker/docker/issues/27307](https://github.com/docker/docker/issues/27307))
+    is fixed. The choice is yours. With the ability to relate virtual IPs with host
+    names, I chose to stick with Docker services instead resorting to non-Swarm solutions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The next thing that needs fixing are service groups.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you open the Service Group list, you'll notice that it is empty. The reason
+    behind that lies in the way the dashboard is configured. It expects that we distinguish
+    services through the container label `com.docker.stack.namespace`. Since we did
+    not specify any, the list contains only the All option.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Which groups should we have? The answer to that question varies from one use
+    case to another. With time, you'll define the groups that best fit your organization.
+    For now, we'll split our services into databases, backend, and infrastructure.
+    We'll put `go-demo-db` into the `db group`, `go-demo` into `backend`, and all
+    the rest into infra. Even though `elasticsearch` is a database, it is part of
+    our infrastructure services, so we'll treat it as such.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We can add labels to existing services. There is no need to remove them and
+    create new ones. Instead, we'll execute `docker service update` commands to add
+    `com.docker.stack.namespace` labels by leveraging the `--container-label-add`
+    argument.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The first service we''ll put into a group is `go-demo_db`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE46]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let''s confirm that the label was indeed added:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE47]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `--format` argument allowed us to avoid lengthy output and display only
+    what interests us.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The output of the `service inspect` command is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE48]'
+  prefs: []
+  type: TYPE_PRE
+- en: As you can see, the `com.docker.stack.namespace` label was added and holds the
+    value `db`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We should do the same with the `go-demo` service and put it to the `backend`
+    group:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE49]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The last group is `infra`. Since quite a few services should belong to it,
+    we''ll update them all with a single command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE50]'
+  prefs: []
+  type: TYPE_PRE
+- en: We iterated over the names of all the services and executed the `service update`
+    command for each.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Please note that the `service update` command reschedules replicas. That means
+    that the containers will be stopped and run again with new parameters. It might
+    take a while until all services are fully operational. Please list the services
+    with `docker service ls` and confirm that they are all running before proceeding.
+    Once all the replicas are up, we should go back to the Grafana dashboard and refresh
+    the screen (*Ctrl*+*R* or *cmd*+*R*).
+  prefs: []
+  type: TYPE_NORMAL
+- en: This time, when you open the Service Group list, you'll notice that the three
+    groups we created are now available. Go ahead, and select a group or two. You'll
+    see that the graphs related to services are changing accordingly.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We can also filter the result by `Service Name` and limit the metrics displayed
+    in some of the graphs to a selected set of services.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you scroll down towards the middle of the dashboard, you'll notice that network
+    graphs related to the `proxy` have too many services while those that exclude
+    `proxy` are empty. We can correct that through the Proxy selector. It allows us
+    to define which services should be treated as a `proxy`. Please open the list
+    and select `proxy`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/grafana-swarm-cpu-graph.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 9-10: Grafana dashboard with network traffic graphs'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The two network graphs related to a `proxy` are now limited to the `proxy` service
+    or, to be more concrete, the service we identified as such. The bottom now contains
+    metrics from all other services. Separating monitoring of the external and internal
+    traffic is useful. Through the proxy graphs, you can see the traffic coming from
+    and going to external sources while the other two are reserved for internal communication
+    between services.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s generate a bit of traffic and confirm that the change is reflected in
+    proxy graphs. We''ll generate a hundred requests:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE51]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If you go back to `proxy` network graphs, you should see a spike in traffic.
+    Please note that the dashboard refreshes data every minute. If the spike is still
+    not visible, you might need to wait, click the Refresh button located in the top-right
+    corner of the screen, or change the refresh frequency, refer the following image:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/grafana-swarm-network-dashboard.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 9-10: Grafana dashboard with network traffic graphs'
+  prefs: []
+  type: TYPE_NORMAL
+- en: We'll move on towards the next option in the dashboard menu and click the Errors
+    checkbox. This checkbox is connected to Elasticsearch. Since there are no logged
+    errors, the graphs stayed the same.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's generate a few errors and see how they visualize in the dashboard.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `go-demo` service has an API that will allow us to create random errors.
+    On average, one out of ten requests will produce an error. We''ll need them to
+    demonstrate one of the integrations between Prometheus metrics and data from Elasticsearch:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE52]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'A sample of the output should be as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE53]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If you go back to the dashboard, you''ll notice red lines representing the
+    point of time when the errors occurred. When such a thing happens, you can investigate
+    system metrics and try to deduce whether the errors were caused by some hardware
+    failure, saturated network, or some other reason. If all that fails, you should
+    go to your Kibana UI, browse through logs and try to deduce the cause from them.Refer
+    to the following image:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/grafana-swarm-errors-graphs.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 9-11: Grafana dashboard with network traffic graphs'
+  prefs: []
+  type: TYPE_NORMAL
+- en: It is important that your system does not report false positives as errors.
+    If you notice that there is an error reported through logs, but there's nothing
+    to do, it would be better to change the code, so that particular case is not treated
+    as an error. Otherwise, with false positives, you'll start seeing too many errors
+    and start ignoring them. As a result, when a real error occurs, the chances are
+    that you will not notice it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We'll skip the Alerts Fired and Alerts Resolved options since they are related
+    to *X-Pack* ([https://www.elastic.co/products/x-pack](https://www.elastic.co/products/x-pack)),
+    which is a commercial product. Since the book is aimed at open source solutions,
+    we'll skip it. That does not mean that you should not consider purchasing it.
+    Quite the contrary. Under certain circumstances, *X-Pack* is a valuable addition
+    to the tool set.
+  prefs: []
+  type: TYPE_NORMAL
+- en: That concludes our quick exploration of the Docker Swarm & Container Overview
+    dashboard options. The graphs themselves should be self-explanatory. Take a few
+    moments to explore them yourself.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Adjusting services through dashboard metrics
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Our services are not static. Swarm will reschedule them with each release, when
+    a replica fails, when a node becomes unhealthy, or as a result of a myriad of
+    other causes. We should do our best to provide Swarm as much information as we
+    can. The better we describe our desired service state, the better will Swarm do
+    its job.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We won't go into all the information we can provide through `docker service
+    create` and `docker service update` commands. Instead, we'll concentrate on the
+    `--reserve-memory` argument. Later on, you can apply similar logic to `--reserve-cpu`,
+    `--limit-cpu`, `--limit-memory`, and other arguments.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We'll observe the memory metrics in Grafana and update our services accordingly.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Please click on the Memory Usage per Container (Stacked) graph in Grafana and
+    choose View. You'll see a screen with a zoomed graph that displays the memory
+    consumption of the top twenty containers. Let's filter the metrics by selecting
+    prometheus from the Service Name list.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Prometheus uses approximately 175 MB of memory. Let''s add that information
+    to the service:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/grafana-swarm-memory-graph.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 9-12: Grafana graph with containers memory consumption filtered with
+    Prometheus service'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE54]'
+  prefs: []
+  type: TYPE_PRE
+- en: We updated the `prometheus` service by reserving `200m` of memory. We can assume
+    that its memory usage will increase with time, so we reserved a bit more than
+    what it currently needs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Please note that `--reserve-memory` does not truly reserve memory, but gives
+    a hint to Swarm how much we expect the service should use. With that information,
+    Swarm will make a better distribution of services inside the cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s confirm that Swarm rescheduled the service:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE55]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output of the `service ps` command is as follows (IDs and Error columns
+    are removed for brevity):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE56]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can also confirm that the `--reserve-memory` argument is indeed applied:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE57]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE58]'
+  prefs: []
+  type: TYPE_PRE
+- en: As you can observe from the `Resources` section, the service now has `200 MiB`
+    reserved. We should repeat a similar set of actions for `logstash`, `go-demo`,
+    `go-demo-db`, `elasticsearch`, and `proxy` services.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The results might be different on your laptop. In my case, the commands that
+    reserve memory based on Grafana metrics are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE59]'
+  prefs: []
+  type: TYPE_PRE
+- en: After each update, Swarm will reschedule containers that belong to the service.
+    As a result, it'll place them inside a cluster in such a way that none is saturated
+    with memory consumption. You should extend the process with CPU and other metrics
+    and repeat it periodically.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Please note that increasing memory and CPU limits and reservations is not always
+    the right thing to do. In quite a few cases, you might want to scale services
+    so that resource utilization is distributed among multiple replicas.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We used ready-to-go dashboards throughout this chapter. I think that they are
+    an excellent starting point and provide a good learning experience. With time,
+    you will discover what works best for your organization and probably start modifying
+    those dashboards or create new ones specifically tailored to your needs. Hopefully,
+    you will contribute them back to the community.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Please let me know if you create a dashboard that complements those we used
+    in this chapter or even replaces them. I'd be happy to feature them in the book.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Before we move on to the next chapter, let us discuss some of the monitoring
+    best practices.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Monitoring best practices
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: You might be tempted to put as much information in a dashboard as you can. There
+    are so many metrics, so why not visualize them? Right? Wrong! Too much data makes
+    important information hard to find. It makes us ignore what we see since too much
+    of it is noise.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What you really need is to have a quick glance of the central dashboard and
+    deduce in an instant whether there is anything that might require your attention.
+    If there is something to be fixed or adjusted, you can use more specialized Grafana
+    dashboards or ad-hoc queries in Prometheus to drill into details.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Create the central dashboard with just enough information to fit a screen and
+    provide a good overview of the system. Further on, create additional dashboards
+    with more details. They should be organized similar to how we organize code. There
+    is usually a main function that is an entry point towards more specific classes.
+    When we start coding, we tend to open the main function and drill down from it
+    until we reach a piece of code that will occupy our attention. Dashboards should
+    be similar. We start with a dashboard that provides critical and very generic
+    information. Such a dashboard should be our home and provide just enough metrics
+    to deduce whether there is a reason to go deeper into more specific dashboards.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A single dashboard should have no more than six graphs. That's usually just
+    the size that fits a single screen. You are not supposed to scroll up and down
+    to see all the graphs while in the central dashboard. Everything essential or
+    critical should be visible.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Each graph should be limited to no more than six plots. In many cases, more
+    than that only produces noise that is hard to decipher.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Do allow different teams to have different dashboards, especially those that
+    are considered as primary or main. Trying to create a dashboard that fits everyone's
+    needs is a bad practice. Each team has different priorities that should be fulfilled
+    with different metrics visualizations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Do the dashboards we used in this chapter fulfill those rules? They don''t.
+    They have too many graphs with too many plots. That begs the question: Why did
+    we use them? The answer is simple. I wanted to show you a quick and dirty way
+    to get a monitoring system up-and-running in no time. I also wanted to show you
+    as many different graphs as I could without overloading your brain. See for yourself
+    which graphs do not provide value and remove them. Keep those that are truly useful
+    and modify those that provide partial value. Create your own dashboards. See what
+    works best for you.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: What now?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Put the monitoring system into practice. Don't try to make it perfect from the
+    first attempt. You'll fail if you do. Iterate over dashboards. Start small, grow
+    with time. If you are a bigger organization, let each team create their own set
+    of dashboards and share what worked well, as well as what failed to provide enough
+    value.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Monitoring is not a simple thing to do unless you want to spend all your time
+    in front of a dashboard. The solution should be designed in such a way that you
+    need only a glance to discover whether a part of the system requires your attention.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now let us destroy everything we did. The next chapter will be a new subject
+    with a new set of challenges and solutions:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE60]'
+  prefs: []
+  type: TYPE_PRE

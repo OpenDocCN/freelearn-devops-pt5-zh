@@ -1,0 +1,1076 @@
+- en: Service Discovery inside a Swarm Cluster
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: It does not take much strength to do things, but it requires a great deal of
+    strength to decide what to do.
+  prefs: []
+  type: TYPE_NORMAL
+- en: -Elbert Hubbard
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you used the old Swarm, the one shipped as a standalone product before *Docker
+    1.12*, you were forced to set up a service registry alongside it. You might have
+    chosen Consul, etcd, or Zookeper. The standalone Swarm could not work without
+    one of them. Why is that? What was the reason for such a strong dependency?
+  prefs: []
+  type: TYPE_NORMAL
+- en: Before we discuss reasons behind using an external service registry with the
+    old Swarm, let's discuss how would Swarm behave without it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What would Docker Swarm look like without?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Let's say we have a cluster with three nodes. Two of them run **Swarm managers**,
+    and one is a worker. Managers accept our requests, decide what should be done,
+    and send tasks to **Swarm workers**. In turn, workers translate those tasks into
+    commands that are sent to the local **Docker Engine**. Managers act as workers
+    as well.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If we describe the flow we did earlier with the `go-demo` service, and imagine
+    there is no service discovery associated with Swarm, it would be as follows.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'A user sends a request to one of the managers. The request is not a declarative
+    instruction but an expression of the desired state. For example, I want to have
+    two instances of the `go-demo` service and one instance of the `DB` running inside
+    the cluster:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/swarm-without-service-registry-user.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 4-1: User sends a request to one of the managers'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Once **Swarm manager** receives our request for the desired state, it compares
+    it with the current state of the cluster, generates tasks, and sends them to **Swarm
+    workers**. The tasks might be to run an instance of the `go-demo` service on **node-1**
+    and **node-2**, and an instance of the `go-demo-db` service on **node-3**:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/swarm-without-service-registry-manager.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 4-2: Swarm manager compares the current state of the cluster with the
+    desired state, generates tasks, and sends them to Swarm workers.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Swarm workers** receive tasks from the managers, translate them into Docker
+    Engine commands, and send them to their local **Docker Engine** instances:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/swarm-without-service-registry-node.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 4-3: Swarm nodes translate received tasks to Docker Engine commands'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Docker Engine receives a command from the Swarm worker and executes it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/swarm-without-service-registry-engine.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 4-4: Docker Engine manages local containers.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Next, let''s say that we send a new desired state to the manager. For example,
+    we might want to scale the number of the **go-demo** instances to **node-3**.
+    We would send a request to the **Swarm manager** on **node-1**, it would consult
+    the cluster state it stored internally and make a decision to, for example, run
+    a new instance on **node-2**. Once the decision is made, the manager would create
+    a new task and send it to the **Swarm worker** on **node-2**. In turn, the worker
+    would translate the task into a Docker command, and send it to the local engine.
+    Once the command is executed, we would have the third instance of the **go-demo**
+    service running on **node-2**:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/swarm-without-service-registry-scale.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 4-5: A scale request is sent to the Swarm manager'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If the flow were as described, we would have quite a lot of problems that would
+    make such a solution almost useless.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's try to list some of the issues we would face.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A Docker manager uses the information we sent to it. That would work as long
+    as we always use the same manager and the state of the cluster does not change
+    due to factors outside the control of the manager. The important thing to understand
+    is that the information about the cluster is not stored in one place, nor it is
+    complete. Each manager knows only about the things it did. Why is that such a
+    problem?
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's explore a few alternative (but not uncommon) paths.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What would happen if we sent the request to scale to three instances to the
+    manager on **node-2**? That manager would be oblivious of the tasks created by
+    the manager in **node-1**. As a result, it would try to run three new instances
+    of the **go-demo** service resulting in five instances in total. We’d have two
+    instances created by the manager in **node-1** and three by the manager in **node-2**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It would be tempting always to use the same manager, but, in that case, we would
+    have a single point of failure. What would happen if the whole **node-1** fails?
+    We would have no managers available or would be forced to use the manager on **node-2**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Many other factors might produce such discrepancies. Maybe one of the containers
+    stopped unexpectedly. In such a case, when we decide to scale to three instances,
+    the manager on **node-1** would think that two instances are running and would
+    create a task to run one more. However, that would not result in three but two
+    instances running inside the cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The list of things that might go wrong is infinite, and we won't go into more
+    examples.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The important thing to note is that it is unacceptable for any single manager
+    to be stateful in isolation. Every manager needs to have the same information
+    as any other. On the other hand, every node needs to monitor events generated
+    by Docker Engine and make sure that any change to its server is propagated to
+    all managers. Finally, we need to oversee the state of each server in case one
+    of them fails. In other words, each manager needs to have an up-to-date picture
+    of the entire cluster. Only then it can translate our requests for the desired
+    state into tasks that will be dispatched to the Swarm nodes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: How can all the managers have a complete view of the whole cluster no matter
+    who made a change to it?
+  prefs: []
+  type: TYPE_NORMAL
+- en: The answer to that question depends on the requirements we set. We need a place
+    where all the information is stored. Such a place need to be distributed so that
+    the failure of one server does not affect the correct functioning of the tool.
+    Being distributed provides fault tolerance, but that, by itself, does not mean
+    data is synchronized across the cluster. The tool needs to maintain data replicated
+    across all the instances. Replication is not anything new except that, in this
+    case, it needs to be very fast so that the services that would consult it can
+    receive data in (near) real-time. Moreover, we need a system that will monitor
+    each server inside the cluster and update the data if anything changes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To summarize, we need a distributed service registry and a monitoring system
+    in place. The first requirement is best accomplished with one of the service registries
+    or key-value stores. The old Swarm (standalone version before Docker 1.12) supports
+    *Consul* ([https://www.consul.io/](https://www.consul.io/)), *etcd* ([https://github.com/coreos/etcd](https://github.com/coreos/etcd)),
+    and *Zookeeper* ([https://zookeeper.apache.org/](https://zookeeper.apache.org/)).
+    My preference is towards Consul, but any of the three should do.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For a more detailed discussion about service discovery and the comparison of
+    the major service registries, please consult the service discovery: The Key to
+    Distributed services chapter of *The DevOps 2.0 Toolkit*.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: What does standalone Docker Swarm look like with service discovery?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Now that we have a better understanding of the requirements and the reasons
+    behind the usage of service discovery, we can define the (real) flow of a request
+    to a Docker Swarm manager.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Please note that we are still exploring how the old (standalone) Swarm is working:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: A user sends a request with the desired state to one of the Swarm managers.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The Swarm manager gets the cluster information from the service registry, creates
+    a set of tasks, and dispatches them to Swarm workers.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Swarm workers translate the tasks into commands and send them to the local Docker
+    Engine which, in turn, runs or stops containers**.**
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Swarm workers continuously monitor Docker events and update the **service registry**.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'That way, information about the whole cluster is always up-to-date. The exception
+    is when one of the managers or workers fails. Since managers are monitoring each
+    other, the failure of a manager or a worker is considered a failure of the whole
+    node. After all, without a worker, containers cannot be scheduled on that node:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/swarm-standalone.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 4-6: Docker Swarm (standalone) flow'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we established that service discovery is an essential tool for managing
+    a cluster, the natural question is what happened to it in Swarm Mode (*Docker
+    1.12*)?
+  prefs: []
+  type: TYPE_NORMAL
+- en: Service discovery in the Swarm cluster
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The old (standalone) Swarm required a service registry so that all its managers
+    can have the same view of the cluster state. When instantiating the old Swarm
+    nodes, we had to specify the address of a service registry. However, if you take
+    a look at setup instructions of the new Swarm (Swarm Mode introduced in *Docker
+    1.12*), you'll notice that we did not set up anything beyond Docker Engines. You
+    will not find any mention of an external service registry or a key-value store.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Does that mean that Swarm does not need service discovery? Quite the contrary.
+    The need for service discovery is as strong as ever, and Docker decided to incorporate
+    it inside Docker Engine. It is bundled inside just as Swarm is. The internal process
+    is, essentially, still very similar to the one used by the standalone Swarm, only
+    with less moving parts. Docker Engine now acts as a Swarm manager, Swarm worker,
+    and service registry.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The decision to bundle everything inside the engine provoked a mixed response.
+    Some thought that such a decision creates too much coupling and increases Docker
+    Engine's level of instability. Others think that such a bundle makes the engine
+    more robust and opens the door to some new possibilities. While both sides have
+    valid arguments, I am more inclined towards the opinion of the latter group. Docker
+    Swarm Mode is a huge step forward, and it is questionable whether the same result
+    could be accomplished without bundling service registry inside the engine.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Knowing how Docker Swarm works, especially networking, the question that might
+    be on your mind is whether we need service discovery (beyond Swarms internal usage).
+    In *The DevOps 2.0 Toolkit*, I argued that service discovery is a must and urged
+    everyone to set up *Consul *([https://www.consul.io/](https://www.consul.io/))
+    or *etcd (*[https://gith](https://github.com/coreos/etcd)[ub.com/coreos/etcd](https://github.com/coreos/etcd))
+    as service registries, Registrator as a mechanism to register changes inside the
+    cluster, and Consul Template or confd ([https://github.com/kelseyhightower/confd](https://github.com/kelseyhightower/confd))
+    as a templating solution. Do we still need those tools?
+  prefs: []
+  type: TYPE_NORMAL
+- en: Do we need service discovery?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: It is hard to provide a general recommendation whether service discovery tools
+    are needed when working inside a Swarm cluster. If we look at the need to find
+    services as the main use case for those tools, the answer is usually no. We don't
+    need external service discovery for that. As long as all services that should
+    communicate with each other are inside the same network, all we need is the name
+    of the destination service. For example, for the go-demo ([https://github.com/vfarcic/go-demo](https://github.com/vfarcic/go-demo))
+    service to find the related database, it only needs to know its DNS `go-demo-db`.
+    The [Chapter 3](fc49e3b5-55fc-4ebe-8f43-9b15cdf924ba.xhtml), *Docker Swarm Networking
+    and Reverse Proxy*  proved that proper networking usage is enough for most use
+    cases.
+  prefs: []
+  type: TYPE_NORMAL
+- en: However, finding services and load balancing requests among them is not the
+    only reason for service discovery. We might have other uses for service registries
+    or key-value stores. We might need to store some information such that it is distributed
+    and fault tolerant.
+  prefs: []
+  type: TYPE_NORMAL
+- en: An example of the need for a key-value store can be seen inside the *Docker
+    Flow Proxy* ([https://github.com/vfarcic/docker-flow-p](https://github.com/vfarcic/docker-flow-proxy)[roxy](https://github.com/vfarcic/docker-flow-proxy))
+    project. It is based on HAProxy which is a stateful service. It loads the information
+    from a configuration file into memory. Having stateful services inside a dynamic
+    cluster represents a challenge that needs to be solved. Otherwise, we might lose
+    state when a service is scaled, rescheduled after a failure, and so on.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Before we go into more details and problems related with stateful services,
+    let's see how we could set up Consul as our key-value store of choice and go through
+    its basic features.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Setting up Consul as service registry inside a Swarm cluster
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: As before, we'll start by setting up a Swarm cluster. From there on, we'll proceed
+    with the Consul setup and a quick overview of the basic operations we can do with
+    it. That will give us the knowledge necessary for the rest of this chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**A note to The DevOps 2.0 Toolkit readers**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: You might be tempted to skip this sub-chapter since you already learned how
+    to set up Consul. I recommend you read on. We'll use the official Consul image
+    that was not available at the time I wrote the previous book. At the same time,
+    I promise to keep this sub-chapter as brief as possible without confusing the
+    new readers too much.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Practice makes perfect, but there is a limit after which there is no reason
+    to repeat the same commands over and over. I'm sure that, by now, you got tired
+    of writing the commands that create a Swarm cluster. So, I prepared the `scripts/dm-swarm.sh` ([https://github.com/vfarcic/cloud-provisioning/blob/master/scripts/dm-swarm.sh](https://github.com/vfarcic/cloud-provisioning/blob/master/scripts/dm-swarm.sh))
+    script that will create Docker Machine nodes and join them into a Swarm cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: All the commands from this chapter are available in the `04-service-discovery.sh` ([https://gist.github.com/vfarcic/fa57e88faf09651c9a7e9e46c8950ef5](https://gist.github.com/vfarcic/fa57e88faf09651c9a7e9e46c8950ef5))
+    Gist.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s clone the code and run the script:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Some of the files will be shared between the host file system and Docker Machines
+    we'll create soon. Docker Machine makes the whole directory that belongs to the
+    current user available inside the VM. Therefore, please make sure that the code
+    is cloned inside one of the user's sub-folders.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output of the `node ls` command is as follows (IDs are removed for brevity):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: Please note that this time there was a slight change in the commands. We used
+    the `manager` token so that all three nodes are set up as managers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As a general rule, we should have a least three Swarm managers. That way, if
+    one of them fails, the others will reschedule the failed containers and can be
+    used as our access points to the system. As is often the case with solutions that
+    require a quorum, an odd number is usually the best. Hence, we have three.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You might be tempted to run all nodes as managers. I advise you against that.
+    Managers synchronize data between themselves. The more manager instances are running,
+    the more time the synchronization might last. While that is not even noticeable
+    when there are only a few, if, for example, you'd run a hundred managers there
+    would be some lag. After all, that's why we have workers. Managers are our entry
+    points to the system and coordinators of the tasks, while workers do the actual
+    work.
+  prefs: []
+  type: TYPE_NORMAL
+- en: With that out of the way, we can proceed and set up Consul.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We'll start by downloading the `docker-compose.yml` ([https://github.com/vfarcic/docker-flow-proxy/blob/master/docker-compose.yml](https://github.com/vfarcic/docker-flow-proxy/blob/master/docker-compose.yml))
+    file from the *Docker Flow Proxy* ([https://github.com/vfarcic/docker-flow-proxy](https://github.com/vfarcic/docker-flow-proxy))
+    project. It already contains Consul defined as Compose services.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: Just as Docker Swarm node can act as a manager or a worker, Consul can be run
+    as a server or an agent. We'll start with the server.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The Compose definition of the Consul service that acts as a server is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: The important thing to note is that we set up the network mode as `host`. That
+    means that the container will share the same network as the host it is running
+    on. This is followed by an environment variable and the command.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The command will run the agent in server mode and, initially, it expects to
+    be the only one in the cluster `-bootstrap-expect=1`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You'll notice the usage of the `DOCKER_IP` environment variable. Consul expects
+    the information about the binding and the client address. Since we don't know
+    the IP of the servers in advance, it had to be a variable.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'At this moment you might be wondering why are we talking about Docker Compose
+    services inside a Swarm cluster. Shouldn''t we run `docker service create` command?
+    The truth is, at the time of this writing, the official consul image is still
+    not adapted to the "Swarm way" of running things. Most images do not require any
+    changes before launching them inside a Swarm cluster. Consul is one of the very
+    few exceptions. I will do my best to update the instructions as soon as the situation
+    changes. Until then, the good old Compose should do:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'You''ll notice `WARNING: The Docker Engine you''re using is running in swarm
+    mode` message in the output. It is only a friendly reminder that we are not running
+    this as Docker service. Feel free to ignore it.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we have a Consul instance running, we can go through the basic operations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We can, for example, put some information into the key-value store:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `curl` command put this is a test value as the `msg1` key inside Consul.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We can confirm that the key-value combination is indeed stored by sending a
+    `GET` request:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows (formatted for readability):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'You''ll notice that the value is encoded. If we add the `raw` parameter to
+    the request, Consul will return only the value in its raw format:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: Right now, we have only one Consul instance. If the node it is running in fails
+    `swarm-1`, all the data will be lost and service registry will be unavailable.
+    That's not a good situation to be in.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We can create fault tolerance by running a few more Consul instances. This time,
+    we'll run agents.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Just as the Consul server instance, the agent is also defined in the `docker-compose.yml` ([https://github.com/vfarcic/docker-flow-proxy/blob/master/docker-compose.yml](https://github.com/vfarcic/docker-flow-proxy/blob/master/docker-compose.yml))
+    file in the *Docker Flow Proxy* ([https://github.com/vfarc](https://github.com/vfarcic/docker-flow-proxy)[ic/docker-flow-proxy](https://github.com/vfarcic/docker-flow-proxy))
+    project. Remember, we downloaded it with the name `docker-compose-proxy.yml`.
+    Let''s take a look at the service definition:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The part of the output that defines the `Consul-agent` service is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: It is almost the same as the definition we used to run the Consul server instance.
+    The only important difference is that the `-server` is missing and that we have
+    the `-retry-join` argument. We're using the latter to specify the address of another
+    instance. Consul uses the gossip protocol. As long as every instance is aware
+    of at least one other instance, the protocol will propagate the information across
+    all of them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s run agents on the other two nodes `swarm-2` and `swarm-3`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now that we have three Consul instances running inside the cluster (one on each
+    node), we can confirm that gossip indeed works.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s request the value of the `msg1` key. This time, we''ll request it from
+    the Consul instance running on `swarm-2`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: As you can see from the output, even though we put the information to the instance
+    running on `swarm-1`, it is available from the instance in `swarm-2`. The information
+    is propagated through all the instances.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We can give the gossip protocol one more round of testing:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: We sent one `PUT` request to the instance running in `swarm-2` and another to
+    the instance in `swarm-3`. When we requested all the keys from the instance running
+    in `swarm-1`, all three were returned. In other words, no matter what we do with
+    data, it is always in sync in all of the instances.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Similarly, we can delete information:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: We sent the request to the `swarm-2` to delete all keys. When we queried the
+    instance running in `swarm-3`, we got an empty response meaning that everything
+    is, indeed, gone.
+  prefs: []
+  type: TYPE_NORMAL
+- en: With a setup similar to the one we explored, we can have a reliable, distributed,
+    and fault-tolerant way for storing and retrieving any information our services
+    might need.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We'll use this knowledge to explore a possible solution for some of the problems
+    that might arise when running stateful services inside a Swarm cluster. But before
+    we start discussing the solution, let's see what the problem is with stateful
+    services.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Problems when scaling stateful instances
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Scaling services inside a Swarm cluster is easy, isn't it? Just execute `docker
+    service scale <SERVICE_NAME>=<NUMBER_OF_INSTANCES>` and, all of a sudden, the
+    service is running multiple copies.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The previous statement is only partly true. The more precise wording would be
+    that "scaling stateless services inside a Swarm cluster is easy".
+  prefs: []
+  type: TYPE_NORMAL
+- en: The reason that scaling stateless services is easy lies in the fact that there
+    is no state to think about. An instance is the same no matter how long it runs.
+    There is no difference between a new instance and one that run for a week. Since
+    the state does not change over time, we can create new copies at any given moment,
+    and they will all be exactly the same.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'However, the world is not stateless. State is an unavoidable part of our industry.
+    As soon as the first piece of information is created, it needs to be stored somewhere.
+    The place we store data must be stateful. It has a state that changes over time.
+    If we want to scale such a stateful service, there are at least two things we
+    need to consider:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: How do we propagate a change of state of one instance to the rest of the instances?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: How do we create a copy (a new instance) of a stateful service, and make sure
+    that the state is copied as well?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: We usually combine stateless and stateful services into one logical entity.
+    A back-end service could be stateless and rely on a database service as an external
+    data storage. That way, there is a clear separation of concerns and a different
+    lifecycle of each of those services.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Before we proceed, I must state that there is no silver bullet that makes stateful
+    services scalable and fault-tolerant. Throughout the book, I will go through a
+    couple of examples that might, or might not, apply to your use case. An obvious,
+    and very typical example of a stateful service is a database. While there are
+    some common patterns, almost every database provides a different mechanism for
+    data replication. That, in itself, is enough to prevent us from having a definitive
+    answer that would apply to all. We'll explore scalability of a MongoDB later on
+    in the book. We'll also see an example with Jenkins that uses a file system for
+    its state.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The first case we'll tackle will be of a different type. We'll discuss scalability
+    of a service that has its state stored in a configuration file. To make things
+    more complicated, the configuration is dynamic. It changes over time, throughout
+    the lifetime of the service. We'll explore ways to make HAProxy scalable.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If we use the official *HAProxy* ([https://hub.doc](https://hub.docker.com/_/haproxy/)[ker.com/_/haproxy/](https://hub.docker.com/_/haproxy/))
+    image, one of the challenges we would face is deciding how to update the state
+    of all the instances. We'd have to change the configuration and reload each copy
+    of the `proxy`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We can, for example, mount an NFS volume on each node in the cluster and make
+    sure that the same host volume is mounted inside all HAProxy containers. At first,
+    it might seem that that would solve the problem with the state since all instances
+    would share the same configuration file. Any change to the config on the host
+    would be available inside all the instances we would have. However, that, in itself,
+    would not change the state of the service.
+  prefs: []
+  type: TYPE_NORMAL
+- en: HAProxy loads the configuration file during initialization, and it is oblivious
+    to any changes we might make to the configuration afterward. For the change of
+    the state of the file to be reflected in the state of the service, we'd need to
+    reload it. The problem is that instances can run on any of the nodes inside the
+    cluster. On top of that, if we adopt dynamic scaling (more on that later on),
+    we might not even know how many instances are running. So we'd need to discover
+    how many instances we have, find out on which nodes they are running, get IDs
+    of each of the containers, and, only then, send a signal to reload the `proxy`.
+    While all this can be scripted, it is far from an optimum solution. Moreover,
+    mounting an NFS volume is a single point of failure. If the server that hosts
+    the volume fails, data is lost. Sure, we can create backups, but they would only
+    provide a way to restore lost data partially. That is, we can restore a backup,
+    but the data generated between the moment the last backup was created, and the
+    node failure would be lost.
+  prefs: []
+  type: TYPE_NORMAL
+- en: An alternative would be to embed the configuration into HAProxy images. We could
+    create a new Dockerfile that would be based on `haproxy` and add the `COPY` instruction
+    that would add the configuration. That would mean that every time we want to reconfigure
+    the proxy, we'd need to change the config, build a new set of images (a new release),
+    and update the `proxy` service currently running inside the cluster. As you can
+    imagine, this is also not practical. It's too big of a process for a simple proxy
+    reconfiguration.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Docker Flow Proxy* uses a different, less conventional, approach to the problem.
+    It stores a replica of its state in Consul. It also uses an undocumented Swarm
+    networking feature (at least at the time of this writing).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using service registry to store the state
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Now that we have Consul instances set up let us explore how to exploit them
+    to our own benefit. We'll study the design of the *Docker Flow Proxy* as a way
+    to demonstrate some of the challenges and solutions you might want to apply to
+    your own services.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let us create the `proxy` network and the service:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: The command we used to create the **proxy** service is slightly different than
+    before. Namely, now we have the `CONSUL_ADDRESS` variable with the comma separated
+    addresses of all three **Consul** instances. The **proxy** is made in a way that
+    it will try the first address. If it does not respond, it will try the next one,
+    and so on. That way, as long as at least one **Consul** instance is running, the
+    **proxy** will be able to fetch and put data. We would not need to do this loop
+    if **Consul** would run as a Swarm service. In that case, all we'd need to do
+    is put both inside the same network and use the service name as the address.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Unfortunately, **Consul** cannot, yet, run as a Swarm service, so we are forced
+    to specify all addresses, refer to the following diagram:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/proxy-scaled-service-view.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 4-7: The proxy scaled to three instances'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Before we proceed, we should make sure that all instances of the `proxy` are
+    running:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: Please wait until the current state of all the instances is set to `Running`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s create the `go-demo` service. It will act as a catalyst for a discussion
+    around challenges we might face with a scaled reverse `proxy`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: There's no reason to explain the commands in detail. They are the same as those
+    we've run in the previous chapters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Please wait until the current state of the `go-demo` service is Running. Feel
+    free to use `docker service ps go-demo` command to check the status.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If we would repeat the same process we used in the [Chapter 3](fc49e3b5-55fc-4ebe-8f43-9b15cdf924ba.xhtml), *Docker
+    Swarm Networking and Reverse Proxy* the request to reconfigure the proxy would
+    be as follows (please do not run it).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: We would send a reconfigure request to the `proxy` service. Can you guess what
+    would be the result?
+  prefs: []
+  type: TYPE_NORMAL
+- en: A user sends a request to reconfigure the **proxy**. The request is picked by
+    the routing mesh and load balanced across all the instances of the **proxy**.
+    The request is forwarded to one of the instances. Since the **proxy** is using
+    **Consul** to store its configuration, it sends the info to one of the **Consul**
+    instances which, in turn, synchronizes the data across all others.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'As a result, we have **proxy** instances with different states. The one that
+    received the request is reconfigured to use the `go-demo` service. The other two
+    are, still, oblivious to it. If we try to ping the `go-demo` service through the
+    **proxy**, we will get mixed responses. One out of three times, the response would
+    be status `200`. The rest of the time, we would get `404`, not found:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/proxy-scaled-service-view-without-distribute.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 4-8: A request to reconfigure the proxy'
+  prefs: []
+  type: TYPE_NORMAL
+- en: We would experience a similar result if we scale MongoDB. The **routing mesh**
+    would load balance across all instances, and their states would start to diverge.
+    We could solve the problem with MongoDB by using replica sets. That's the mechanism
+    that allows us to replicate data across all `DB` instances. However, HAProxy does
+    not have such a feature. So, I had to add it myself.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The correct request to reconfigure the proxy running multiple instances is
+    as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Please note the new parameter `distribute=true`. When specified, the **proxy**
+    will accept the request, reconfigure itself, and resend the request to all other
+    instances:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/proxy-scaled-service-view-distribute-1.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 4-9: The proxy instance that received the request and resent it to all
+    others'
+  prefs: []
+  type: TYPE_NORMAL
+- en: That way, the **proxy** implements a mechanism similar to replica sets in MongoDB.
+    A change to one of the instances is propagated to all others.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let us confirm that it indeed works as expected:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: The response is `200` meaning that the `go-demo` service received the request
+    forwarded by the `proxy` service. Since the routing mesh is in play, the request
+    entered the system, was load balanced and resent to one of the proxy instances.
+    The proxy instance that received the request evaluated the path and decided that
+    it should go to the `go-demo` service. As a result, the request is resent to the
+    `go-demo` network, load balanced again and forwarded to one of the `go-demo` instances.
+    In other words, any of the `proxy` and `go-demo` instances could have received
+    the request. If the proxy state was not synchronized across all the instances,
+    two out of three requests would fail.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Feel free to repeat the `curl -i $(docker-machine ip swarm-1)/demo/hello` command.
+    The result should always be the same.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We can double check that the configuration is indeed synchronized by taking
+    a peek into one of the containers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's take a look at, let's say, proxy instance number three.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The first thing we should do is find out the node the instance is running in:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: We listed all `proxy` service processes `docker service ps proxy`, filtered
+    the result with the third instance `grep "proxy.3"`, and returned the name of
+    the node stored in the fourth column of the output `awk '{print $4}'`. The result
+    was stored in the environment variable `NODE`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now that we know the server this instance is running in, we can enter the container
+    and display the contents of the configuration file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: We changed the Docker client to point to the node. That was followed with the
+    command that lists all running processes `docker ps`, filters out the third instance
+    `grep "proxy.3"`, and outputs the container ID stored in the first column `awk
+    '{print $1}'`. The result was stored in the environment variable ID.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'With the client pointing to the correct node and the ID stored as the environment
+    variable ID, we can, finally, enter the container and display the configuration:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The relevant part of the output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: As you can see, the third instance of the `proxy` is indeed configured correctly
+    with the `go-demo` service. Feel free to repeat the process with the other two
+    instances. The result should be exactly the same proving that synchronization
+    works.
+  prefs: []
+  type: TYPE_NORMAL
+- en: How was it done? How did the `proxy` instance that received the request discover
+    the IPs of all the other instances? After all, there is no Registrator that would
+    provide the IPs to Consul, and we cannot access Swarms internal service discovery
+    API.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Discovering addresses of all instances that form a service
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: If you browse through the official Docker documentation, you will not find any
+    reference to addresses of individual instances that form a service.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The previous sentence might not be true at the time you're reading this. Someone
+    might have updated the documentation. However, at the time I'm writing this chapter,
+    there is not a trace of such information.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The fact that something is not documented does not mean that it does not exist.
+    Indeed, there is a special DNS that will return all IPs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To see it in action, we''ll create the global service called util and attach
+    it to the `proxy` network:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: Before proceeding, please wait until the current state is set to running.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Next, we''ll find the ID of one of the util instances and install drill that
+    will show us the information related to DNS entries:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let''s start by drilling the DNS proxy:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: As you can see, even though we are running three instances of the service, only
+    one IP is returned `10.0.0.2`. That is the IP of the service, not an individual
+    instance. To be more concrete, it is the IP of the `proxy` service network end-point.
+    When a request reaches that end-point, Docker network performs load balancing
+    across all the instances.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In most cases, we do not need anything else. All we have to know is the name
+    of the service and Docker will do the rest of the work for us. However, in a few
+    cases, we might need more. We might need to know the IPs of every single instance
+    of a service. That is the problem *Docker Flow Proxy* faced.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To find the IPs of all the instances of a service we can use the "undocumented"
+    feature. We need to add the tasks prefix to the service name.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s drill again:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This time, the output is different:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: We got three answers, each with a different IP `10.0.0.4, 10.0.0.3, 10.0.0.5`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Knowing the IPs of all the instances solved the problem of having to synchronize
+    data. With tasks.`<SERVICE_NAME>` we have all the info we need. The rest is only
+    a bit of coding that will utilize those IPs. It is a similar mechanism used when
+    synchronizing databases (more on that later).
+  prefs: []
+  type: TYPE_NORMAL
+- en: We are not done yet. The fact that we can synchronize data on demand (or events)
+    does not mean that the service is fault tolerant. What should we do if we need
+    to create a new instance? What happens if an instance fails and Swarm reschedules
+    it somewhere else?
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using service registry or key value store to store service state
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We'll continue using *Docker Flow Proxy* as a playground to explore some of
+    the mechanisms and decisions we might make when dealing with stateful services.
+    Please note that, in this chapter, we are concentrating on services with a relatively
+    small state. We'll explore other use cases in the chapters that follow.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Imagine that the proxy does not use Consul to store data and that we do not
+    use volumes. What would happen if we were to scale it up? The new instances would
+    be out of sync. Their state would be the same as the initial state of the first
+    instance we created. In other words, there would be no state, even though the
+    instances that are already running changed over time and generated data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: That is where Consul comes into play. Every time an instance of the proxy receives
+    a request that results in the change of its state, it propagates that change to
+    other instances, as well as to Consul. On the other hand, the first action the
+    proxy performs when initialized is to consult Consul, and create the configuration
+    from its data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We can observe the state stored in Consul by sending a request for all the
+    data with keys starting with `docker-flow`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'A part of the output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: The preceding example shows that the path and the port we specified when we
+    reconfigured the proxy for the `go-demo` service, is stored in Consul. If we instruct
+    Swarm manager to scale the `proxy` service, new instances will be created. Those
+    instances will query Consul and use the information to generate their configurations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s give it a try:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: We increased the number of instances from three to six.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s take a sneak peek into the instance number six:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'A part of the output of the `exec` command is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: As you can see, the new instance recuperated all the information from Consul.
+    As a result, its state became the same as the state of any other `proxy` instance
+    running inside the cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If we destroy an instance, the result will, again, be the same. Swarm will
+    detect that an instance crashed and schedule a new one. The new instance will
+    repeat the same process of querying Consul and create the same state as the other
+    instances:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE38]'
+  prefs: []
+  type: TYPE_PRE
+- en: We should wait for a few moments until Swarm detects the failure and creates
+    a new instance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Once it''s running, we can take a look at the configuration of the new instance.
+    It will be the same as before:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE39]'
+  prefs: []
+  type: TYPE_PRE
+- en: The explanation of *Docker Flow Proxy* inner workings is mostly for educational
+    purposes. I wanted to show you one of the possible solutions when dealing with
+    stateful services. The methods we discussed are applicable only when the state
+    is relatively small. When it is bigger, as is the case with databases, we should
+    employ different mechanisms to accomplish the same goals.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If we go one level higher, the primary requirements, or prerequisites, when
+    running stateful services inside a cluster are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Ability to synchronize the state across all instances of the service.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Ability to recuperate the state during initialization.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: If we manage to fulfill those two requirements, we are on the right path towards
+    solving one of the major bottlenecks when operating stateful services inside the
+    cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What now?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: That concludes the exploration of basic concepts behind the usage of service
+    discovery inside a Swarm cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Are we done learning about Swarm features? We are far from knowing everything
+    there is to know about Docker Swarm. However, at this point, we have enough knowledge
+    to go back to the end of [Chapter 1](44df5a4c-1e47-4de0-9442-660034287e66.xhtml), *Continuous
+    Integration with Docker Containers* and make the next logical step. We can design
+    a Continuous Delivery flow.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now is the time to take a break before diving into the next chapter. As before,
+    we''ll destroy the machines we created and start fresh:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE40]'
+  prefs: []
+  type: TYPE_PRE

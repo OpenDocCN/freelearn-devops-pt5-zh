@@ -1,0 +1,1342 @@
+- en: Securing Kubernetes Clusters
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Security implementation is a game between a team with a total lock-down strategy
+    and a team that plans to win by providing complete freedom to everyone. You can
+    think of it as a battle between anarchists and totalitarians. The only way the
+    game can be won is if both blend into something new. The only viable strategy
+    is freedom without sacrificing security (too much).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Right now, our cluster is as secured as it can get. There is only one user (you).
+    No one else can operate it. The others cannot even list the Pods in the cluster.
+    You are the judge, the jury, and the executioner. You are the undisputed king
+    with god-like powers that are not shared with anyone else.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The I-and-only-I-can-do-things strategy works well when simulating a cluster
+    on a laptop. It serves the purpose when the only goal is to learn alone. The moment
+    we create a "real" cluster where the whole company will collaborate (in some form
+    or another), we'll need to define (and apply) an authentication and authorization
+    strategy. If your business is small and there are only a few people who will ever
+    operate the cluster, giving everyone the same cluster-wide administrative set
+    of permissions is a simple and legitimate solution. More often than not, this
+    will not be the case.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Your company probably has people with different levels of trust. Even if that's
+    not the case, different people will require different levels of access. Some will
+    be allowed to do anything they want, while others will not have any type of access.
+    Most will be able to do something in between. We might choose to give everyone
+    a separate Namespace and forbid them from accessing others. Some might be able
+    to operate a production Namespace while others might have interest only in the
+    one assigned for development and testing. The number of permutations we can apply
+    is infinite. Still, one thing is certain. We will need to create an authentication
+    and authorization mechanism. Most likely, we'll need to create permissions that
+    are sometimes applied cluster-wide and, in other cases, limited to Namespaces.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Those and many other policies can be created by employing Kubernetes authorization
+    and authentication.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Accessing Kubernetes API
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Every interaction with Kubernetes goes through its API and needs to be authorized.
+    That communication can be initiated through a user or a service account. All Kubernetes
+    objects currently running inside our cluster are interacting with the API through
+    service accounts. We won't go deep into those. Instead, we'll concentrate on the
+    authorization of human users.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Typically, the Kubernetes API is served on a secured port. Our Minikube cluster
+    is no exception. We can check the port from the `kubectl` config.
+  prefs: []
+  type: TYPE_NORMAL
+- en: All the commands from this chapter are available in the [`12-auth.sh`](https://gist.github.com/f2c4a72a1e010f1237eea7283a9a0c11)
+    ([https://gist.github.com/vfarcic/f2c4a72a1e010f1237eea7283a9a0c11](https://gist.github.com/vfarcic/f2c4a72a1e010f1237eea7283a9a0c11))
+    Gist.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: We used `jsonpath` to output the `cluster.server` entry located in the cluster
+    with the name `minikube`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: We can see that `kubectl` accesses the Minikube Kubernetes API on the port `8443`.
+    Since the access is secured, it requires certificates which are stored as the
+    `certificate-authority` entry. Let's take a look.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `ca.crt` certificate was created with the Minikube cluster and, currently,
+    provides the only way we can access the API.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If this was a "real" cluster, we'd need to enable access for other users as
+    well. We could send them the certificate we already have, but that would be very
+    insecure and would lead to a lot of potential problems. Soon, we'll explore how
+    to enable other users to access the cluster securely. For now, we'll focus on
+    the exploration of the process Kubernetes uses to authorize requests to its API.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Each request to the API goes through three stages. It needs to be authenticated,
+    it needs to be authorized, and it needs to pass the admission control.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The authentication process is retrieving the username from the HTTP request.
+    If the request cannot be authenticated, the operation is aborted with the status
+    code 401.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Once the user is authenticated, the authorization validates whether it is allowed
+    to execute the specified action. The authorization can be performed through ABAC,
+    RBAC, or Webhook modes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finally, once a request is authorized, it passes through admission controllers.
+    They intercept requests to the API before the objects are persisted and can modify
+    them. They are advanced topics that we won't cover in this chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Authentication is pretty standard, and there's not much to say about it. On
+    the other hand, admission controllers are too advanced to be covered just yet.
+    Therefore, we're left with authorization as the topic we'll explore in more detail.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Authorizing requests
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Just like almost everything else in Kubernetes, authorization is modular. We
+    can choose to use *Node*, *ABAC*, *Webhook*, or *RBAC* authorization. Node authorization
+    is used for particular purposes. It grants permissions to kubelets based on the
+    Pods they are scheduled to run. **Attribute-based access control** (**ABAC**)
+    is based on attributes combined with policies and is considered deprecated in
+    favor of RBAC. Webhooks are used for event notifications through HTTP POST requests.
+    Finally, **Role-based access control** (**RBAC**) grants (or denies) access to
+    resources based on roles of individual users or groups.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Among the four authorization methods, RBAC is the right choice for user-based
+    authorization. Since we'll focus this chapter on the exploration of the means
+    to authorize humans, RBAC will be our primary focus.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What can we do with RBAC? To begin with, we can use it to secure the cluster
+    by allowing access only to authorized users. We can define roles that would grant
+    different levels of access to users and groups. Some could have god-like permissions
+    that would allow them to do almost anything, while others could be limited only
+    to basic non-destructive operations. There can be many other roles in between.
+    We can combine RBAC with Namespaces and allow users to operate only within specific
+    segments of a cluster. There are many other combinations we could apply depending
+    on particular use-cases.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Since I get uncomfortable with too much theory, we'll leave the rest for later
+    and explore details through a few examples. As you might already suspect, we'll
+    kick it off with a new Minikube cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Creating a Cluster
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The commands that will create a Minikube cluster are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: RBAC is installed by default starting from minikube v0.26\. If your version
+    is older than that, you'll need to add `--extra-config apiserver.Authorization.Mode=RBAC`
+    argument. Or, better yet, upgrade your minikube binary.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It might come in handy to have a few objects in the cluster so we'll deploy
+    the `go-demo-2` application. We'll use it to test different permutations of the
+    authorization strategies we'll use soon.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The definition of the `go-demo-2` application is the same as the one we created
+    in the previous chapters so we''ll skip the explanation and just execute `kubectl
+    create`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: Creating users
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The word about Kubernetes awesomeness is spreading in your company. People are
+    becoming curious and would like to try it out. Since you are the Kubernetes guru,
+    it came as no surprise that you received a call from John Doe. He wants to "play"
+    with Kubernetes, but he does not have time to set up his own cluster. Since he
+    knows that you already have a cluster up and running, he'd appreciate if you would
+    let him use yours.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Since you have no intention giving John your certificates, you decide to let
+    him authenticate with his user.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You will have to create certificates for him, so the first step you'll need
+    to do is to verify that OpenSSL is installed on your laptop.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'It shouldn''t matter which version of OpenSSL is installed. We output the `version`
+    only to verify that the software is working. If the output is something like `command
+    not found: openssl`, you will have to install the binaries ([https://wiki.openssl.org/index.php/Binaries](https://wiki.openssl.org/index.php/Binaries)).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The first thing we'll do is to create a private key for John. We'll assume that
+    John Doe's username is `jdoe`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: We created the directory `keys` and generated a private key `jdoe.key`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Next, we''ll use the private key to generate a certificate:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: A note to Windows users
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you received an error like `Subject does not start with '/'. Problems making
+    Certificate Request`, please replace `-subj "/CN=jdoe/O=devs"` with `-subj "//CN=jdoe\O=devs"`
+    in the previous command and execute it again.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We created the certificate `jdoe.csr` with a specific subject that will help
+    us identify John. `CN` is the username and `O` represents the organization he
+    belongs. John is a developer, so `devs` should do.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For the final certificate, we'll need the cluster's **certificate authority**
+    (**CA**). It will be responsible for approving the request and for generating
+    the necessary certificate John will use to access the cluster. Since we used Minikube,
+    the authority is already produced for us as part of the cluster creation. It should
+    be in the `.minikube` directory inside the OS user's home folder. Let's confirm
+    it's there.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: Minikube's directory might be somewhere else. If that's the case, please replace
+    `~/.minikube` with the correct path.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now we can generate the final certificate by approving the certificate sign
+    request `jdoe.csr`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: Since we feel generous, we made the certificate `jdoe.crt` valid for a whole
+    year (365 days).
+  prefs: []
+  type: TYPE_NORMAL
+- en: To simplify the process, we'll copy the cluster's certificate authority to the
+    `keys` directory.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let''s check what we generated:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: John does not need the `jdoe.csr` file. We used it only to generate the final
+    certificate `jdoe.crt`. He will need all the others though.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Apart from the keys, John will need to know the address of the cluster. At the
+    beginning of the chapter, we already created the `jsonpath` that retrieves the
+    server so that part should be easy.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: Equipped with the new certificate, the key, the cluster authority, and the address
+    of the server, John can configure his `kubectl` installation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Since John is not around, we'll do some role playing and impersonate him.
+  prefs: []
+  type: TYPE_NORMAL
+- en: John will first have to set the cluster using the address and the certificate
+    authority we sent him.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: We created a new cluster called `jdoe`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next, he'll have to set the credentials using the certificate and the key we
+    created for him.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: We created a new set of credentials called `jdoe`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Finally, John will have to create a new context:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: We created the context `jdoe` that uses the newly created cluster and the user.
+    We also made sure that we're using the newly created context.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s take a look at the config:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output, limited to John''s settings, is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: John should be happy thinking that he can access our cluster. Since he's a curious
+    person, he'll want to see the Pods we're running.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: That's frustrating. John can reach our cluster, but he cannot retrieve the list
+    of Pods. Since hope dies last, John might check whether he is forbidden from seeing
+    other types of objects.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: The output is a long list of all the objects he's forbidden from seeing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: John picks up his phone to beg not only that you give him the access to the
+    cluster, but also the permissions to "play" with it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Before we change John's permission, we should explore the components involved
+    in the RBAC authorization process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Exploring RBAC authorization
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Managing Kubernetes RBAC requires knowledge of a few elements. Specifically,
+    we should learn about Rules, Roles, Subjects, and RoleBindings.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A *Rule* is a set of operations (verbs), resources, and API groups. Verbs describe
+    activities that can be performed on resources which belong to different API Groups.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Permissions defined through Rules are additive. We cannot deny access to some
+    resources.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Currently supported verbs are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| **Verb** | **Description** |'
+  prefs: []
+  type: TYPE_TB
+- en: '| get | Retrieves information about a specific object |'
+  prefs: []
+  type: TYPE_TB
+- en: '| list | Retrieves information about a collection of objects |'
+  prefs: []
+  type: TYPE_TB
+- en: '| create | Creates a specific object |'
+  prefs: []
+  type: TYPE_TB
+- en: '| update | Updates a specific object |'
+  prefs: []
+  type: TYPE_TB
+- en: '| patch | Patches a specific object |'
+  prefs: []
+  type: TYPE_TB
+- en: '| watch | Watches for changes to an object |'
+  prefs: []
+  type: TYPE_TB
+- en: '| proxy | Proxies requests |'
+  prefs: []
+  type: TYPE_TB
+- en: '| redirect | Redirects requests |'
+  prefs: []
+  type: TYPE_TB
+- en: '| delete | Deletes a specific object |'
+  prefs: []
+  type: TYPE_TB
+- en: '| deletecollection | Deletes a collection of objects |'
+  prefs: []
+  type: TYPE_TB
+- en: If, for example, we'd like to allow a user only to create objects and retrieve
+    their information, we'd use the verbs `get`, `list` and `create`. A verb can be
+    an asterisk (`*`), thus allowing all verbs (operations).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Verbs are combined with Kubernetes resources. For example, if we'd like to allow
+    a user only to create Pods and retrieve their information, we'd mix `get`, `list`
+    and `create` verbs with the `pods` resource.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The last element of a Rule is the API Group. RBAC uses the `rbac.authorization.k8s.io`
+    group. If we'd switch to a different authorization method, we'd need to change
+    the group as well.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A *Role* is a collection of Rules. It defines one or more Rules that can be
+    bound to a user or a group of users. The vital aspect of Roles is that they are
+    applied to a Namespace. If we'd like to create a role that refers to a whole cluster,
+    we'd use *ClusterRole* instead. Both are defined in the same way, and the only
+    difference is in the scope (Namespace or an entire cluster).
+  prefs: []
+  type: TYPE_NORMAL
+- en: The next piece of the authorization mechanism is *Subjects*. They define entities
+    that are executing operations. A Subject can be a *User*, a *Group*, or a *Service
+    Account*. A User is a person or a process residing outside a cluster. A Service
+    Account is used for processes running inside Pods that want to use the API. Since
+    this chapter focuses on human authentication, we won't explore them right now.
+    Finally, Groups are collections of Users or Service Accounts. Some Groups are
+    created by default (for example, `cluster-admin`).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finally, we need *RoleBindings*. As the name suggests, they bind Subjects to
+    Roles. Since Subjects define users, RoleBindings effectively bind users (or Groups
+    or Service Accounts) to Roles, thus giving them permissions to perform certain
+    operations on specific objects within a Namespace. Just like roles, RoleBindings
+    have a cluster-wide alternative called *ClusterRoleBindings*. The only difference
+    is that their scope is not limited to a Namespace, but applied to a whole cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: All that might seem confusing and overwhelming. You might even say that you
+    did not understand anything. Fear not. We'll explore each of the RBAC components
+    in more details through practical examples. We went through the explanation because
+    people say that things should be explained first, and demonstrated later. I don't
+    think that's a right approach, but I didn't want you to say that I did not provide
+    the theory. In any case, the examples that follow will clarify everything.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's go back to John's issue and try to solve it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Peeking into pre-defined Cluster roles
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: John is frustrated. He can access the cluster, but he is not permitted to perform
+    any operation. He cannot even list the Pods. Naturally, he asked us to be more
+    generous and allow him to "play" with our cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Since we are not taking anything for granted, we decided that the first action
+    should be to verify John's claim. Is it true that he cannot even retrieve the
+    Pods running inside the cluster?
+  prefs: []
+  type: TYPE_NORMAL
+- en: Before we move further, we'll stop impersonating John and go back to using the
+    cluster with god-like administrative privileges granted to the `minikube` user.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now that we switched to the `minikube` context (and the `minikube` user), we
+    regained full permissions, and `kubectl get all` returned all the objects from
+    the `default` Namespace.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's verify that John indeed cannot list Pods in the `default` Namespace.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We could configure the same certificates as those he's using, but that would
+    complicate the process. Instead, we'll use a `kubectl` command that will allow
+    us to check whether we could perform an action if we would be a specific user.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: The response is `no`, indicating that `jdoe` cannot `get pods`. The `--as` argument
+    is a global option that can be applied to any command. The `kubectl auth can-i`
+    is a "special" command. It does not perform any action but only validates whether
+    an operation could be performed. Without the `--as` argument, it would verify
+    whether the current user (in this case `minikube`) could do something.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We already discussed Roles and ClusterRoles briefly. Let's see whether there
+    are any already configured in the cluster or the `default` namespace.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: The output reveals that `no resources` were `found`. We do not have any Roles
+    in the `default` Namespace. That was the expected outcome since a Kubernetes cluster
+    comes with no pre-defined Roles. We'd need to create those we need ourselves.
+  prefs: []
+  type: TYPE_NORMAL
+- en: How about Cluster Roles? Let's check them out.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: This time we got quite a few resources. Our cluster already has some Cluster
+    Roles defined by default. Those prefixed with `system:` are Cluster Roles reserved
+    for Kubernetes system use. Modifications to those roles can result in non-functional
+    clusters, so we should not update them. Instead, we'll skip system Roles and focus
+    on those that should be assigned to users.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The output, limited to Cluster Roles that are meant to be bound to users, is
+    as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The Cluster Role with the least permissions is `view`. Let''s take a closer
+    look at it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output, limited to the first few rows, is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: It contains a long list of resources, all of them with the `get`, `list`, and
+    `watch` verbs. It looks like it would allow users bound to it to retrieve all
+    the resources. We have yet to validate whether the list of resources is truly
+    complete. For now, it looks like an excellent candidate to assign to users that
+    should have very limited permissions. Unlike Roles that are tied to a specific
+    Namespace, Cluster Roles are available across the whole cluster. That is a significant
+    difference that we'll exploit later on.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's explore another pre-defined Cluster Role.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output, limited to Pods, is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: As we can see, the `edit` Cluster Role allows us to perform any action on Pods.
+    If we go through the whole list, we'd see that the `edit` role allows us to execute
+    almost any operation on any Kubernetes object. It seems like it gives us unlimited
+    permissions. However, there are a few resources that are not listed. We can observe
+    those differences through the Cluster Role `admin`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: If you pay close attention, you'll notice that the Cluster Role `admin` has
+    a few additional entries.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The output, limited to the records not present in the Cluster Role `edit`,
+    is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: The main difference between `edit` and `admin` is that the latter allows us
+    to manipulate Roles and RoleBindings. While `edit` permits us to do almost any
+    operation related to Kubernetes objects like Pods and Deployments, `admin` goes
+    a bit further and provides an additional capability that allows us to define permissions
+    for other users by modifying existing or creating new Roles and Role Bindings.
+    The major restriction of the `admin` role is that it cannot alter the Namespace
+    itself, nor it can update Resource Quotas (we haven't explored them yet).
+  prefs: []
+  type: TYPE_NORMAL
+- en: There is only one more pre-defined non-system Cluster Role left.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The Cluster Role `cluster-admin` holds nothing back. An asterisk (`*`) means
+    everything. It provides god-like powers. A user bound to this role can do anything,
+    without any restrictions. The `cluster-admin` role is the one bound to the `minikube`
+    user. We can confirm that easily by executing:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE38]'
+  prefs: []
+  type: TYPE_PRE
+- en: The output is `yes`. Even though we did not really confirm that the `cluster-admin`
+    role is bound to `minikube`, we did verify that it can do anything.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Creating Role bindings and Cluster Role bindings
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Role Bindings bind a User (or a Group, or a Service Account) to a Role (or
+    a Cluster Role). Since John wants more visibility to our cluster, we''ll create
+    a Role Binding that will allow him to view (almost) all the objects in the `default`
+    namespace. That should be a good start of our quest to give John just the right
+    amount of privileges:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE39]'
+  prefs: []
+  type: TYPE_PRE
+- en: We created a Role Binding called `jdoe`. Since the Cluster Role `view` already
+    provides, more or less, what we need, we used it instead of creating a whole new
+    Role.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The output of the latter command proved that the new Role Binding `jdoe` was
+    indeed created.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is a good moment to clarify that a Role Binding does not need to be used
+    only with a Role, but that it can also be combined with a Cluster Role (as in
+    our example). As the rule of thumb, we define Cluster Roles when we think that
+    they might be used cluster-wide (with Cluster Role Bindings) or in multiple Namespaces
+    (with Role Bindings). The scope of the permissions is defined with the type of
+    binding, not with the type of role. Since we used Role Binding, the scope is limited
+    to a single Namespace which, in our case, is the `default`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s take a look at the details of the newly created Role Binding:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE40]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can see that the Role Binding `jdoe` has a single subject with the User
+    `jdoe`. It might be a bit confusing that the Namespace is empty and you might
+    think that the Role Binding applies to all Namespaces. Such an assumption would
+    be false. Remember, a Role Binding is always tied to a specific Namespace, and
+    we just described the one created in the `default` Namespace. The same Role Binding
+    should not be available anywhere else. Let''s confirm that:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE41]'
+  prefs: []
+  type: TYPE_PRE
+- en: We described the Role Binding `jdoe` in the Namespace `kube-system`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE42]'
+  prefs: []
+  type: TYPE_PRE
+- en: The Namespace `kube-system` does not have that Role Binding. We never created
+    it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'It might be easier to verify that our permissions are set correctly through
+    the `kubectl auth can-i` command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE43]'
+  prefs: []
+  type: TYPE_PRE
+- en: The first command validated whether the user `jdoe` can `get pods` from the
+    `default` Namespace. The answer was `yes`. The second checked whether the Pods
+    could be retrieved from all the Namespaces and the answer was `no`. Currently,
+    John can only see the Pods from the `default` Namespace, and he is forbidden from
+    exploring those from the other Namespaces.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'From now on, John should be able to view the Pods in the `default` Namespace.
+    However, he works in the same company as we do and we should have more trust in
+    him. Why don''t we give him permissions to view Pods in any Namespace? Why not
+    apply the same permissions cluster-wide? Before we do that, we''ll delete the
+    Role Binding we created and start over:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE44]'
+  prefs: []
+  type: TYPE_PRE
+- en: We'll change John's `view` permissions so that they are applied across the whole
+    cluster. Instead of executing yet another ad-hoc kubectl commands, we'll define
+    `ClusterRoleBinding` resource in YAML format so that the change is documented.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's take a look at the definition in the `auth/crb-view.yml` file.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE45]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE46]'
+  prefs: []
+  type: TYPE_PRE
+- en: Functionally, the difference is that, this time, we're creating `ClusterRoleBinding`
+    instead of `RoleBinding`. Also, we specified the `apiGroup` explicitly thus making
+    it clear that the `ClusterRole` is RBAC.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE47]'
+  prefs: []
+  type: TYPE_PRE
+- en: We created the role defined in the YAML file, and the output confirmed that
+    `clusterrolebinding "view"` was `created`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We can further validate that everything looks correct by describing the newly
+    created role.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE48]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE49]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Finally, we''ll impersonate John and validate that he can indeed retrieve the
+    Pods from any Namespace:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE50]'
+  prefs: []
+  type: TYPE_PRE
+- en: The output is `yes`, thus confirming that `jdoe` can view the Pods.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We're so excited that we cannot wait to let John know that he was granted permissions.
+    However, a minute into the phone call, he raises a concern. While being able to
+    view Pods across the cluster is a good start, he will need a place where he and
+    other developers will have more freedom. They will need to be able to deploy,
+    update, delete, and access their applications. They will probably need to do more,
+    but they can't give you more information. They are not yet very experienced with
+    Kubernetes, so they don't know what to expect. He's asking you to find a solution
+    that will allow them to perform actions that will help them develop and test their
+    software without affecting other users of the cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The new request provides an excellent opportunity to combine Namespaces with
+    Role Bindings. We can create a `dev` Namespace and allow a selected group of users
+    to do almost anything in it. That should give developers enough freedom within
+    the `dev` Namespace while avoiding the risks of negatively impacting the resources
+    running in others.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s take a look at the `auth/rb-dev.yml` definition:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE51]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE52]'
+  prefs: []
+  type: TYPE_PRE
+- en: The first section defines the `dev` Namespace, while the second specifies the
+    binding with the same name. Since we're using `RoleBinding` (not `ClusterRoleBinding`),
+    the effects will be limited to the `dev` Namespace. At the moment, there is only
+    one subject (the User `jdoe`). We can expect the list to grow with time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finally, `roleRef` uses `ClusterRole` (not `Role`) `kind`. Even though the Cluster
+    Role is available across the whole cluster, the fact that we are combining it
+    with `RoleBinding` will limit it to the specified Namespace.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Cluster Role `admin` has an extensive set of resources and verbs, and the
+    Users (at the moment only `jdoe`) will be able to do almost anything within the
+    `dev` Namespace.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s create the new resources:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE53]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE54]'
+  prefs: []
+  type: TYPE_PRE
+- en: We can see that the Namespace and the Role Binding were created.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s verify that, for example, `jdoe` can create and delete Deployments:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE55]'
+  prefs: []
+  type: TYPE_PRE
+- en: In both cases, the output was `yes`, confirming that `jdoe` can perform at least
+    `create` and `delete` actions with Deployments. Since we already explored the
+    list of resources defined in the Cluster Role `admin`, we can assume that we'd
+    get the same response if we'd check other operations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Still, there are a few permissions that are not granted to John. Only the `cluster-admin`
+    role covers all the permissions. The Cluster Role `admin` is very wide, but it
+    does not include all the resources and verbs. We can confirm that with the command
+    that follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE56]'
+  prefs: []
+  type: TYPE_PRE
+- en: The output is `no`, indicating that there are still a few operations forbidden
+    to John within the `dev` Namespace. Those operations are mostly related to cluster
+    administration that is still in our control.
+  prefs: []
+  type: TYPE_NORMAL
+- en: John is happy. He and his fellow developers have a segment of the cluster where
+    they can do almost anything without affecting other Namespaces.
+  prefs: []
+  type: TYPE_NORMAL
+- en: John is a team player, but he'd also like to have space for himself. Now that
+    he knows how easy it was to create a Namespace for developers, he's wondering
+    whether we could generate one only for him. You are starting to feel like he's
+    an ungrateful guy that will always be asking for more, but you cannot deny the
+    fact that his new request makes sense. It should be easy to create his personal
+    Namespace, so why not grant him that wish.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s take a look at yet another YAML definition:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE57]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE58]'
+  prefs: []
+  type: TYPE_PRE
+- en: This definition is not much different from the previous one. The important change
+    is that the Namespace is `jdoe`, and that John is likely to be its only user,
+    at least until he decides to add someone else. By referencing the role `cluster-admin`,
+    he's given full permissions to do whatever he wants within that Namespace. He
+    might deploy something cool and give others permissions to see it. Everyone likes
+    to show off every once in a while. In any case, that would be his decision. It's
+    his Namespace, and he should be able to do anything he likes inside it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s create the new resources:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE59]'
+  prefs: []
+  type: TYPE_PRE
+- en: Before we move on, we'll confirm that John can indeed do anything he likes in
+    the `jdoe` Namespace.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE60]'
+  prefs: []
+  type: TYPE_PRE
+- en: As expected, the response is `yes`, indicating that John is a god-like figure
+    in his own little galaxy.
+  prefs: []
+  type: TYPE_NORMAL
+- en: John loves the idea of having his own Namespace. He'll use it as his playground.
+    However, there's one more thing he's missing. He happens to be a release manager.
+    Unlike his other fellow developers, he's in charge of deploying new releases to
+    production. He's planning to automate that process with Jenkins. However, that
+    will require a bit of time, and until then he should be allowed to perform deployments
+    manually. We already decided that production releases should be deployed to the
+    `default` Namespace, so he'll need additional permissions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: After a short discussion, we decided that the minimum permissions required for
+    the release manager is to perform actions on Pods, Deployments, and ReplicaSets.
+    People with that role should be able to do almost anything related to Pods, while
+    the allowed actions for the Deployments and ReplicaSets should be restricted to
+    `create`, `get`, `list`, `update`, and `watch`. We don't think that they should
+    be able to delete them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We're not entirely confident that those are all the permissions release managers
+    will need, but it's a good start. We can always update the role later on if the
+    need arises.
+  prefs: []
+  type: TYPE_NORMAL
+- en: John will be the only release manager for now. We'll add more users once we're
+    confident that the role is working as expected.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now that we have a plan, we can proceed to create a role and a binding that
+    will define the permissions for release managers. The first thing we need to do
+    is to figure out the resources, the Verbs, and the API Groups we''ll use. We might
+    want to take a look at the Cluster Role `admin` for inspiration:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE61]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output, limited to Pods, is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE62]'
+  prefs: []
+  type: TYPE_PRE
+- en: If we'd specify only `pods` as a Rule resource, we would probably not create
+    all the Pods-related permissions we need. Even though most of the operations we
+    can perform on Pods are covered with the `pods` resource, we might need to add
+    a few sub-resources as well. For example, if we'd like to be able to retrieve
+    the logs, we'll need `pods/log` resource. In that case, `pods` would be a namespaced
+    resource, and `log` would be a sub-resource of `pods`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deployment and ReplicaSet objects present a different challenge. If we go back
+    to the output of the `kubectl describe clusterrole admin` command, we'll notice
+    that the `deployments` have API Groups. Unlike sub-resources that are separated
+    from resources with a slash (`/`), API Groups are separated with a dot (`.`).
+    So, when we see a resource like `deployments.apps`, it means that it is a Deployment
+    through the API Group `apps`. Core API Groups are omitted.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'It''ll probably be easier to understand sub-resources and API Groups by exploring
+    the definition in `auth/crb-release-manager.yml`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE63]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Most of that definition follows the same formula we already used a few times.
+    We''ll focus only on the `rules` section of the `ClusterRole`. It is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE64]'
+  prefs: []
+  type: TYPE_PRE
+- en: The level of access release managers' need differs between Pods on the one hand
+    and Deployments and ReplicaSets on the other. Therefore, we split them into two
+    groups.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The first group specifies the `pods` resource together with a few sub-resources
+    (`attach`, `exec`, `log`, and `status`). That should cover all the use cases we
+    explored so far. Since we did not create Pod proxies nor port forwarding, they
+    are not included.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We already said that release managers should be able to perform any operation
+    on Pods, so the `verbs` consist of a single entry with an asterisk (`*`). On the
+    other hand, all Pod resources belong to the same Core group, so we did not have
+    to specify any in the `apiGroups` field.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The second group of rules is set for `deployments` and `replicasets` resources.
+    Considering we decided that we'll be more restrictive with them, we specified
+    more specific `verbs`, allowing release managers only to `create`, `get`, `list`,
+    and `watch`. Since we did not specify `delete`, `deletecollection`, `patch`, and
+    `update` Verbs, release managers will not be able to perform related actions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As you can see, RBAC Rules can be anything from being very simple to finely
+    tuned to particular needs. It's up to us to decide the level granularity we'd
+    like to accomplish.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's create the role and the binding related to release managers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE65]'
+  prefs: []
+  type: TYPE_PRE
+- en: To be on the safe side, we'll describe the newly created Cluster Role, and confirm
+    that it has the permissions we need.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE66]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE67]'
+  prefs: []
+  type: TYPE_PRE
+- en: As you can see, the users assigned to the role can do (almost) anything with
+    Pods, while their permissions with Deployments and ReplicaSets are limited to
+    creation and viewing. They will not be able to update or delete them. Access to
+    any other resource is forbidden.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'At the moment, John is the only User bound to the `release-manager` role. We''ll
+    impersonate him, and verify that he can, for example, do anything related to Pods:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE68]'
+  prefs: []
+  type: TYPE_PRE
+- en: We'll do a similar type of verification but limited to creation of Deployments.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE69]'
+  prefs: []
+  type: TYPE_PRE
+- en: In both cases, we got the answer `yes`, thus confirming that John can perform
+    those actions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The last verification we'll do, before letting John know about his new permissions,
+    is to verify that he cannot delete Deployments.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE70]'
+  prefs: []
+  type: TYPE_PRE
+- en: The output is `no`, clearly indicating that such action is forbidden.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We phone John to tell him all the things he's now permitted to do within the
+    cluster in his role as release manager.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's see a few of the things John would do with his newly generated permissions.
+    We'll simulate that we are him by switching to the `jdoe` context.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE71]'
+  prefs: []
+  type: TYPE_PRE
+- en: A quick validation that John can create Deployments could be done with Mongo
+    DB.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE72]'
+  prefs: []
+  type: TYPE_PRE
+- en: John managed to create the Deployment in the `default` Namespace.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE73]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE74]'
+  prefs: []
+  type: TYPE_PRE
+- en: We can see that John cannot delete the ReplicaSet created by the Deployment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s check whether John can perform any action in his own Namespace:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE75]'
+  prefs: []
+  type: TYPE_PRE
+- en: We updated the `jdoe` context so that it uses the Namespace with the same name
+    as default. Further on, we made sure that the context is used, and created a new
+    Deployment based on the `mongo` image.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Since John should be able to do anything within his Namespace, he should be
+    able to delete the Deployment as well.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE76]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Finally, let''s try something that requires a truly high level of permissions:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE77]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE78]'
+  prefs: []
+  type: TYPE_PRE
+- en: John is even able to add new users to his Namespace and bind them to any role
+    (as long as it does not exceed his permissions).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Replacing Users with Groups
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Defining a single user that can access the `jdoe` Namespace was probably the
+    best approach. We expect that only John will want to access it. He is the owner
+    of that Namespace. It's his private playground. Even if he chooses to add more
+    users to it, he'll probably do it independently from our YAML definitions. After
+    all, what's the point of giving him god-like privileges if not to let him do things
+    without asking for our permission or involvement? From our perspective, that Namespace
+    has, and will continue having only one User.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We cannot apply the same logic to the permissions in `default` and `dev` Namespaces.
+    We might choose to give everyone in our organization the `view` role in the `default`
+    Namespace. Similarly, developers in our company should be able to `deploy`, `update`,
+    and `delete` resources from the `dev` Namespace. All in all, we can expect that
+    the number of users in the `view` and `dev` bindings will increase with time.
+    Continually adding new users is repetitive, boring, and error-prone process you
+    probably don't want to do. Instead of becoming a person who hates his tedious
+    job, we can create a system that groups users based on their roles. We already
+    did a step in that direction when we created John's certificate.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's take another look at the subject of the certificate we created earlier.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE79]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE80]'
+  prefs: []
+  type: TYPE_PRE
+- en: We can see that the name is `jdoe` and that he belongs to the organization `devs`.
+    We'll ignore the fact that he should probably belong to at least one more organization
+    (`release-manager`).
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you paid close attention, you probably remember that I mentioned a few times
+    that RBAC can be used with Users, Groups, and Service Accounts. Groups are the
+    same as Users, except that they are validating whether the certificate attached
+    to a request to the API belongs to a specified group (`O`), instead of a name
+    (`CN`).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's take a quick look at yet another YAML definition.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE81]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE82]'
+  prefs: []
+  type: TYPE_PRE
+- en: You'll notice that the Role Binding `dev` and the Cluster Role Binding `view`
+    are almost the same as those we used before. The only difference is in the `subjects.kind`
+    field. This time, we're using `Group` as the value. As a result, we'll grant permissions
+    to all users that belong to the organization `devs`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We'll need to switch the context back to `minikube` before we apply the changes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE83]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE84]'
+  prefs: []
+  type: TYPE_PRE
+- en: We can see that the new definition reconfigured a few resources.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that the new definition is applied, we can validate whether John can still
+    create objects inside the `dev` Namespace.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE85]'
+  prefs: []
+  type: TYPE_PRE
+- en: The output is `no`, indicating that `jdoe` cannot `create deployments`. Before
+    you start wondering what's wrong, I should inform you that the response is expected
+    and correct. The `--as` argument is impersonating John, but the certificate is
+    still from `minikube`. Kubernetes has no way of knowing that `jdoe` belongs to
+    the group `devs`. At least, not until John issues a request with his own certificate.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Instead of using the `--as` argument, we'll switch back to the `jdoe` context
+    and try to create a Deployment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE86]'
+  prefs: []
+  type: TYPE_PRE
+- en: This time the output is `deployment "new-db" created`, clearly indicating that
+    the John as a member of the `devs` group can `create deployments`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: From now on, any user with a certificate that has `/O=devs` in the subject will
+    have the same permissions as John within the `dev` Namespace as well as `view`
+    permissions everywhere else. We just saved ourselves from constantly modifying
+    YAML files and applying changes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What now?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Authorization and authentication are critical security components. Without a
+    proper set of permissions, we are risking exposure with potentially devastating
+    results. Moreover, with appropriate Rules, Roles, and RoleBindings, we can make
+    a cluster not only more secure but also increase collaboration between different
+    members of our organization. The only trick is to find a right balance between
+    tight security and freedom. It takes time until that equilibrium is established.
+  prefs: []
+  type: TYPE_NORMAL
+- en: RBAC combined with Namespaces provides an excellent separation. Without Namespaces,
+    we'd need to create multiple clusters. Without RBAC, those clusters would be exposed
+    or locked down to only a handful of users. The two combined provide an excellent
+    way to increase collaboration without sacrificing security.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We did not explore Service Accounts. They are the third kind of Subjects, besides
+    Users and Groups. We'll leave that for some other time and place since they are
+    used primarily for Pods that need to access the Kubernetes API. This chapter focused
+    on humans and the ways we can enable them to reach a cluster in a safe and controlled
+    manner.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We are still missing one important restriction. By combining Namespaces and
+    RBAC, we can restrict what users can do. However, that will not prevent them from
+    deploying applications that could potentially bring down the whole cluster. We
+    need to add Resource Quotas to the mix. That will be the subject of the next chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For now, we'll destroy the cluster and take a rest. We covered a lot of ground
+    in this chapter. We deserve a break.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE87]'
+  prefs: []
+  type: TYPE_PRE
+- en: If you'd like to know more about Roles, please explore the Role v1 rbac ([https://v1-9.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.9/#role-v1-rbac](https://v1-9.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.9/#role-v1-rbac))
+    and ClusterRole v1 rbac ([https://v1-9.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.9/#clusterrole-v1-rbac](https://v1-9.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.9/#clusterrole-v1-rbac))
+    API documentation. Similarly, you might want to visit the RoleBinding v1 rbac
+    ([https://v1-9.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.9/#rolebinding-v1-rbac](https://v1-9.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.9/#rolebinding-v1-rbac))
+    and ClusterRoleBinding v1 rbac ([https://v1-9.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.9/#clusterrolebinding-v1-rbac](https://v1-9.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.9/#clusterrolebinding-v1-rbac))
+    API documentation as well.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Kubernetes RBAC compared to Docker Swarm RBAC
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Docker has RBAC. Just as Kubernetes, it is organized around subjects, roles,
+    and resource collections. In many aspects, both provide a very similar set of
+    features. Should we quickly declare it a tie?
+  prefs: []
+  type: TYPE_NORMAL
+- en: There is one crucial difference between Kubernetes RBAC and the one provided
+    by Docker. The latter is not free. You'd need to purchase Docker **Enterprise
+    Edition** (**EE**) to secure your cluster beyond "only those with the certificate
+    can access it." If you do have Docker EE, you already made up your mind, and the
+    discussion whether to use one or the other is over. Docker EE is great, and soon
+    it will work not only with Swarm but also with Kubernetes. You bought it, and
+    there's not much reason to switch to something else. However, this comparison
+    focuses on what open source core versions can offer. It ignores third party and
+    enterprise additions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If we stick with an "only what's in the box" comparison, Kubernetes is a clear
+    winner. It has RBAC, and Docker Swarm doesn't. The problem is not that Swarm doesn't
+    have RBAC, but that it doesn't have any user-based authentication baked in. Therefore,
+    this is a very short comparison. If you don't want to purchase enterprise products,
+    and you do need an authorization and authentication mechanism, Kubernetes is the
+    only option. Just as with Namespaces, Kubernetes shows its strength by the sheer
+    number of features that do not exist in Swarm.
+  prefs: []
+  type: TYPE_NORMAL

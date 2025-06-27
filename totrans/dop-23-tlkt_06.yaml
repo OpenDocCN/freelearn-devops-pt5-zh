@@ -1,0 +1,1334 @@
+- en: Deploying Releases with Zero-Downtime
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: If we are to survive in the face of competition, we have to release features
+    to production as soon as they are developed and tested. The need for frequent
+    releases fortifies the need for zero-downtime deployments.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We learned how to deploy our applications packaged as Pods, how to scale them
+    through ReplicaSets, and how to enable communication through Services. However,
+    all that is useless if we cannot update those applications with new releases.
+    That is where Kubernetes Deployments come in handy.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The desired state of our applications is changing all the time. The most common
+    reasons for new states are new releases. The process is relatively simple. We
+    make a change and commit it to a code repository. We build it, and we test it.
+    Once we're confident that it works as expected, we deploy it to a cluster. It
+    does not matter whether that deployment is to a development, test, staging, or
+    production environment. We need to deploy a new release to a cluster, even when
+    that is a single-node Kubernetes running on a laptop. No matter how many environments
+    we have, the process should always be the same or, at least, as similar as possible.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The deployment must produce no downtime. It does not matter whether it is performed
+    on a testing or a production cluster. Interrupting consumers is disruptive, and
+    that leads to loss of money and confidence in a product. Gone are the days when
+    users did not care if an application sometimes did not work. There are so many
+    competitors out there that a single bad experience might lead users to another
+    solution. With today's scale, 0.1% of failed requests is considered disastrous.
+    While we might never be able to reach 100% availability, we should certainly not
+    cause downtime ourselves and must minimise other factors that could cause downtime.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Failures caused by circumstances outside of our control are things which, by
+    definition, we can do nothing about. However, failures caused by obsolete practices
+    or negligence are failures which should not happen. Kubernetes Deployments provide
+    us with the tools we need to avoid such failures by allowing us to update our
+    applications without downtime.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's explore how Kubernetes Deployments work and the benefits we gain by adopting
+    them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Creating a Cluster
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Creating a cluster at the beginning of each chapter allows us to jump into any
+    part of the book without worrying whether there is a requirement to meet from
+    previous chapters. It also allows us to pause between chapters without stressing
+    our laptops by running a VM that is not in use. The downside is that this is the
+    boring part of every chapter. Therefore, the talk stops here. Let's get it over
+    with.
+  prefs: []
+  type: TYPE_NORMAL
+- en: All the commands from this chapter are available in the `06-deploy.sh` ([https://gist.github.com/vfarcic/677a0d688f65ceb01e31e33db59a4400](https://gist.github.com/vfarcic/677a0d688f65ceb01e31e33db59a4400))
+    Gist.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: The code was updated, the cluster is up-and-running, and we can start exploring
+    Deployments.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deploying new releases
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Just as we are not supposed to create Pods directly but using other controllers
+    like ReplicaSet, we are not supposed to create ReplicaSets either. Kubernetes
+    Deployments will create them for us. If you're wondering why, you'll have to wait
+    a little while longer to find out. First, we'll create a few Deployments and,
+    once we are familiar the process and the outcomes, it'll become obvious why they
+    are better at managing ReplicaSets than we are.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's take a look at a Deployment specification for the database ReplicaSet
+    we've been using thus far.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: If you compare this Deployment with the ReplicaSet we created in the previous
+    chapter, you'll probably have a hard time finding a difference. Apart from the
+    `kind` field, they are the same.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Since, in this case, both the Deployment and the ReplicaSet are the same, you
+    might be wondering what the advantage of using one over the other is.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We will regularly add `--record` to the `kubectl create` commands. This allows
+    us to track each change to our resources such as a Deployments.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's create the Deployment and explore what it offers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output of the latter command is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: The Deployment was created. However, `get` does not provide us much info, so
+    let's `describe` it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output, limited to the last few lines, is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'From the `Events` section, we can observe that the Deployment created a ReplicaSet.
+    Or, to be more precise, that it scaled it. That is interesting. It shows that
+    Deployments control ReplicaSets. The Deployment created the ReplicaSet which,
+    in turn, created Pods. Let''s confirm that by retrieving the list of all the objects:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: All three objects were created, and you might be wondering why we created the
+    Deployment at all. You might think that we'd have the same result if we created
+    a ReplicaSet directly. You'd be right. So far, from the functional point of view,
+    there is no difference between a ReplicaSet created directly or using a Deployment.
+    The real advantage of Deployments becomes evident if we try to change some of
+    its aspects. For example, we might choose to upgrade MongoDB to version 3.4.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/7ca574b5-1c0c-406a-ba52-3f5559c0f47d.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 6-1: Deployment and its cascading effect that creates a ReplicaSet and,
+    though it, Pods'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Before we move onto Deployment updates, we'll go through our usual ritual of
+    seeing the process through a sequence diagram. We won't repeat the explanation
+    of the events that happened after the ReplicaSet object was created as those steps
+    were already explained in the previous chapters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Kubernetes client (`kubectl`) sent a request to the API server requesting the
+    creation of a Deployment defined in the `deploy/go-demo-2-db.yml` file
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The deployment controller is watching the API server for new events, and it
+    detected that there is a new Deployment object
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The deployment controller creates a new ReplicaSet object
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![](img/0e76e8fa-76b4-4608-956e-7c5ccd76ea69.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 6-2: The sequence of events followed by request to create a deployment'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Updating Deployments
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Let's see what happens when we `set` a new image to the `db` Pod.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: It'll take a while until the new image is pulled, so you might as well fetch
+    yourself a coffee. Once you're back, we can `describe` the Deployment by checking
+    the events it created.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The last few lines of the output are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: We can see that it created a new ReplicaSet and that it scaled the old ReplicaSet
+    to `0`. If, in your case, the last line did not appear, you'll need to wait until
+    the new version of the `mongo` image is pulled.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Instead of operating directly on the level of Pods, the Deployment created a
+    new ReplicaSet which, in turn, produced Pods based on the new image. Once they
+    became fully operational, it scaled the old ReplicaSet to `0`. Since we are running
+    a ReplicaSet with only one replica, it might not be clear why it used that strategy.
+    When we create a Deployment for the API, things will become more evident.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To be on the safe side, we might want to retrieve all the objects from the
+    cluster:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: As you can see, both ReplicaSets are there. However, one is inactive (scaled
+    to `0`).
+  prefs: []
+  type: TYPE_NORMAL
+- en: You'll notice that contained within the name of the Pod is a hash which matches
+    the hash in the name of the new ReplicaSet, namely `f8d4b86ff`. Even though it
+    might look like it is a random value, it is not. If you destroy the Deployment
+    and create it again, you'll notice that the hash in the Pod name and ReplicaSet
+    name remain consistent. This value is generated by hashing the PodTemplate of
+    the ReplicaSet. As long as the PodTemplate is the same, the hash value will be
+    the same as well. That way a Deployment can know whether anything related to the
+    Pods has changed and, if it does, will create a new ReplicaSet.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `kubectl set image` command is not the only way to update a Deployment.
+    We could also have used `kubectl edit` as well. The command would be as follows.
+    **Please do NOT execute it.** If you do (against my advice), you'll need to type
+    `:q` followed by the *Enter* key to exit.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: I don't think the above `edit` command is a good way to update the definition.
+    It is unpractical and undocumented. The `kubectl set image` is more useful if
+    we'd like to integrate Deployment updates with one of the CI/CD tools. Since we'll
+    have a chapter dedicated to continuous deployment, we'll continue using `kubectl
+    set image` from now on.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Another alternative would be to update the YAML file and execute the `kubectl
+    apply` command. While that is a good idea for applications that do not update
+    frequently, it does not fit well with those that change weekly, daily, or even
+    hourly.
+  prefs: []
+  type: TYPE_NORMAL
+- en: MongoDB is one of those that might get updated with a new release only a couple
+    of times a year so having an always up-to-date YAML file in your source code repository
+    is an excellent practice. We used `kubectl set image` just as a way to introduce
+    you to what's coming next when we explore frequent deployments without downtime.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A simple update of Pod images is far from what Deployment offers. To see its
+    real power, we should deploy the API. Since it can be scaled to multiple Pods,
+    it'll provide us with a much better playground.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Before we move on, let''s finish with the database by adding a Service and,
+    therefore, enabling internal cluster communication to it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: Zero-Downtime Deployments
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Updating a single-replica MongoDB cannot demonstrate true power behind Deployments.
+    We need a scalable service. It's not that MongoDB cannot be scaled (it can), but
+    it is not as straight-forward as an application that was designed to be scalable.
+    We'll jump to the second application in the stack and create a Deployment of the
+    ReplicaSet that will create Pods based on the `vfarcic/go-demo-2` image. But,
+    before we do that, we'll spend a few moments discussing the need for zero-downtime
+    deployments.
+  prefs: []
+  type: TYPE_NORMAL
+- en: On the one hand, our applications are supposed to have very high availability.
+    Depending on the context and the goals, we usually discuss how many nines are
+    coming after 99%. At the very least, an application must have availability of
+    at least 99.9%. More likely, it should be something closer to 99.99 or even 99.999
+    percent availability. Hundred percent availability is often not possible or too
+    expensive to accomplish. We cannot avoid all failures, but we can reduce them
+    to acceptable limits.
+  prefs: []
+  type: TYPE_NORMAL
+- en: No matter what the availability of SLA is, applications (at least when developed
+    by us) must be scalable. Only when there are multiple replicas, can we hope for
+    any decent availability. Scaled applications can not only spread the load across
+    various instances but ensure that a failure of one replica will not produce downtime.
+    Healthy instances are handling the load until the scheduler recreates failed ones.
+  prefs: []
+  type: TYPE_NORMAL
+- en: High availability is accomplished through fault tolerance and scalability. If
+    either is missing, any failure might have disastrous effects.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The reason we're discussing failures and scalability lies in the nature of immutable
+    deployments. If a Pod is unchangeable, the only way to update it with a new release
+    is to destroy the old ones and put the Pods based on the new image in their place.
+    Destruction of Pods is not much different from failures. In both cases, they cease
+    to work. On the other hand, fault tolerance (re-scheduling) is a replacement of
+    failed Pods.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The only essential difference is that new releases result in Pods being replaced
+    with new ones based on the new image. As long as the process is controlled, new
+    releases should not result in any downtime when multiple replicas of an application
+    are running and when they are adequately designed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We should not worry about the frequency of new releases. The process should
+    be the same no matter whether we make releases once a month, once a week, once
+    a day, or every few minutes. If the release process produces any downtime, we
+    might be compelled to deploy new versions infrequently. As a matter of fact, throughout
+    the history of software development, we were taught that releases should be limited
+    in number. A couple a year was the norm. Part of the reasons behind such infrequent
+    releases was due to the downtime they produce. If we can reach zero-downtime deployments,
+    the frequency can change, and we can aim for continuous deployment. We won't go
+    into benefits behind continuous deployment just yet. It's not relevant at this
+    point. Instead, we'll focus on zero-downtime deployments. Given a choice, no one
+    would choose the little-bit-of-downtime strategy, so I'll assume that everyone
+    wants to be able to release without interruptions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Zero-downtime deployment is a prerequisite for higher frequency releases.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s take a look at the Deployment definition of the API:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: We'll skip explaining `apiVersion`, `kind`, and `metadata`, since they always
+    follow the same pattern.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `spec` section has a few of the fields we haven't seen before, and a few
+    of those we are familiar with. The `replicas` and the `selector` are the same
+    as what we used in the ReplicaSet from the previous chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`minReadySeconds` defines the minimum number of seconds before Kubernetes starts
+    considering the Pods healthy. We put the value of this field to `1` second. The
+    default value is `0`, meaning that the Pods will be considered available as soon
+    as they are ready and, when specified, `livenessProbe` returns OK. If in doubt,
+    omit this field and leave it to the default value of `0`. We defined it mostly
+    for demonstration purposes.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The next field is `revisionHistoryLimit`. It defines the number of old ReplicaSets
+    we can rollback. Like most of the fields, it is set to the sensible default value
+    of `10`. We changed it to `5` and, as a result, we will be able to rollback to
+    any of the previous five ReplicaSets.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `strategy` can be either the `RollingUpdate` or the `Recreate` type. The
+    latter will kill all the existing Pods before an update. `Recreate` resembles
+    the processes we used in the past when the typical strategy for deploying a new
+    release was first to stop the existing one and then put a new one in its place.
+    This approach inevitably leads to downtime. The only case when this strategy is
+    useful is when applications are not designed for two releases to coexist. Unfortunately,
+    that is still more common than it should be. If you're in doubt whether your application
+    is like that, ask yourself the following question. Would there be an adverse effect
+    if two different versions of my application are running in parallel? If that's
+    the case, a `Recreate` strategy might be a good choice and *you must be aware
+    that you cannot accomplish zero-downtime deployments*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `recreate` strategy is much better suited for our single-replica database.
+    We should have set up the native database replication (not the same as Kubernetes
+    ReplicaSet object), but, as explained earlier, that is out of the scope of this
+    chapter (and probably this book).
+  prefs: []
+  type: TYPE_NORMAL
+- en: If we're running the database as a single replica, we must have mounted a network
+    drive volume. That would allow us to avoid data loss when updating it or in case
+    of a failure. Since most databases (MongoDB included) cannot have multiple instances
+    writing to the same data files, killing the old release before creating a new
+    one is a good strategy when replication is absent. We'll apply it later.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `RollingUpdate` strategy is the default type, for a good reason. It allows
+    us to deploy new releases without downtime. It creates a new ReplicaSet with zero
+    replicas and, depending on other parameters, increases the replicas of the new
+    one, and decreases those from the old one. The process is finished when the replicas
+    of the new ReplicaSet entirely replace those from the old one.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When `RollingUpdate` is the strategy of choice, it can be fine-tuned with the
+    `maxSurge` and `maxUnavailable` fields. The former defines the maximum number
+    of Pods that can exceed the desired number (set using `replicas`). It can be set
+    to an absolute number (for example, `2`) or a percentage (for example, `35%`).
+    The total number of Pods will never exceed the desired number (set using `replicas`)
+    and the `maxSurge` combined. The default value is `25%`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`maxUnavailable` defines the maximum number of Pods that are not operational.
+    If, for example, the number of replicas is set to 15 and this field is set to
+    4, the minimum number of Pods that would run at any given moment would be 11\.
+    Just as the `maxSurge` field, this one also defaults to `25%`. If this field is
+    not specified, there will always be at least 75% of the desired Pods.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In most cases, the default values of the Deployment specific fields are a good
+    option. We changed the default settings only as a way to demonstrate better all
+    the options we can use. We'll remove them from most of the Deployment definitions
+    that follow.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `template` is the same `PodTemplate` we used before. Best practice is to
+    be explicit with image tags like we did when we set `mongo:3.3`. However, that
+    might not always be the best strategy with the images we're building. Given we
+    employ right practices, we can rely on `latest` tags being stable. Even if we
+    discover they're not, we can remedy that quickly by creating a new `latest` tag.
+    However, we cannot expect the same from third-party images. They must always be
+    tagged to a specific version.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Never deploy third-party images based on `latest` tags. By being explicit with
+    the release, we have more control over what is running in production, as well
+    as what should be the next upgrade.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We won't always use `latest` for our services, but only for the initial Deployments.
+    Assuming that we are doing our best to maintain the `latest` tag stable and production-ready,
+    it is handy when setting up the cluster for the first time. After that, each new
+    release will be with a specific tag. Our automated continuous deployment pipeline
+    will do that for us in one of the next chapters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you are confident in your ability to maintain `latest` stable, it is handy
+    using it for the first Deployment of an application.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Before we explore rolling updates, we should create the Deployment and, with
+    it, the first release of our application.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: We created the Deployment and retrieved the object from the Kubernetes API server.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The output of the latter command is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: Please make sure that the number of available Pods is `3`. Wait for a few moments,
+    if that's not the case. Once all the Pods are up-and-running, we'll have a Deployment
+    that created a new ReplicaSet which, in turn, created three Pods based on the
+    latest release of the `vfarcic/go-demo-2` image.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's see what happens when we set a new image.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: There are a few ways we can observe what is happening during the update. One
+    of those is through the `kubectl rollout status` command.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: From the last entry, we can see that the rollout of the new deployment was successful.
+    Depending on the time that passed between setting the new image and displaying
+    the rollout status, you might have seen other entries marking the progress. However,
+    I think that the events from the `kubectl describe` command are painting a better
+    picture of the process that was executed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The last lines of the output are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: We can see that the number of desired replicas is `3`. The same number was updated
+    and all are available.
+  prefs: []
+  type: TYPE_NORMAL
+- en: At the bottom of the output are events associated with the Deployment. The process
+    started by increasing the number of replicas of the new ReplicaSet (`go-demo-2-api-68c75f4f5`)
+    to `1`. Next, it decreased the number of replicas of the old ReplicaSet (`go-demo-2-api-68df567fb5`)
+    to `2`. The same process of increasing replicas of the new, and decreasing replicas
+    of the old ReplicaSet continued until the new one got the desired number (`3`),
+    and the old one dropped to zero.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There was no downtime throughout the process. Users would receive a response
+    from the application no matter whether they sent it before, during, or after the
+    update. The only important thing is that, during the update, a response might
+    have come from the old or the new release. During the update process, both releases
+    were running in parallel.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s take a look at the rollout history:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: We can see that, so far, there were two revisions of the software. The change
+    cause shows which command created each of those revisions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: How about ReplicaSets?
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: The output, limited to `go-demo-2-api`, is as follows.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: We can see that the Deployment did not modify the ReplicaSet, but that it created
+    a new one and, at the end of the process, the old one was scaled to zero replicas.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The diagram in the *Figure 6-2* shows the flow of the events that occurred since
+    we executed the `kubectl set image` command. It closely depicts the events we
+    already saw from the `kubectl describe` command.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/43ddf2cc-9300-4176-905c-fe6f3a01ac61.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 6-3: Deployment controller rolling update workflow'
+  prefs: []
+  type: TYPE_NORMAL
+- en: We made great progress. However, the unexpected can happen at any time, and
+    we must be prepared to deal with it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Rolling back or rolling forward?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: At this point, we are, more or less, capable of deploying new releases to production
+    as soon as they are ready. However, there will be problems. Something unexpected
+    will happen. A bug will sneak in and put our production cluster at risk. What
+    should we do in such a case? The answer to that question largely depends on the
+    size of the changes and the frequency of deployments.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If we are using continuous deployment process, we are deploying new releases
+    to production fairly often. Instead of waiting until features accumulate, we are
+    deploying small chunks. In such cases, fixing a problem might be just as fast
+    as rolling back. After all, how much time would it take you to fix a problem caused
+    by only a few hours of work (maybe a day) and that was discovered minutes after
+    you committed? Probably not much. The problem was introduced by a very recent
+    change that is still in engineer's head. Fixing it should not take long, and we
+    should be able to deploy a new release soon.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You might not have frequent releases, or the amount of changes included is more
+    than a couple of hundreds of lines of code. In such a case, rolling forward might
+    not be as fast as it should be. Still, rolling back might not even be possible.
+    We might not be able to revert the deployment if database schema changed, and
+    it is not compatible with the previous versions of the back-end that uses it.
+    The moment the first transaction enters, we might lose the option to roll-back.
+    At least, not without losing the data generated since the new release.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Rolling back a release that introduced database changes is often not possible.
+    Even when it is, rolling forward is usually a better option when practicing continuous
+    deployment with high-frequency releases limited to a small scope of changes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I did my best to discourage you from rolling back. Still, in some cases that
+    is a better option. In others, that might be the only option. Luckily, rolling
+    back is reasonably straightforward with Kubernetes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We''ll imagine that we just discovered that the latest release of the `vfarcic/go-demo-2`
+    image is faulty and that we should roll back to the previous release. The command
+    that will do just that is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output of the latter command, limited to the last lines, is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: We can see from the events section that the Deployment initiated rollback and,
+    from there on, the process we experienced before was reversed. It started increasing
+    the replicas of the older ReplicaSet, and decreasing those from the latest one.
+    Once the process is finished, the older ReplicaSet became active with all the
+    replicas, and the newer one was scaled down to zero.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The end result might be easier to see from the `NewReplicaSet` entry located
+    just above `Events`. Before we undid the rollout, the value was `go-demo-2-api-68c75f4f5`,
+    and now it's `go-demo-2-api-68df567fb5`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Knowing only the current state of the latest Deployment is often insufficient,
+    and we might need a list of the past rollouts. We can get it with the `kubectl
+    rollout history` command.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: If you look at the third revision, you'll notice that the change cause is the
+    same command we used to create the Deployment the first time. Before we executed
+    `kubectl rollout undo`, we had two revisions; `1` and `2`. The `undo` command
+    checked the second-to-last revision (`1`). Since new deployments do no destroy
+    ReplicaSets but scale them to `0`, all it had to do to undo the last change was
+    to scale it back to the desired number of replicas and, at the same time, scale
+    the current one to zero.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's fast track a bit and deploy a few new releases. That will provide us with
+    a broader playground to explore a few additional things we can do with Deployments.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We updated the image to `vfarcic/go-demo-2:3.0` and retrieved the rollout status.
+    The last line of the latter command is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: The deployment was successfully updated and, as a result, it created a new ReplicaSet
+    and scaled it up to the desired number of replicas. The previously active ReplicaSet
+    was scaled to `0`. As a result, we're running tag `3.0` of the `vfarcic/go-demo-2`
+    image.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We''ll repeat the process with the tag `4.0`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: The output of the last line of the `rollout status` confirmed that the rollout
+    was successful.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now that we deployed a few releases, we can check the current `rollout history`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: We can clearly see the commands that produced the changes and, through them,
+    how our application progressed all the way until the current release based on
+    the image `vfarcic/go-demo-2:4.0`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You saw that we can rollback to the previous release through the `kubectl rollout
+    undo` command. In most cases, that should be the correct action when faced with
+    problems and without the ability to roll forward by creating a new release with
+    the fix. However, sometimes even that is not enough, and we have to go back in
+    time further than the previous release.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s say that we discovered not only that the current release is faulty but
+    also that a few before it have bugs as well. Following the same narrative, we''ll
+    imagine that the last correct release was based on the image `vfarcic/go-demo-2:2.0`.
+    We can remedy that by executing the command that follows (**please do NOT run
+    it**):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE38]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'While that command would certainly fix the problem, there is an easier way
+    to accomplish the same result. We can `undo` the `rollout` by moving to the last
+    revision that worked correctly. Assuming that we want to revert to the image `vfarcic/go-demo-2:2.0`,
+    reviewing the change causes listed in the history tells us we should roll back
+    to revision `2`. That can be accomplished through the `--to-revision` argument.
+    The command is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE39]'
+  prefs: []
+  type: TYPE_PRE
+- en: We undid the rollout by moving to revision `2`. We also retrieved the `history`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The output of the latter command is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE40]'
+  prefs: []
+  type: TYPE_PRE
+- en: Through the new revision `6`, we can see that the currently active Deployment
+    is based on the image `vfarcic/go-demo-2:2.0`. We successfully moved back to the
+    specific point in time. The problem is solved and, if this was the "real" application
+    running in a production cluster, our users would continue interacting with the
+    version of our software that actually works.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Rolling back failed Deployments
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Discovering a critical bug is probably the most common reason for a rollback.
+    Still, there are others. For example, we might be in a situation when Pods cannot
+    be created. An easy to reproduce case would be an attempt to deploy an image with
+    a tag that does not exist.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE41]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE42]'
+  prefs: []
+  type: TYPE_PRE
+- en: After seeing such a message, you might be under the impression that everything
+    is OK. However, that output only indicates that the definition of the image used
+    in the Deployment was successfully updated. That does not mean that the Pods behind
+    the ReplicaSet are indeed running. For one, I can assure you that the `vfarcic/go-demo-2:does-not-exist`
+    image does not exist.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Please make sure that at least `60` seconds have passed since you executed the
+    `kubectl set image` command. If you're wondering why we are waiting, the answer
+    lies in the `progressDeadlineSeconds` field set in the `go-demo-2-api` Deployment
+    definition. That's how much the Deployment has to wait before it deduces that
+    it cannot progress due to a failure to run a Pod.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's take a look at the ReplicaSets.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE43]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE44]'
+  prefs: []
+  type: TYPE_PRE
+- en: By now, under different circumstances, all the Pods from the new ReplicaSet
+    (`go-demo-2-api-dc7877dcd`) should be set to `3`, and the Pods of the previous
+    one (`go-demo-2-api-68c75f4f5`) should have been scaled down to `0`. However,
+    the Deployment noticed that there is a problem and stopped the update process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We should be able to get more detailed information with the `kubectl rollout
+    status` command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE45]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE46]'
+  prefs: []
+  type: TYPE_PRE
+- en: The Deployment realized that it shouldn't proceed. The new Pods are not running,
+    and the limit was reached. There's no point to continue trying.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If you expected that the Deployment would roll back after it failed, you''re
+    wrong. It will not do such a thing. At least, not without additional add-ons.
+    That does not mean that I would expect you to sit in front of your terminal, wait
+    for timeouts, and check the `rollout status` before deciding whether to keep the
+    new update or to roll back. I expect you to deploy new releases as part of your
+    automated CDP pipeline. Fortunately, the `status` command returns `1` if the deployment
+    failed and we can use that information to decide what to do next. For those of
+    you not living and breathing Linux, any exit code different than `0` is considered
+    an error. Let''s confirm that by checking the exit code of the last command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE47]'
+  prefs: []
+  type: TYPE_PRE
+- en: The output is indeed `1`, thus confirming that the rollout failed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We'll explore automated CDP pipeline soon. For now, just remember that we can
+    find out whether Deployment updates were successful or not.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we discovered that our last rollout failed, we should undo it. You
+    already know how to do that, but I'll remind you just in case you're of a forgetful
+    nature.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE48]'
+  prefs: []
+  type: TYPE_PRE
+- en: The output of the last command confirmed that `deployment "go-demo-2-api"` was
+    `successfully rolled out`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we have learned how to rollback no matter whether the problem is a
+    critical bug or inability to run the new release, we can take a short pause from
+    learning new stuff and merge all the definitions we explored thus far into a single
+    YAML file. But, before we do that, we'll remove the objects we created.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE49]'
+  prefs: []
+  type: TYPE_PRE
+- en: Merging everything into the same YAML definition
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Consider this section a short intermezzo. We'll merge the definitions we used
+    in this chapter into a single YAML file. You already had a similar example before,
+    so there's no need for lengthy explanations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE50]'
+  prefs: []
+  type: TYPE_PRE
+- en: If you start searching for differences with the previous definitions, you will
+    find a few. The `minReadySeconds`, `progressDeadlineSeconds`, `revisionHistoryLimit`,
+    and `strategy` fields are removed from the `go-demo-2-api` Deployment. We used
+    them mostly as a way to demonstrate their usage. But, since Kubernetes has sensible
+    defaults, we omitted them from this definition. You'll also notice that there
+    are two Services even though we created only one in this chapter. We did not need
+    the `go-demo-2-api` Service in our examples since we didn't need to access the
+    API. But, for the sake of completeness, it is included in this definition. Finally,
+    the strategy for deploying the database is set to `recreate`. As explained earlier,
+    it is more suited for a single-replica database, even though we did not mount
+    a volume that would preserve the data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's create the objects defined in `deploy/go-demo-2.yml`. Remember, with `--save-config`
+    we're making sure we can edit the configuration later. The alternative would be
+    to use `kubectl apply` instead.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE51]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output of the latter command is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE52]'
+  prefs: []
+  type: TYPE_PRE
+- en: All four objects (two Deployments and two Services) were created, and we can
+    move on and explore ways to update multiple objects with a single command.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Updating multiple objects
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Even though most of the time we send requests to specific objects, almost everything
+    is happening using selector labels. When we updated the Deployments, they looked
+    for matching selectors to choose which ReplicaSets to create and scale. They,
+    in turn, created or terminated Pods also using the matching selectors. Almost
+    everything in Kubernetes is operated using label selectors. It's just that sometimes
+    that is obscured from us.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We do not have to update an object only by specifying its name or the YAML file
+    where its definition resides. We can also use labels to decide which object should
+    be updated. That opens some interesting possibilities since the selectors might
+    match multiple objects.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Imagine that we are running several Deployments with Mongo databases and that
+    the time has come to update them all to a newer release. Before we explore how
+    we could do that, we'll create another Deployment so that we have at least two
+    with the database Pods.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let us first take a look at the definition:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE53]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE54]'
+  prefs: []
+  type: TYPE_PRE
+- en: When compared with the `go-demo-2-db` Deployment, the only difference is in
+    the `service` label. Both have the `type` set to `db`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s create the deployment:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE55]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now that we have two deployments with the `mongo:3.3` Pods, we can try to update
+    them both at the same time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The trick is to find a label (or a set of labels) that uniquely identifies all
+    the Deployments we want to update.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s take a look at the list of Deployments with their labels:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE56]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE57]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We want to update `mongo` Pods created using `different-app-db` and `go-demo-2-db`
+    Deployments. Both are uniquely identified with the labels `type=db` and `vendor=MongoLabs`.
+    Let''s test that:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE58]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE59]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can see that filtering with those two labels worked. We retrieved only the
+    Deployments we want to update, so let''s proceed and roll out the new release:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE60]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE61]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Finally, before we move into the next subject, we should validate that the
+    image indeed changed to `mongo:3.4`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE62]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output, limited to the relevant parts, is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE63]'
+  prefs: []
+  type: TYPE_PRE
+- en: As we can see, the update was indeed successful, at least with that Deployment.
+    Feel free to describe the Deployment defined in `deploy/different-app-db.yml`.
+    You should see that its image was also updated to the newer version.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Scaling Deployments
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: There are quite a few different ways we can scale Deployments. Everything we
+    do in this section is not unique to Deployments and can be applied to any Controller,
+    like ReplicaSet, and those we did not yet explore.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If we decide that the number of replicas changes with relatively low frequency
+    or that Deployments are performed manually, the best way to scale is to write
+    a new YAML file or, even better, modify the existing one. Assuming that we store
+    YAML files in a code repository, by updating existing files we have a documented
+    and reproducible definition of the objects running inside a cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We already performed scaling when we applied the definition from the `go-demo-2-scaled.yml`.
+    We'll do something similar, but with Deployments.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's take a look at `deploy/go-demo-2-scaled.yml`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE64]'
+  prefs: []
+  type: TYPE_PRE
+- en: We won't display the contents of the whole file since it is almost identical
+    to `deploy/go-demo-2.yml`. The only difference is the number of replicas of the
+    `go-demo-2-api` Deployment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE65]'
+  prefs: []
+  type: TYPE_PRE
+- en: At the moment, we're running three replicas. Once we apply the new definition,
+    it should increase to five.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE66]'
+  prefs: []
+  type: TYPE_PRE
+- en: Please note that, even though the file is different, the names of the resources
+    are the same so `kubectl apply` did not create new objects. Instead, it updated
+    those that changed. In particular, it changed the number of replicas of the `go-demo-2-api`
+    Deployment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's confirm that there are indeed five replicas of the Pods controlled through
+    the Deployment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE67]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output, limited to the `deploy/go-demo-2-api`, is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE68]'
+  prefs: []
+  type: TYPE_PRE
+- en: The result should come as no surprise. After all, we executed the same process
+    before, when we explored ReplicaSets.
+  prefs: []
+  type: TYPE_NORMAL
+- en: While scaling Deployments using YAML files (or other Controllers) is an excellent
+    way to keep documentation accurate, it rarely fits the dynamic nature of the clusters.
+    We should aim for a system that will scale (and de-scale) services automatically.
+    When scaling is frequent and, hopefully, automated, we cannot expect to update
+    YAML definitions and push them to Git. That would be too inefficient and would
+    probably cause quite a few unwanted executions of delivery pipelines if they are
+    triggered through repository Webhooks. After all, do we really want to push updated
+    YAML files multiple times a day?
+  prefs: []
+  type: TYPE_NORMAL
+- en: The number of `replicas` should not be part of the design. Instead, they are
+    a fluctuating number that changes continuously (or at least often), depending
+    on the traffic, memory and CPU utilization, and so on.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Depending on release frequency, the same can be said for `image`. If we are
+    practicing continuous delivery or deployment, we might be releasing once a week,
+    once a day, or even more often. In such cases, new images would be deployed often,
+    and there is no strong argument for the need to change YAML files every time we
+    make a new release. That is especially true if we are deploying through an automated
+    process (as we should).
+  prefs: []
+  type: TYPE_NORMAL
+- en: We'll explore automation later on. For now, we'll limit ourselves to a command
+    similar to `kubectl set image`. We used it to change the `image` used by Pods
+    with each release. Similarly, we'll use `kubectl scale` to change the number of
+    replicas. Consider this an introduction to automation that is coming later on.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE69]'
+  prefs: []
+  type: TYPE_PRE
+- en: We scaled the number of replicas associated with the Deployment `go-demo-2-api`.
+    Please note that, this time, we did not use `-f` to reference a file. Since we
+    have two Deployments specified in the same YAML, that would result in scaling
+    of both. Since we wanted to limit it to a particular Deployment, we used its name
+    instead.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's confirm that scaling indeed worked as expected.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE70]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output, limited to Deployments, is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE71]'
+  prefs: []
+  type: TYPE_PRE
+- en: As I mentioned earlier, we'll dedicate quite a lot of time to automation, and
+    you won't have to scale your applications manually. However, I thought that it
+    is useful to know that the `kubectl scale` command exists. For now, you know how
+    to scale Deployments (and other Controllers).
+  prefs: []
+  type: TYPE_NORMAL
+- en: What now?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Everything we learned led us to Deployments. Pods must not be created directly,
+    but through ReplicaSets which, similarly, must not be created directly, but through
+    Deployments. They are the objects that allow us not only to create the ReplicaSets
+    and Pods, but that can also be updated without producing any downtime (when applications
+    are designed accordingly). We combined Deployments with Services so that Pods
+    can communicate with each other, or can be accessed from outside a cluster. All
+    in all, we have everything we need to release our services to production. That
+    is not to say that we understand all the crucial aspects of Kubernetes. We're
+    not even close to that point. But, we do have almost everything we need for running
+    some types of applications in production. What we're missing is networking.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Before we enter the next stage of our knowledge seeking mission, we'll destroy
+    the cluster we're running and give our laptops a break.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE72]'
+  prefs: []
+  type: TYPE_PRE
+- en: If you'd like to know more about Deployments, please explore Deployment v1 apps
+    ([https://v1-9.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.9/#deployment-v1-apps](https://v1-9.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.9/#deployment-v1-apps))
+    API documentation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/daf85690-4328-4ab1-9a11-5a87a9e5d3a0.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 6-4: The components explored so far'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Before we move onto the next chapter, we'll explore the differences between
+    Kubernetes Deployments and Docker Swarm stacks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Kubernetes Deployments compared to Docker Swarm stacks
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: If you have already used Docker Swarm, the logic behind Kubernetes Deployments
+    should be familiar. Both serve the same purpose and can be used to deploy new
+    applications or update those that are already running inside a cluster. In both
+    cases, we can easily deploy new releases without any downtime (when application
+    architecture permits that).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Unlike the previous comparison between Kubernetes Pods, ReplicaSets, and Services
+    with Docker Swarm Stacks, Kubernetes Deployments do provide a few potentially
+    important functional differences. But, before we dive into the functional comparison,
+    we'll take a moment to explore differences in how we define objects.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'An example Kubernetes Deployment and Service definition is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE73]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'An equivalent Docker Swarm stack definition is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE74]'
+  prefs: []
+  type: TYPE_PRE
+- en: Both definitions provide, more or less, the same functionality.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It is evident that a Kubernetes Deployment requires a much longer definition
+    with more a complex syntax. It is worth noting that Swarm's equivalent to `readinessProbe`
+    and `livenessProbe` is not present in the stack because it is defined as a `HEALTHCHECK`
+    inside the Dockerfile. Still, even if we remove them, a Kubernetes Deployment
+    remains longer and more complicated.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When comparing only the differences in the ways to define objects, Docker Swarm
+    is a clear **winner**. Let's see what we can conclude from the functional point
+    of view.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Creating the objects is reasonably straight-forward. Both `kubectl create` and
+    `docker stack deploy` will deploy new releases without any downtime. New containers
+    or, in case of Kubernetes, Pods will be created and, in parallel, the old ones
+    will be terminated. So far, both solutions are, more or less, the same.
+  prefs: []
+  type: TYPE_NORMAL
+- en: One of the main differences is what happens in case of a failure. A Kubernetes
+    Deployment will not perform any corrective action in case of a failure. It will
+    stop the update, leaving a combination of new and old Pods running in parallel.
+    Docker Swarm, on the other hand, can be configured to rollback automatically.
+    That might seem like another win for Docker Swarm. However, Kubernetes has something
+    Swarm doesn't. We can use `kubectl rollout status` command to find out whether
+    the update was a success or failure and, in case of the latter, we can `undo`
+    the `rollout`. Even though we need a few commands to accomplish the same result,
+    that might fare better when updates are automated. Knowing whether an update succeeded
+    or failed allows us to not only execute a subsequent rollback action but also
+    notify someone that there is a problem.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Both approaches have their pros and cons. Docker Swarm's automated rollback
+    is better suited in some cases, and Kubernetes update status works better in others.
+    The methods are different, and there is no clear winner, so I'll proclaim it a
+    tie.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Kubernetes Deployments can record history. We can use the `kubectl rollout history`
+    command to inspect past rollout. When updates are working as expected, `history`
+    is not very useful. But, when things go wrong, it might provide additional insight.
+    That can be combined with the ability to rollback to a specific revision, not
+    necessarily the previous one. However, most of the time, we rollback to the previous
+    version. The ability to go back further in time is not very useful. Even when
+    such a need arises, both products can do that. The difference is that Kubernetes
+    Deployments allow us to go to a specific revision (for example, we're on the revision
+    five, rollback to the revision two). With Docker Swarm, we'd have to issue a new
+    update (for example, update the image to the tag 2.0). Since containers are immutable,
+    the result is the same, so the difference is only in the syntax behind a rollback.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The ability to rollback to a specific version or a tag exists in both products.
+    We can argue which syntax is more straightforward or more useful. The differences
+    are minor, and I'll proclaim that there is no winner for that functionality. It's
+    another tie.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Since almost everything in Kubernetes is based on label selectors, it has a
+    feature that Docker Swarm doesn't. We can update multiple Deployments at the same
+    time. We can, for example, issue an update (`kubetl set image`) that uses filters
+    to find all Mongo databases and upgrade them to a newer release. It is a feature
+    that would require a few lines of bash scripting with Docker Swarm. However, while
+    the ability to update all Deployments that match specific labels might sound like
+    a useful feature, it often isn't. More often than not, such actions can produce
+    undesirable effects. If, for example, we have five back-end applications that
+    use Mongo database (one for each), we'd probably want to upgrade them in a more
+    controlled fashion. Teams behind those services would probably want to test each
+    of those upgrades and give their blessings. We probably wouldn't wait until all
+    are finished, but upgrade a single database when the team in charge of it feels
+    confident.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There are the cases when updating multiple objects is useful so I must give
+    this one to Kubernetes. It a minor win, but it still counts.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There are a few other things that are easier to accomplish with Kubernetes.
+    For example, due to the way Kubernetes Services work, creating a blue-green deployment
+    process, instead of using rolling updates, is much easier. However, such a process
+    falls into advanced usage so I'll leave it out of this comparison. It'll (probably)
+    come later.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It's difficult to say which solution provides better results. Docker Swarm continues
+    to shine from the user-friendliness perspective. On the other hand, Kubernetes
+    Deployments offer a few additional features.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It is much simpler and easier to write a Docker Swarm stack file than a Kubernetes
+    Deployment definition. Kubernetes Deployments offer a few additional functional
+    features that Swarm does not have. However, those features are, for most use cases,
+    of minor importance. Those that indeed matter are, more or less, the same.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Don't make a decision based on the differences between Kubernetes Deployments
+    and Docker Swarm stacks. Definition syntax is where Swarm has a clear win, while
+    on the functional front Kubernetes has a tiny edge over Swarm. If you'd make a
+    decision only based on deployments, Swarm might be a slightly better candidate.
+    Or not. It all depends on what matters more in your case. Do you care about YAML
+    syntax? Are those additional Kubernetes Deployment features something you will
+    ever use?
+  prefs: []
+  type: TYPE_NORMAL
+- en: In any case, Kubernetes has much more to offer, and any conclusion based on
+    such a limited comparison scope is bound to be incomplete. We only scratched the
+    surface. Stay tuned for more.
+  prefs: []
+  type: TYPE_NORMAL

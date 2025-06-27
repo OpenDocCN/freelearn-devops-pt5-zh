@@ -1,0 +1,724 @@
+- en: Dividing a Cluster into Namespaces
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Applications and corresponding objects often need to be separated from each
+    other to avoid conflicts and other undesired effects.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We might need to separate objects created by different teams. We can, for example,
+    give each team a separate cluster so that they can "experiment" without affecting
+    others. In other cases, we might want to create different clusters that will be
+    used for various purposes. For example, we could have a production and a testing
+    cluster. There are many other problems that we tend to solve by creating different
+    clusters. Most of them are based on the fear that some objects will produce adverse
+    effects on others. We might be afraid that a team will accidentally replace a
+    production release of an application with an untested beta. Or, we might be concerned
+    that performance tests will slow down the whole cluster. Fear is one of the main
+    reasons why we tend to be defensive and conservative. In some cases, it is founded
+    on past experiences. In others, it might be produced by insufficient knowledge
+    of the tools we adopted. More often than not, it is a combination of the two.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The problem with having many Kubernetes clusters is that each has an operational
+    and resource overhead. Managing one cluster is often far from trivial. Having
+    a few is complicated. Having many can become a nightmare and require quite a significant
+    investment in hours dedicated to operations and maintenance. If that overhead
+    is not enough, we must also be aware that each cluster needs resources dedicated
+    to Kubernetes. The more clusters we have, the more resources (CPU, memory, IO)
+    are spent. While that can be said for big clusters as well, the fact remains that
+    the resource overhead of having many smaller clusters is higher than having a
+    single big one.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I am not trying to discourage you from having multiple Kubernetes clusters.
+    In many cases, that is a welcome, if not a required, strategy. However, there
+    is the possibility of using Kubernetes Namespaces instead. In this chapter, we'll
+    explore ways to split a cluster into different segments as an alternative to having
+    multiple clusters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Creating a Cluster
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: You know the drill, so let's get the cluster setup over and done with.
+  prefs: []
+  type: TYPE_NORMAL
+- en: All the commands from this chapter are available in the `11-ns.sh` ([https://gist.github.com/vfarcic/6e0a03df4c64a9248fbb68673c1ab719](https://gist.github.com/vfarcic/6e0a03df4c64a9248fbb68673c1ab719))
+    Gist.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now that the cluster is created (again), we can start exploring Namespaces.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deploying the first release
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We'll start by deploying the `go-demo-2` application and use it to explore Namespaces.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: The definition is the same as the one we used before, so we'll skip the explanation
+    of the YAML file. Instead, we'll jump right away into the deployment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Unlike previous cases, we'll deploy a specific tag of the application. If this
+    would be a Docker Swarm stack, we'd define the tag of the `vfarcic/go-demo-2`
+    image as an environment variable with the default value set to `latest`. Unfortunately,
+    Kubernetes does not have that option. Since I don't believe that it is a good
+    idea to create a different version of the YAML file for each release, we'll use
+    `sed` to modify the definition before passing it to `kubectl`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Using `sed` to alter Kubernetes definitions is not a good solution. Heck, it''s
+    a terrible one. We should use a templating solution like, for example, Helm ([https://helm.sh/](https://helm.sh/)).
+    However, we are focusing purely on Kubernetes. Helm and other third-party products
+    are out of the scope of this book. So, we''ll have to do with a workaround in
+    the form of `sed` commands:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We declared environment variables `IMG` and `TAG`. Further on, we `cat` the
+    YAML file and piped the output to `sed`. It, in return, replaced `image: vfarcic/go-demo-2`
+    with `image: vfarcic/go-demo-2:1.0`. Finally, the modified definition was piped
+    to `kubectl`. When the `-f` argument is followed with a dash (`-`), `kubectl`
+    uses standard input (`stdin`) instead of a file. In our case, that input is the
+    YAML definition altered by adding the specific `tag (1.0)` to the `vfarcic/go-demo-2`
+    image.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s confirm that the deployment rolled out successfully:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We''ll check whether the application is deployed correctly by sending an HTTP
+    request. Since the Ingress resource we just created has the `host` set to `go-demo-2.com`,
+    we''ll have to "fake" it by adding `Host: go-demo-2.com` header to the request:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: The reason we jumped through so many hoops to deploy a specific release will
+    be revealed soon. For now, we'll assume that we're running the first release in
+    production.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Exploring virtual clusters
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Almost all of the system services are running as Kubernetes objects. Kube DNS
+    is a deployment. Minikube Addon Manager, Dashboard, Storage Controller, and nginx
+    Ingress are a few of the system Pods that are currently running in our Minikube
+    cluster. Still, we haven't seen them yet. Even though we executed `kubectl get
+    all` quite a few times, there was not a trace of any of those objects. How can
+    that be? Will we see them now if we list all the objects? Let's check it out.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: The output shows only the objects we created. There are `go-demo-2` Deployments,
+    ReplicaSets, Services, and Pods. The only system object we can observe is the
+    `kubernetes` Service.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Judging from the current information, if we limit our observations to Pods,
+    our cluster can be described through the *Figure 11-1*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/d10ad6a3-d890-4fed-b5e4-bfc1dcfa9e37.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 11-1: The cluster with go-demo-2 Pods'
+  prefs: []
+  type: TYPE_NORMAL
+- en: All in all, our cluster runs a mixture of system-level objects and the objects
+    we created, but only the latter is visible. You might be compelled to execute
+    `kubectl get --help` hoping that there is an argument that will allow you to retrieve
+    the information about system level objects. You might think that they are hidden
+    from you by default. That's not the case. They are not hidden. Instead, they do
+    not live in the Namespace we're looking at.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Kubernetes uses Namespaces to create virtual clusters. When we created the Minikube
+    cluster, we got three Namespaces. In a way, each Namespace is a cluster within
+    the cluster. They provide scope for names.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So far our experience tells us that we cannot have two of the same types of
+    objects with the same name. There cannot be, for example, two deployments named
+    `go-demo-2-api`. However, that rule applies only within a Namespace. Inside a
+    cluster, we can have many of same object types with the same name as long as they
+    belong to different Namespaces.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So far, we had the impression that we are operating on the level of a Minikube
+    Kubernetes cluster. That was a wrong assumption. All this time we were inside
+    one Namespace of all the possible Namespaces in the cluster. To be more concrete,
+    all the commands we executed thus far created objects in the `default` Namespace.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Namespaces are so much more than scopes for object names. They allow us to split
+    a cluster among different groups of users. Each of those Namespaces can have different
+    permissions and resources quotas. There are quite a few other things we can do
+    if we combine Namespaces with other Kubernetes services and concepts. However,
+    we'll ignore permissions, quotas, policies, and other things we did not yet explore.
+    We'll focus on Namespaces alone.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We'll start by exploring the pre-defined Namespaces first.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Exploring the existing Namespaces
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Now that we know that our cluster has multiple Namespaces, let's explore them
+    a bit.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We can list all the Namespaces through the `kubectl get namespaces` command.
+    As with the most of the other Kubernetes objects and resources, we can also use
+    a shortcut `ns` instead of the full name.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: We can see that three Namespaces were set up automatically when we created the
+    Minikube cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `default` Namespace is the one we used all this time. If we do not specify
+    otherwise, all the `kubectl` commands will operate against the objects in the
+    `default` Namespace. That's where our `go-demo-2` application is running. Even
+    though we were not aware of its existence, we now know that's where the objects
+    we created are placed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/60c3a763-527e-4a1e-a93a-1f6dd7eff781.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 11-2: The Namespaces and the go-demo-2 Pods'
+  prefs: []
+  type: TYPE_NORMAL
+- en: There are quite a few ways to specify a Namespace. For now, we'll use the `--namespace`
+    argument. It is one of the global options that is available for all `kubectl`
+    commands.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The command that will retrieve all the objects from the `kube-public` Namespace
+    is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: The output states that `No resources` were `found`. That's disappointing, isn't
+    it? Kubernetes does not use the `kube-public` Namespace for its system-level object.
+    All the objects we created are in the `default` Namespace.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `kube-public` Namespace is readable by all users from all Namespaces. The
+    primary reason for its existence is to provide space where we can create objects
+    that should be visible throughout the whole cluster. A good example is ConfigMaps.
+    When we create one in, let's say, the `default` Namespace, it is accessible only
+    by the other objects in the same Namespace. Those residing somewhere else would
+    be oblivious of its existence. If we'd like such a ConfigMap to be visible to
+    all objects no matter where they are, we'd put it into the `kube-public` Namespace
+    instead. We won't use this Namespace much (if at all).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `kube-system` Namespace is critical. Almost all the objects and resources
+    Kubernetes needs are running inside it. We can check that by executing the command
+    that follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We retrieved all the objects and resources running inside the `kube-system`
+    Namespace. The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: As we can see, quite a few things are running inside the `kube-system` Namespace.
+    For example, we knew that there is an nginx Ingress controller, but this is the
+    first time we saw its objects. It consists of a Replication Controller `nginx-ingress-controller`,
+    and the Pod it created, `nginx-ingress-controller-fxrhn`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/c31706ce-4181-4892-91d1-65fcc0f1b824.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 11-3: The Namespaces and the Pods'
+  prefs: []
+  type: TYPE_NORMAL
+- en: As long as the system works as expected, there isn't much need to do anything
+    inside the `kube-system` Namespace. The real fun starts when we create new Namespaces.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deploying to a new Namespace
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Currently, we're running the release 1.0 of the `go-demo-2` application. We
+    can consider it the production release. Now, let's say that the team in charge
+    of the application just made a new release. They ran unit tests and built the
+    binary. They produced a new Docker image and tagged it as `vfarcic/go-demo-2:2.0`.
+    What they didn't do is run functional, performance, and other types of tests that
+    require a running application. The new release is still not ready to be deployed
+    to production so we cannot yet execute a rolling update and replace the production
+    release with the new one. We need to finish running the tests, and for that we
+    need the new release running in parallel with the old one.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We could, for example, create a new cluster that would be used only for testing
+    purposes. While that is indeed a good option in some situations, in others it
+    might be a waste of resources. Moreover, we'd face the same challenge in the testing
+    cluster. There might be multiple new releases that need to be deployed and tested
+    in parallel.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Another option could be to create a new cluster for each release that is to
+    be tested. That would create the necessary separation and maintain the freedom
+    we strive for. However, that is slow. Creating a cluster takes time. Even though
+    it might not look like much, wasting ten minutes (if not more) only on that is
+    too much time. Even if you disagree with me and you think that ten minutes is
+    not that much, such an approach would be too expensive. Every cluster has a resource
+    overhead that needs to be paid. While the overall size of a cluster affects the
+    resource overhead, the number of clusters affects it even more. It's more expensive
+    to have many smaller clusters than a big one. On top of all that, there is the
+    operational cost. While it is often not proportional to the number of clusters,
+    it still increases.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Having a separate cluster for all our testing needs is not a bad idea. We shouldn't
+    discard it, just as we should consider creating (and destroying) a new cluster
+    for each new release. However, before you start creating new Kubernetes clusters,
+    we'll explore how we might accomplish the same goals with a single cluster and
+    with the help of Namespaces.
+  prefs: []
+  type: TYPE_NORMAL
+- en: First things first. We need to create a new Namespace before we can use it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output of the latter command is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: We can see that the new Namespace `testing` was created.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We can continue using the `--namespace` argument to operate within the newly
+    created Namespace. However, adding `--namespace` with every command is tedious.
+    Instead, we'll create a new context.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: We created a new context called `testing`. It is the same as the `minikube`
+    context, except that it uses the `testing` Namespace.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output, limited to the relevant parts, is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: We can see that there are two contexts. Both are set to use the same `minikube`
+    cluster with the same `minikube` user. The only difference is that one does not
+    have the Namespace set, meaning that it will use the `default`. The other has
+    it set to `testing`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we have two contexts, we can switch to `testing`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: We switched to the `testing` context that uses the Namespace of the same name.
+    From now on, all the `kubectl` commands will be executed within the context of
+    the `testing` Namespace. That is, until we change the context again, or use the
+    `--namespace` argument.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To be on the safe side, we'll confirm that nothing is running in the newly created
+    Namespace.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: The output shows that `no resources` were `found`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If we repeat the same command with the addition of the `--namespace=default`
+    argument, we'll see that the `go-demo-2` objects we created earlier are still
+    running.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s continue and deploy a new release. As we explained before, the main
+    objective of the deployment is to provide a means to test the release. It should
+    remain hidden from our users. They should be oblivious to the existence of the
+    new Deployment and continue using the release 1.0 until we are confident that
+    2.0 works as expected:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: Just as before, we used `sed` to alter the image definition. This time, we're
+    deploying the tag `2.0`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Apart from changing the image tag, we also modified the host. This time, the
+    Ingress resource will be configured with the host `2.0.go-demo-2.com`. That will
+    allow us to test the new release using that domain while our users will continue
+    seeing the production release 1.0 through the domain `go-demo-2.com`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's confirm that the rollout finished.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: As you can see, we rolled out the Deployment `go-demo-2-api`, along with some
+    other resources. That means that we have two sets of the same objects with the
+    same name. One is running in the `default` Namespace, while the other (release
+    2.0) is running in the `testing` Namespace.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/3c63451b-d096-468e-a676-d1ff58a57423.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 11-4: The cluster with the new Namespace testing'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Before we open a new bottle of Champagne and celebrate the successful deployment
+    of the new release without affecting production, we should verify that both are
+    indeed working as expected.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If we send a request to `go-demo-2.com`, we should receive a response from the
+    release 1.0 running in the `default` Namespace.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: If, on the other hand, we send a request to `2.0.go-demo-2.com`, we should get
+    a response from the release 2.0 running in the `testing` Namespace.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: The result we accomplished through different Namespaces is very similar to what
+    we'd expect by using separate clusters. The main difference is that we did not
+    need to complicate things by creating a new cluster. We saved time and resources
+    by using a new Namespace instead.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If this would be a "real world" situation, we'd run functional and other types
+    of tests using the newly deployed release. Hopefully, those tests would be automated,
+    and they would last for only a few minutes. We'll skip the testing part since
+    it's not within the scope of this chapter (and probably not even the book). Instead,
+    we'll imagine that the tests were executed and that they were successful.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Communication is an important subject when working with Namespaces, so we'll
+    spend a few moments exploring it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Communicating between Namespaces
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We'll create an `alpine-based` Pod that we'll use to demonstrate communication
+    between Namespaces.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: We switched to the `minikube` context (`default` Namespace) and created a Pod
+    with a container based on the `alpine` image. We let it `sleep` for a long time.
+    Otherwise, the container would be without a process and would stop almost immediately.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Before we proceed, we should confirm that the Pod is indeed running.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: Please wait a few moments if, in your case, the Pod is not yet ready.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Before we proceed, we'll install `curl` inside the container in the `test` Pod.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: We already explored communication between objects in the same Namespace. Since
+    the `test` Pod is running in the `default` Namespace, we can, for example, reach
+    the `go-demo-2-api` Service by using the Service name as a DNS name.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: We got the response from the release 1.0 because that's the one running in the
+    same Namespace. Does that mean that we cannot reach Services from other Namespaces?
+  prefs: []
+  type: TYPE_NORMAL
+- en: When we create a Service, it creates a few DNS entries. One of them corresponds
+    to the name of the Service. So, the `go-demo-2-api` Service created a DNS based
+    on that name. Actually, the full DNS entry is `go-demo-2-api.svc.cluster.local`.
+    Both resolve to the same service `go-demo-2-api` which, in this case, runs in
+    the `default` Namespace.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The third DNS entry we got is in the format `<service-name>.<namespace-name>.svc.cluster.local`.
+    In our case, that is `go-demo-2-api.default.svc.cluster.local`. Or, if we prefer
+    a shorter version, we could use `go-demo-2-api.default`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In most cases, there is no good reason to use the `<service-name>.<namespace-name>`
+    format when communicating with Services within the same Namespace. The primary
+    objective behind the existence of the DNSes with the Namespace name is when we
+    want to reach services running in a different Namespace.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If we'd like to reach `go-demo-2-api` running in the `testing` Namespace from
+    the `test` Pod in the `default` Namespace, we should use the `go-demo-2-api.testing.svc.cluster.local`
+    DNS or, even better, the shorter version `go-demo-2-api.testing`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This time, the output is different:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: Kube DNS used the DNS suffix `testing` to deduce that we want to reach the Service
+    located in that Namespace. As a result, we got the response from the release 2.0
+    of the `go-demo-2` application.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deleting a Namespace and all its Objects
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Another handy feature of the Namespaces is their cascading effect. If, for example,
+    we delete the `testing` Namespace, all the objects and the resources running inside
+    it will be removed as well.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We deleted the `testing` Namespace and retrieved all the objects residing in
+    it. The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: Please note that, in your case, the output might show more objects. If that's
+    the case, you were too fast, and Kubernetes did not yet have time to remove them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: After a second or two, the only objects in the `testing` Namespace are the Pods
+    with the status `terminating`. Once the grace period is over, they will be removed
+    as well. The Namespace is gone, and everything we created in it was removed as
+    well.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The ability to remove a Namespace and all the objects and the resources it hosts
+    is especially useful when we want to create temporary objects. A good example
+    would be **continuous deployment** (**CDP**) processes. We can create a Namespace
+    to build, package, test, and do all the other tasks our pipeline requires. Once
+    we're finished, we can simply remove the Namespace. Otherwise, we would need to
+    keep track of all the objects we created and make sure that they are removed before
+    we terminate the CDP pipeline.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that the Namespace hosting our release 2.0 is gone, we might want to double
+    check that the production release (1.0) is still running.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: The output should show the `go-demo-2` Deployments, ReplicaSets, Pods, and Services
+    since we are still using the `default` context.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To be on the safe side, we'll check that a request coming from the `go-demo-2.com`
+    domain still returns a response from the release 1.0.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: As expected, the response is `hello, release 1.0!`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If this were a continuous deployment pipeline, the only thing left would be
+    to execute rolling updates that would change the image of the production release
+    to `vfarcic/go-demo-2:2.0`. The command could be as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE38]'
+  prefs: []
+  type: TYPE_PRE
+- en: What now?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Deploying test releases as part of a continuous deployment process is not the
+    only usage of Namespaces. There can be many other situations when they are useful.
+    We could, for example, give a separate Namespace to each team in our organization.
+    Or we could split the cluster into Namespaces based on the type of applications
+    (for example, monitoring, continuous-deployment, back-end, and so on). All in
+    all, Namespaces are a handy way to separate the cluster into different sections.
+    Some of the Namespaces we'll create will be long-lasting while others, like testing
+    Namespace from our examples, will be short-lived.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The real power behind Namespaces comes when they are combined with authorization
+    policies and constraints. However, we did not yet explore those subjects so, for
+    now, we'll need to limit our Namespaces experience to their basic form.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The chapter is finished, and that means that we are about to remove the cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE39]'
+  prefs: []
+  type: TYPE_PRE
+- en: If you'd like to know more about Namespaces, please explore Namespace v1 core
+    ([https://v1-9.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.9/#namespace-v1-core](https://v1-9.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.9/#namespace-v1-core))
+    API documentation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Kubernetes Namespaces compared to Docker Swarm equivalent (if there is any)
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Docker Swarm does not have anything like Kubernetes Namespaces. We cannot split
+    a Swarm cluster into sections. Therefore, we can finish this comparison by saying
+    that Kubernetes is a clear winner regarding this feature since Docker Swarm doesn't
+    have Namespaces. But, that would not be entirely accurate.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Docker Swarm stacks are, in a way, similar to Kubernetes Namespaces. All the
+    services in a stack are uniquely identified through a combination of a stack name
+    and the names of services inside it. By default, all services within a stack can
+    communicate with each other through the stack's default network. Services can
+    speak with those from other stacks only if they are explicitly attached to the
+    same network. All in all, each Swarm stack is separated from other stacks. They
+    are, in a way, similar to Kubernetes Namespaces.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Even though Docker Swarm stacks do provide a functionality similar to Kubernetes
+    Namespaces, their usage is limited. If, for example, we'd like to split the cluster
+    into production and testing, we'd need to create two potentially large Swarm stack
+    files. That would be impractical. Moreover, Kubernetes Namespaces can be associated
+    with resource quotas, policies, and quite a few other things. They do act as genuinely
+    separate clusters. Swarm stacks, on the other hand, are meant to group services
+    into logical entities. While some of the features in Kubernetes Namespaces and
+    Docker Swarm stacks coincide, this is still a clear win for Kubernetes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Some might argue that they are useful only for bigger clusters or organizations
+    with many teams. I think that's an understatement. Namespaces can be applied to
+    many other use-cases. For example, creating a new Namespace for every continuous
+    integration, delivery, or deployment pipeline is a beneficial practice. We get
+    a unique scope for names, we can mitigate potential problems through resource
+    quotas, and we can increase security. At the end of the process, we can remove
+    the Namespace and all the objects we created inside it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Kubernetes Namespaces are one of the things that make Kubernetes a more likely
+    candidate for teams that are in need of big clusters as well as those relying
+    heavily on automation. Among the features we compared so far, this is the first
+    real differentiator between the two platforms. Kubernetes is the winner of this
+    round.
+  prefs: []
+  type: TYPE_NORMAL

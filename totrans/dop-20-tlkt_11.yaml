@@ -1,0 +1,398 @@
+- en: Chapter 11. Automating Implementation of the Deployment Pipeline
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Now that we are in control of the process of manually executing the deployment
+    pipeline, we can start working on the creation of a fully automated version. After
+    all, our goal is not to employ an army of operators that will sit in front of
+    their computers and continuously execute deployment commands. Before we proceed,
+    let us quickly go through the process one more time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deployment Pipeline Steps
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The steps of the pipeline are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Check out the code
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Run pre-deployment tests, compile and package the code
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Build the container
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Push the container to the registry
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Deploy the container to the production server
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Integrate the container
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Run post-deployment tests
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Push the tests container to the registry![Deployment Pipeline Steps](img/B05848_11_01.jpg)
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Figure 11-1 – Deployment pipeline
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'To minimize the impact the pipeline has on our business, we tried our best
+    to run as many tasks as possible outside the production server. The only two steps
+    that we had to perform on the `prod` node is deployment itself and the integrations
+    (at the moment only with the proxy service). All the rest of the steps were done
+    inside the `cd` server:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Deployment Pipeline Steps](img/B05848_11_02.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 11-2 – Tasks distribution between the CD and production nodes
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We already chose Ansible as the tool we''re using for servers provisioning.
+    We used it in several occasions to install packages, setup configurations and
+    so on. Up until now, all those usages were aimed at providing all the requirements
+    necessary for the deployment of our containers. We''ll extend the usage of Ansible
+    playbooks and add the deployment pipeline to it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Deployment Pipeline Steps](img/B05848_11_03.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 11-3 – Automated deployment pipeline with Ansible
+  prefs: []
+  type: TYPE_NORMAL
+- en: Of all the steps involved, we'll leave only one of them outside of the automation
+    scope. We won't check out the code with Ansible. The reason behind this is not
+    that Ansible is not capable of cloning a Git repository. It certainly is. The
+    problem is that Ansible is not a tool designed to run continuously and monitor
+    code repositories for changes. There are a few more problems that we did not yet
+    tackle. For example, we do not have a set of actions that should be run in case
+    of a failure of the process. Another hole in the current pipeline is that there
+    is a short downtime related to each deployment. The process stops the running
+    release and brings up the new one. Between those two actions, there is a (short)
+    period the service we're deploying is not operational.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We''ll leave those and other possible improvements for later on:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Deployment Pipeline Steps](img/B05848_11_04.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 11-4 – Missing pieces in the deployment pipeline
+  prefs: []
+  type: TYPE_NORMAL
+- en: To get a better grasp on the process, we'll go through each manual step we performed
+    earlier and see how it can be done with Ansible.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We''ll start by creating up the nodes and cloning the code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: The Playbook and the Role
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: If you already tried automated deployment, the chances are that the scripts
+    you created were mostly related to the deployment itself. With Ansible (and CM
+    tools in general), we have the option to do the process from scratch every time.
+    Not only that we'll automate the deployment, but we'll set up the whole server.
+    We cannot be confident in which state the server is. For example, maybe it has
+    nginx or maybe it doesn't. Maybe it did have the nginx container up and running
+    but, for some reason, its process stopped. Even if the process is running, maybe
+    some crucial configuration changed. The same logic can be applied to anything,
+    directly or indirectly, related to the service we want to deploy. The approach
+    we'll take is to have a playbook that will make sure that everything is set correctly.
+    Ansible is intelligent enough to check the status of all those dependencies and
+    applies changes only if something is wrong.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let us take a look at the `se` `rvice.yml` playbook:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `service` role will contain tasks directly related to the deployment and
+    all the others before them are dependencies our service needs to work correctly.
+    Since we already went through all but the last role from this playbook, stands
+    to reason that we should jump directly to the definition of the list of tasks
+    in the `service` role defined in the `roles/service/tasks` `/main.yml` file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: Since this role will be a bit bigger than those we used before, we made the
+    decision to split them into logical groups (*pre-deployment*, *deployment* and
+    *post-deployment*) and include them into the `main.yml` file. That way we won't
+    be dealing with too many tasks at a time, and we'll increase the readability of
+    the role.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Pre-Deployment tasks
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The first thing we should do is build the tests container. We already used
+    the following command (please don''t run it):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Replicating the same command in Ansible is very easy with the `Sh` `ell module`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: We changed the command itself so that parts that might be prone to change are
+    used as variables. The first one is the `registry_url` that should contain the
+    IP and the port of the Docker registry. The default value is specified in the
+    `grou` `p_vars/all` file. The second one is more interesting. We are not creating
+    this role to work with the service `books-ms` but as something that can be used
+    with (almost) any service since all of them can follow the same pattern. We can
+    do this sorts of things without sacrificing the freedom since the key instructions
+    are stored in a few files located in the repository of each service. The most
+    important ones are the `Dockerfile.test` and the *Dockerfile* that define testing
+    and service containers, Docker Compose configurations that define how should containers
+    be run and, finally, the proxy configuration and template. All those files are
+    separated from the process we're creating, and people in charge of the project
+    have the full freedom to tailor them to their needs. That showcases a very important
+    aspect I'm trying to promote. It is crucial not only to have the right process
+    in place but also to have the scripts, configurations and the code properly located.
+    Everything that is common to multiple projects should be centralized (as is the
+    case with Ansible playbooks located in the [https://github.com/vfarcic/ms-lifecycle](https://github.com/vfarcic/ms-lifecycle)
+    repository). On the other hand, things that might be specific to a project should
+    be stored in the repository that project resides in. Storing everything in one
+    centralized place would introduce quite a lot of waiting time since a project
+    team would need to request a change from the delivery team. The other extreme
+    is just as wrong. If everything is stored in the project repositories, there would
+    be quite a lot of duplication. Each project would need to come up with scripts
+    to set up servers, deploy a service, and so on.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next we specified a single argument `chdir`. It will make sure that the command
+    is run from the directory that, in this case, contains the `Dockerfile.test` file.
+    The `chdir` value is the variable `repo_dir` that, unlike `registry_url` does
+    not have the default value. We'll specify it at runtime when we run the playbook.
+    Then comes the `delegate_to` instruction. Since we are committed to disrupting
+    the destination server as little as possible, tasks like this one will be run
+    on the localhost (`127.0.0.1`). Finally, we set few tags that can be used to filter
+    which tasks will or will not be run.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The reason behind pulling the tests container before building it is to save
+    the time. The execution of the playbook might change from one server to another
+    and, if such a thing happens, without first pulling the container from the Registry,
+    Docker would build all the layers even though most of them are likely to be the
+    same as before. Take a note that we introduced the `ignore_errors` instruction.
+    Without it, the playbook would fail if this is the first build of the container
+    and there is nothing to be pulled.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Please keep in mind that the `shell` module should be avoided in most cases.
+    The idea behind Ansible is to specify the desired behavior and not the action
+    that should be performed. Once that desire is run, Ansible will try to do the
+    right thing. If, for example, we specify that some package should be installed,
+    Ansible will check whether such a package already exists and do the installation
+    only if it doesn't. The shell module that we used, in this case, will always run,
+    no matter the state of the system. In this particular situation, that is OK, because
+    Docker itself will make sure that only changed layers are built. It won't build
+    the whole container every time. Please keep this in mind when designing your roles.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The rest of the commands we used in the pre-deployment phase are as follows
+    (please don''t run them):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'When translated to the Ansible format, the result is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: There's not much to be said about those tasks. They all use the shell module
+    and are all running on localhost. We run the tests container that, besides the
+    obvious function of checking the quality of the code, compiles the service. The
+    result of that compilation is used to build the service container that is later
+    on pushed to the Docker registry.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The final result can be seen in the `roles/service/tasks/pre-` `deployment.yml`
+    file and we can proceed with the deployment tasks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deployment tasks
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The next set of commands we did when manually running the deployment pipeline
+    had the goal of creating directories and files required for the process. They
+    were as follows (please don't run them).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We created the service directory and downloaded the `docker-compose.yml`, `nginx-includes.conf`
+    and `nginx-upstreams.ctmpl` files from the code repository. The latter two we''ll
+    download later when the time comes to change the proxy, but we can group them
+    all together as a single Ansible task. With Ansible, we''ll do it a bit differently.
+    Since we already checked out the code, there is no reason to download those files.
+    We can just copy them to the destination server. Ansible tasks that replicate
+    this same set of commands are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: We created two tasks. The first one uses the Ansible module `file` to create
+    the service directory. Since this role is supposed to be generic and apply to
+    (almost) any service, the name of the service is a variable that we'll set at
+    runtime when we run the playbook. The second task uses the `copy` module to copy
+    all the files that we'll need on the destination server. We're using the `with_items`
+    instruction that will repeat this task for each entry into the `*files_ variable`.
+    The variable is defined in the `roles/service/defaults/main.yml` file and is as
+    follows.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: The source of all of those files utilizes the `repo_dir` variable that we already
+    used in the pre-deployment tasks. Similarly, file destinations are using the `service_name`
+    variable.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Once we're sure that all the files we'll need are on the destination server,
+    we can proceed with the actual deployment that consists of two steps (please don't
+    run them).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: First we pulled the latest image from the Docker registry and then we brought
+    it up. When `docker-compose up` is run, it checks whether the container image
+    or its configuration changed when compared with the running container. If it is
+    indeed different, Docker Compose will stop the running containers and run the
+    new ones while preserving mounted volumes. We already discussed that, during some
+    time (between the stopping the current version and running the new one), our service
+    will be unavailable. We'll deal with this problem later on. For now, a (very short)
+    downtime will be something we'll have to live with. Finally, we run `consul-template`
+    that updates configurations and reloads nginx.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'As you probably guessed, we''ll run those two commands through the Ansible
+    `shell` module:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We''re not doing anything new. It''s the same pattern as the shell tasks we
+    defined as pre-deployment tasks. The only thing worth noting is that we used variables
+    as the `-template` value. The only reason behind this is that the length of the
+    book has a maximum limit of characters per line, and all the parameters would
+    not fit. Those variables are defined in the `roles/service/defaults/main.yml`
+    file and are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The final result can be seen in the `roles/service/tas` `ks/deployment.yml`
+    file. Please note that, unlike the pre-deployment tasks, all those in this group
+    are indeed going to run on the destination server. That can be seen by the lack
+    of the `delegate_to: 127.0.0.1` instruction.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: We're done with deployment and can turn our attention to the last group of tasks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Post-Deployment tasks
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: All that is left is to run integration tests and push the tests container to
+    the registry. As a reminder, the commands are as follows (please don't run them).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Ansible equivalent of those commands is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: There's nothing new here so we won't go into details. The complete version of
+    post-deployment tasks can be found in the `roles/service/tasks/p` `ost-deploym`
+    `ent.yml` file.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Running the Automated Deployment Pipeline
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Let us see the `service` playbook in action:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: We run the playbook `service.yml` with the inventory pointing to the `hosts/prod`
+    file and few extra variables. The first one is the `repo_dir` with the value of
+    the current directory (`$PWD`). The second represents the name of the service
+    we want to deploy (`books-ms`). At the moment, we have only this service. If there
+    would be more, they could all be deployed with this same playbook by changing
+    the value of this variable.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We managed to have not only the fully automated deployment but also provisioning
+    of the destination server. The first of the playbook was done against a virgin
+    Ubuntu server, so Ansible made sure that everything needed for the deployment
+    is properly configured. The result is not perfect, but it is a good start.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Feel free to repeat the execution of the playbook and observe the differences
+    when compared to the first run. You'll notice that most of the Ansible tasks will
+    be in the status `ok` since there was nothing to be done and that the playbook
+    runs much faster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'What could be the things that we might be missing? There are quite a few. However,
+    before we proceed and try to fix them, we should set up a proper *Continuous Deployment*
+    platform and see whether it can help with the current process. Until then, let
+    us destroy the VMs and let your computer take a break:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE

@@ -1,0 +1,907 @@
+- en: Using Services to Enable Communication between Pods
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Applications that cannot communicate with each other or are not accessible to
+    end-users are worthless. Only once the communication paths are established, can
+    applications fulfill their role.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Pods are the smallest unit in Kubernetes and have a relatively short life-span.
+    They are born, and they are destroyed. They are never healed. The system heals
+    itself by creating new Pods (cells) and by terminating those that are unhealthy
+    or those that are surplus. The system is long-living, Pods are not.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Controllers, together with other components like the scheduler, are making sure
+    that the Pods are doing the right thing. They control the scheduler. We used only
+    one of them so far. ReplicaSet is in charge of making sure that the desired number
+    of Pods is always running. If there's too few of them, new ones will be created.
+    If there's too many of them, some will be destroyed. Pods that become unhealthy
+    are terminated as well. All that, and a bit more, is controlled by ReplicaSet.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The problem with our current setup is that there are no communication paths.
+    Our Pods cannot speak with each other. So far, only containers inside a Pod can
+    talk with each other through `localhost`. That led us to the design where both
+    the API and the database needed to be inside the same Pod. That was a lousy solution
+    for quite a few reasons. The main problem is that we cannot scale one without
+    the other. We could not design the setup in a way that there are, for example,
+    three replicas of the API and one replica of the database. The primary obstacle
+    was communication.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Truth be told, each Pod does get its own address. We could have split the API
+    and the database into different Pods and configure the API Pods to communicate
+    with the database through the address of the Pod it lives in. However, since Pods
+    are unreliable, short-lived, and volatile, we cannot assume that the database
+    would always be accessible through the IP of a Pod. When that Pod gets destroyed
+    (or fails), the ReplicaSet would create a new one and assign it a new address.
+    We need a stable, never-to-be-changed address that will forward requests to whichever
+    Pod is currently running.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Kubernetes Services provide addresses through which associated Pods can be accessed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's see Services in action.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Creating a Cluster
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: You know the drill. Every chapter starts by pulling the latest code from the
+    `vfarcic/k8s-specs` ([https://github.com/vfarcic/k8s-specs](https://github.com/vfarcic/k8s-specs))
+    repository, and with the creation of a new Minikube cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: All the commands from this chapter are available in the `05-svc.sh` ([https://github.com/vfarcic/k8s-specs](https://github.com/vfarcic/k8s-specs))
+    Gist.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now we have the latest code pulled and Minikube cluster running (again).
+  prefs: []
+  type: TYPE_NORMAL
+- en: We can proceed with the first example of a Service.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Creating Services by exposing ports
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Before we dive into services, we should create a ReplicaSet similar to the one
+    we used in the previous chapter. It'll provide the Pods we can use to demonstrate
+    how Services work.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s take a quick look at the ReplicaSet definition:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: The only significant difference is the `db` container definition. It is as follows.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: We customized the command and the arguments so that MongoDB exposes the REST
+    interface. We also defined the `containerPort`. Those additions are needed so
+    that we can test that the database is accessible through the Service.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s create the ReplicaSet:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We created the ReplicaSet and retrieved its state from Kubernetes. The output
+    is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: You might need to wait until both replicas are up-and-running. If, in your case,
+    the `READY` column does not yet have the value `2`, please wait for a while and
+    `get` the state again. We can proceed after both replicas are running.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We can use the `kubectl expose` command to expose a resource as a new Kubernetes
+    service. That resource can be a Deployment, another Service, a ReplicaSet, a ReplicationController,
+    or a Pod. We'll expose the ReplicaSet since it is already running in the cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: We specified that we want to expose a ReplicaSet (`rs`) and that the name of
+    the new Service should be `go-demo-2-svc`. The port that should be exposed is
+    `28017` (the port MongoDB interface is listening to). Finally, we specified that
+    the type of the Service should be `NodePort`. As a result, the target port will
+    be exposed on every node of the cluster to the outside world, and it will be routed
+    to one of the Pods controlled by the ReplicaSet.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There are other Service types we could have used.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`ClusterIP` (the default type) exposes the port only inside the cluster. Such
+    a port would not be accessible from anywhere outside. `ClusterIP` is useful when
+    we want to enable communication between Pods and still prevent any external access.
+    If `NodePort` is used, `ClusterIP` will be created automatically. The `LoadBalancer`
+    type is only useful when combined with cloud provider''s load balancer. `ExternalName`
+    maps a service to an external address (for example, `kubernetes.io`).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this chapter, we'll focus on `NodePort` and `ClusterIP` types. `LoadBalancer`
+    will have to wait until we move our cluster to one of the cloud providers and
+    `ExternalName` has a very limited usage.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The processes that were initiated with the creation of the Service are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Kubernetes client (`kubectl`) sent a request to the API server requesting the
+    creation of the Service based on Pods created through the `go-demo-2` ReplicaSet.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Endpoint controller is watching the API server for new service events. It detected
+    that there is a new Service object.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Endpoint controller created endpoint objects with the same name as the Service,
+    and it used Service selector to identify endpoints (in this case the IP and the
+    port of `go-demo-2` Pods).
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: kube-proxy is watching for service and endpoint objects. It detected that there
+    is a new Service and a new endpoint object.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: kube-proxy added iptables rules which capture traffic to the Service port and
+    redirect it to endpoints. For each endpoint object, it adds iptables rule which
+    selects a Pod.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The kube-dns add-on is watching for Service. It detected that there is a new
+    service.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The kube-dns added `db` container's record to the dns server (skydns).
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![](img/9fb3fdee-8495-4fa1-b025-c3165544ee1b.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 5-1: The sequence of events followed by request to create a Service'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The sequence we described is useful when we want to understand everything that
+    happened in the cluster from the moment we requested the creation of a new Service.
+    However, it might be too confusing so we'll try to explain the same process through
+    a diagram that more closely represents the cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/6e2811d0-694d-461d-ac6e-ffa0b38d73b5.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 5-2: The Kubernetes components view when requesting creation of a Service'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's take a look at our new Service.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: We can see the name and the namespace. We did not yet explore namespaces (coming
+    up later) and, since we didn't specify any, it is set to `default`. Since the
+    Service is associated with the Pods created through the ReplicaSet, it inherited
+    all their labels. The selector matches the one from the ReplicaSet. The Service
+    is not directly associated with the ReplicaSet (or any other controller) but with
+    Pods through matching labels.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next is the `NodePort` type which exposes ports to all the nodes. Since `NodePort`
+    automatically created `ClusterIP` type as well, all the Pods in the cluster can
+    access the `TargetPort`. The `Port` is set to `28017`. That is the port that the
+    Pods can use to access the Service. Since we did not specify it explicitly when
+    we executed the command, its value is the same as the value of the `TargetPort`,
+    which is the port of the associated Pod that will receive all the requests. `NodePort`
+    was generated automatically since we did not set it explicitly. It is the port
+    which we can use to access the Service and, therefore, the Pods from outside the
+    cluster. In most cases, it should be randomly generated, that way we avoid any
+    clashes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s see whether the Service indeed works:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: A note to Windows users
+  prefs: []
+  type: TYPE_NORMAL
+- en: Git Bash might not be able to use the `open` command. If that's the case, replace
+    the `open` command with `echo`. As a result, you'll get the full address that
+    should be opened directly in your browser of choice.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We used the filtered output of the `kubectl get` command to retrieve the `nodePort`
+    and store it as the environment variable `PORT`. Next, we retrieved the IP of
+    the minikube VM. Finally, we opened MongoDB UI in a browser through the service
+    port.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/09249c2b-a21e-4adb-bc07-1ac48dcc05f5.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 5-3: The Service created by exposing the ReplicaSet'
+  prefs: []
+  type: TYPE_NORMAL
+- en: As I already mentioned in the previous chapters, creating Kubernetes objects
+    using imperative commands is not a good idea unless we're trying some quick hack.
+    The same applies to Services. Even though `kubectl expose` did the work, we should
+    try to use a documented approach through YAML files. In that spirit, we'll destroy
+    the service we created and start over.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: Creating Services through declarative syntax
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We can accomplish a similar result as the one using `kubectl expose` through
+    the `svc/go-demo-2-svc.yml` specification.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: You should be familiar with the meaning of `apiVersion`, `kind`, and `metadata`,
+    so we'll jump straight into the `spec` section. Since we already explored some
+    of the options through the `kubectl expose` command, the `spec` should be relatively
+    easy to grasp.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The type of the Service is set to `NodePort` meaning that the ports will be
+    available both within the cluster as well as from outside by sending requests
+    to any of the nodes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `ports` section specifies that the requests should be forwarded to the Pods
+    on port `28017`. The `nodePort` is new. Instead of letting the service expose
+    a random port, we set it to the explicit value of `30001`. Even though, in most
+    cases, that is not a good practice, I thought it might be a good idea to demonstrate
+    that option as well. The protocol is set to `TCP`. The only other alternative
+    would be to use `UDP`. We could have skipped the protocol altogether since `TCP`
+    is the default value but, sometimes, it is a good idea to leave things as a reminder
+    of an option.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `selector` is used by the Service to know which Pods should receive requests.
+    It works in the same way as ReplicaSet selectors. In this case, we defined that
+    the service should forward requests to Pods with labels `type` set to `backend`
+    and `service` set to `go-demo`. Those two labels are set in the Pods `spec` of
+    the ReplicaSet.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that there's no mystery in the definition, we can proceed and create the
+    Service.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We created the Service and retrieved its information from the API server. The
+    output of the latter command is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now that the Service is running (again), we can double-check that it is working
+    as expected by trying to access MongoDB UI.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: Since we fixed the `nodePort` to `30001`, we did not have to retrieve the Port
+    from the API server. Instead, we used the IP of the Minikube node and the hard-coded
+    port `30001` to open the UI.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/82fe0877-d23c-4f0a-b8af-9031ef7093fa.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 5-4: The Service with the matching Pods and hard-coded port'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's take a look at the endpoint. It holds the list of Pods that should receive
+    requests.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: We can see that there are two subsets, corresponding to the two Pods that contain
+    the same labels as the Service `selector`. Each has a unique IP that is included
+    in the algorithm used when forwarding requests. Actually, it's not much of an
+    algorithm. Requests will be sent to those Pods randomly. That randomness results
+    in something similar to round-robin load balancing. If the number of Pods does
+    not change, each will receive an approximately equal number of requests.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Random requests forwarding should be enough for most use cases. If it's not,
+    we'd need to resort to a third-party solution (for now). However soon, when Kubernetes
+    1.9 gets released, we'll have an alternative to the *iptables* solution. We'll
+    be able to apply different types of load balancing algorithms like last connection,
+    destination hashing, newer queue, and so on. Still, the current solution is based
+    on *iptables*, and we'll stick with it, for now.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Throughout the book, so far, I repeated a few times that our current Pod design
+    is flawed. We have two containers (an API and a database) packaged together. Among
+    other problems, that prevents us from scaling one without the other. Now that
+    we learned how to use Services, we can redesign our Pod solution.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Before we move on, we''ll delete the Service and the ReplicaSet we created:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: Both the ReplicaSet and the Service are gone, and we can start a new.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Splitting the Pod and establishing communication through Services
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Let''s take a look at a ReplicaSet definition for a Pod with only the database:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: We'll comment only on the things that changed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Since this ReplicaSet defines only the database, we reduced the number of replicas
+    to `1`. Truth be told, MongoDB should be scaled as well, but that's out of the
+    scope of this chapter (and probably the book as well). For now, we'll pretend
+    that one replica of a database is enough.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Since `selector` labels need to be unique, we changed them slightly. The `service`
+    is still `go-demo-2`, but the `type` was changed to `db`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The rest of the definition is the same except that the `containers` now contain
+    only `mongo`. We'll define the API in a separate ReplicaSet.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's create the ReplicaSet before we move to the Service that will reference
+    its Pod.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: One object was created, three are left to go.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The next one is the Service for the Pod we just created through the ReplicaSet.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: This Service definition does not contain anything new. There is no `type`, so
+    it'll default to `ClusterIP`. Since there is no reason for anyone outside the
+    cluster to communicate with the database, there's no need to expose it using the
+    `NodePort` type. We also skipped specifying the `nodePort`, since only internal
+    communication within the cluster is allowed. The same is true for the `protocol`.
+    `TCP` is all we need, and it happens to be the default one. Finally, the `selector`
+    labels are the same as the labels that define the Pod.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s create the Service:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: We are finished with the database. The ReplicaSet will make sure that the Pod
+    is (almost) always up-and-running and the Service will allow other Pods to communicate
+    with it through a fixed DNS.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Moving to the backend API...
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: Just as with the database, this ReplicaSet should be familiar since it's very
+    similar to the one we used before. We'll comment only on the differences.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The number of `replicas` is set to `3`. That solves one of the main problems
+    we had with the previous ReplicaSets that defined Pods with both containers. Now
+    the number of replicas can differ, and we have one Pod for the database, and three
+    for the backend API.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `type` label is set to `api` so that both the ReplicaSet and the (soon to
+    come) Service can distinguish the Pods from those created for the database.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We have the environment variable `DB` set to `go-demo-2-db`. The code behind
+    the `vfarcic/go-demo-2` image is written in a way that the connection to the database
+    is established by reading that variable. In this case, we can say that it will
+    try to connect to the database running on the DNS `go-demo-2-db`. If you go back
+    to the database Service definition, you'll notice that its name is `go-demo-2-db`
+    as well. If everything works correctly, we should expect that the DNS was created
+    with the Service and that it'll forward requests to the database.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In earlier Kubernetes versions it used `userspace` proxy mode. Its advantage
+    is that the proxy would retry failed requests to another Pod. With the shift to
+    the `iptables` mode, that feature is lost. However, `iptables` are much faster
+    and more reliable, so the loss of the retry mechanism is well compensated. That
+    does not mean that the requests are sent to Pods "blindly". The lack of the retry
+    mechanism is mitigated with `readinessProbe`, which we added to the ReplicaSet.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `readinessProbe` has the same fields as the `livenessProbe`. We used the
+    same values for both, except for the `periodSeconds`, where instead of relying
+    on the default value of `10`, we set it to `1`. While `livenessProbe` is used
+    to determine whether a Pod is alive or it should be replaced by a new one, the
+    `readinessProbe` is used by the `iptables`. A Pod that does not pass the `readinessProbe`
+    will be excluded and will not receive requests. In theory, Requests might be still
+    sent to a faulty Pod, between two iterations. Still, such requests will be small
+    in number since the `iptables` will change as soon as the next probe responds
+    with HTTP code less than `200`, or equal or greater than `400`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Ideally, an application would have different end-points for the `readinessProbe`
+    and the `livenessProbe`. This one doesn't so the same one should do. You can blame
+    it on me being too lazy to add them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's create the ReplicaSet.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Only one object is missing, that is service:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: There's nothing truly new in this definition. The `type` is set to `NodePort`
+    since the API should be accessible from outside the cluster. The `selector` label
+    `type` is set to `api` so that it matches the labels defined for the Pods.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'That is the last object we''ll create (in this section), so let''s move on
+    and do it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We''ll take a look at what we have in the cluster:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: Both ReplicaSets for `db` and api are there, followed by the three replicas
+    of the `go-demo-2-api` Pods and one replica of the `go-demo-2-db` Pod. Finally,
+    the two Services are running as well, together with the one created by Kubernetes
+    itself.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I'm not sure why are the ReplicaSets duplicated in this view. My best guess
+    is that it is a bug that will be corrected soon. To be honest, I haven't spent
+    time investigating that since it does not affect how the cluster and ReplicaSets
+    work. If you execute `kubectl get rs`, you'll see that there are only two of them,
+    not four.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Before we proceed, it might be worth mentioning that the code behind the `vfarcic/go-demo-2`
+    image is designed to fail if it cannot connect to the database. The fact that
+    the three replicas of the `go-demo-2-api` Pod are running means that the communication
+    is established. The only verification left is to check whether we can access the
+    API from outside the cluster. Let's try that out.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We retrieved the port of the service (we still have the Minikube node `IP`
+    from before) and used it to send a request. The output of the last command is
+    as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: We got the response `200` and a friendly `hello, world!` message indicating
+    that the API is indeed accessible from outside the cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: At this point, you might be wondering whether it is overkill to have four YAML
+    files for a single application. Can't we simplify the definitions? Not really.
+    Can we define everything in a single file? Read on.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Before we move further, we''ll delete the objects we created. By now, you probably
+    noticed that I like destroying things and starting over. Bear with me. There is
+    a good reason for the imminent destruction:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: Everything we created is gone, and we can start over.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Defining multiple objects in the same YAML file
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The `vfarcic/go-demo-2` and `mongo` images form the same stack. They work together
+    and having four YAML definitions is confusing. It would get even more confusing
+    later on since we are going to add more objects to the stack. Things would be
+    much simpler and easier if we would move all the objects we created thus far into
+    a single YAML definition. Fortunately, that is very easy to accomplish.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s take a look at yet another YAML file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: We won't display the output since it is the same as the contents of the previous
+    four YAML files combined. The only difference is that each object definition is
+    separated by three dashes (`---`).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If you''re as paranoid as I am, you''d like to double check that everything
+    works as expected, so let''s create the objects defined in that file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output of the latter command is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: The two ReplicaSets and the two Services were created, and we can rejoice in
+    replacing four files with one.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finally, to be on the safe side, we'll also double check that the stack API
+    is up-and-running and accessible.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE38]'
+  prefs: []
+  type: TYPE_PRE
+- en: The response is `200` indicating that everything works as expected.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Before we finish the discussion about Services, we might want to go through
+    the discovery process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Discovering Services
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Services can be discovered through two principal modes; environment variables
+    and DNS.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Every Pod gets environment variables for each of the active Services. They are
+    provided in the same format as what Docker links expect, as well with the simpler
+    Kubernetes-specific syntax.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's take a look at the environment variables available in one of the Pods
+    we're running.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE39]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output, limited to the environment variables related to the `go-demo-2-db`
+    service, is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE40]'
+  prefs: []
+  type: TYPE_PRE
+- en: The first five variables are using the Docker format. If you already worked
+    with Docker networking, you should be familiar with them. At least, if you're
+    familiar with the way Swarm (standalone) and Docker Compose operate. Later version
+    of Swarm (Mode) still generate the environment variables but they are mostly abandoned
+    by the users in favour of DNSes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The last two environment variables are Kubernetes specific and follow the `[SERVICE_NAME]_SERVICE_HOST`
+    and `[SERVICE_NAME]_SERIVCE_PORT` format (service name is upper-cased).
+  prefs: []
+  type: TYPE_NORMAL
+- en: No matter which set of environment variables you choose to use (if any), they
+    all serve the same purpose. They provide a reference we can use to connect to
+    a Service and, therefore to the related Pods.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Things will become more evident when we describe the `go-demo-2-db` Service.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE41]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE42]'
+  prefs: []
+  type: TYPE_PRE
+- en: The key is in the `IP` field. That is the IP through which this service can
+    be accessed and it matches the values of the environment variables `GO_DEMO_2_DB_*`
+    and `GO_DEMO_2_DB_SERVICE_HOST`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The code inside the containers that form the `go-demo-2-api` Pods could use
+    any of those environment variables to construct a connection string towards the
+    `go-demo-2-db` Pods. For example, we could have used `GO_DEMO_2_DB_SERVICE_HOST`
+    to connect to the database. And, yet, we didn't do that. The reason is simple.
+    It is easier to use DNS instead.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s take another look at the snippet from the `go-demo-2-api-rs.yml` ReplicaSet
+    definition:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE43]'
+  prefs: []
+  type: TYPE_PRE
+- en: We declared an environment variable with the name of the Service (`go-demo-2-db`).
+    That variable is used by the code as a connection string to the database. Kubernetes
+    converts Service names into DNSes and adds them to the DNS server. It is a cluster
+    add-on that is already set up by Minikube.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s go through the sequence of events related to service discovery and components
+    involved:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: When the `api` container `go-demo-2` tries to connect with the `go-demo-2-db`
+    Service, it looks at the nameserver configured in `/etc/resolv.conf`. `kubelet`
+    configured the nameserver with the kube-dns Service IP (`10.96.0.10`) during the
+    Pod scheduling process.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The container queries the DNS server listening to port `53`. `go-demo-2-db`
+    DNS gets resolved to the service IP `10.0.0.19`. This DNS record was added by
+    kube-dns during the service creation process.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The container uses the service IP which forwards requests through the iptables
+    rules. They were added by kube-proxy during Service and Endpoint creation process.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Since we only have one replica of the `go-demo-2-db` Pod, iptables forwards
+    requests to just one endpoint. If we had multiple replicas, iptables would act
+    as a load balancer and forward requests randomly among Endpoints of the Service.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![](img/238e11b0-6ce1-47d2-927e-c28311551956.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 5-5: Service discovery process and components involved'
+  prefs: []
+  type: TYPE_NORMAL
+- en: What now?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: That was it. We went through most important aspects of Services. There are a
+    few other cases we did not yet explore, but the current knowledge should be more
+    than enough to get you going.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Services are indispensable objects without which communication between Pods
+    would be hard and volatile. They provide static addresses through which we can
+    access them not only from other Pods but also from outside the cluster. This ability
+    to have fixed entry points is crucial as it provides stability to otherwise dynamic
+    elements of the cluster. Pods come and go, Services stay.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We are one crucial topic away from having a fully functional, yet still simple,
+    strategy for deployment and management of our applications. We are yet to explore
+    how to deploy and update our services without downtime.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We have exhausted this topic and the time has come to destroy everything we
+    did so far.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE44]'
+  prefs: []
+  type: TYPE_PRE
+- en: If you'd like to know more about Services, please explore Service v1 core ([https://v1-9.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.9/#service-v1-core](https://v1-9.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.9/#service-v1-core))
+    API documentation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Figure 5-6: The components explored so far'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Kubernetes Pods, ReplicaSets, and Services compared to Docker Swarm stacks
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Starting from this chapter, we'll compare each Kubernetes feature with Docker
+    Swarm equivalents. That way, Swarm users can have a smoother transition into Kubernetes
+    or, depending on their goals, choose to stick with Swarm.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Please bear in mind that the comparisons will be made only for a specific set
+    of features. You will not (yet) be able to conclude whether Kubernetes is better
+    or worse than Docker Swarm. You'll need to grasp both products in their entirety
+    to make an educated decision. The comparisons like those that follow are useful
+    only as a base for more detailed examinations of the two products.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For now, we'll limit the comparison scope to Pods, ReplicaSets, and Services
+    on the one hand, and Docker Service stacks, on the other.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's start with Kubernetes file `go-demo-2.yml` ([https://github.com/vfarcic/k8s-specs/blob/master/svc/go-demo-2.yml](https://github.com/vfarcic/k8s-specs/blob/master/svc/go-demo-2.yml))
+    (the same one we used before).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The definition is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE45]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now, let's take a look at the Docker stack defined in `go-demo-2-swarm.yml`
+    ([https://github.com/vfarcic/k8s-specs/blob/master/svc/go-demo-2-swarm.yml](https://github.com/vfarcic/k8s-specs/blob/master/svc/go-demo-2-swarm.yml)).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The specification is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE46]'
+  prefs: []
+  type: TYPE_PRE
+- en: Both definitions accomplish the same result. There is no important difference
+    from the functional point of view, except in Pods. Docker does not have the option
+    to create something similar. When Swarm services are created, they are spread
+    across the cluster, and there is no easy way to specify that multiple containers
+    should run on the same node. Whether multi-container Pods are useful or not is
+    something we'll explore later. For now, we'll ignore that feature.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If we execute something like `docker stack deploy -c svc/go-demo-2-swarm.yml
+    go-demo-2`, the result would be equivalent to what we got when we run `kubectl
+    create -f svc/go-demo-2.yml`. In both cases, we get three replicas of `vfarcic/go-demo-2`,
+    and one replica of `mongo`. Respective schedulers are making sure that the desired
+    state (almost) always matches the actual state. Networking communication through
+    internal DNSes is also established with both solutions. Each node in a cluster
+    would expose a randomly defined port that forwards requests to the `api`. All
+    in all, there are no functional differences between the two solutions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When it comes to the way services are defined, there is indeed, a considerable
+    difference. Docker's stack definition is much more compact and straight-forward.
+    We defined, in twelve lines, what took around eighty lines in the Kubernetes format.
+  prefs: []
+  type: TYPE_NORMAL
+- en: One might argue that Kubernetes YAML file could have been smaller. Maybe it
+    could. Still, it'll be bigger and more complex no matter how much we simplify
+    it. One might also say that Docker's stack is missing `readinessProbe` and `livenessProbe`.
+    Yes it is, and that is because I decided not to put it there, because the `vfarcic/go-demo-2`
+    image already has `HEALTHCHECK` definition that Docker uses for similar purposes.
+    In most cases, Dockerfile is a better place to define health checks than a stack
+    definition. That does not mean that it cannot be set, or overwritten, in a YAML
+    file. It can, when needed. But, that is not the case in this example.
+  prefs: []
+  type: TYPE_NORMAL
+- en: All in all, if we limit ourselves only to Kubernetes Pods, ReplicaSets, and
+    Services, and their equivalents in Docker Swarm, the latter wins due to a much
+    simpler and more straightforward way to define specs. From the functional perspective,
+    both are very similar.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Should you conclude that Swarm is a better option than Kubernetes? Not at all.
+    At least, not until we compare other features. Swarm won the battle, but the war
+    has just begun. As we progress, you'll see that there's much more to Kubernetes.
+    We only scratched the surface.
+  prefs: []
+  type: TYPE_NORMAL

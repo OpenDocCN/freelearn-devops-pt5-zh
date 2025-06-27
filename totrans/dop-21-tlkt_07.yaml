@@ -1,0 +1,669 @@
+- en: Exploring Docker Remote API
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: You can mass-produce hardware; you cannot mass-produce software - you cannot
+    mass-produce the human mind.
+  prefs: []
+  type: TYPE_NORMAL
+- en: –Michio Kaku
+  prefs: []
+  type: TYPE_NORMAL
+- en: Up until now, we used Docker through its client. Whenever we needed something,
+    the only thing we had to do is execute a `docker` command (example: `docker service
+    create`). In most cases, that is enough when we are limiting ourselves to operating
+    our cluster from a command line.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What happens if we want to accomplish a functionality beyond what the client
+    offers? What if we'd like to operate Docker from inside our applications? Can
+    we get statistics from all the containers running on the whole cluster?
+  prefs: []
+  type: TYPE_NORMAL
+- en: One possible answer to those and quite a few other questions lies in the adoption
+    of tools beyond those offered by Docker Inc. We'll explore quite a few of those
+    in the chapters that follow.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Another approach would be to use Docker Remote API. After all, if we choose
+    one of the products of the Docker ecosystem, chances are they will use the API.
+    Docker Compose uses it to issue commands to Docker engines. Even the client uses
+    it to communicate with the remote engine. You might find it useful as well.
+  prefs: []
+  type: TYPE_NORMAL
+- en: By default, Docker daemon listens on `unix:///var/run/docker.sock` and the client
+    must have root access to interact with the daemon. If a group named `docker` exists
+    on your system, Docker applies ownership of the socket to the group. That does
+    not mean that the socket is the only way to access the API. There are indeed quite
+    a few others, and I encourage you to experiment with different combinations. For
+    the purpose of this chapter, we'll stick with the socket since it is the easiest
+    way to send API requests.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Setting up the environment
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: As in the previous chapters, we'll start with the creation of a cluster we'll
+    use to experiment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: All the commands from this chapter are available in the `07-api.sh` ([https://gist.github.com/vfarcic/bab7f89f1cbd14f9895a9e0dc7293102](https://gist.github.com/vfarcic/bab7f89f1cbd14f9895a9e0dc7293102))
+    Gist.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Please enter the `cloud-provisioning` directory where we pulled the repository.
+    Since I might have updated it since the last time you used it, we''ll issue a
+    pull. Finally, we''ll run the already familiar        `script/ dm-swarm.sh` that
+    will create a new Swarm cluster:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: The cluster is up and running.
+  prefs: []
+  type: TYPE_NORMAL
+- en: VMs created with *Docker Machine* are based on *Boot2Docker*. It is a lightweight
+    Linux distribution made specifically to run Docker containers. It runs entirely
+    from RAM, is a small 38 MB download, and boots in ~5s. It is based on *Tiny Core
+    Linux* ([http://tinycorelinux.net/](http://tinycorelinux.net/)). What distinguishes
+    it from more popular Linux distributions is its size. It is stripped down to a
+    bare minimum. This approach serves us well. If we adopt containers, there is no
+    real need for most of the kernel modules usually seen in distributions like Ubuntu
+    and RedHat.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is in line with the minimalistic approach we strive for when working with
+    containers. I already discussed the reasons for using `Alpine` as the base image
+    we use for our containers. The main one is its size (only a few MB). After all,
+    why would we ship our containers with things we don't need? The same can be said
+    for the hosts OS. Less is better, as long as all our needs are fulfilled.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There is a caveat. *Boot2Docker* is currently designed and tuned for development.
+    Using it for any kind of production workloads at this time is highly discouraged.
+    That does not diminish its value, but makes a clear distinction what it's good
+    for, and what it's not.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The reason behind this short introduction to *Boot2Docker* and Tiny Core Linux
+    lies in the next steps. We're about to install a few programs, and we need to
+    know the package management tool for the distribution we're using. Tiny Core Linux
+    uses `tce-load`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the previous chapters, we executed most of the commands from your OS (MacOS,
+    Linux, or Windows). This time, we'll run them inside one of the Docker Machine
+    VMs. The reason lies in `jq` ([https://stedolan.github.io/jq/](https://stedolan.github.io/jq/))
+    we'll use to format JSON output we'll be receiving from the API. It is available
+    on most platforms, but I thought it would be better to avoid possible problems
+    by putting you inside the VM. The second and more important reason lies in the
+    choice to send requests to the API through the Docker socket that is available
+    on the machines.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Without further ado, we''ll proceed with installations of `curl` and `jq`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: We entered the `swarm-1` machine and used `tce-load` to install `curl` and `wget`.
+    Since `jq` is not available through `tce-load`, we used `wget` to download the
+    binary. Finally, we moved `jq` to the bin directory and added execute permissions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now we're ready to start exploring Docker Remote API.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Operating Docker Swarm through the Docker Remote API
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We won't go through the whole API. The official *documentation* ([https://docs.docker.com/engine/reference/api/docker_remote_api_v1.24/](https://docs.docker.com/engine/reference/api/docker_remote_api_v1.24/))
+    is well written and provides enough details. Instead, we'll go through some basic
+    examples focused around Docker Swarm. We'll see how we can use the API by repeating
+    some of the client commands we practiced earlier. The goal of this chapter is
+    to get just enough knowledge to be able to use the API in your applications as
+    well as a glue between different services we'll explore in the next chapters.
+    Later on, we'll try to leverage this knowledge to create a monitoring system that
+    stores the information about the cluster in a database and performs some actions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's discuss a very simple example of a possible use case for the API.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If a node fails, Swarm will make sure that the containers that were running
+    inside it are rescheduled. However, that does not mean that is enough. We might
+    want to send an email stating that a node failed. Upon receiving such an email,
+    someone would perform an investigation of the cause of the failed node and probably
+    take some corrective actions. Those tasks are not urgent since Swarm mitigated
+    the problem. However, something not being urgent does not mean that it should
+    not be done.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The chapters that follow will try to make our cluster more robust, and the API
+    will play a crucial role in that. For now, let's have a brief overview.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We''ll start with a simple example. Let''s see which nodes form our cluster:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output displays three nodes with detailed information for each. Showing
+    all the information of all the nodes is too much for the book so let''s limit
+    the output to one of the nodes. All we have to do is append the name of the node
+    to the previous command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: The output, above, is truncated and only includes the "Leader" node. Your output
+    will contain three sets of nodes that start with `ID`. We won't go into details
+    of what each of the fields means. You should already be familiar with most of
+    them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Please consult *Docker Remote API v1.24: Nodes* ([https://docs.docker.com/engine/reference/api/docker_remote_api_v1.24/#/nodes](https://docs.docker.com/engine/reference/api/docker_remote_api_v1.24/#/nodes))
+    for more information.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The API is not limited only to queries. We can use it to perform any of the
+    operations available through the Docker client (and a few more). For example,
+    we can create a new service:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We sent a `POST` request to create a service named `go-demo-db`. The image
+    of the service is `mongo:3.2.10`. As a result, the API responded with the service
+    `ID`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Please consult *Docker Remote API v1.24: Create a service* ([https://docs.docker.com/engine/reference/api/docker_remote_api_v1.24/#create-a-service](https://docs.docker.com/engine/reference/api/docker_remote_api_v1.24/#create-a-service))
+    for more information.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We can confirm that the operation was indeed successful by listing all the
+    services:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We got a list of services (at the moment only one) with some of their properties.
+    We can see when was the service created, the number of replicas, and so on. Please
+    consult *Docker Remote API v1.24: List services *([https://docs.docker.com/engine/reference/api/docker_remote_api_v1.24/#/list-services](https://docs.docker.com/engine/reference/api/docker_remote_api_v1.24/#/list-services))
+    for more information.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Similarly, we can retrieve the information of a single instance:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is almost the same as when we listed all services. The only significant
+    difference is that, this time, we got a single result, while the list of services
+    returned an array enclosed in `[ and ]`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Please consult *Docker Remote API v1.24: Inspect one or more services* ([https://docs.docker.com/engine/reference/api/docker_remote_api_v1.24/#inspect-one-or-more-services](https://docs.docker.com/engine/reference/api/docker_remote_api_v1.24/#inspect-one-or-more-services))
+    for more information.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's spice it up a bit and scale to three replicas. We can accomplish that
+    by updating the service. However, before we send an update request, we need the
+    version and ID of the service. That information is available in the output of
+    the service request we sent a moment ago. However, since we are trying to do things
+    in a way that is easy to automate, we might be better off putting those values
+    in environment variables.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We can use `jq` to filter the output and return a particular value.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The command that returns the version of the service is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output of the variable `$VERSION` is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Similarly, we should retrieve the service `ID` as well:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now we have all the information we need to update the service. We''ll change
+    the number of replicas to three:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Please consult *Docker Remote API v1.24: Update a service* ([https://docs.docker.com/engine/reference/api/docker_remote_api_v1.24/#update-a-service](https://docs.docker.com/engine/reference/api/docker_remote_api_v1.24/#update-a-service))
+    for more information.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Next, we can list the `tasks` and confirm whether the service was indeed scaled
+    to three instances:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: As you can see, three tasks were returned, each representing one replica of
+    the `go-demo-db` service.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Please consult *Docker Remote API v1.24: List tasks *([https://docs.docker.com/engine/reference/api/docker_remote_api_v1.24/#list-tasks](https://docs.docker.com/engine/reference/api/docker_remote_api_v1.24/#list-tasks))
+    for more information.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: All the API requests we made so far were related to nodes and services. In some
+    cases, we might need to go lower and use the API on a container level. For example,
+    we might want to get statistics related to a single container.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Before we proceed, please make sure that the state of all the tasks is running.
+    Feel free to repeat the `http:/tasks` request to confirm the state. If it's not
+    running, please wait for a while and check it again.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To get stats of a container, first we need to find out on which node it is
+    running:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: We exited the `swarm-1` machine and used eval to create environment variables
+    that instructed the Docker client running on our host to use the engine running
+    on `swarm-1`. Please note that those environment variables are telling the client
+    to use the same API we've been exploring throughout this chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Further on, we retrieved the node where one of the containers forming the `go-demo-db`
+    service is running. We already used a similar command a couple of times, so there's
+    no need explaining it in more detail.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The output of the `$NODE` variable is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: On my laptop, the container we're looking for is running inside the `swarm-2`
+    node. In your case, it might be a different one.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now we can enter the node and get the `ID` of the container:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output of the `ID` variable is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Finally, we are ready to get the statistics. The command is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: As soon as the request is sent, you will see a constant stream of statistics.
+    Please press *CTRL* + *C* to stop the stream when you get tired looking at it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Streaming stats might be a very useful feature if we would like to implement
+    our own monitoring solution. In many other cases, we might want to disable streaming
+    and retrieve only a single recordset. We can accomplish that by setting the `stream`
+    parameter to `false`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The command that returns a single stats recordset is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: The output is still too big to be presented in the book, so you have to inspect
+    it from your screen.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We won't go into details of what each field from stats means. You'll have to
+    wait until we reach the monitoring chapter for deeper exploration. For now, the
+    important thing to note is that you can retrieve them for each container inside
+    your cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As an exercise, create a script that retrieves all the containers running on
+    the node. Iterate through each to get stats of all the containers running inside
+    that VM.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Please consult *Docker Remote API v1.24: Get container stats based on resource
+    usage* ([https://docs.docker.com/engine/reference/api/docker_remote_api_v1.24/#get-container-stats-based-on-resource-usage](https://docs.docker.com/engine/reference/api/docker_remote_api_v1.24/#get-container-stats-based-on-resource-usage))
+    for more information.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We are almost finished with the exploration of basic API requests related to
+    Swarm services so let''s remove the service we created:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We sent the `DELETE` request to remove the `go-demo-db` service followed with
+    the request to retrieve all services. The output of the later is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: Our service is no more. We removed it from the cluster and, since that was the
+    only one we created, the request to retrieve the list of services returned an
+    empty array `[]`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Please consult *Docker Remote API v1.24: Remove a service* ([https://docs.docker.com/engine/reference/api/docker_remote_api_v1.24/#remove-a-service](https://docs.docker.com/engine/reference/api/docker_remote_api_v1.24/#remove-a-service))
+    for more information.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Finally, let''s get out of the machine:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now that you have a basic understanding of the API, we can explore one possible
+    use case.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using Docker Remote API to automate proxy configuration
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Up until now, we were sending reconfigure and remove requests to our proxy.
+    That greatly simplified the configuration. Instead of changing HAProxy config
+    ourselves, we let the service reconfigure itself. We used Consul to persist the
+    state of the proxy. Can we improve the existing design by leveraging Docker Remote
+    API? I think we can.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Instead of sending reconfigure and remove requests, we can have a service that
+    would monitor the cluster state through the API. Such a tool could detect new
+    and removed services and send the same request to the `proxy` like the one we
+    would send manually.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We can go even further. Since the API allows us to retrieve any information
+    related to the cluster, we don't need to store it in Consul anymore. Whenever
+    a new instance of the service is created, it can retrieve all the information
+    it needs from the API.
+  prefs: []
+  type: TYPE_NORMAL
+- en: All in all, we can use the API to fully automate changes to the `proxy` configuration
+    as well as its state. We can create a new service that will monitor the cluster
+    state. We can also modify the `proxy` to consult that service during its initialization.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I thought to save you some time by taking the liberty to create such a service.
+    The project behind it is called *Docker Flow Swarm Listener *([https://github.com/vfarcic/docker-flow-swarm-listener](https://github.com/vfarcic/docker-flow-swarm-listener)).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's see it in action.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Combining the Swarm listener with the proxy
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The *Docker Flow Swarm Listener* ([https://github.com/vfarcic/docker-flow-swarm-listener](https://github.com/vfarcic/docker-flow-swarm-listener))
+    project leverages Docker Remote API. It has many usages but, for now, we'll limit
+    ourselves to the features that can help make our proxy configuration fully hands-free.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We''ll start by creating two networks:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: We created those two networks so many times that there is no reason to go over
+    their usefulness. The only difference is that this time, we'll have one more service
+    to attach to the `proxy` network.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next, we'll create the `swarm-listener` ([https://github.com/vfarcic/docker-flow-swarm-listener](https://github.com/vfarcic/docker-flow-swarm-listener))
+    service. It will act as a companion to the Docker Flow Proxy. Its purpose is to
+    monitor Swarm services and send requests to the proxy whenever a service is created
+    or destroyed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**A note to Windows users**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Git Bash has a habit of altering file system paths. To stop this, execute the
+    following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`export MSYS_NO_PATHCONV=1`'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s create the `swarm-listener` service:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: The service is attached to the `proxy` network, mounts the Docker socket, and
+    declares the environment variables `DF_NOTIF_CREATE_SERVICE_URL` and `DF_NOTIF_REMOVE_SERVICE_URL`.
+    We'll see the purpose of those variables soon. The service is constrained to the
+    manager nodes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The next step is to create the `proxy` service:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: We opened ports `*80*` and `*443*`. External requests will be routed through
+    them towards destination services. Please note that this time, we did not open
+    port `8080`. Since the `proxy` will be receiving notifications from the `swarm-listener`,
+    there is no need for having `8080` available for manual notifications.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `proxy` is attached to the `proxy` network and has the mode set to swarm.
+    The `proxy` must belong to the same network as the listener. They will exchange
+    information whenever a service is created or removed as well as when a new instance
+    of the `proxy` is created.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Automatically reconfiguring the proxy
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Let''s create the already familiar demo services:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: Please note the labels. We did not have them in the previous chapters. Things
+    changed and now they are a crucial part of the service definition. The `com.df.notify=true`
+    tells the `swarm-listener`  service whether to send notifications whenever a service
+    is created or removed. Since we don't want to add the `go-demo-db` service to
+    the `proxy`, the label is defined only for the `go-demo` service. The rest of
+    the labels match the query arguments we would use if we'd reconfigure the proxy
+    manually. The only difference is that the labels are prefixed with `com.df`. For
+    the list of the query arguments, please see the *Reconfigure* ([https://github.com/vfarcic/docker-flow-proxy#reconfigure](https://github.com/vfarcic/docker-flow-proxy#reconfigure))
+    section of the project.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now we should wait until all the services are running. You can see their status
+    by executing the command that follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Once all the replicas are set to `1/1`, we can see the effect of the `com.df`
+    labels by sending a request to the `go-demo` service through the `proxy`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: We sent a request to the `proxy` (the only service listening to the port `80`)
+    and got back the response from the `go-demo` service. The `proxy` was configured
+    automatically as soon as the `go-demo` service was created.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The way the process works is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Docker Flow Swarm Listener* is running inside one of the Swarm manager nodes
+    and queries Docker API in search of newly created services. Once it finds a new
+    service, it looks for its labels. If the service contains the label `com.df.notify`
+    (it can hold any value), the rest of the labels with keys starting with `com.df`.
+    are retrieved. All those labels are used to form request parameters. Those parameters
+    are appended to the address specified as the `DF_NOTIF_CREATE_SERVICE_URL` environment
+    variable defined in the `swarm-listener` service. Finally, a request is sent.
+    In this particular case, the request was made to reconfigure the `proxy` with
+    the service `go-demo` (the name of the service), using `/demo` as the path, and
+    running on the port `808`0\. The distribute label is not necessary in this example
+    since we''re running only a single instance of the `proxy`. However, in production,
+    we should run at least two `proxy` instances (for fault tolerance) and the distribute
+    argument means that reconfiguration should be applied to all.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Please see the *Reconfigure* ([https://github.com/vfarcic/docker-flow-proxy#reconfigure](https://github.com/vfarcic/docker-flow-proxy#reconfigure))
+    section for the list of all the arguments that can be used with the proxy.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Removing a service from the proxy
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Since `swarm-listener` is monitoring `docker` services, if a service is removed,
+    related entries in the `proxy` configuration will be removed as well:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If you were to check the Swarm Listener logs in the same way you would check
+    logs for any other container service, you''d see an entry similar to the one that
+    follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'A moment later, a new entry would appear in the `proxy` logs:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: From this moment on, the service `go-demo` is not available through the proxy.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Swarm Listener detected that the service was removed, sent a notification to
+    the `proxy` which, in turn, changed its configuration and reloaded the underlying
+    HAProxy.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What now?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Apart from the potential utility of having a proxy that is configured automatically
+    whenever a service is created or removed, `swarm-listener` shows how useful it
+    is to leverage the Docker Remote API. If you have your own needs that are not
+    fully covered with Docker or one of the tools in its ecosystem, it is relatively
+    easy to write your own service on top of the API. The truth is that, at the time
+    this chapter was written, the Swarm Mode is only a couple of months old, and there
+    aren’t many third party tools that can be used to fine tune or extend its behavior.
+    Even if you find all the tools that do more or less what you need, it’s still
+    a good idea to write a bit of code yourself and switch from more or less to exactly
+    what you need.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I encourage you to fire up your favorite editor and write a service in your
+    programming language of choice. You can monitor services and send yourself an
+    email whenever a member of your team creates or removes one. Or you can integrate
+    statistics with your favorite monitoring tool.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you are out of ideas for your own service and you're not afraid of *Go *([https://golang.org/](https://golang.org/)),
+    you might try extending *Docker Flow Swarm Listener *([https://github.com/vfarcic/docker-flow-swarm-listener](https://github.com/vfarcic/docker-flow-swarm-listener)).
+    Fork it, add a new feature, and make a pull request.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Remember, learning is golden. If the only outcome is that you learned something,
+    that's already pretty good. If it turns up to be useful, even better.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We reached the end of the chapter, and you already know the drill. We'll destroy
+    the machines we created and start anew.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE

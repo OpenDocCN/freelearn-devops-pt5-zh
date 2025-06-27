@@ -1,0 +1,1510 @@
+- en: Scaling Your Infrastructure
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we are going to analyze all the technologies used to deploy
+    a complete web application in **Amazon Web Services** (**AWS**). In particular,
+    we will look at how to create a monolithic application in one single machine and
+    decompose the application into multiple pieces in order to achieve scalability
+    and reliability.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Every section of this chapter first has a theoretical part that focuses on the
+    overarching idea as well as the AWS technologies necessary to implement it. It
+    also has a practical example, which makes it possible to put what is explained *into
+    action*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Starting with the monolith approach to all the software on a single machine,
+    we are going to see when and why it is convenient to break it into multiple pieces
+    to achieve better scalability and reliability. To do this, moving the data (also
+    called the state of the application) outside of the EC2 machine is the first step
+    that can be performed using RDS, the database service in the Amazon cloud universe.
+    Adding a load balancer can add many advantages, from using the **AWS Certification
+    Manager** (**ACM**), to preparing the infrastructure and scaling in and out. Configuring
+    Auto Scaling group / launch configuration is the last step to enabling scalability
+    in and out for our application.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, basic knowledge of the AWS console is assumed. This was covered
+    in the previous chapters as well as in the Terraform configuration already completed
+    in [Chapter 4](1528f579-c596-4cda-8f8c-09f2c7772c5e.xhtml), *Infrastructure as
+    Code with Terraform*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A public domain is available in the AWS account. This can be useful for testing
+    all aspects of a web application, but this is only an optional step.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Basic knowledge of Linux command-line tool is also required because the example
+    is built with an Amazon Linux 2 operating system. The code files included within
+    the chapter can be found on GitHub at link: [https://github.com/giuseppeborgese/effective_devops_with_aws__second_edition](https://github.com/giuseppeborgese/effective_devops_with_aws__second_edition).
+  prefs: []
+  type: TYPE_NORMAL
+- en: A monolithic application
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The purpose of this chapter is to introduce and lead the reader to transform
+    what is commonly called *monolithic* *application* into a dynamic and scalable
+    application.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What is a monolithic application?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'When people talk about scaling, they often use the term **monolithic application**.
+    But what is this, exactly? Usually, this refers to a software or an infrastructure
+    where everything (including the presentation part, backend, and data part) is
+    combined in a single block, called a monolith. In our case, we are focusing on
+    the infrastructure. To explain the concept of a monolithic application, we are
+    going to build an example application with the following components as shown in
+    the figure below:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: A MySQL database where there is only one table with a single numeric field
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A backend frontend Java/Tomcat listening on the default `8080` port component
+    that reads the database, shows the value, and increments the numeric value
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: An Apache 2.2 web server listening on default port `80` that communicates with
+    the Tomcat and shows the web page
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Everything contained in a single EC2 virtual machine with a public IP assigned
+    to it to communicate on the internet
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '![](img/d9be6f94-10f5-4274-9aa7-bce565976e0e.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Let''s create an example application that allows us to break and scale it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We learned how to use Terraform in the previous chapters. To build the EC2
+    machine and the security group showed in the following screenshot, we can use
+    this module called **monolith application**. To use it in your account you need
+    to change the initialization parameters and provide your personal: `* vpc-id *
+    subnet * pem` key. For the AMI instead you can find the right one following the
+    indication in the following screenshot. This example was tested with North Virginia
+    Amazon region and operative system Amazon Linux 2. Find the AMI ID for your region
+    as it is shown in the following screenshot:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/7c9d8f88-a3f3-4bd8-a84c-a39842a9b079.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The commands that create the modules are always as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'You should have in the output the following result:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If you wait a few minutes to let the application run and install all the software
+    and configurations, you can put the URL in your browser and see the one shown
+    in the following screenshot:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/9afd02a3-939c-4360-b423-74c255e885e0.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'If you receive this result, you should wait a few minutes. If this doesn''t
+    resolve the error, something probably went wrong in the installation. The error
+    message is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/14985c87-fc7f-4bb5-b341-5a41f2370a67.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Of course, your public IP will be different from this one. Every time you refresh
+    the page or the URL is opened from any source, the Java application reads the
+    value from the MySQL database, increments the value of 1 unit, and writes in the
+    same database field.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'It is worth spending some lines of code to see how everything was installed.
+    This code is found inside the `monolith_application` module shown above:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'These lines are the installation script for the `monolith_application`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now install  MySQL (MariaDB)—this is the MySQL type that is available in the
+    Amazon Linux 2 **Long Term Support** (**LTS**) default repository as well as Apache
+    2 and Java software.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The following is the installation script we started to explain before::'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: Apache is configured to pass the traffic to the Tomcat on port `8080`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To set up the MySQL in a non-interactive way, I used these lines to create
+    a database, table, and user for the Java application as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `user_data` script is inside the `module_application` and it is provided
+    as a parameter to the `user_data` field. It downloads an example Java application
+    that saves the result in the database. To simplify the installation, the `.jar`
+    file also contains the Tomcat. This is acceptable for a playground but not for
+    a real usage:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: To run this Tomcat at startup as a service, the `.jar` and the configuration
+    file are downloaded and the configuration is made automatically.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Anyway, the purpose of the `playground` application is to have something that
+    saves the result of its computation (called the **state**) inside a database.
+    Every time the url is referred to, the state is read from the database, incremented,
+    and saved again.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Associating a DNS name
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: It is not indispensable for the exercise, but if you have a public domain register,
+    you can create an **A DNS record**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You need to have a Route 53 public domain registered like mine: `devopstools.link`.
+    If you don''t know how to register, go to [https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/domain-register-update.html](https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/domain-register-update.html)
+    and follow the instructions there. Based on my experience, you will need to wait
+    from 30 minutes to two hours and the new domain will then be available. To create
+    a record follow these steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Go to Route53 | Hosted zones and select your zone
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Click on the Create Record Set button
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Insert a name and choose the `bookapp` name
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Insert the public IP of your EC2 machine
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Click on the Create button as shown in the following screenshot:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![](img/c553d97d-f219-40b6-97e3-2f5b0690e8b0.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Now you can use this record to query the application:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![](img/07b726ab-1c21-4620-85fc-26cc0e4abe9f.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Scaling a monolithic application
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We have now created the infrastructure and deployed our application, which is
+    working well. If the application is useful for a large number of people, there
+    is a chance that the number of users, requests, and data will grow  quickly. This
+    is exactly what every application owner wants.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'It is possible that the EC2 that we chose is not adequate to manage a large
+    amount of data anymore. The following are also possible:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'CPU or RAM are not enough for our three programs: Apache, Tomcat, and MySQL'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The bandwidth of the EC2 virtual machine is not enough for the number of simultaneous
+    requests
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Tomcat or MySQL need to store data for each user and the disk space is not enough
+    anymore
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: MySQL and Tomcat need to read a lot of data from a single disk at the same time.
+    Furthermore, there is a context switch for the single disk.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'There are two ways to scale an application. These are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Scaling it vertically, which means using bigger EC2 instances so that you get
+    an instance with more CPU, more memory, and better network performance
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Scaling it horizontally, which means adding more and more EC2 instances while
+    running the same code and load balancing the traffic across them
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Right now we have monolith so we can only scale vertically. In the next section,
+    we are going to break the monolith into different pieces, removing the *state* from
+    the EC2 virtual disk. In this way we can add more machines and also split the
+    load between the balancer and the database using the CDN.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To vertically scale our monolith, you need to follow these steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Choose a new instance type from the list at [https://aws.amazon.com/ec2/instance-types/](https://aws.amazon.com/ec2/instance-types/)
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Switch off the instance
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Change the instance type:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![](img/d51690c0-e8c6-4697-ae3a-7fd27d18390f.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Switch on the instance
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'For the disk space instead, this is a little bit more complex. Here, you must
+    expand the size. This procedure is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Switch off the machine to avoid date incoherency.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Detach each volume attached to the instance. However, before doing this, make
+    a note of the device used: `/dev/sda1` or `/dev/xdc` ecc.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Make a snapshot for each volume attached to the instance.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: For each snapshot created in the previous step, create a new volume. You need
+    to specify the desired size of the volume.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Attach each new volume to the instance using the same device name as in step
+    2.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Switch the machine on.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Log in to the machine and resize the filesystem using the guide for Linux and
+    for Windows. For more details please refer to the *Further reading* section toward
+    the end of the chapter.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Advantages of a monolith
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Before breaking and scaling our monolith, it is important to know whether or
+    not it is worth making the effort for our application. Let''s examine all the
+    advantages of a single block architecture:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The first advantage for sure is the infrastructure cost. Here, we are going
+    to break into multiple and scalable pieces but this means that we need to pay
+    for each piece of this architecture. The final cost of the infrastructure will
+    be higher than the single monolith.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The cost to build a multi-tier scalable architecture will definitely be much
+    more complex than a monolithic one. This means more time to build and more competencies
+    required to do that. The purpose of this book is also to reduce this competency
+    gap.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: An articulated architecture requires many settings. For example, correctly configuring
+    the security group, choosing the right balancer, choosing the right RDS,  and
+    configuring S3 or EFS to move out the state from the virtual disk. An exception
+    to this is the SSL configuration. Configuring SSL using the AWS Certificate Manager
+    is much easier than buying and configuring an SSL certificate for Apache.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: So, if you do not expect much traffic, your budget is limited. You can consider
+    building a *monolith* infrastructure to host your web application. Of course,
+    keep in mind the scalable limitation and the downtime that you need to accept
+    when you want to scale up or down vertically.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The database
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Now that we are aware of the benefits and disadvantages of a monolith application
+    and we have decided to break our app into multiple pieces, it is time to move
+    the first resource outside of the monolith.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As we anticipated in the first section of this chapter, it is necessary to move
+    the data (also called *state*) outside  of the EC2 machine. In some web applications,
+    the database is the only data source. However, in others, there are also files
+    uploaded from the users saved directly on the disk or index files if you use an
+    index engine such as **Apache Solr**. For more information on this, refer to [http://lucene.apache.org/solr/](http://lucene.apache.org/solr/)
+    .
+  prefs: []
+  type: TYPE_NORMAL
+- en: When possible, it is always convenient to use a cloud service instead to install
+    a program in a virtual machine. For a database, the RDS  service ([https://aws.amazon.com/rds/](https://aws.amazon.com/rds/))
+    provides a large set of open or closed source (Amazon Aurora, PostgreSQL, MySQL,
+    MariaDB, Oracle, and Microsoft SQL Server), so if you need an **IBM Db2** [https://www.ibm.com/products/db2-database](https://www.ibm.com/products/db2-database)
+    you can use the RDS service for your database.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To create our MySQL RDS instance, refer to the module is available in the official
+    registry at [https://registry.terraform.io/modules/terraform-aws-modules/rds/aws/1.21.0:](https://registry.terraform.io/modules/terraform-aws-modules/rds/aws/1.21.0)
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/6ccf67d1-bc18-4460-a2f0-c990e4755d8c.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: It is important to consider that, when splitting the pieces, it is necessary
+    to correctly configure security groups in order to allow access from the EC2 instance
+    to the RDS instance on port `3306`. This also avoids unnecessary access to the
+    database.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For the subnet, it is mandatory to keep a public subnet for the EC2 instance.
+    Instead, it is convenient to choose a private one for the RDS instance. We will
+    explore this topic further in [Chapter 8, ](0eb2bba9-5a84-4031-93d2-72dc4d6d4dd3.xhtml)*Hardening*
+    *the Security of Your AWS Environment.*
+  prefs: []
+  type: TYPE_NORMAL
+- en: Moving the database to the RDS
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: To create the MySQL database, we can use a public module that is available in
+    the official repository found here: [https://registry.terraform.io/modules/terraform-aws-modules/rds/aws/1.21.0](https://registry.terraform.io/modules/terraform-aws-modules/rds/aws/1.21.0).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the following code, I will simplify the original example slightly and add
+    a security group as follows. Refer to the `main.tf` file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: Because an RDS needs to work on an option group, a parameter group and a subnet
+    group.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You can see the new instance in the RDS console and click on it to open the
+    properties as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/e974351a-6087-427f-be20-efd163125314.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Once the property of the selected instance is opened, note the value of the
+    Endpoint field as shown in the following screenshot:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/84e18afa-72ba-4c17-beb8-8090951c880c.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: In my case, this is `demodb.cz4zwh6mj6on.us-east-1.rds.amazonaws.com`**.**
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Connect in SSH to the EC2 machine and try the connection to the RDS:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Run the `show databases` command to see if there is the `demodb` schema:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'To transfer the database, follow these steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Close the Java process with the `pkill` java command
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Dump the local database with the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We don''t need the local database anymore, so stop it with the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now restore the dump in the RDS with the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Check if the content was correctly copied as follows:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now that the dump is correct, you need to replace the connection inside `/home/ec2-user/tomcat.sh`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now find the string in the file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Replace this with the following line of code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Leave everything else untouched:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: You should now see that the output and the application are working again.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'It is now convenient to remove the local database with the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: Choose the RDS type
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'If you have a MySQL engine like we saw in the previous example, you can choose
+    between the following instance types:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: MySQL Classic
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Aurora MySQL
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A new type of Serverless Aurora MySQL, found here: [https://aws.amazon.com/rds/aurora/serverless/](https://aws.amazon.com/rds/aurora/serverless/)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: In most cases, MySQL Classic would be ideal. However, if you know that you will
+    have a big amount of data to manage, Aurora MySQL is ideal. This serverless option
+    is for **infrequently-used**, **variable**, and **unpredictable** workloads instead.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Backup
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: It is important to enable the backup for your RDS instance and choose the backup as Windows.
+    This is important when you expect a low write load on your database because it
+    is true that the backup will be done without downtime but it can also influence
+    the performance. For more information on best practices for Amazon RDS, refer
+    to [https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/CHAP_BestPractices.html](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/CHAP_BestPractices.html).
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can set up a daily backup and keep a maximum of 35 snapshots. Upon restore
+    you can choose one of these 35 snapshots or any moment inside these 35 days using
+    the new point-in-time recovery feature. For more information on this, refer to
+    [https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_PIT.html](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_PIT.html).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Multi-AZ
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The multi-AZ feature available at [https://aws.amazon.com/rds/details/multi-az/](https://aws.amazon.com/rds/details/multi-az/)
+    maintains a second copy of your RDS instance, using the **master-slave** technique
+    in another **availability zone** (**AZ**). If there is an issue with the master
+    instance (or in the whole AZ where the master instance is located), the DNS name
+    is automatically switched to the slave instance. Using this feature, two RDS instances
+    will always be up. In addition, the cost will be doubled. For this reason, it
+    is convenient to only use it in production.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the following diagram, shown is an multi-AZ architecture:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/91c3514d-b688-4f9f-bf46-939bcaa96781.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: ElastiCache
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'You can consider inserting a cache for your database in order to reduce the
+    load on your RDS instance. This introduces another piece to your infrastructure
+    and is also necessary for changing the software code in order to make it possible
+    to use the cache instead of the RDS only. Depending on the type of data that you
+    need to save in it, the AWS ElastiCache service available at [https://aws.amazon.com/elasticache/](https://aws.amazon.com/elasticache/)
+    provides two types: **Redis** and **Memcached**.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Elastic Load Balancer (ELB)
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'In this section, we are going to replace the Apache with the ELB and also add
+    an SSL certificate as shown in the following diagram:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/011c6db9-4325-46f4-b631-902ea94d7002.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: As we did in the previous section for the RDS, it is convenient here to replace
+    a software installed in an EC2 machine with a managed service.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We will benefit from the following features:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deploy and reliability on multiple AZs
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A web interface to manage the proxy instead of the Apache configuration files
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A fully manageable service that doesn't need to perform software upgrades
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Scalability to handle requests (pre-warming is requested in some scenarios)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Ease of storing logs on an S3 bucket
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Alternatively, when you use an ELB you need to follow the AWS method and you
+    are not free to customize this as you want. Apache is the Swiss knife of the web
+    server; it has modules that make it possible to do so many different kinds of
+    operations and actions. Using an ELB, it is possible to lose something that may
+    be useful, such as a redirect from HTTP to HTTPS.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Choosing the right ELB
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'As is well documented on AWS at [https://aws.amazon.com/elasticloadbalancing](https://aws.amazon.com/elasticloadbalancing), there
+    are 2 versions and 3 types of ELB available:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Version 1 with **Classic Lo****ad Balancer** (**CLB**)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Version 2 with **Application** **Load Balancer** (**ALB**) and **Network** **Load
+    Balancer** (**NLB**)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Each product can be described as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: CLB is the first version of the Elastic Load Balancer and was made available
+    in Spring 2009\. For more information on this, refer to [https://aws.amazon.com/blogs/aws/new-aws-load-balancing-automatic-scaling-and-cloud-monitoring-services/](https://aws.amazon.com/blogs/aws/new-aws-load-balancing-automatic-scaling-and-cloud-monitoring-services/). This
+    is one of the most popular Load Balancer, but it is also the one with the fewest
+    features.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: ALB was made available during summer 2016\. For more information, refer to [https://aws.amazon.com/blogs/aws/new-aws-application-load-balancer/](https://aws.amazon.com/blogs/aws/new-aws-application-load-balancer/). This
+    extends the CLB version 1 with a lot of features.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: NLB was released in September, 2017\. For more information on this, refer to
+    [https://aws.amazon.com/blogs/aws/new-network-load-balancer-effortless-scaling-to-millions-of-requests-per-second/](https://aws.amazon.com/blogs/aws/new-network-load-balancer-effortless-scaling-to-millions-of-requests-per-second/).
+    This is complementary to the ALB and is more focused on the network level.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'If you want a comparison of all the features of each of these three products,
+    you can take a look at the comparison table available at [https://aws.amazon.com/elasticloadbalancing/details/#compare](https://aws.amazon.com/elasticloadbalancing/details/#compare).
+    However, let''s try to summarize these differences as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: You shouldn't create CLB anymore unless you have an EC2 classic network. In
+    this case, you should really consider migrating to the VPC network type as soon
+    as possible. You also need to be familiar with the CLB because it is the most
+    popular product in the AWS Cloud environment.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: If you need to manage HTTP/HTTPS connections - and this applies to most of the
+    web applications - you should use the ALB.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: If you need to manage TCP connections or you need to control the public IP of
+    your balancer instead, the NLB is the right choice. Keep in mind that you cannot
+    use the SSL feature with this type of balancer.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: In our example, the right balancer to deploy is the ALB one. This is because
+    we want to use a web application with the HTTP/S protocol and have an SSL certificate
+    in it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deploying the balancer
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Now that we know what to do, it is time to adapt our application to the balancer
+    according to these steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Configure the security groups to allow access from the balancer to port `8080`
+    in the EC2 machine. ALB ==> `8080` EC2 (we are referring to the connection from
+    the Application Load Balancer to the EC2 machine). To simplify, we will give access
+    to the whole VPC **Classless Inter-Domain Routing** (**CIDR**).
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Create the ALB, connect to the EC2 machine, and verify that the machine is in
+    Service.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Now you can change the DNS record from the public IP of the EC2 machine to the
+    alias of the DNS balancer.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Remove the Apache software from the machine; you don't need it anymore.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: In every environment, it is convenient to deploy the balancer in more subnets
+    that belong to different AZs. Keep in mind that each zone is like a datacenter
+    and issues can always arise with datacenters. Deployment in multiple zones doesn't
+    increase the cost  as it is for RDS instead where the cost is double if you use
+    Multi AZ.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In [Chapter 5](93bb1465-ceda-4cb9-823e-5a4355720a79.xhtml)*,  Adding Continuous
+    Integration and Continuous Deployment* we will use Terraform to create ALB. Here,
+    we will perform these changes from the web console in order to understand the
+    details of each step.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Step 1 – open the access for the port 8080 from the whole VPC CIDR
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Open the access for the port 8080 from the whole VPC CIDR as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/0451ade3-e082-45c1-aae8-9fc130502f82.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Step 2 – Creating the ALB and associate to the EC2 machine
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Create the ALB and associate to the EC2 machine as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Go to Load Balancers | Create Load Balancer and choose the ALB by clicking
+    the Create button on the Application Load Balancer section, as shown in the following
+    screenshot:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/38be90d0-01d9-4c95-8b35-aa86ab76b2ec.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Select the internet-facing option from the Scheme section. This is important
+    because we want it to be reachable from the world and we also want at least two
+    subnets in two different AZs:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/e456cdb1-d696-41a6-baf9-37a0273a335b.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Ignore the following message:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: Next, we will add a secure listener.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To do this, click on the Create a new security group radio button for this
+    load balancer and open the port `80` for HTTP:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/48a501d6-b4c4-4b92-a1f0-5f17bc97c7db.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Now create a new target group. In this group, the requests will be rotated and
+    reach the EC2 instance.  The port `8080` is the port of the Tomcat software in
+    the EC2 machines.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Our `playground` application has only one URL called `/visits` so we need to
+    insert that one, and this will cause an increment of the counter in the DB every
+    time the health check is performed. In a real environment, you need a health check
+    that performs the control with a read of the DB as opposed to a write as seen
+    in the following example. In this example, it is acceptable to use this method:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/ccdd96f2-8afd-4696-9bdf-8e06cce7227a.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Select the EC2 instance and click on the Add to registered button, as shown
+    in the following screenshot:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/767b084f-af61-494c-ad05-bc40aca1f251.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'This instance will be added to the Registered targets list:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/5e29eef0-640b-4e33-975d-8b58ff992fd4.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'If you check now the target group just created in the Targets tab, you can
+    see your instance and the Status column. If the status doesn''t become healthy in
+    half a minute, there is probably an error in the configuration:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/bd58869c-1f39-4a95-979e-f92f8cfd7d2e.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: You can now check the load balancer URL as follows: `http://break-the-monolith-939654549.us-east-1.elb.amazonaws.com/visits`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Again, your URL will be different from this one, but at this point, you should
+    understand how it works.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Step 3 – creating an alias for the ELB
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Go to the new Route 53 zone and modify the A record created before with a CNAME
+    alias, as shown in the following screenshot:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/329ccd2d-c410-4ca3-998b-bed03ce72984.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: In less than 300 seconds, you should see the change and have the DNS pointing
+    to the new domain.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Step 4 – removing the Apache software from the machine
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'At this point, we don''t need the Apache software in the EC2 machine anymore.
+    To remove it run the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'It is also convenient to clean the security group of the EC2 machine by removing
+    the access to port `80`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/948c19f0-974e-4f81-93d9-4d43620f35a6.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Leave the SSH open to your own IP with the My IP source option.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Configuring the SSL certificate
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: You can configure a single certificate that is valid for one DNS record such
+    as `example.devopstools.link` or a generic one such as `*.devopstools.link` which
+    is valid for each subdomain. My advice is to use the `*` so that you don't need
+    to repeat this certificate procedure every time you have a new resource.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Certificate Manager makes it possible to acquire an SSL certificate for free
+    unless you don''t use the private authority. Follow these steps  to generate an
+    SSL certificate:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Go to the AWS Certificate Manager service and click on the Provision certificates
+    section as shown in the following screenshot:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/9d338173-824f-44bd-8990-7b9dd869f6da.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Select the Request a public certificate option as shown in the following screenshot:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/af7dce6b-f37a-48b9-8675-0acecd67ec96.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Now insert the domain name. In my case, this includes the domain name and the
+    domain name with a `*`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/22237e1b-9bfa-4e0b-8acc-8aa19e768e91.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'I decided to use the DNS validation option, but the Email validation option
+    is also good. In this case, you need to have access to the email address that
+    was used to register the domain:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/244e401e-2136-4c2a-81f0-a6f92719ccdd.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'The wizard prompts you to create one DNS record for each domain we inserted
+    at the beginning. In our case, this refers to two domains ( `*.devopstools.link` 
+    and `devopstools.link` ). You can follow the wizard and create it by clicking
+    on the Create record in Route 53 button, as shown in the following screenshot:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/36d3fc90-7491-421f-8eb3-dd8075edd699.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Click on the Create button for both DNS records. At this point, the record
+    created will be shown:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/ebf24f55-fd4a-4380-aab3-66a28bc5a8ef.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'In less than a minute, the status of the new SSL certificate will be Issued
+    and will become available for use:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/2956b4a8-63b8-4515-b878-93f37c1d207e.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: If you have ever created an SSL certificate before, you will know how simple
+    and straightforward this procedure is compared to the classic one. You can now
+    add the new certificate to your balancer and use an SSL listener.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'First of all, you need to open the security group of your ALB for the new port
+    `443` as shown in the following screenshot:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/78c9a547-9dc7-42d0-9b5d-ea07bfe2a406.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Go to your load balancer, followed by the Listeners Tab, and then click on
+    the Add listener button as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/4acbe4a1-32be-4c3e-9420-b0627635ab59.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Select the HTTPS protocol and its default port `443`
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The rule is to forward to the target already defined at creation time
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Finally, select the certificate created before from the From ACM (recommended)
+    drop-down as shown in the following screenshot:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '![](img/b482e966-7073-4246-bd1a-5d00367d73fa.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Now you have a secure certificate for your application as shown in the following
+    screenshot:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/0e83f2ad-d793-41f2-bc54-1e9392498812.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: ALB and integration with Auth0
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: If you want your users are authenticated before gaining access to the content
+    served by your load balancer, then you can integrate the ALB with the Auth0 service
+    available at [https://auth0.com/](https://auth0.com/). This is a cloud service
+    that is designed to manage users through a different kind of authentication in
+    order to use the words on their home page and provide a universal authentication
+    and authorization platform for web, mobile, and legacy applications.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you want to try this interesting configuration feature, follow the guidelines
+    at [https://medium.com/@sandrinodm/securing-your-applications-with-aws-alb-built-in-authentication-and-auth0-310ad84c8595](https://medium.com/@sandrinodm/securing-your-applications-with-aws-alb-built-in-authentication-and-auth0-310ad84c8595).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Pre-warming a load balancer
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: A well-known problem in the CLB is that it is necessary to pre-warm in order
+    to manage traffic peak because the system is made to scale up, as you can read
+    in the documentation. We recommend that you increase the load at a rate of no
+    more than 50 percent every five minutes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The official declaration about this topic is available at [https://aws.amazon.com/articles/best-practices-in-evaluating-elastic-load-balancing/#pre-warming](https://aws.amazon.com/articles/best-practices-in-evaluating-elastic-load-balancing/#pre-warming).
+    This states the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '"Amazon ELB is able to handle the vast majority of use cases for our customers
+    without requiring "pre-warming" (configuring the load balancer to have the appropriate
+    level of capacity based on expected traffic). In certain scenarios, such as when
+    flash traffic is expected, or in the case where a load test cannot be configured
+    to gradually increase traffic, we recommend that you contact us  [https://aws.amazon.com/contact-us/](https://aws.amazon.com/contact-us/)
+    to have your load balancer "pre-warmed". We will then configure the load balancer
+    to have the appropriate level of capacity based on the traffic that you expect.
+    We will need to know the start and end dates of your tests or expected flash traffic,
+    the expected request rate per second and the total size of the typical request/response
+    that you will be testing."'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Differences between the ALB and NLB:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: NLB is designed to handle tens of millions of requests per second while maintaining
+    high throughput at ultra-low latency, with no effort on the customer's part. As
+    a result, no pre-warm is needed.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: ALB instead follows the same rules as CLB.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: In short, NLB doesn't require pre-warming. However, CLB and ALB still need it.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Access/error logs
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'It is a good practice to configure the ELB to store the access/error logs to
+    an S3 bucket:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**For CLB**: [https://docs.aws.amazon.com/elasticloadbalancing/latest/classic/enable-access-logs.html](https://docs.aws.amazon.com/elasticloadbalancing/latest/classic/enable-access-logs.html)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**For ALB**: [https://docs.aws.amazon.com/elasticloadbalancing/latest/application/load-balancer-access-logs.html](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/load-balancer-access-logs.html)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**For NLB**: ELBs do not have these kind of logs because it works at network
+    level TPC/IP'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The next step
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Now that we have the balancer in multi-AZ with an SSL configured as well as
+    a scalable system, the RDS is deployed in multi-AZ. However, the EC2 machine is
+    still in a single AZ so this is consequently a single point of failure which doesn't
+    scale automatically. We need to configure the Auto Scaling feature for the EC2
+    part, but first of all we need to move the state outside of the machine if it is
+    still there.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Moving the state outside the EC2 machine
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'If your application has something regarding its state saved on a disk, you
+    need to remove it before applying Auto Scaling. What was previously saved as files
+    in the EC2 machine must be removed and managed by a service. There are two options
+    which are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**AWS Elastic File System** ([https://aws.amazon.com/efs/](https://aws.amazon.com/efs/)): In
+    a few words, this is a network file system that is mounted in your EC2 machine
+    with virtually infinite space where you only pay for the space used by your file.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**AWS S3** ([https://aws.amazon.com/s3/](https://aws.amazon.com/s3/)): This
+    was the first AWS service on the market and is an object storage designed to deliver
+    99.999999999% durability.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: In general, the S3 should be your favorite solution, but it is not always applicable
+    because it requires application software change to use it. Consequently, in some
+    cases, you may need an alternative that you can leverage on EFS.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The world is full of software and plugins designed around S3\. For example,
+    WordPress saves the files loaded by the users into the disk by default, but with
+    an additional plugin you can save it in AWS S3 and remove  the state from the
+    EC2 machine in this way.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Pushing the logs out
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Your instance is disposable and can be replaced or destroyed at any time. If
+    you need application-specific logs, you need to use a program to push the logs
+    out to S3 or CloudWatch.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Configure Auto Scaling
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The purpose of the couple, Launch Configurations and Auto Scaling Groups shown
+    below is to ensure scalability and reliability:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/ed028653-0555-4017-a3eb-02367e88065c.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Scalability and reliability are described as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Scalability**: if there is an increase of requests/CPU, the system needs
+    to scale up and add instances. In the same way, if the traffic goes down, it is
+    necessary to remove unnecessary resources.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Reliability**: if one instance  goes down for any reason, the Auto Scaling
+    system automatically replaces it with a new one.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: You need to start the instance quickly in order to create an image, so by using
+    the `user_data` option you can also install a software program as we did during
+    the monolith configuration at the beginning of this chapter. However, this results
+    in an additional amount of time in which it is necessary to start a new instance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When you need to scale up, this is because you need to satisfy an increase in
+    demand and therefore need to do this as soon as possible. For this reason, it
+    is a good idea to create an image with all software and configuration files installed
+    and then insert the parameter or the configuration files that need to be passed
+    at runtime to the `user_data`, if there are any.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Moving our example inside Auto Scaling
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Our application is now ready for Auto Scaling. Here, the state is removed from
+    the EC2 and it is only in the RDS database. We tested how reachable it is from
+    the balancer and checked that it can communicate with the database. This is what
+    we are going to create:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/af1ffd58-d430-4a9d-8ac0-5495251ec52b.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Preparing the image
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'We need to have an AMI in order to pass as a parameter in the launch configuration.
+    To ensure that you have a good AMI, it is convenient to stop the machine first.
+    When it is stopped, make the AMI. To do this, right-click the Image section and
+    then click on the Create Image option, as shown in the following screenshot:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/2baf9f72-9534-4e12-9772-1e2304d77d68.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Choose a meaningful name and description before clicking on the Create Image
+    button:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/2b3c3f85-cb2b-4d3f-a77c-74a2201a5d93.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Depending on disk size, the image will be available in a few minutes. In our
+    example with 8 GB of disk, the waiting time will be short.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using the wizard launch configuration part
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'To have the Auto Scaling process in place, the following two objects are necessary:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Launch configuration
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Auto Scaling group
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Click on the Auto Scaling Groups option and an automatic wizard will then start
+    to create the necessary resources:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/0cc70e03-c741-402c-8311-5966cc821cb0.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Launch configuration is the first step to be followed. Here, select the My
+    AMIs option and find the image created in the previous step, as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/5d89d593-04c6-45d8-9d55-31e43c887923.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Now choose the name. Don''t modify anything else at this step:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/e3dc245f-cc8f-4d7d-9eaa-1a5e30365910.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Auto Scaling group part
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: At this point, the wizard asks us to provide some details for the Auto Scaling
+    part at the beginning of the configuration process. It is okay to start with 1
+    instance to first check whether or not everything is working well.
+  prefs: []
+  type: TYPE_NORMAL
+- en: VPC and subnets that you specify in the Auto Scaling group can be the same used
+    in the previous example. But keep in mind, for the ALB it is mandatory to choose
+    a public subnet while for the EC2 you can use a private or a public subnet. In
+    [Chapter 5](93bb1465-ceda-4cb9-823e-5a4355720a79.xhtml), *Adding Continuous Integration
+    and Continuous Deployment* we focus on security, we will explain why it is beneficial
+    to insert the EC2 in private ones.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'However, for now, it is okay to use any subnet. The important thing to do is
+    to choose more than one subnets in different AZs:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/bbb95c86-fa5c-4340-b714-d40d28820d1a.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'For the security group, choose the one assigned to the EC2 machine in precedence;
+    don''t create a new one:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/f73e01c8-56ca-43ca-aaf6-fb7e6728c260.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Use a key-pair that you own for a normal EC2\. In theory, you don''t need to
+    log in to a machine managed by Auto Scaling. You only need a key to log in if
+    there are errors and it is necessary to debug something:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/851a3039-ad72-4a93-9f28-9e8d4d9fed34.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Scaling policies
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'This is the important part of the wizard, but this is a slightly more difficult
+    stage. Scaling policies decide the condition whether to scale up (adding instances
+    to the Auto Scaling group) and scale down (remove instances from the group). There
+    are many ways to do this; here I have chosen the easiest way, which is through
+    the CPU % usage:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If the CPU usage is below 70% for more than 5 minutes, add 1 instance
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: If the CPU usage is lower than 40% for more than 5 minutes, remove 1 instance
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Of course, the chosen metric and values depend on your application, but with
+    this example, you can have an idea:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/e7387212-821c-4a1f-a5d4-b3f99ae5eae7.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'It is necessary to create two alarms (one for each rule) to associate to the
+    Auto Scaling group:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/1b64fe75-6d24-4730-a7c9-ddac7a75b7d3.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: '![](img/deaffdb8-9476-47aa-8160-2ab0ce240052.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'This is the final result:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/c8bf381a-1f27-44cc-b8e8-3cbbac0f2d1d.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'In the next step, add at least the tag name so it is easier to identify the
+    instances created by the Auto Scaling group:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/332e26a4-0b22-4c94-860f-d74a9edf0ced.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Modifying the Auto Scaling group
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: If you need to modify the launch configuration, it is mandatory to create a
+    copy and perform the changes at the time of creation because modifications are
+    not allowed. In the Auto Scaling group it is possible to make changes without
+    recreating it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We need to modify the Auto Scaling group because we want each instance to be
+    registered to the target group associated with our ALB:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/40500247-d3ec-4509-8edd-0c88a939283d.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'If you want to manually increase the number of instances, it is enough to modify
+    the Min size. Keep in mind that the Desired Capacity value needs to have a value
+    between Min and Max sizes:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/aeb7bb67-9445-483b-aba2-54875a77bfa9.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'In the instances, it is possible to see the new one created by the Auto Scaling
+    group:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/2f122c39-e3e4-4f97-baf9-4aa560cd9a56.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Removing the manually created instance from the balancer
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Now that the Auto Scale is working, we can remove the EC2 instance used for
+    configuration from the load balancer and leave the instances that are automatically
+    generated. As you may notice, when you remove the instance it is not immediately
+    removed but goes into a draining state for a short period of time. This occurs
+    in order to avoid poor user experience and manage the possibility that there is
+    still somebody to connect through it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/d7f8b575-2e0c-41fd-86ce-41a829353ef8.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: At this point, the configuration of the Auto Scale is complete and you now have
+    an application that satisfies the requirements of scalability and reliability.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using microservices and serverless
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: As we tested throughout this whole chapter, breaking the monolith into several
+    pieces produces many advantages but also complicates the whole system.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This concept is amplified when we use a microservices and serverless approach.
+    This is because, if you use these two approaches in the correct way, it is possible
+    to increase scalability, increase reliability, and reduce infrastructure costs.
+    However, you always need to consider that the system will be more complex to build
+    and manage. This leads to increasing the build and operative cost, especially
+    if it is the first time that your team builds and manages a system with this kind
+    of approach.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The following image represents the concept of load and cost with micro services
+    and serverless:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/692d90fe-07d0-4d4e-a96e-5f9b7dc7f817.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Image source: [https://medium.freecodecamp.org/serverless-is-cheaper-not-simpler-a10c4fc30e49](https://medium.freecodecamp.org/serverless-is-cheaper-not-simpler-a10c4fc30e49)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Scaling is a long process that has the potential to be improved. In this chapter,
+    we completed the first step and learned how to break a monolith application into
+    multiple pieces leveraging the AWS services. This approach brings many advantages
+    but also complicates our initial infrastructure, meaning that more time is spent
+    on configuration, bug fixing, and the necessity to study new services. We have
+    explored how powerful and useful all the AWS tools can be for scalability, but
+    it can also sometimes be difficult to use this, especially the first time. Using
+    automation with Terraform modules makes it possible to immediately achieve the
+    result with our knowledge on module creator. In addition, hiding the complexity
+    of a solution cannot help us in understanding what is really happening behind
+    the scenes. This can be necessary during a bug fix. For this reason, some parts
+    of the book, such as the Autos Scale, ALB, and the SSL certification, were completed
+    using the web console and its wizard.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Questions
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Is it always convenient to break a monolith into a multi-level application?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: What are the differences between the multi-level approach and the microservices/serverless
+    approach?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Can it be difficult moving from software installed in a virtual machine to as
+    a service components?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Can a load balancer manage any spike of traffic without any intervention?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Can I save money using Certificate Manager instead of a classic SSL certification
+    authority?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Why is it important to span the resources in multiple AZs?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Further reading
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'For more information, read the following articles:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Changing the Instance Type**: [https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-instance-resize.html](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-instance-resize.html)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Extending a Linux File System after Resizing the Volume**:  [https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/recognize-expanded-volume-linux.html](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/recognize-expanded-volume-linux.html)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Extending a Windows File System after Resizing the Volume**: [https://docs.aws.amazon.com/AWSEC2/latest/WindowsGuide/recognize-expanded-volume-windows.html](https://docs.aws.amazon.com/AWSEC2/latest/WindowsGuide/recognize-expanded-volume-windows.html)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Elastic Load Balancing Documentation**: [https://aws.amazon.com/documentation/elastic-load-balancing/](https://aws.amazon.com/documentation/elastic-load-balancing/)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Comparison of Elastic Load Balancing Products**: [https://aws.amazon.com/elasticloadbalancing/details/#compare](https://aws.amazon.com/elasticloadbalancing/details/#compare)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Best Practices in Evaluating Elastic Load Balancing**: [https://aws.amazon.com/articles/best-practices-in-evaluating-elastic-load-balancing/#pre-warming](https://aws.amazon.com/articles/best-practices-in-evaluating-elastic-load-balancing/#pre-warming)
+    and [https://aws.amazon.com/articles/best-practices-in-evaluating-elastic-load-balancing/](https://aws.amazon.com/articles/best-practices-in-evaluating-elastic-load-balancing/)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Spring Boot, MySQL, JPA, Hibernate Restful CRUD API Tutorial**: [https://www.callicoder.com/spring-boot-rest-api-tutorial-with-mysql-jpa-hibernate/](https://www.callicoder.com/spring-boot-rest-api-tutorial-with-mysql-jpa-hibernate/) the
+    tutorial used to create our playground.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Serverless is cheaper, not simpler**: [https://medium.freecodecamp.org/serverless-is-cheaper-not-simpler-a10c4fc30e49](https://medium.freecodecamp.org/serverless-is-cheaper-not-simpler-a10c4fc30e49)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL

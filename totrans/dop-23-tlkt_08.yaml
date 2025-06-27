@@ -1,0 +1,895 @@
+- en: Using Volumes to Access Host&#x27;s File System
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Having a system without a state is impossible. Even though there is a tendency
+    to develop stateless applications, we still need to deal with the state. There
+    are databases and other stateful third-party applications. No matter what we do,
+    we need to make sure that the state is preserved no matter what happens to containers,
+    Pods, or even whole nodes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Most of the time, stateful applications store their state on disk. That leaves
+    us with a problem. If a container crashes, `kubelet` will restart it. The problem
+    is that it will create a new container based on the same image. All data accumulated
+    inside a container that crashed will be lost.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Kubernetes volumes solve the need to preserve the state across container crashes.
+    In essence, volumes are references to files and directories made accessible to
+    containers that form a Pod. The significant difference between different types
+    of Kubernetes volumes is in the way these files and directories are created.
+  prefs: []
+  type: TYPE_NORMAL
+- en: While the primary use-case for volumes is the preservation of state, there are
+    quite a few others. For example, we might use volumes to access Docker's socket
+    running on a host. Or we might use them to access configuration residing in a
+    file on the host file system.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We can describe Volumes as a way to access a file system that might be running
+    on the same host or somewhere else. No matter where that file system is, it is
+    external to the containers that mount volumes. There can be many reasons why someone
+    might mount a Volume, with state preservation being only one of them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There are over twenty-five volume types supported by Kubernetes. It would take
+    us too much time to go through all of them. Besides, even if we'd like to do that,
+    many volume types are specific to a hosting vendor. For example, `awsElasticBlockStore`
+    works only with AWS, `azureDisk` and `azureFile` work only with Azure, and so
+    on and so forth. We'll limit our exploration to volume types that can be used
+    within Minikube. You should be able to extrapolate that knowledge to volume types
+    applicable to your hosting vendor of choice.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's get down to it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Creating a cluster
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: This time, we'll have an additional action we'll execute in preparation to create
+    a Minikube cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: All the commands from this chapter are available in the [`08-volume.sh`](https://gist.github.com/5acafb64c0124a1965f6d371dd0dedd1)
+    ([https://gist.github.com/vfarcic/5acafb64c0124a1965f6d371dd0dedd1](https://gist.github.com/vfarcic/5acafb64c0124a1965f6d371dd0dedd1))
+    Gist.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: We'll need the file inside the soon-to-be-created Minikube VM. When it starts,
+    it will copy all the files from `~/.minikube/files` on your host, into the `/files`
+    directory in the VM.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Depending on your operating system, the `~/.minikube/files` directory might
+    be somewhere else. If that's the case, please adapt the preceding command.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that the files are copied to the shared directory, we can repeat the same
+    process we did quite a few times before. Please note that we've added the step
+    from the last chapter that enables the ingress addon.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now that the Minikube cluster is up-and-running, we can explore the first volume
+    type.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Accessing host's resources through hostPath volumes
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Sooner or later, we'll have to build our images. A simple solution would be
+    to execute the `docker image build` command directly from a server. However, that
+    might cause problems. Building images on a single host means that there is an
+    uneven resource utilization and that there is a single point of failure. Wouldn't
+    it be better if we could build images anywhere inside a Kubernetes cluster?
+  prefs: []
+  type: TYPE_NORMAL
+- en: Instead of executing the `docker image build` command, we could create a Pod
+    based on the `docker` image. Kubernetes will make sure that the Pod is scheduled
+    somewhere inside the cluster, thus distributing resource usage much better.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's start with an elementary example. If we can list the images, we'll prove
+    that running docker commands inside containers works. Since, from Kubernetes'
+    point of view, Pods are the smallest entity, that's what we'll run.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: We created a Pod named `docker` and based it on the official `docker` image.
+    Since we want to execute a one-shot command, we specified that it should `Never`
+    restart. Finally, the container command is `docker image ls`. The second command
+    lists all the Pods in the cluster (including failed ones).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The output of the latter command is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: The output should show that the status is `Error`, thus indicating that there
+    is a problem with the container we're running. If, in your case, the status is
+    not yet `Error`, Kubernetes is probably still pulling the image. In that case,
+    please wait a few moments, and re-execute the `kubectl get pods` command.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s take a look at the logs of the container:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: Docker consists of two main pieces. There is a client, and there is a server.
+    When we executed `docker image ls`, we invoked the client who tried to communicate
+    with the server through its API. The problem is that Docker server is not running
+    in that container. What we should do is tell the client (inside a container) to
+    use Docker server that is already running on the host (Minikube VM).
+  prefs: []
+  type: TYPE_NORMAL
+- en: By default, the client sends instructions to the server through the socket located
+    in `/var/run/docker.sock`. We can accomplish our goal if we mount that file from
+    the host into a container.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Before we try to enable communication between a Docker client in a container
+    and Docker server on a host, we''ll delete the Pod we created a few moments ago:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let''s take a look at the Pod definition stored in `volume/docker.yml`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: Part of the definition closely mimics the `kubectl run` command we executed
+    earlier. The only significant difference is in the `volumeMounts` and `volumes`
+    sections.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `volumeMounts` field is relatively straightforward and is the same no matter
+    which type of volume we're using. In this section, we're specifying the `mountPath`
+    and the name of the volume. The former is the path we expect to mount inside this
+    container. You'll notice that we are not specifying the type of the volume nor
+    any other specifics inside the `VolumeMounts` section. Instead, we simply have
+    a reference to a volume called `docker-socket`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The volume configuration specific to each type is defined in the `volumes` section.
+    In this case, we're using the `hostPath` volume type.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`hostPath` allows us to mount a file or a directory from a host to Pods and,
+    through them, to containers. Before we discuss the usefulness of this type, we''ll
+    have a short discussion about use-cases when this is not a good choice.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Do not use `hostPath` to store a state of an application. Since it mounts a
+    file or a directory from a host into a Pod, it is not fault-tolerant. If the server
+    fails, Kubernetes will schedule the Pod to a healthy node, and the state will
+    be lost.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For our use case, `hostPath` works just fine. We're not using it to preserve
+    state, but to gain access to Docker server running on the same host as the Pod.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `hostPath` type has only two fields. The `path` represents the file or a
+    directory we want to mount from the host. Since we want to mount a socket, we
+    set the `type` accordingly. There are other types we could use.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `Directory` type will mount a directory from the host. It must exist on
+    the given path. If it doesn't, we might switch to `DirectoryOrCreate` type which
+    serves the same purpose. The difference is that `DirectoryOrCreate` will create
+    the directory if it does not exist on the host.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `File` and `FileOrCreate` are similar to their `Directory` equivalents.
+    The only difference is that this time we'd mount a file, instead of a directory.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The other supported types are `Socket`, `CharDevice`, and `BlockDevice`. They
+    should be self-explanatory. If you don't know what character or block devices
+    are, you probably don't need those types.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Last, but not least, we changed the command and the arguments to `sleep 100000`.
+    That will give us more freedom since we'll be able to create the Pod, enter inside
+    its only container, and experiment with different commands.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s create the Pod and check whether, this time, we can execute Docker commands
+    from inside the container it''ll create:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: Since the image is already pulled, starting the Pod should be almost instant.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s see whether we can retrieve the list of Docker images:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We executed `docker image ls` command and shortened the output by limiting
+    its formatting only to `Repository`. The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: Even though we executed the `docker` command inside a container, the output
+    clearly shows the images from the host. We proved that mounting the Docker socket
+    (`/var/run/docker.sock`) as a volume allows communication between Docker client
+    inside the container, and Docker server running on the host.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/0aebfc58-7258-4d6c-8549-dc9d52ccbda9.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 8-1: HostPath mounted inside a container'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's enter the container and see whether we can build a Docker image.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'To build an image, we need a `Dockerfile` as well as an application''s source
+    code. We''ll continue using `go-demo-2` as the example, so our first action will
+    be to clone the repository:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: We used `apk add` to install `git`. `docker` and many other images use `alpine`
+    as the base. If you're not familiar with `alpine`, it is a very slim and efficient
+    base image, and I strongly recommend that you use it when building your own. Images
+    like `debian`, `centos`, `ubuntu`, `redhat`, and similar base images are often
+    a terrible choice made because of a misunderstanding of how containers work.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`alpine` uses `apk` package management, so we invoked it to install `git`.
+    Next, we cloned the `vfarcic/go-demo-2` repository, and, finally, we entered into
+    the `go-demo-2` directory:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s take a quick look at the `Dockerfile`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: Since this book is dedicated to Kubernetes, we won't go into details behind
+    this Dockerfile, but only comment that it uses Docker's multi-stage builds. The
+    first stage downloads the dependencies, it runs unit tests, and it builds the
+    binary. The second stage starts over. It builds a fresh image with the `go-demo`
+    binary copied from the previous stage.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I sincerely hope you're proficient with Docker and there's no need to explain
+    image building further. If that's not the case, you might want to explore the
+    official documentation or one of my previous books. This one is focused only on
+    Kubernetes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's test whether building an image indeed works.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We executed the `docker image build` command, followed by `docker image ls`.
+    The output of the latter command is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: If we compare this with the previous `docker image ls` output, we'll notice
+    that, this time, a few new images are listed. The `golang` and `alpine` images
+    are used as a basis for each of the build stages. The `vfarcic/go-demo-2` is the
+    result of our build. Finally, `<none>` is only a left-over of the process and
+    it can be safely removed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `docker system prune` command removes all unused resources. At least, all
+    those created and unused by Docker. We confirmed that by executing `docker image
+    ls` again. This time, we can see the `<none>` image is gone.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We''ll destroy the `docker` Pod and explore other usages of the `hostPath`
+    volume type:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: '`hostPath` is a great solution for accessing host resources like `/var/run/docker.sock`,
+    `/dev/cgroups`, and others. That is, as long as the resource we''re trying to
+    reach is on the same node as the Pod.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's see whether we can find other use-cases for `hostPath`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using hostPath volume type to inject configuration files
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We are about to deploy Prometheus ([https://prometheus.io/](https://prometheus.io/))
+    for the first time (in this book). We won't go into details behind the application
+    except to say that it's fantastic and that you should consider it for your monitoring
+    and alerting needs. At the risk of disappointing you, I will have to say that
+    Prometheus is not in the scope of this chapter, and probably not even the book.
+    We're using it only to demonstrate a few Kubernetes concepts. We're not trying
+    to learn how to operate it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s take a look the application''s definition:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: There's nothing genuinely new in that YAML file. It defines an Ingress, a deployment,
+    and a service. There is, however, one thing we might need to change. Prometheus
+    needs a full `external-url` if we want to change the base path. At the moment,
+    it's set to the IP of my Minikube VM. In your case, that IP might be different.
+    We'll fix that by adding a bit of sed "magic" that will make sure the IP matches
+    that of your Minikube VM.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: We output the contents of the `volume/prometheus.yml` file, we used `sed` to
+    replace the hard-coded IP with the actual value of your Minikube instance, and
+    we passed the result to `kubectl create`. Please note that, this time, the `create`
+    command has dash (`-`) instead of the path to the file. That's an indication that
+    `stdin` should be used instead.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Once we created the application, we used the `kubectl rollout status` command
+    to confirm that the deployment finished.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now we can open Prometheus in a browser.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'At first glance, the application seems to be running correctly. However, since
+    the targets are the crucial part of the application, we should check them as well.
+    For those not familiar with Prometheus, it pulls data from targets (external data
+    sources) and, by default, comes with only one target pre-configured: Prometheus
+    itself. Prometheus will always pull data from this target unless we configure
+    it otherwise.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's take a look at its targets.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: There's something wrong. The default target is not reachable. Before we start
+    panicking, we should take a closer look at its configuration.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: The problem is with the `metrics_path` field. By default, it is set to `/metrics`.
+    However, since we changed the base path to `/prometheus`, the field should have
+    `/prometheus/metrics` as the value.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Long story short, we must change Prometheus configuration.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We could, for example, enter the container, update the configuration file, and
+    send the reload request to Prometheus. That would be a terrible solution since
+    it would last only until the next time we update the application, or until the
+    container fails, and Kubernetes decides to reschedule it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's explore alternative solutions. We could, for example, use `hostPath` volume
+    for this as well. If we can guarantee that the correct configuration file is inside
+    the VM, the Pod could attach it to the `prometheus` container. Let's try it out.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output, limited to relevant parts, is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: The only significant difference, when compared with the previous definition,
+    is in the added `volumeMounts` and `volumes` fields. We're using the same schema
+    as before, except that, this time, the `type` is set to `File`. Once we apply
+    this Deployment, the file `/files/prometheus-conf.yml` on the host will be available
+    as `/etc/prometheus/prometheus.yml` inside the container.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you recall, we copied one file to the `~/.minikube/files` directory, and
+    Minikube copied it to the `/files` directory inside the VM.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In some cases, files might end up being copied to the VM's root (`/`), instead
+    of to `/files`. If this has happened to you, please enter the VM (`minikube ssh`),
+    and move the files to `/files`, by executing the commands that follow (only if
+    the `/files` directory does not exist or is empty).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: The time has come to take a look at the content of the file.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: We changed the permissions of the file and displayed its content.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: This configuration is almost identical to what Prometheus uses by default. The
+    only difference is in the `metrics_path`, which is now pointing to `/prometheus/metrics`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s see whether Prometheus with the new configuration works as expected:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We applied the new definition (after the `sed` "magic"), we waited until the
+    `rollout` finished, and we then opened the Prometheus targets in a browser. This
+    time, with the updated configuration, Prometheus is successfully pulling data
+    from the only target currently configured:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/68682aff-9d59-427a-bbbb-d42877a9cd8a.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 8-2: Prometheus targets screen'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The next logical step would be to configure Prometheus with additional targets.
+    Specifically, you may want to configure it to fetch metrics that are already made
+    available through the Kubernetes API. We, however, will *NOT* be doing this. First
+    of all, this chapter is not about monitoring and alerting. The second, and the
+    more important reason, is that using the `hostPath` volume type to provide configuration
+    is *NOT* a good idea.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A `hostPath` volume maps a directory from a host to where the Pod is running.
+    Using it to "inject" configuration files into containers would mean that we'd
+    have to make sure that the file is present on every node of the cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Working with Minikube can be potentially misleading. The fact that we're running
+    a single-node cluster means that every Pod we run will be scheduled on one node.
+    Copying a configuration file to that single node, as we did in our example, ensures
+    that it can be mounted in any Pod. However, the moment we add more nodes to the
+    cluster, we'd experience side effects. We'd need to make sure that each node in
+    our cluster has the same file we wish to mount, as we would not be able to predict
+    where individual Pods would be scheduled. This would introduce far too much unnecessary
+    work and added complexity.
+  prefs: []
+  type: TYPE_NORMAL
+- en: An alternative solution would be to mount an NFS drive to all the nodes and
+    store the file there. That would provide the guarantee that the file will be available
+    on all the nodes, as long as we do *NOT* forget to mount NFS on each.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Another solution could be to create a custom Prometheus image. It could be based
+    on the official image, with a single `COPY` instruction that would add the configuration.
+    The advantage of that solution is that the image would be entirely immutable.
+    Its state would not be polluted with unnecessary volume mounts. Anyone could run
+    that image and expect the same result. That is my preferred solution. However,
+    in some cases, you might want to deploy the same application with a slightly different
+    configuration. Should we, in those cases, fall back to mounting an NFS drive on
+    each node and continue using `hostPath`?
+  prefs: []
+  type: TYPE_NORMAL
+- en: Even though mounting an NFS drive would solve some of the problems, it is still
+    not a great solution. In order to mount a file from NFS, we need to use the [`nfs`](https://kubernetes.io/docs/concepts/storage/volumes/#nfs)
+    ([https://kubernetes.io/docs/concepts/storage/volumes/#nfs](https://kubernetes.io/docs/concepts/storage/volumes/#nfs))
+    volume type instead of `hostPath`. Even then it would be a sub-optimal solution.
+    A much better approach would be to use `configMap`. We'll explore it in the next
+    chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Do use `hostPath` to mount host resources like `/var/run/docker.sock` and `/dev/cgroups`.
+    Do not use it to inject configuration files or store the state of an application.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We''ll move onto a more exotic volume type. But, before that, we''ll remove
+    the Pod we''re currently running:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: Using gitRepo to mount a Git repository
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The `gitRepo` volume type is probably not going to be on your list of top three
+    volume types. Or, maybe it will. It all depends on your use cases. I like it since
+    it demonstrates how a concept of a volume can be extended to a new and innovative
+    solution.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s see it in action through the `volume/github.yml` definition:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: This Pod definition is very similar to `volume/docker.yml`. The only significant
+    difference is that we added the second `volumeMount`. It will mount the directory
+    `/src` inside the container, and will use the volume named `github`. The volume
+    definition is straightforward. The `gitRepo` type defines the Git `repository`
+    and the `directory`. If we skipped the latter, we'd get the repository mounted
+    as `/src/go-demo-2`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `gitRepo` volume type allows a third field which we haven't used. We could
+    have set a specific `revision` of the repository. But, for demo purposes, the
+    `HEAD` should do.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's create the Pod.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now that we created the Pod, we''ll enter its only container, and check whether
+    `gitRepo` indeed works as expected:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: We entered into the container of the Pod, switched to the `/src` directory,
+    and listed all the files and directories inside it. That proved that `gitRepo`
+    mounted a volume with the contents of the `vfarcic/go-demo-2` GitHub repository.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/edf5c060-dfc3-4ff6-9a70-ae0bdcddfff9.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 8-3: GitHub repository mounted inside a container'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Since the Pod container is based on the `docker` image, and the socket is mounted
+    as well, we should be able to build the image using the source code provided by
+    the `gitRepo` volume:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: This time, the build should be very fast since we already have the same image
+    on the host, and the source code did not change in the meantime. You should see
+    a `Using cache` notification for each layer of the image we're building.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Since we now proved the point, let''s get out of the container and remove the
+    Pod:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE38]'
+  prefs: []
+  type: TYPE_PRE
+- en: '`gitRepo` is a nifty little addition to the volume types. It does not save
+    us a lot of work, nor does it provide something truly exceptional. We could accomplish
+    the same result by using an image with `git` and execute a simple `git clone`
+    command. Still, the volume type might come in handy on a few occasions. The more
+    we have defined in YAML files, the less we depend on ad-hoc commands. That way,
+    we can aim towards fully documented processes.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `gitRepo` volume type helps us move `git` commands (for example, `git clone`)
+    into the YAML definition. It also removes the need for the `git` binary inside
+    containers. While `gitRepo` might not always be the best option, it is indeed
+    something worth considering.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Persisting state through the emptyDir volume type
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: This time we'll deploy Jenkins and see what challenges we will face.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s take a look at the `volume/jenkins.yml` definition:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE39]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE40]'
+  prefs: []
+  type: TYPE_PRE
+- en: There's nothing special in that YAML file. It defines an Ingress with `/jenkins`
+    path, a Deployment, and a Service. We won't waste time with it. Instead, we'll
+    move on and create the objects.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE41]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We created the objects and waited until the processes finished. Now we can
+    open Jenkins in our browser of choice:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE42]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Jenkins UI opened, thus confirming that the application is deployed correctly.
+    Jenkins'' primary function is to execute jobs, so it''s only fair to create one:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE43]'
+  prefs: []
+  type: TYPE_PRE
+- en: Please type `test` in the item name field, select `Pipeline` as the type, and
+    click the OK button.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There's no need to make the Pipeline do any specific set of tasks. For now,
+    you should be fine if you just Save the job.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s explore what happens if the main process inside the Jenkins container
+    dies:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE44]'
+  prefs: []
+  type: TYPE_PRE
+- en: We retrieved the name of the Pod, and we used it to execute `kill 1` inside
+    its only container. The result is a simulation of a failure. Soon afterward, Kubernetes
+    detected the failure and recreated the container. Let's double-check all that.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE45]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE46]'
+  prefs: []
+  type: TYPE_PRE
+- en: We can see that a container is running. Since we killed the main process and,
+    with it, the first container, the number of restarts was increased to one.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's go back to Jenkins UI and check what happened to the job. I'm sure you
+    already know the answer, but we'll double check it anyways.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE47]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'As expected, the job we created is gone. When Kubernetes recreated the failed
+    container, it created a new one from the same image. Everything we generated inside
+    the running container is no more. We reset to the initial state:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s take a look at a slightly updated YAML definition:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE48]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output, limited to the relevant parts, is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE49]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We added a mount that references the `jenkins-home` volume. The volume type
+    is, this time, `emptyDir`. We''ll discuss the new volume type soon. But, before
+    we dive into explanations, we''ll try to experience its effects:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE50]'
+  prefs: []
+  type: TYPE_PRE
+- en: We applied the new definition and waited until the rollout finished.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now we can open the New Job Jenkins screen and repeat the same process we followed
+    before:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE51]'
+  prefs: []
+  type: TYPE_PRE
+- en: Please type `test` in the item name field, select `Pipeline` as the type, click
+    the OK button, and finish by clicking the Save button.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now we''ll kill the container and see what happens:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE52]'
+  prefs: []
+  type: TYPE_PRE
+- en: The output should show that there is a container running or, in other words,
+    that Kubernetes detected the failure and created a new container.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Finally, let''s open Jenkins'' Home screen one more time:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE53]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This time, the `test` job is there. The state of the application was preserved
+    even when the container failed, and Kubernetes created a new one:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/4a0c9a7f-e811-421a-86bb-60a6de474730.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 8-4: Jenkins with preserved state'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now let's talk about the `emptyDir` volume. It is considerably different from
+    those we explored thus far.
+  prefs: []
+  type: TYPE_NORMAL
+- en: An emptyDir Volume is created when a Pod is assigned to a node. It will exist
+    for as long as the Pod continues running on that server.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What that means is that `emptyDir` can survive container failures. When a container
+    crashes, a Pod is not removed from the node. Instead, Kubernetes will recreate
+    the failed container inside the same Pod and, thus, preserve the `emptyDir` Volume.
+    All in all, this volume type is only partially fault-tolerant.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If `emptyDir` is not entirely fault-tolerant, you might be wondering why we
+    are discussing it in the first place.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `emptyDir` volume type is closest we can get to fault-tolerant volumes without
+    using a network drive. Since we do not have any, we had to resort to `emptyDir`
+    as the-closest-we-can-get-to-fault-tolerant-persistence type of Volume.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As you start deploying third-party applications, you'll discover that many of
+    them come with the recommended YAML definition. If you pay closer attention, you'll
+    notice that many are using `emptyDir` volume type. It's not that `emptyDir` is
+    the best choice, but that it all depends on your needs, your hosting provider,
+    your infrastructure, and quite a few other things. There is no one-size-fits-all
+    type of persistent and fault-tolerant volume type. On the other hand, `emptyDir`
+    always works. Since it has no external dependencies, it is safe to put it as an
+    example, with the assumption that people will change to whichever type fits them
+    better.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There is an unwritten assumption that `emptyDir` is used for testing purposes,
+    and will be changed to something else before it reaches production.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As long as we're using Minikube to create a Kubernetes cluster, we'll use `emptyDir`
+    as a solution for persistent volumes. Do not despair. Later on, once we move into
+    a "more serious" cluster setup, we'll explore better options for persisting state.
+    For now, you have a taste. The full (and persistent) meal is coming later.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What now?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: With the exception of `emptyDir`, our choice of volume type demonstrated in
+    this chapter was not simply based on the ability to use them in a Minikube cluster.
+    Each of these three volume types will be an essential piece in the chapters that
+    follow. We'll use `hostPath` to access Docker server from inside containers. The
+    `gitRepo` volume type will be very significant once we start designing a continuous
+    deployment pipeline. The `emptyDir` type will be required as long as we're using
+    Minikube. Until we have a better solution for creating a Kubernetes cluster, `emptyDir`
+    will continue to be used in our Minikube examples.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We have only scratched the surface with volumes. There are at least two more
+    that we should explore inside Minikube, and one (or more) when we change to a
+    different solution for creating a cluster. The volumes that we'll explore throughout
+    the rest of the book are long enough subjects to deserve a separate chapter or,
+    as we already mentioned, require that we get rid of Minikube. For now, we'll just
+    destroy the cluster and take a break.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE54]'
+  prefs: []
+  type: TYPE_PRE
+- en: If you'd like to know more about Volumes, please explore Volume v1 core ([https://v1-9.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.9/#volume-v1-core](https://v1-9.docs.kubernetes.io/docs/reference/generated/kubernetes-api/v1.9/#volume-v1-core))
+    API documentation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The next chapter is dedicated to the `configMap` volume type. It will, hopefully,
+    solve a few problems and provide better solutions to some use-cases than those
+    we employed in this chapter. ConfigMaps deserve a full chapter, so they're getting
+    one.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/b1ad4db4-979a-48a2-9166-a07d83085772.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 8-5: The components explored so far'
+  prefs: []
+  type: TYPE_NORMAL

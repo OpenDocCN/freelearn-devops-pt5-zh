@@ -1,0 +1,987 @@
+- en: Chapter 13. Blue-Green Deployment
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Traditionally, we deploy a new release by replacing the current one. The old
+    release is stopped, and the new one is brought up in its place. The problem with
+    this approach is the downtime occurring from the moment the old release is stopped
+    until the new one is fully operational. No matter how quickly you try to do this
+    process, there will be some downtime. That might be only a millisecond, or it
+    can last for minutes or, in extreme situations, even hours. Having monolithic
+    applications introduces additional problems like, for example, the need to wait
+    a considerable amount of time until the application is initialized. People tried
+    to solve this issue in various ways, and most of them used some variation of the
+    *blue-green deployment process*. The idea behind it is simple. At any time, one
+    of the releases should be running meaning that, during the deployment process,
+    we must deploy a new release in parallel with the old one. The new and the old
+    releases are called blue and green.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Blue-Green Deployment](img/B05848_13_01.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 13-1 – At any given moment, at least, one service release is up and running
+  prefs: []
+  type: TYPE_NORMAL
+- en: We run one color as a current release, bring up the other color as a new release
+    and, once it is fully operational, switch all the traffic from the current to
+    the new release. This switch is often made with a router or a proxy service.
+  prefs: []
+  type: TYPE_NORMAL
+- en: With the blue-green process, not only that we are removing the deployment downtime,
+    but we are also reducing the risk the deployment might introduce. No matter how
+    well we tested our software before it reached the production node(s), there is
+    always a chance that something will go wrong. When that happens, we still have
+    the current version to rely on. There is no real reason to switch the traffic
+    to the new release until it is tested enough that any reasonable possibility of
+    a failure due to some specifics of the production node is verified. That usually
+    means that integration testing is performed after the deployment and before the
+    "switch" is made. Even if those verifications returned false negatives and there
+    is a failure after the traffic is redirected, we can quickly switch back to the
+    old release and restore the system to the previous state. We can roll back much
+    faster than if we'd need to restore the application from some backup or do another
+    deployment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If we combine the blue-green process with immutable deployments (through VMs
+    in the past and though containers today), the result is a very powerful, secure
+    and reliable deployment procedure that can be performed much more often. If architecture
+    is based on microservices in conjunction with containers, we don't need two nodes
+    to perform the procedure and can run both releases side by side.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The significant challenges with this approach are databases. In many cases,
+    we need to upgrade a database schema in a way that it supports both releases and
+    then proceed with the deployment. The problems that might arise from this database
+    upgrade are often related to the time that passes between releases. When releases
+    are done often, changes to the database schema tend to be small, making it easier
+    to maintain compatibility across two releases. If weeks, or months, passed between
+    releases, database changes could be so big that backward compatibility might be
+    impossible or not worthwhile doing. If we are aiming towards continuous delivery
+    or deployment, the period between two releases should be short or, if it isn't,
+    involve a relatively small amount of changes to the code base.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The blue-green deployment process
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The blue-green deployment procedure, when applied to microservices packed as
+    containers, is as follows.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The current release (for example blue), is running on the server. All traffic
+    to that release is routed through a proxy service. Microservices are immutable
+    and deployed as containers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The blue-green deployment process](img/B05848_13_02.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 13-2 – Immutable microservice deployed as a container
+  prefs: []
+  type: TYPE_NORMAL
+- en: When a new release (for example green) is ready to be deployed, we run it in
+    parallel with the current release. This way we can test the new release without
+    affecting the users since all the traffic continues being sent to the current
+    release.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The blue-green deployment process](img/B05848_13_03.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 13-3 – New release of the immutable microservice deployed alongside the
+    old release
+  prefs: []
+  type: TYPE_NORMAL
+- en: Once we think that the new release is working as expected, we change the proxy
+    service configuration so that the traffic is redirected to that release. Most
+    proxy services will let the existing requests finish their execution using the
+    old proxy configuration so that there is no interruption.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The blue-green deployment process](img/B05848_13_04.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 13-4 – Proxy is reconfigured to point to the new release
+  prefs: []
+  type: TYPE_NORMAL
+- en: When all the requests sent to the old release received responses, the previous
+    version of a service can be removed or, even better, stopped from running. If
+    the latter option is used, rollback in case of a failure of the new release will
+    be almost instantaneous since all we have to do is bring the old release back
+    up.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The blue-green deployment process](img/B05848_13_05.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 13-5 – The old release is removed
+  prefs: []
+  type: TYPE_NORMAL
+- en: Equipped with the basic logic behind the blue-green process, we can try setting
+    it up. We'll start with manual commands and, once we're familiar with the practical
+    part of the process, we'll attempt to automate the procedure.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We'll need the usual two nodes (`cd` and `prod`) to be up and running so let
+    us create and provision the VMs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: Manually running the blue-green deployment
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Please note that we'll go through the whole blue-green process within the context
+    of what we tried to accomplish earlier. We will not only run two releases in parallel
+    but make sure that, among other things, everything is thoroughly tested during
+    multiple phases. That will complicate the process more than if we follow the blue-green
+    procedure assuming that everything works. Most implementations do not take into
+    account the need for testing before making the change to the proxy service. We
+    can, and will, do better than that. Another thing to note is that we'll explore
+    manual steps for you to understand the process. Later on, we'll automate everything
+    using the tools we're already familiar with. I choose this approach in order to
+    be sure that you grasp the complexity behind the combination of the continuous
+    deployment and the blue-green processes. By truly understanding how to do it manually,
+    you will be able to make an informed decision whether benefits of tools we're
+    will explore throughout the rest of the book are greater than things they are
+    missing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We'll start by downloading the Docker Compose and nginx configurations that
+    we used in the previous chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: With all the configuration files available, let us deploy the first release.
+    The tools we explored earlier will come in handy. We'll use Consul as the service
+    registry, Registrator to register and de-register containers, nginx as a proxy
+    service and Consul Template to generate configurations and reload nginx.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deploying the blue release
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Since, at this moment, we do not have the `books-ms` service up and running,
+    we'll call the first release `blue`. The only thing we need to do for now is to
+    make sure that the name of the container we are about to run contains the word
+    `blue` so that it does not collide with the next release. We'll be using Docker
+    Compose to run containers so let us take a quick look at the targets defined in
+    the `docker-compose.yml` file that we just downloaded (only relevant targets are
+    presented).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: We cannot use the `app` target directly since we'll be deploying two different
+    targets (one for each color) and in that way avoid them overriding each other.
+    Also, we'll want to differentiate them in Consul as well, so the `SERVICE_NAME`
+    environment variable should be unique. To accomplish that, we have two new targets
+    called `app-blue` and `app-green`. Those targets extend the `base` service in
+    the same way the `app` target extended it in previous chapters. The only difference
+    between the targets `app-blue` and `app-green` on one hand and the `base` on the
+    other is (besides the name of the target) the environment variable `SERVICE_NAME`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: With those two targets defined, we can deploy the blue release.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: We pulled the latest version from the registry and brought it up as the blue
+    release of the service. Just to be on the safe side, let us quickly check whether
+    the service is running and is registered in Consul.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: The output of both commands combined is as follows.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: The first command showed that both the `app-blue` and the `db` containers are
+    running. The second command displayed the details of the `books-ms-blue` service
+    registered in Consul. Now we have the first release of our service up and running
+    but still not integrated with nginx and, therefore, not accessible through the
+    port 80\. We can confirm that by sending a request to the service.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: The output is as follows.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: The request response is the `404 Not Found` error message proving that we are
+    yet to configure the proxy.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Deploying the blue release](img/B05848_13_06.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 13-6 – The blue container is deployed
+  prefs: []
+  type: TYPE_NORMAL
+- en: Integrating the blue release
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: We can integrate the service in a similar way as we did before. The only difference
+    is in the target of the service we registered in Consul.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let us start by taking a look at the nginx Consul template `nginx-upstreams-blue.ctmpl`
+    that we downloaded earlier.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: The service name is `books-ms-blue` and we can proceed by running Consul Template
+    that will generate the final nginx upstreams configuration.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: The command run Consul Template that produced the nginx upstreams configuration
+    file and reloaded the service.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's check whether the configuration file was indeed created correctly.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: The output is as follows.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: Finally, all that's left is to copy the configuration files to the `prod` server
+    and reload `nginx`. When asked, please use `vagrant` as the password.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: We copied the two configuration files to the server and reloaded `nginx` by
+    sending the `HUP` signal.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's check whether our service is indeed integrated with the proxy.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: The output is as follows.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: This time, the response code is `200 OK` indicating that the service indeed
+    responded to the request.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Integrating the blue release](img/B05848_13_07.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 13-7 – The blue container integrated with the proxy service
+  prefs: []
+  type: TYPE_NORMAL
+- en: We finished the simplest scenario by deploying the first (blue) release. As
+    you will soon see, the process of deploying the second (green) release will not
+    be much different.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deploying the green release
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Deployment of the second (green) release can be done using the same steps as
+    those we executed for the first (blue) release. The only difference is that this
+    time we'll deploy the `books-ms-green` instead of the `books-ms-blue` target.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Unlike the previous deployment, this time, the new release (green) will run
+    in parallel with the current release (blue).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: The new release has been pulled and run. We can confirm that by running the
+    `docker-compose ps` command.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: The result is as follows.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: The output shows that the two services (blue and green) are running in parallel.
+    Similarly, we can confirm that both releases are registered in Consul.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: The output is as follows.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: As before, we can also check the details of the newly deployed service.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: Finally, we can confirm that the old release is still accessible through the
+    proxy.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: The output of the last command should be similar to the following (timestamps
+    are removed for brevity).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: Please keep in mind that the port of the service deployed on your computer might
+    be different than the one from the preceding example.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The output of nginx logs should display that the request we made is redirected
+    to the port of the blue release. That can be observed by checking that the last
+    request went to the same port as the one we made before deploying the `green`
+    release.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Deploying the green release](img/B05848_13_08.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 13-8 – The green container is deployed in parallel with the blue
+  prefs: []
+  type: TYPE_NORMAL
+- en: Right now, we have two releases (blue and green) running in parallel and the
+    proxy service is still redirecting all requests to the old release (blue). The
+    next step should be to test the new release before we change the proxy configuration.
+    We'll skip testing until we reach the automation part and dive straight into the
+    integration of the green release with nginx.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Integrating the green release
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The process to integrate the second (green) release with the proxy service is
+    similar to the one we already did.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: We can send a request to the proxy and check its logs to see whether it truly
+    points to the new (green) release.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: The nginx logs should be similar to the following (timestamps are removed for
+    brevity).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: It is obvious that the last request went to a different port (`32770`) than
+    those we made before (`32769`). We switched the proxy from the blue to the green
+    release. There was no downtime during this process since we waited until the new
+    release is fully up and running before changing the proxy. Also, nginx is intelligent
+    enough not to apply the configuration change to all requests but only to those
+    made after the reload. In other words, all requests started before the reload
+    continued using the old release while all those initiated afterward were sent
+    to the new release. We managed to accomplish zero-downtime with minimum effort
+    and without resorting to any new tool. We used nginx as a proxy and Consul (together
+    with Registrator and Consul Template) to store and retrieve service information.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Integrating the green release](img/B05848_13_09.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 13-9 – The green container integrated with the proxy service
+  prefs: []
+  type: TYPE_NORMAL
+- en: As a result of what we did by now, the new release was deployed in parallel
+    with the old one and proxy was changed to point to that new release. Now we can
+    safely remove the old release.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Removing the blue release
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Removing a release is easy, and we did it many times before. All we have to
+    do is make sure that the correct target is used when running the `stop` command.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: The first command stopped the blue release, and the second listed all processes
+    specified as Docker Compose targets. The output of the command that list processes
+    is as follows.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: Please note that the state of the `booksms_app-blue_1` is `Exit 137`. Only the
+    green release and the database containers are running.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We can also confirm the same by sending a request to Consul.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: The Consul response is as follows.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: Registrator detected the removal of the blue release and removed it from Consul.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We should also check that the green release is still integrated with the proxy
+    service.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: As expected, nginx is still sending all requests to the green release and our
+    work is done (for now). To summarize, we deployed a new release in parallel with
+    the old one, changed the proxy service to point to the new release and, once all
+    requests invoked with the old release received their responses, removed the old
+    release.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Removing the blue release](img/B05848_13_10.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 13-10 – The blue container is removed
+  prefs: []
+  type: TYPE_NORMAL
+- en: The only thing left, before we proceed with the automation, is to find a better
+    way to discover which release to deploy (blue or green). While running manually,
+    we can easily find that information by simply listing docker processes or services
+    registered in Consul and observing which color is not running. The automated deployment
+    will require a bit different approach. We should discover which release to run.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let us remove the containers and start over.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: Discovering which release to deploy and rolling back
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: One way to know which color to deploy next would be to store the deployed color
+    to Consul and use that information for the next deployment. In other words, we
+    should have two processes; color discovery and color registration.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s think about use cases of the color discovery. There are three possible
+    combinations:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: We are deploying the first release, and no color is stored in the registry.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The blue release is running and stored in the registry.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The green release is running and stored in the registry.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: We can reduce those combinations to two. If blue color is registered, the next
+    one is green. Otherwise, the next color is blue covering both the case when the
+    current color is green or when no color is registered (when service has never
+    been deployed). With this strategy, we can create the following bash script (please
+    do not run it yet).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: Since we could use the same script for many services, it accepts two arguments;
+    the name of the service we are about to deploy and the destination (production)
+    server. Then, we query Consul on the production server and put the result into
+    the `CURR_COLOR` variable. That is followed by a simple `if…else` statement that
+    sends the `green` or the `blue` string to `STDOUT`. With such a script, we can
+    easily retrieve the color we should use to deploy a service.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s create the script:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: We created the `get-color.sh` script and gave it executable permissions. Now
+    we can use it to retrieve the next color and repeat the procedure we practiced
+    before.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: The only difference when compared with the commands we run earlier, is that
+    we're using the `NEXT_COLOR` variable instead of hard-coded values `blue` and
+    `green`. As a result, we have the first release (blue) up and running.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Discovering which release to deploy and rolling back](img/B05848_13_11.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 13-11 – The color of the current release is retrieved from Consul
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's use this opportunity to have a short discussion about testing. On one
+    hand, we want to test as much as possible before we change the proxy to point
+    to the new release. On the other hand, we still need to make one round of tests,
+    after the proxy is changed, to be sure that everything (including the change of
+    the proxy) is running as expected. We'll call those two types pre-integration
+    tests and post-integration tests. Keep in mind that their scope should be limited
+    to those cases that could not be covered with pre-deployment tests. In the case
+    of the (relatively small) `books-ms` service, it should be enough if pre-integration
+    tests verify that the service can communicate with the database. In such a case,
+    the only thing left to check after the integration with the proxy service, is
+    that nginx has been reconfigured correctly.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's start with pre-integration tests. We'll simulate testing using `curl`.
+    Since the proxy is still not changed to point to the newly deployed service, we
+    need to find out what the port the newly released service is. We can find the
+    port from Consul and create a script similar to the `get-color.sh`. The script
+    can be created with the following command.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: This time, we created the script named `get-port.sh` with three arguments; the
+    name of the service, the address of the production server, and the color. With
+    those three arguments, we are querying the information from Consul and sending
+    the result to STDOUT.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's try it out.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: The output will vary from case to case depending on the random port Docker assigned
+    to our service. With the port stored inside the variable, we can test the service
+    before integrating it with the proxy.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: Service returned the status code `200 OK` so we can proceed with the integration
+    in a similar way we did before. When asked, please use `vagrant` as the password.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE38]'
+  prefs: []
+  type: TYPE_PRE
+- en: With the service integrated, we can test it again but this time without the
+    port.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE39]'
+  prefs: []
+  type: TYPE_PRE
+- en: Finally, we should stop one of the containers. Which one should be stopped depends
+    on the testing results. If pre-integration tests failed, we should stop the new
+    release. There is no need to do anything with the proxy since, at this time, it
+    is still sending all requests to the old release. On the other hand, if post-integration
+    tests failed, not only that the new release should be stopped, but we should also
+    revert changes to the proxy service so that all traffic goes back to the old release.
+    At this moment we won't go through all the paths we might need to take in case
+    of tests failures. That will be reserved for the automation that we will explore
+    soon. For now, we'll put the color to Consul registry and stop the old release.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE40]'
+  prefs: []
+  type: TYPE_PRE
+- en: This set of commands put the new color to the registry, obtained the next color
+    that should be equivalent to the color of the old release, and, finally, stopped
+    the old release. Since we started over and this is the first release, there was
+    no old release to be stopped. Never the less, the next time we run the process,
+    the old release will indeed be stopped.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Discovering which release to deploy and rolling back](img/B05848_13_12.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 13-12 – The color of the current release is sent to Consul
+  prefs: []
+  type: TYPE_NORMAL
+- en: With this, we concluded the manual process of blue-green deployment. It is done
+    in a way that it can easily be automated. Before we move forward, let's run all
+    those commands few more times and observe that the color changes from blue to
+    green, from green to blue and so on. All the commands grouped together are as
+    follows.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE41]'
+  prefs: []
+  type: TYPE_PRE
+- en: The last command showed Docker processes. You will see that, after the first
+    run, the green release will be running, and the blue will be in Exited state,
+    and then, after the next run, the blue release will be running, and the green
+    will be in the Exited state, and so on. We managed to deploy new releases without
+    any downtime. The only exception is if post-integration tests fail, which is very
+    unlikely to happen since the only cause for that would be a failure of the proxy
+    service itself due to the wrong configuration. Since the process will soon be
+    fully automated, such a thing is indeed very unlikely to happen. Another reason
+    for post-integration tests to fail would be if proxy service itself fails. The
+    only way to remove this possibility is to have multiple instances of the proxy
+    service (out of the scope of this book).
+  prefs: []
+  type: TYPE_NORMAL
+- en: That being said, let's see the nginx logs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE42]'
+  prefs: []
+  type: TYPE_PRE
+- en: You'll notice that each request we made was sent to a different port meaning
+    that a new container was indeed deployed and running on a new port.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now, after all those commands and experiments, we are ready to start working
+    on the automation of the blue-green deployment procedure.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We'll destroy the virtual machines and start over to be sure that everything
+    works correctly.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE43]'
+  prefs: []
+  type: TYPE_PRE
+- en: Automating the blue-green deployment with Jenkins workflow
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We'll start by creating the VMs, provisioning the `prod` node, and bringing
+    up Jenkins, our deployment tool of choice.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE44]'
+  prefs: []
+  type: TYPE_PRE
+- en: Since it will take a couple of minutes until everything is set, let us discuss
+    what should be automated and how. We are already familiar with the Jenkins Workflow.
+    It served us well, so there is no real reason to change the tool at this time.
+    We'll use it to automate the blue-green deployment procedure. The flow will have
+    quite a lot of steps so we'll break them into functions to digest the process
+    more easily and, at the same time, to extend our workflow utilities script. More
+    detailed discussion and implementation of those functions follow.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Automating the blue-green deployment with Jenkins workflow](img/B05848_13_13.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 13-13 – Blue-green deployment automation flow
+  prefs: []
+  type: TYPE_NORMAL
+- en: Blue-green deployment role
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: We'll use the *Multibranch Workflow* Jenkins job `books-ms-blue-green`. It filters
+    branches of the `vfarcic/books-ms` repository so that only those containing `blue-green`
+    in their names are included.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Since the first run might take a considerable amount of time, let's index branches
+    so that Jenkins can run the subprojects while we explore the script.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Please open the Jenkins Multibranch Workflow job `books-ms-blue-green`, click
+    the **Branch Indexing** and, then, **Run Now** links from the left-hand menu.
+    Once branches are indexed, Jenkins will find that the `blue-green` branch matches
+    the filter set inside the job, create the subproject with the same name and start
+    running it. The indexing status can be seen in the `master` node executor located
+    in the bottom-left part of the screen.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Blue-green deployment role](img/B05848_13_14.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 13-14 – The Jenkins Multibranch Workflow job books-ms-blue-green with
+    the blue-green subproject
+  prefs: []
+  type: TYPE_NORMAL
+- en: We'll leave Jenkins running the build and explore the `Jenkinsfile` inside the
+    `blue-green` branch.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE45]'
+  prefs: []
+  type: TYPE_PRE
+- en: The file starts with the declaration of a few variables followed by the load
+    of the `workflow-util.groovy` script. That is followed with invocations of the
+    functions that provision the environments, build and run tests, and build the
+    service. Up until now, the script is the same as the one we explored in the previous
+    chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The first new additions are invocations of the utilities functions `getCurrentColor`
+    and `getNextColor` and assignment of values they return to the `currentColor`
+    and the `nextColor` variables. The functions are as follows.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE46]'
+  prefs: []
+  type: TYPE_PRE
+- en: As you can see, those functions follow the same logic as the one we practiced
+    with manual commands but, this time, translated to Groovy. The current color is
+    retrieved from Consul and used to deduce the next color we should deploy.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we know what the currently running color is as well as what the next
+    color should be, we can deploy the new release using the `deployBG`. The function
+    is as follows.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE47]'
+  prefs: []
+  type: TYPE_PRE
+- en: We created the `DOCKER_HOST` environment variable pointing to Docker CLI running
+    on the production node. The variable scope is limited to the commands within its
+    curly braces. Inside them, we are pulling the latest release and running it through
+    Docker Compose. The only important difference when, compared with the `Jenkinsfile`
+    script we explored in the previous chapter, is the dynamic generation of the target
+    through the `color` variable. The target that will be used depends on the actual
+    value of the `nextColor` used to invoke this function.
+  prefs: []
+  type: TYPE_NORMAL
+- en: At this point in the script, a new release is deployed but still not integrated
+    with the proxy service. The users of our service would still be using the old
+    release thus giving us the opportunity to test the newly deployed version before
+    making it publicly available. We'll call them pre-integration tests. They are
+    run by invoking the utility function `runBGPreIntegrationTests` located in the
+    `workflow-util.groovy` script.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE48]'
+  prefs: []
+  type: TYPE_PRE
+- en: The function starts by retrieving the address of the newly deployed service
+    from Consul. This retrieval is accomplished through invocation of the `getAddress`
+    function. Please consult the details of the function by examining the `workflow-util.groovy`
+    script. Next, we run the tests inside a `try…catch` block. Since the new release
+    is still not integrated with nginx and, therefore, not accessible through the
+    port `80`, we are passing the `address` of the release as an environment variable
+    `DOMAIN`. If the execution of tests fails, the script will jump to the `catch`
+    block and call the `stopBG` function that will stop the new release. Since our
+    servers are running [Registrator], once the new release is stopped, its data will
+    be removed from Consul. There's nothing else to be done. Proxy service will continue
+    pointing to the old release, and, through it, our users will continue using the
+    old version of our service that is proven to work correctly. Please consult the
+    `workflow-util.groovy` script to see details of the `stopBG` function.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If the pre-integration tests passed, we are invoking the `updateBGProxy` function
+    that updates the proxy service thus making our new release available to our users.
+    The function is as follows.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE49]'
+  prefs: []
+  type: TYPE_PRE
+- en: The major difference, when compared with the `updateProxy` function we used
+    in the previous chapter, is the usage of `nginx-upstreams-${color}.ctmpl` as the
+    name of the template. Depending on the value we pass to the function, `nginx-upstreams-blue.ctmpl`,
+    or `nginx-upstreams-green.ctmpl` will be used. As an additional instruction, we
+    are sending a request to Consul to store the color related to the newly deployed
+    release. The rest of this function is the same as the `updateProxy`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finally, now that the new release is deployed, and the proxy service has been
+    reconfigured, we are doing another round of testing to confirm that the integration
+    with the proxy was indeed correct. We're doing that by invoking the `runBGPostIntegrationTests`
+    function located in the `workflow-util.groovy` script.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE50]'
+  prefs: []
+  type: TYPE_PRE
+- en: We start by running integration tests that are, this time, using the public
+    domain that points to the proxy. If tests fail, we are reverting the changes to
+    the proxy service by invoking the `updateBGProxy` function. By passing the `currentColor`
+    as the variable, `updateBGProxy` will reconfigure nginx to work with the old release
+    of the service. The second instruction in case of a failure of tests is to stop
+    the new release by invoking the `stopBG` function with `nextColor`. On the other
+    hand, if all tests passed, we are stopping the old release.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you are new to Groovy, this script might have been overwhelming. However,
+    with a little bit of practice, you'll see that, for our purposes, Groovy is very
+    simple and with the addition of Jenkins Workflow DSL, many things are made even
+    easier.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It is worth noting that the Workflow plugin is restrictive. For security reasons,
+    invocation of some Groovy classes and functions needs to be approved. I already
+    did that for you as part of the provisioning and configuration process defined
+    through the `jenkins.yml` Ansible playbook. If you'd like to see the end result
+    or would need to make new approvals, please open **In-process Script Approval**
+    screen located inside **Manage Jenkins**. At first, those security restrictions
+    might seem over-the-top, but the reasoning behind them is essential. Since Workflow
+    scripts can access almost any part of the Jenkins platform, letting anything run
+    inside it might have very severe consequences. For that reason, some instructions
+    are allowed by default while others need to be approved. If a Workflow script
+    fails due to this restriction, you'll see a new entry in the **In-process Script
+    Approval** screen waiting for your approval (or disapproval). The XML behind those
+    approvals is located in the `/data/jenkins/scri` `ptApproval.xml` file.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Running the blue-green deployment
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Hopefully, by this time, the subproject finished running. You can monitor the
+    process by opening blue-green subproject Console screen. Once the first run of
+    the subproject is finished, we can manually confirm that everything run correctly.
+    We'll use this opportunity to showcase few `ps` arguments we haven't used. The
+    first one will be `--filter` that can be used to (you guessed it) filter containers
+    returned with the `ps` command. The second one is `--format`. Since the standard
+    output of the `ps` command can be very long, we'll use it to retrieve only names
+    of the containers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE51]'
+  prefs: []
+  type: TYPE_PRE
+- en: The output of the `ps` command is as follows.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE52]'
+  prefs: []
+  type: TYPE_PRE
+- en: We can see that the `blue` release has been deployed together with the linked
+    database. We can also confirm that the service has been stored in Consul.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE53]'
+  prefs: []
+  type: TYPE_PRE
+- en: The combined output of the two requests to Consul is as follows.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE54]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `books-ms-blue` has been registered as a service besides the `dockerui`
+    and `consul`. The second output shows all the details of the service.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finally, we should verify that the color has been stored in Consul and that
+    the service itself is indeed integrated with nginx.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE55]'
+  prefs: []
+  type: TYPE_PRE
+- en: The first command returned `blue`, and the status of the request to the service
+    through the proxy is `200 OK`. Everything seems to be working correctly.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Please run the job a couple of more times by opening the `books-ms-blue-green`
+    job and clicking the **Schedule a build for blue-green** icon located on the right-hand
+    side.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can monitor the process by opening the blue-green subproject Console screen.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Running the blue-green deployment](img/B05848_13_15.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 13-15 – The Jenkins blue-green subproject Console screen
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you repeat the manual verifications, you'll notice that the second time the
+    `green` release will be running, and the `blue` will be stopped. The third run
+    will invert colors and the `blue` release will be running while the `green` will
+    be stopped. The correct color will be stored in Consul, proxy service will always
+    redirect requests to the latest release, and there will be no downtime during
+    the deployment process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Even though we are reaching the end of this chapter, we are not finished practicing
+    the blue-green deployment. Even though we will change the way we are running the
+    procedure, it will be the integral part of a couple of more practices we'll explore
+    throughout the rest of this book. We accomplished zero-downtime deployments, but
+    there is still a lot of work left before we reach zero-downtime system. The fact
+    that our current process does not produce downtime during deployments does not
+    mean that the whole system is fault tolerant.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We reached a significant milestone, yet there are still a lot of obstacles left
+    to overcome. One of them is clustering and scaling. The solution we have works
+    well on a single server. We could easily extend it to support a few more, maybe
+    even ten. However, the bigger the number of our servers, the greater the need
+    to look for a better way to manage clustering and scaling. That will be the subject
+    of the next chapter. Until then, let us destroy the environments we've been using
+    so that we can start fresh.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE56]'
+  prefs: []
+  type: TYPE_PRE

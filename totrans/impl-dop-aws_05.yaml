@@ -1,0 +1,947 @@
+- en: Chapter 5. Ever-Ready to Deploy Using Continuous Delivery
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Thanks to the Continuous Integration setup we examined in the previous chapter,
+    we now have a way of continuously producing deployable artifacts from our source
+    code.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Our next goal will be to upgrade the pipeline from a Continuous Integration
+    to an **Integration** plus **Delivery** one. To illustrate, we are in the middle
+    of a three stage workflow:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Ever-Ready to Deploy Using Continuous Delivery](img/image_05_001.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'That is to say, following a successful Integration run, we trigger the Delivery
+    stage that will do the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Launch a vanilla EC2 instance
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Apply configuration management to it:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Install the `demo-app` RPM we produced
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Install other required packages to turn it into a web server
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Test the applied configuration (using **Serverspec**)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Produce an AMI out of the configured instance (using **Packer**)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Launch an EC2 instance from the produced AMI
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Run additional tests against the new EC2 instance
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: This pipeline will ensure that the application RPM installs correctly, our configuration
+    management gets applied as expected, and our new AMI artifact is fit for purpose.
+    At the end we should be left with a sparkling, prebaked, production-ready AMI
+    of a web server with our `demo-app` on it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To accomplish these tasks, we are going to introduce two new tools to the mix
+    - Packer and Serverspec (more details as we go).
+  prefs: []
+  type: TYPE_NORMAL
+- en: We will be able to reuse a significant part of our work so far, given that we
+    are building on top of it. As before, we will start by preparing our code, deploying
+    it to AWS, and configuring our Jenkins Pipeline.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Feel free to skip some of the following steps if you have kept the AWS environment
+    from the previous chapter running. Although I think that it might be better to
+    start from scratch to avoid any confusion.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Preparing Terraform templates
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In addition to the usual VPC, IGW, and subnet that we need for Jenkins, we are
+    going to deploy NAT and ELB for our `demo-app` web server scenario.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Resources
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Please refer to [https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_05_CodeFiles/Terraform/resources.tf](https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_05_CodeFiles/Terraform/resources.tf).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We start with VPC, IGW, and NAT:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We add a `public` subnet for Jenkins and ELB, plus a `private` one to be used
+    by the EC2 web server:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Next is IAM. We need a role for Jenkins:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'And another one for the `demo-app` web server:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'They will be sharing a common policy, allowing them to access CodeCommit, where
+    we keep our infrastructure and application code and S3, where we store our RPM
+    artifacts:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The newcomer, Packer, is going to require a separate policy to allow for the
+    manipulation of EC2 resources. We are going to use it to start/stop/terminate
+    instances and create AMIs:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: The need to allow `PassRole` represents an IAM security feature which helps
+    prevent users/services granting themselves more privileges than they are supposed
+    to have (refer to: [https://blogs.aws.amazon.com/security/post/Tx3M0IFB5XBOCQX/Granting-Permission-to-Launch-EC2-Instances-with-IAM-Roles-PassRole-Permission](https://blogs.aws.amazon.com/security/post/Tx3M0IFB5XBOCQX/Granting-Permission-to-Launch-EC2-Instances-with-IAM-Roles-PassRole-Permission)).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We are going to need a security group for ELB, accepting HTTP traffic from
+    the World:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Then, ELB itself:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We create a security group for Jenkins permitting SSH and HTTP/S traffic from
+    anywhere:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The next one is for the web server, accepting HTTP from ELB and SSH from Jenkins:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'To bootstrap the Jenkins node, we need the user-data we used in the past, with
+    one important addition:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'You will note that after we have installed SaltStack and put the masterless
+    minion configuration in place, we also add a custom Grains file. The roles list
+    that it holds will help us assign the Salt States later on (since we are now going
+    to have two different types of hosts under configuration management: `jenkins`
+    and our `demo-app` web server).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Variables
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Please refer to [https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_05_CodeFiles/Terraform/variables.tf](https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_05_CodeFiles/Terraform/variables.tf).
+  prefs: []
+  type: TYPE_NORMAL
+- en: No change from [Chapter 4](ch04.html "Chapter 4. Build, Test, and Release Faster
+    with Continuous Integration"), *Build, Test, and Release Faster with Continuous
+    Integration*, we set just a few VPC- and EC2 (Jenkins)-related variables.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Variables (values)
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Please refer to [https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_05_CodeFiles/Terraform/terraform.tfvars](https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_05_CodeFiles/Terraform/terraform.tfvars).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Same as our previous deployment, we specify the values for the VPC and Jenkins
+    variables.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Outputs
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Please refer to [https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_05_CodeFiles/Terraform/outputs.tf](https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_05_CodeFiles/Terraform/outputs.tf).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Some new `outputs` reflect the additional `resources`. The ELB endpoint and
+    the ID of our Private subnet and the `demo-app` security group:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: This is certainly not an exhaustive list, and if we need more information later,
+    we can always retrieve a detailed description of our deployed infrastructure via
+    the `terraform show` command.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Prepareing Salt code
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'We will be using SaltStack to apply configuration management on both our Jenkins
+    and `demo-app` web server nodes. We will be using Grains to define which States/Pillars
+    apply to which host. Let us have a look at the code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: States
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Please refer to [https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/tree/master/5585_05_CodeFiles/CodeCommit/salt/states](https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/tree/master/5585_05_CodeFiles/CodeCommit/salt/states).
+  prefs: []
+  type: TYPE_NORMAL
+- en: top.sls
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'The `top` file shows us that some states are shared between all hosts/roles
+    while others are assigned based on the role:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: You are already familiar with the users and the `yum-s3` States. Now this is
+    a good time to add an account and an SSH key for yourself.
+  prefs: []
+  type: TYPE_NORMAL
+- en: jenkins
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'We install the service as before plus a couple of extra tools:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: We will be using `jq` to parse JSON output and `ab` from the `httpd-tools` package
+    for basic HTTP load testing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: nginx
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'This time we split the NGINX State into three parts:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**init.sls**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This installs the main package and sets up the service daemon:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: '**jenkins.sls**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This deploys the NGINX configuration and related file needed for the Jenkins
+    service:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: '**demo-app.sls**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This deploys the NGINX configuration and related file needed for the `demo-app`
+    web server:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In both cases, we include `init.sls` also known as NGINX, which provides shared
+    functionality, Docker remains the same, whereas Packer is a new addition which
+    we will get to play with shortly:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: The archive module conveniently downloads and extracts the Packer zip file for
+    us. After that we ensure that the binary is executable with `cmd.wait`, which
+    gets triggered on package change (that is watch archive).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**php-fpm**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We need PHP in order to be able to serve our PHP `application` (`demo-app)`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'And finally, the `demo-app` State, which installs a selected version the application
+    `rpm`. We will discuss how we populate `/tmp/APP_VERSION` a bit later:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: Pillars
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Please refer to [https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/tree/master/5585_05_CodeFiles/CodeCommit/salt/pillars](https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/tree/master/5585_05_CodeFiles/CodeCommit/salt/pillars).
+  prefs: []
+  type: TYPE_NORMAL
+- en: We will reuse the `nginx` and `users` Pillars from the previous chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Minion configuration
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Please refer to [https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/tree/master/5585_05_CodeFiles/CodeCommit/salt/minion.d](https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/tree/master/5585_05_CodeFiles/CodeCommit/salt/minion.d).
+  prefs: []
+  type: TYPE_NORMAL
+- en: While `masterless.conf` remains the same as before, we are extending the `minion`
+    configuration with a custom role Grain, which we set via UserData for Jenkins
+    and a config file for the `demo-app` web server (discussed later in the chapter).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Preparing Jenkins code
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Before we proceed with Jenkins, allow me to introduce the two new helpers –
+    Packer and Serverspec.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Packer
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Please refer to [https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/tree/master/5585_05_CodeFiles/CodeCommit/demo-app-cdelivery/packer](https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/tree/master/5585_05_CodeFiles/CodeCommit/demo-app-cdelivery/packer).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'As described:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '|   | *"Packer is a tool for creating machine and container images for multiple
+    platforms from a single source configuration."* |   |'
+  prefs: []
+  type: TYPE_TB
+- en: '|   | --*https://www.packer.io* |'
+  prefs: []
+  type: TYPE_TB
+- en: Essentially, Packer is going to, well, pack things for us. We will feed it a
+    template, based on which it will launch an EC2 instance, perform requested tasks
+    (over SSH), then create an AMI from it. Packer can talk to various platforms (AWS,
+    GCE, OpenStack, and so on) to provision resources via local shell, remote (SSH),
+    Salt, Ansible, Chef, and others. As a HashiCorp product, it does not come as a
+    surprise that Packer uses a templating system very similar to Terraform's.
+  prefs: []
+  type: TYPE_NORMAL
+- en: demo-app.json
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Here, we define what and how it should be provisioned. At the top, we set our
+    `variables`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We have exported the actual values to a `variables` file (see later). Setting
+    a value to null here, makes it required. We could also fix values here or make
+    use of environment variables (refer to [https://www.packer.io/docs/templates/user-variables.html](https://www.packer.io/docs/templates/user-variables.html)).
+    Once defined, you can refer to variables with this syntax: ``{{user `srcAmiId`}}``.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The next section lists the `builders`, in our case, AWS EC2:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We are asking for an EBS-backed nano instance in the US-East-1 region. It is
+    to be bootstrapped via UserData (see later in the text) and tagged as `"CreatedBy":
+    "Jenkins"`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Naturally, after launching the instance, we would like to provision it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here, our first `provisioners` is a shell command to be executed over SSH by
+    Packer (refer to [https://www.packer.io/docs/provisioners/shell.html](https://www.packer.io/docs/provisioners/shell.html)).
+    It pauses for 30 seconds to allow the node to complete its boot process, then
+    creates the `APP_VERSION` file needed by the Salt `php-fpm` State.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Next, we run SaltStack:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Packer already knows how to run Salt via the salt-masterless `provisioner`.
+    It only needs a source of States and Pillars (refer to: [https://www.packer.io/docs/provisioners/salt-masterless.html](https://www.packer.io/docs/provisioners/salt-masterless.html)).
+    We define a relative path of `salt/`, which is part of a checked out Git repository
+    (see `demo-app-cdelivery` here). We are opting to install Salt via UserData, hence
+    `skip_bootstrap: true`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We will get to Serverspec in a moment, but here is how we run it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: The file `provisioners` is used to transfer data between the remote instance
+    and Packer (refer to [https://www.packer.io/docs/provisioners/file.html](https://www.packer.io/docs/provisioners/file.html)).
+    We push the local `"serverspec/"` folder containing our Serverspec tests to `"/tmp"`
+    on the remote side. Then, run a few shell commands to install the Serverspec ruby
+    gem and run the tests.
+  prefs: []
+  type: TYPE_NORMAL
+- en: demo-app_vars.json
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'The values for the variables we defined earlier (alternatively, you could set
+    these as a list of `-var ''key=value''` cmd line arguments):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: demo-app_userdata.sh
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'The EC2 UserData to bootstrap our test instance:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: Much like the one we use for Jenkins. It gets SaltStack installed and puts the
+    roles Grain in place.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Serverspec
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Please refer to [https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/tree/master/5585_05_CodeFiles/CodeCommit/demo-app-cdelivery/serverspec](https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/tree/master/5585_05_CodeFiles/CodeCommit/demo-app-cdelivery/serverspec).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Straight out of the front page:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '|   | *"RSpec tests for your servers configured by CFEngine, Puppet, Ansible,
+    Itamae or anything else. With Serverspec, you can write RSpec tests for checking
+    your servers are configured correctly. Serverspec tests your servers'' actual
+    state by executing command locally, via SSH, via WinRM, via Docker API and so
+    on. So you don''t need to install any agent softwares on your servers and can
+    use any configuration management tools, Puppet, Ansible, CFEngine, Itamae and
+    so on. But the true aim of Serverspec is to help refactoring infrastructure code."*
+    |   |'
+  prefs: []
+  type: TYPE_TB
+- en: '|   | --*http://serverspec.org* |'
+  prefs: []
+  type: TYPE_TB
+- en: We are going to use Serverspec to assert the final state of the EC2 instance
+    after all other configuration tasks have been completed. It should help verify
+    that any nonconfiguration management changes have taken effect (for example, shell
+    commands) and that configuration management has been applied correctly (for example,
+    no race conditions/overlaps/conflicts in States). This does introduce some overhead
+    and some will rightly question whether it is needed in addition to a SaltStack
+    run, so it remains a personal preference. I see it as a second layer of verification
+    or a safety net.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The content under the `serverspec/` folder has been created by running `serverspec-init`
+    (refer to [http://serverspec.org](http://serverspec.org)), selecting UNIX and
+    then SSH. We replace the sample `spec.rb` file with our own:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: spec/localhost/demo-app_spec.rb
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: Serverspec performs tests on supported resource types (refer to [http://serverspec.org/resource_types.html](http://serverspec.org/resource_types.html)).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the preceding brief example we assert that:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: A specific version of our `demo-app` package has been installed
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: PHP-FPM and NGINX are running and enabled on boot
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The SSH `authorized_keys` file for a given user has the expected contents
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Our Serverspec tests can be run from the containing folder like so:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: It will parse any files it finds ending in `_spec.rb`. We use `sudo` only because,
+    in this case, we are trying to read a private file (`authorized_keys`).
+  prefs: []
+  type: TYPE_NORMAL
+- en: And back to Jenkins. We are already familiar with the concept of a `Jenkinsfile`
+    (as used by our Integration job). In this example, we will be adding a second
+    (Delivery) pipeline using the same approach.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let us examine both pipeline jobs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: demo-app
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Please refer to [https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_05_CodeFiles/CodeCommit/demo-app/Jenkinsfile](https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_05_CodeFiles/CodeCommit/demo-app/Jenkinsfile).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This is our old Integration job that downloads the application code, runs tests
+    against it, produces an RPM package and uploads the package to a YUM repository.
+    We are going to add one more stage to this process:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: This final stage triggers our next job that is the Delivery pipeline and passes
+    an `APP_VERSION` parameter to it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The value of this parameter is the `gitHash` which we have been using so far
+    as a version string for our `demo-app RPM package`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `-1` you see appended to the `gitHash` represents the rpm's minor version
+    number which you can safely ignore at this time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Setting `wait` to `false` means that we don't want to keep the current job running,
+    waiting for the subsequently triggered one to complete.
+  prefs: []
+  type: TYPE_NORMAL
+- en: demo-app-cdelivery
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Please refer to [https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_05_CodeFiles/CodeCommit/demo-app-cdelivery/Jenkinsfile](https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_05_CodeFiles/CodeCommit/demo-app-cdelivery/Jenkinsfile).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now the fun part. The Delivery job has been passed an `APP_VERSION` and is ready
+    to start, let us follow the process described in the `Jenkinsfile`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We start by cleaning up our workspace, checking out the `demo-app-cdelivery`
+    repository, then adding the SaltStack code on top of it. We need both codebases
+    in order to launch an instance and configure it to be a web server:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'After this, we are ready to run Packer:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: First, we validate our template and then execute, requesting a machine-readable
+    output. Packer is going to spin up an instance, connect over SSH to it, apply
+    all relevant Salt States, run Serverspec tests, and produce an AMI of what is
+    essentially a web server that has the `demo-app` and all its prerequisites installed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Then, we go ahead and launch a second EC2 instance; this time, form the AMI
+    we just created:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: The variables seen at the top we get from Terraform (`terraform show`).
+  prefs: []
+  type: TYPE_NORMAL
+- en: We use the `aws cli` to launch the instance inside the Private VPC subnet, attach
+    the `demo-app` security group, the Terraform key, and `demo-app` instance profile
+    to it. You will notice that we need not pass any EC2 credentials here as Jenkins
+    is already authorized via the IAM role we assigned to it earlier.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next, we retrieve the `instanceId` by parsing the `aws cli` JSON output with
+    `jq` (refer to [https://stedolan.github.io/jq](https://stedolan.github.io/jq)).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'After we have launched the instance, we set its tags, register it with ELB,
+    and loop until its ELB status becomes `InService`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now that the node is ready to serve, we can launch our improvised Load Test
+    using AB:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: At the end of the AB test, the various reported metrics are compared with preset
+    thresholds and logged.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The EC2 instance is no longer needed, so it can be terminated:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In the final stage, the job''s exit code is determined by the AB test results:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: Preparing CodeCommit repositories
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Ideally, we would put all the preceding code under revision control, so let
+    us create some repositories. We need an IAM user with enough privileges to do
+    that:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Please refer to [https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_05_CodeFiles/CodeCommit/demo-app-cdelivery/Jenkinsfile](https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_05_CodeFiles/CodeCommit/demo-app-cdelivery/Jenkinsfile).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: We create a `terraform` IAM user with the preceding policy that grants us privileges
+    to carry out the CodeCommit tasks and also do the Terraform deployment later (remember
+    to write down the API keys).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Please refer to the previous chapter on how to export the API keys and create
+    three CodeCommit repositories: `salt`, `demo-app`, and `demo-app-cdelivery`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You will need to clone the repositories locally and populate each with the
+    code we prepared earlier respectively (refer to: [https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/tree/master/5585_05_CodeFiles/CodeCommit](https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/tree/master/5585_05_CodeFiles/CodeCommit)).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deploy Terraform templates
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Create a `terraform` EC2 key pair, then run terraform plan, terraform validate,
+    and finally terraform apply inside the Terraform templates folder (if needed,
+    please refer to the previous chapter for details on how to do all of this).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Initializing Jenkins
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Once Terraform has finished the deployment, you will get the Jenkins EIP value
+    in the outputs. Do a hostname lookup on it and load the resulting address in your
+    browser. You should see the **Getting Started** page (screenshots and instructions
+    in previous chapter):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Unlock jenkins
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Install suggested plugins
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Create an Admin user
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Configuring Jenkins jobs
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Prior to recreating the Continuous Integration pipeline job, we need a S3 bucket
+    for our YUM repository. Create a bucket (unless you've kept the old one around),
+    update the `demo-app/Jenkinsfile` script accordingly then commit and push Git
+    changes upstream.
+  prefs: []
+  type: TYPE_NORMAL
+- en: demo-app pipeline
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Refer to the *Setting up the pipeline* steps from the previous chapter to create
+    the Continuous Integration job. Let us call it `demo-app` this time around. The
+    script path remains the same ([https://git-codecommit.us-east-1.amazonaws.com/v1/repos/demo-app](https://git-codecommit.us-east-1.amazonaws.com/v1/repos/demo-app)).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You should now have this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![demo-app pipeline](img/image_05_002.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'The pipeline is going to fail as we do not have our YUM repository configured
+    yet:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![demo-app pipeline](img/image_05_003.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: The repository contents have already been uploaded to S3 by this first job run.
+    Now we need to update the `salt/states/yum-s3/files/s3.repo` file with the S3
+    URL and set the repository to `enabled`. Commit and push the Salt changes to the
+    Git repository, then pull and apply on the Jenkins node.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'A subsequent pipeline run takes us a step further:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![demo-app pipeline](img/image_05_004.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: This time the failure is because our downstream job is not quite ready yet.
+    Let us fix that next.
+  prefs: []
+  type: TYPE_NORMAL
+- en: demo-app-cdelivery pipeline
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'From the Jenkin''s dashboard, we select  **New Item**:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![demo-app-cdelivery pipeline](img/image_05_005.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'We shall call it `demo-app-cdelivery`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![demo-app-cdelivery pipeline](img/image_05_006.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'This job will be triggered by another one, so no need to poll SCM. Also, we
+    have a parameter being passed to this pipeline:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![demo-app-cdelivery pipeline](img/image_05_007.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Finally, we set the location of the `Jenkinsfile` ([https://git-codecommit.us-east-1.amazonaws.com/v1/repos/demo-app-cdelivery](https://git-codecommit.us-east-1.amazonaws.com/v1/repos/demo-app-cdelivery)):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![demo-app-cdelivery pipeline](img/image_05_008.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Do you remember the VPC details we specified in the Packer `variables` file
+    and also the `Jenkinsfile` for this pipeline? We need to set those to match our
+    current VPC:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Update the variables in `packer/demo-app_vars.json`
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`srcAmiId` could be the latest AmazonLinux AMI'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`subnetId` is the ID of the Private subnet'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`vpcId`'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Update `demo-app-cdelivery/Jenkinsfile`:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'In the **Deploy AMI** stage:'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`secGroup`is the ID of the `demo-app` security group'
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`subnetId`is the ID of the Private VPC subnet as mentioned earlier'
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: In **Run AB test**
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`elbUri`is the endpoint address of the `demo-app-elb` ELB'
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Commit and push your changes.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Here, we are with our two pipelines ready for action:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![demo-app-cdelivery pipeline](img/image_05_009.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Let us trigger a `demo-app` run by changing the `$full_name` in `demo-app/src/index.php`.
+    You should see it running after detecting the Git change. At the end of the run,
+    it should trigger the downstream `demo-app-cdelivery` pipeline, and after another
+    approximately10 minutes, there should be a brand new `demo-app AMI` waiting for
+    you (check the AWS console).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Please remember to delete any AWS resources used in the mentioned examples (VPC,
+    EC2, S3, IAM, CodeCommit, and so on) to avoid unnecessary charges.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we extended our Jenkins pipeline to deploy and test our application
+    artifact on an EC2 instance in a VPC environment. You learned how to use Packer
+    to template the provisioning of instances as well as how to use Serverspec to
+    apply extra verification of our infrastructure.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next chapter, we are going to finalize our Jenkins pipeline setup by
+    adding the Continuous Deployment element to it. We will examine ways to deploy
+    AMIs created during the Delivery stage into a production environment.
+  prefs: []
+  type: TYPE_NORMAL

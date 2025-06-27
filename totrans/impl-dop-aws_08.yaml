@@ -1,0 +1,574 @@
+- en: Chapter 8. Optimize for Scale and Cost
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'On the subject of optimization, we shall start from the top, that is to say
+    the earliest stage: the design stage.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Imagine iterating over your architecture plan time and time again, until you
+    have convinced yourself and your colleagues that this is the best you can do with
+    the information available at that time. Now imagine that, unless you have a very
+    unusual use case, other people have already done similar iterations and have kindly
+    shared the outcome.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Back to reality and fortunately, we were not far off. There is indeed a collective
+    AWS knowledge base in the form of blog posts, case studies, and white papers available
+    to anybody embarking on their first cloud deployment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We are going to take a distilled sample of that knowledge base and apply it
+    to a common architecture example, in an attempt to achieve maximum scalability,
+    whilst remaining cost efficient.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The example is going to be one of a typical frontend (NGINX nodes), backend
+    (DB cluster) and a storage layer deployment within a VPC:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Optimize for Scale and Cost](img/image_08_001.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Whilst, technically, our whole deployment is on the Internet, the visual segregation
+    above is to emphasize the network isolation properties of a VPC.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Architectural considerations
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Let us now examine this deployment one component at a time, starting with the
+    VPC itself.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The VPC
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: I am proceeding under the assumption that if you are still holding this book,
+    you have likely accepted the way of the VPC.
+  prefs: []
+  type: TYPE_NORMAL
+- en: CIDR
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: How many VPCs are you foreseeing having? Would they be linked (VPC peering)
+    or would you be bridging other networks in (VPN)?
+  prefs: []
+  type: TYPE_NORMAL
+- en: The answers to these questions play a role when choosing the CIDR for a VPC.
+    As a general rule it is recommended to avoid common (household router) network
+    addresses such as `192.168.1.0` or `10.0.0.0`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Keep track of and assign different CIDRs if you have more than one VPC, even
+    if you don't have an immediate need to peer them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Consider a CIDR that will allow for large enough subnets to accommodate potential
+    instance scaling with minimal fragmentation (number of subnets).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Subnets and Availability Zones
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: '**Availability Zones** (**AZs**) are how we add resilience to a deployment,
+    so we should have at least two of those. There might be configurations in which
+    you have to use three, for example where a cluster quorum is needed, such as **ZooKeeper**.
+    In that case, it is advisable to keep quorum members in separate zones in order
+    to handle network partitions better. To accommodate this and to keep charges low,
+    we could create subnets in three zones, deploy quorum clusters in all three, and
+    other components (say **NGINX** hosts) in only two of those.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let us illustrate an example where we have a Zookeeper and a web server (NGINX)
+    component within our VPC. We have decided to use three AZs and maintain two sets
+    of subnets: **public** and **private**. The former routing through the IGW, the
+    latter via NAT:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Subnets and Availability Zones](img/image_08_002.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Here we have the ELB spanning across all three AZs and public subnets respectively.
+    In the private subnet space, we find two web servers plus our cluster of three
+    ZooKeeper nodes giving us a good balance of resilience at optimal cost.
+  prefs: []
+  type: TYPE_NORMAL
+- en: VPC limits
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'AWS enforces certain initial limits on every account, which might catch you
+    by surprise when your environment starts scaling up. Important ones to check are: **Instances**,
+    **EBS** and **Networking** limits found on the **EC2 dashboard**:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![VPC limits](img/image_08_003.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: When requesting an increase, select a number that is high enough to provide
+    a buffer for scaling, but not inadequately high as after all the limits are there
+    to protect against accidental/erroneous overprovisioning.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The frontend layer
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: With the subnets in place, we can start thinking about our VPC inhabitants.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The frontend or application layer consists of our Auto Scaling Groups and the
+    first decision that we'll face would be that of an EC2 instance type.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The profile of the frontend application would very much dictate the choice between
+    a memory, compute or a storage optimized instance. With some help from fellow
+    developers (in the case of an in-house application) and a suitable performance
+    testing tool (or service) you should be able to ascertain which system resource
+    does the given application make most use of.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let us assume we have picked the **C4 Compute Optimized** instance class which
+    AWS suggests for webservers. The next question will be - what size?
+  prefs: []
+  type: TYPE_NORMAL
+- en: Well, one way to guess our way through, is to take the average number of requests
+    per second that we would like to be able to support, deploy the minimum number
+    of instances we can afford (two for resilience) of the smallest size available
+    in the chosen class and run a load test against them. Ideally the average utilization
+    across the two nodes would remain under 50% to allow for traffic spikes and events
+    of failure where the remaining host takes all the load. If the results are far
+    below that mark, then we should look for a different class with smaller instance
+    types for better value. Otherwise we keep increasing the C4 size.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Next comes the question of Auto Scaling. We have the right class and instance
+    size to work with, and now we need scaling thresholds. Firstly, if you are fortunate
+    enough to have predicable loads, then your problems end here with the use of **Scheduled
+    Actions**:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The frontend layer](img/image_08_004.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: You can simply tell AWS scale me up at *X* o'clock then back down at *Y*. The
+    rest of us, we have to set alarms and thresholds.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We've already decided that a 50% average utilization (let us say CPU) is our
+    upper limit and by that time we should already have scaling in progress. Otherwise,
+    if one of our two nodes fails, at that rate the other one will have to work at
+    maximum capacity. As an example a **CloudWatch** alarm could be >40% average CPU
+    used for five minutes, triggering an Auto Scaling Group action to increase the
+    group size by 50% (which is one instance).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Tip
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: In order to prevent unnecessary scaling events, it is important to adjust the
+    value of the **Cooldown period**. It should reflect the expected time a newly
+    launched instance will take to become fully operational and start affecting the
+    **CloudWatch** metric.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For even finer control over how Auto Scaling reacts to the alarm we could use
+    Step Scaling (ref: [http://docs.aws.amazon.com/autoscaling/latest/userguide/as-scale-based-on-demand.html](http://docs.aws.amazon.com/autoscaling/latest/userguide/as-scale-based-on-demand.html)).
+    **Step Adjustments** allow for a varied response based on the severity of the
+    threshold breach. For example, if the load increases from 40% to 50%, then scale
+    up with only a single instance, but if the hop is from 40% to 70%, go straight
+    to two or more.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Tip
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: With Step Scaling the **Cooldown period** is set via the **Instance Warmup**
+    option.
+  prefs: []
+  type: TYPE_NORMAL
+- en: While we aim to scale up relatively quickly to prevent any service disruption,
+    scaling down should be timely to save hourly charges, but not premature which
+    could cause a scaling loop.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The **CloudWatch** alarm for scaling down should act over a much longer period
+    of time than the five minutes we observed earlier. Also the gap between the threshold
+    for scaling up and the one for scaling down should be wide enough not to have
+    instances launch, only to be terminated shortly after.
+  prefs: []
+  type: TYPE_NORMAL
+- en: EC2 Instance utilization is just one example of a trigger; it is also worth
+    considering ELB metrics such as sum of total request, non-2XX responses or response
+    latency. If you choose to use any of those, ensure that your scale down alarms
+    react to the **INSUFFICIENT_DATA** state which is observed during periods of no
+    traffic (perhaps late at night).
+  prefs: []
+  type: TYPE_NORMAL
+- en: The backend layer
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Behind the application we are likely to find a database cluster of some sort.
+    For this example, we have chosen RDS (MySQL/PostgreSQL). However, the scaling
+    and resilience ideas can be easily translated to suit a custom DB cluster on EC2
+    instances.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Starting with high-availability, in terms of RDS, the feature is called a **Multi-AZ**
+    deployment. This gives us a Primary RDS instance with a hot **STANDBY** replica
+    as a failover solution. Unfortunately, the Standby cannot be used for anything
+    else, that is to say we cannot have it, for example, serving read-only queries.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'A Multi-AZ setup within our VPC would look like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The backend layer](img/image_08_005.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: In the case of a **PRIMARY** outage, RDS automatically fails over to the **STANDBY**,
+    updating relevant DNS records in the process. According to the documentation,
+    a typical failover takes one to two minutes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The triggers include the Primary becoming unavailable (thus failing AWS health-checks),
+    a complete AZ outage, or a user interruption such as an RDS instance reboot.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'So far, with Multi-AZ we have a reasonably resilient, but perhaps not very
+    scalable setup. In a busy environment it is common to dedicate a primary DB node
+    for writes, while reading is done off of replicas. The inexpensive option would
+    be to add a single replica to our current arrangement:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The backend layer](img/image_08_006.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Here we write to **PRIMARY** and read from **REPLICA**, or for read-intensive
+    applications reads can go to both.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If our budget allows, we can take this a step further and provide a **REPLICA**
+    in both subnets in which we deploy frontend/application nodes:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The backend layer](img/image_08_007.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Latency across AWS zones is already pretty low, but with such a per-zone RDS
+    distribution, we reduce it even further. All hosts would write to the **PRIMARY**.
+    However they can assign a higher priority to their local (same zone) **REPLICA**
+    when reading.
+  prefs: []
+  type: TYPE_NORMAL
+- en: And since we are on a spending spree, additional RDS performance boost can be
+    gained with provisioned IOPS. This is something to consider if you are running
+    a heavy workload and in need of high RDS Storage I/O.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Although indirectly, caching is another very effective way to increase RDS scalability
+    by alleviating the load.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Popular software choices here are **Memcached** and **Redis**. Either is simple
+    to setup locally (on each application host). If you would like to benefit from
+    a shared cache then you could run a cluster on EC2 or use the AWS managed ElastiCache
+    service. With the latter, we can have again a **Multi-AZ** configuration plus
+    multiple replicas for resilience and low-latency:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The backend layer](img/image_08_008.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: You will notice that the failover scenario differs from RDS in that there is
+    no standby instance. In the event of a **PRIMARY** failure **ELASTICACHE** promotes
+    the most up-to-date **REPLICA** instead.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Tip
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Note that after the promotion the **PRIMARY** endpoint remains the same, however
+    the promoted Replica's address changes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The object storage layer
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In the effort of achieving effortless scalability, we must put emphasis on building
+    stateless applications where possible. Not keeping state on our application nodes
+    would mean storing any valuable data away from them. A classic example is **WordPress**,
+    where user uploads are usually kept locally, making it difficult to scale such
+    a setup horizontally.
+  prefs: []
+  type: TYPE_NORMAL
+- en: While it is possible to have a shared file system across your EC2 instances
+    using **Elastic File System** (**EFS**), for reliability and scalability we are
+    much better off using an object storage solution such as **AWS S3**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'It is fair to say that accessing S3 objects is not as trivial as working with
+    an EFS volume, however the AWS tools and SDKs lower the barrier considerably.
+    For easy experimenting, you could start with the S3 CLI. Eventually you would
+    want to build S3 capabilities into your application using one of the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Java/.NET/PHP/Python/Ruby or other SDKs (ref: [https://aws.amazon.com/tools/](https://aws.amazon.com/tools/))'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'REST API (ref: [http://docs.aws.amazon.com/AmazonS3/latest/dev/RESTAPI.html](http://docs.aws.amazon.com/AmazonS3/latest/dev/RESTAPI.html))'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'In previous chapters we examined IAM Roles as a convenient way of granting
+    S3 bucket access to EC2 instances. We can also enhance the connectivity between
+    those instances and S3 using VPC Endpoints:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '|   | *A VPC endpoint enables you to create a private connection between your
+    VPC and another AWS service without requiring access over the Internet, through
+    a NAT device, a VPN connection, or AWS Direct Connect. Endpoints are virtual devices.
+    They are horizontally scaled, redundant, and highly available VPC components that
+    allow communication between instances in your VPC and AWS services without imposing
+    availability risks or bandwidth constraints on your network traffic.* |   |'
+  prefs: []
+  type: TYPE_TB
+- en: '|   | --[http://docs.aws.amazon.com/AmazonVPC/latest/UserGuide/vpc-endpoints.html](http://docs.aws.amazon.com/AmazonVPC/latest/UserGuide/vpc-endpoints.html)
+    |'
+  prefs: []
+  type: TYPE_TB
+- en: 'If you have clients in a different geographic location uploading content to
+    your bucket, then S3 transfer acceleration (ref: [http://docs.aws.amazon.com/AmazonS3/latest/dev/transfer-acceleration.html](http://docs.aws.amazon.com/AmazonS3/latest/dev/transfer-acceleration.html))
+    can be used to improve their experience. It is simply a matter of clicking **Enable**
+    on the bucket''s settings page:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The object storage layer](img/image_08_009.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: We have now covered speed improvements; scalability comes built into the S3
+    service itself and for cost optimization we have the different storage classes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: S3 currently supports four types (classes) of storage. The most expensive and
+    most durable being the **Standard class**, which is also the default. This is
+    followed by the **Infrequent Access class (Standard_IA)** which is cheaper, however
+    keep in mind that it is indeed intended for rarely accessed objects otherwise
+    the associated retrieval cost would be prohibitive. Next is the **Reduced Redundancy
+    class** which, despite the scary name, is still pretty durable at 99.99%. And
+    lastly, comes the **Glacier storage class** which is akin to a tape backup in
+    that objects are archived and there is a 3-5 hour retrieval time (with 1-5 minute
+    urgent retrievals available at a higher cost).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You can specify the storage class (except for Glacier) of an object at time
+    of upload or change it retrospectively using the AWS console, CLI or SDK. Archiving
+    to Glacier is done using a bucket lifecycle policy (bucket''s settings page):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The object storage layer](img/image_08_010.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'We need to add a new rule, describing the conditions under which an object
+    gets archived:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The object storage layer](img/image_08_011.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Incidentally, Lifecycle rules can also help you clean up old files.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The load balancing layer
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The days of the *Wild Wild West* when one used to setup web servers with public
+    IPs and DNS round-robin have faded away and the load balancer has taken over.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We are going to look at the AWS ELB service, but this is certainly not the only
+    available option. As a matter of fact, if your use case is highly sensitive to
+    latency or you observe frequent, short lived traffic surges then you might want
+    to consider rolling your own EC2 fleet of load balancing nodes using NGINX or
+    HAProxy.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The ELB service is priced at a flat per-hour fee plus bandwidth charges, so
+    perhaps not much we can do to reduce costs, but we can explore ways of boosting
+    performance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Cross-zone load balancing
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Under normal conditions, a Classic ELB would deploy its nodes within the zones
+    which our backend (application) instances occupy and forward traffic according
+    to those zones. That is to say, the ELB node in zone **A** will talk to the backend
+    instance in the same zone, and the same principle applies for zone **B**:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Cross-zone load balancing](img/image_08_012.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'This is sensible as it clearly ensures lowest latency, but there are a couple
+    of things to note:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: An equal number of backend nodes should be maintained in each zone for best
+    load spread
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Clients caching the IP address for an ELB node would stick to the respective
+    backend instance
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'To improve the situation at the expense of some (minimal) added latency, we
+    can enable **Cross-Zone Load Balancing** in the Classic ELB''s properties:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Cross-zone load balancing](img/image_08_013.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'This will change the traffic distribution policy, so that requests to a given
+    ELB node will be evenly spread across all registered (status: InService) backend
+    instances, changing our earlier diagram to this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Cross-zone load balancing](img/image_08_014.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: An unequal number of backend nodes per zone would no longer have an impact on
+    load balancing, nor would external parties targeting a single ELB instance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: ELB pre-warming
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: An important aspect of the ELB service is that it runs across a cluster of EC2
+    instances of a given type, very much like our backend nodes. With that in mind,
+    it should not come as a surprise that ELB scales based on demand, again much like
+    our Auto Scaling Group does.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is all very well when incoming traffic fluctuates within certain boundaries,
+    so that it can be absorbed by the ELB or increases gradually, allowing enough
+    time for the ELB to scale and accommodate. However, sharp surges can result in
+    ELB dropping connections if large enough.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This can be prevented with a technique called **pre-warming** or essentially
+    scaling up an ELB ahead of anticipated traffic spikes. Currently this is not something
+    that can be done at the user end, meaning you would need to contact AWS Support
+    with an ELB pre-warming request.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The CDN layer
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '**CloudFront** or AWS''s CDN solution is yet another method of improving the
+    performance of the ELB and S3 services. If you are not familiar with CDN networks,
+    those, generally speaking, provide faster access to any clients you might have
+    in a different geographic location from your deployment location. In addition,
+    a CDN would also cache data so that subsequent requests won''t even reach your
+    server (also called **origin**) greatly reducing load.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, given our VPC deployment in the US, if we were to setup a **CloudFront distribution**
+    in front of our ELB and/or S3 bucket, then requests from clients originating in
+    say Europe would be routed to the nearest *European CloudFront Point-of-Presence*
+    which in turn would either serve a cached response or fetch the requested data
+    from the ELB/S3 over a high-speed, internal AWS network.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To setup a basic **web distribution** we can use the **CloudFront dashboard**:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The CDN layer](img/image_08_015.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Once we **Get Started** then the second page presents the distribution properties:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The CDN layer](img/image_08_016.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Conveniently, resources within the same AWS account are suggested. The origin
+    is the source of data that CloudFront needs to talk to, for example the ELB sitting
+    in front of our application. In the **Alternate Domain Names** field we would
+    enter our website address (say `www.example.org`), the rest of the settings can
+    remain with their defaults for now.
+  prefs: []
+  type: TYPE_NORMAL
+- en: After the distribution becomes active all that is left to do is to update the
+    DNS record for `www.example.org` currently pointing at the ELB to point to the
+    distribution address instead.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Spot instances
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Our last point is on making further EC2 cost savings using **Spot** instances.
+    These represent unused resources across the EC2 platform, which users can bid
+    on at any given time. Once a user has placed a winning bid and has been allocated
+    the EC2 instance, it remains theirs for as long as the current Spot price stays
+    below their bid, else it gets terminated (a notice is served via the instance
+    meta-data, ref: [http://docs.aws.amazon.com/AWSEC2/latest/UserGuide/spot-interruptions.html](http://docs.aws.amazon.com/AWSEC2/latest/UserGuide/spot-interruptions.html)).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: These conditions make Spot instances ideal for workflows, where the job start
+    time is flexible and any tasks can be safely resumed in case of instance termination.
+    For example, one can run short-lived Jenkins jobs on Spot instances (there is
+    even a plugin for this) or use it to run a workflow which performs a series of
+    small tasks that save state regularly to S3/RDS.
+  prefs: []
+  type: TYPE_NORMAL
+- en: AWS Calculators
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Lastly, a simple yet helpful tool to give you an idea of how much your planned
+    deployment would cost: [http://calculator.s3.amazonaws.com/index.html](http://calculator.s3.amazonaws.com/index.html)
+    (remember to untick the **FREE USAGE TIER** near the top of the page)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'And if you were trying to compare the cost of on-premise to cloud, then this
+    might be of interest: [https://aws.amazon.com/tco-calculator/](https://aws.amazon.com/tco-calculator/).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter we examined different ways in which to optimize both the scalability
+    and running costs of an AWS deployment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We started with the underlying VPC and its core properties such as the CIDR,
+    subnets and how to plan for growth. We covered methods of improving the performance
+    of the frontend, backend, storage and load balancing components. Then we looked
+    at AWS Spot instances as a very cost efficient solution for executing lower-priority,
+    batch processing jobs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next chapter we move into the realm of security and explore the topic
+    of how to better harden an AWS environment.
+  prefs: []
+  type: TYPE_NORMAL

@@ -1,0 +1,1331 @@
+- en: Automating Continuous Deployment Flow with Jenkins
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The most powerful tool we have as developers is automation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: -Scott Hanselman
+  prefs: []
+  type: TYPE_NORMAL
+- en: We already have all the commands required for a fully automated Continuous Deployment
+    flow. Now we need a tool that will monitor changes in our code repository and
+    trigger those commands every time a commit is detected.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There is a plethora of CI/CD tools on the market. We'll choose Jenkins. That
+    does not mean that it is the only choice nor that it is the best one for all use
+    cases. I won't compare different tools nor provide more details behind the decision
+    to use Jenkins. That would require a chapter on its own or even a whole book.
+    Instead, we'll start by discussing Jenkins architecture.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Jenkins architecture
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Jenkins is a monolithic application based on a combination of a master and agents.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Jenkins master can be described as an orchestrator. It monitors sources, triggers
+    jobs when predefined conditions are met, stores logs and artifacts, and performs
+    a myriad of other tasks related to CI/CD orchestration. It does not run actual
+    tasks but makes sure that they are executed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Jenkins agent, on the other hand, does the actual work. When master triggers
+    a job execution, the actual work is performed by an agent.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We cannot scale Jenkins master. At least not in the same way as we scaled the
+    `go-demo` service. We can create multiple Jenkins masters, but they cannot share
+    the same file systems. Since Jenkins uses files to store its state, creating multiple
+    instances would result in completely separate applications. Since the main reasons
+    behind scaling are fault tolerance and performance benefits, none of those goals
+    would be accomplished by scaling Jenkins master.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If Jenkins cannot be scaled, how do we meet performance requirements? We increase
+    the capacity by adding agents. A single master can handle many agents. In most
+    cases, an agent is a whole server (physical or virtual). It is not uncommon for
+    a single master to have tens or even hundreds of agents (servers). In turn, each
+    of those agents runs multiple executors that run tasks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Traditionally, Jenkins master and agents would run on a dedicated server. That,
+    in itself, poses a few problems. If Jenkins is running on a dedicated server,
+    what happens when it fails? Remember, everything fails sooner or later.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For many organizations, Jenkins is mission critical. If it's not operational,
+    new releases are not made, scheduled tasks are not run, software is not deployed,
+    and so on. Typically, Jenkins failure would be fixed by moving the software together
+    with the files that form its state to a healthy server. If that is done manually,
+    and it usually is, the downtime can be substantial.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Throughout this chapter, we'll leverage the knowledge we obtained by now and
+    try to make Jenkins fault tolerant. We might not be able to accomplish zero-downtime
+    but, at least, we'll do our best to reduce it as much as possible. We'll also
+    explore ways to apply what we learned to create a master and Jenkins agents in
+    (almost) fully automated way. We'll try to make the master fault tolerant and
+    agents scalable and dynamic.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Enough talk! Let's move towards more practical parts of the chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Production environment setup
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We'll start by recreating the production cluster we used in the previous chapters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'All the commands from this chapter are available in the `06-jenkins.sh` ([https://gist.github.com/vfarcic/9f9995f90c6b8ce136376e38afb14588](https://gist.github.com/vfarcic/9f9995f90c6b8ce136376e38afb14588))
+    Gist:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: We entered the `cloud-provisioning` repository we cloned earlier and pulled
+    the latest code. Then we executed the `scripts/dm-swarm.sh` ([https://github.com/vfarcic/cloud-provisioning/blob/master/scripts/dm-swarm.sh](https://github.com/vfarcic/cloud-provisioning/blob/master/scripts/dm-swarm.sh))
+    script that created the production cluster. It is the same script we used in the
+    previous chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s confirm that the cluster was indeed created correctly:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output of the `node ls` command is as follows (IDs are removed for brevity):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now that the production cluster is up and running, we can create the Jenkins
+    service.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Jenkins service
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Traditionally, we would run Jenkins in its own server. Even if we'd choose to
+    share server's resources with other applications, the Deployment would still be
+    static. We'd run a Jenkins instance (with or without Docker) and hope that it
+    never fails. The problem with this approach is in the fact that every application
+    fails sooner or later. Either the process will stop, or the whole node will die.
+    Either way, Jenkins, like any other application, will stop working at some moment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The problem is that Jenkins has become a critical application in many organizations.
+    If we move the execution or, to be more precise, triggering of all automation
+    into Jenkins, we create a strong dependency. If Jenkins is not running, our code
+    is not built, it is not tested, and it is not deployed. Sure, when it fails, you
+    can bring it up again. If the server on which it is running stops working, you
+    can deploy it somewhere else. The downtime, assuming it happens during working
+    hours, will not be long. An hour, maybe two, or even more time will pass since
+    the moment it stops working, someone finds out, notifies someone else, that someone
+    restarts the application or provisions a new server. Is that a long time? It depends
+    on the size of your organization. The more people depend on something, the bigger
+    the cost when that something doesn't work. Even if such a downtime and the cost
+    it produces is not critical, we already have all the knowledge and the tools to
+    avoid it. All we have to do is create another service and let Swarm take care
+    of the rest.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**A note to Windows users**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Git Bash has a habit of altering file system paths. To stop this, execute the
+    following before running the code block:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`export MSYS_NO_PATHCONV=1`'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s create a Jenkins service. Run the following commands from within the
+    `cloud-provisioning` directory:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: '**A note to Linux (example: Ubuntu) users**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Docker Machine mounts users directory from the host inside the VMs it creates.
+    That allows us to share the files. However, that feature does not work in Docker
+    Machine running on Linux. The easiest workaround is, for now, to remove the `--mount`
+    argument. Later on, when we reach persistent storage, you'll see how to mount
+    volumes more effectively.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The good news is that the problem will be fixed soon. Please see the *issue
+    #1376* ([https://g](https://github.com/docker/machine/issues/1376)[ithub.com/docker/machine/issues/1376](https://github.com/docker/machine/issues/1376))
+    for the discussion. Once the *pull request #2122* ([https://github.com/docker/machine/pull/2122](https://github.com/docker/machine/pull/2122))
+    is merged, you will be able to use automatic mounting on Linux.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Jenkins stores its state in the file system. Therefore, we started by creating
+    a directory `mkdir` on the host. It will be used as Jenkins home. Since we are
+    inside one of the subdirectories of our host's user, the `docker/jenkins` directory
+    is mounted on all the machines we created.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next, we created the service. It exposes the internal port `8080` as `8082`
+    as well as the port `50000`. The first one is used to access Jenkins UI and the
+    second for master/agent communication. We also defined the URL prefix `as/jenkins`
+    and mounted the `jenkins` home directory. Finally, we reserved `300m` of memory.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Once the image is downloaded, the output of the `service ps` command is as
+    follows (IDs are removed for brevity):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: '![](img/cd-environment-jenkins-only.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 6-1: Production cluster with the Jenkins service'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Jenkins 2 changed the setup process. While the previous versions allowed us
+    to run it without any mandatory configuration, the new Jenkins forces us to go
+    through some steps manually. Unfortunately, at the time of this writing, there
+    is no good API to help us automate the process. While there are some *tricks*
+    we could use, the benefits are not high enough when compared with the additional
+    complexity they introduce. After all, we'll setup Jenkins only once, so there
+    is no big incentive to automate the process (at least until a configuration API
+    is created).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s open the UI:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: '**A note to Windows users**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Git Bash might not be able to use the open command. If that''s the case, execute `docker-machine
+    ip <SERVER_NAME>` to find out the IP of the machine and open the URL directly
+    in your browser of choice. For example, the command above should be replaced with
+    the command that follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`docker-machine ip swarm-1`'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If the output would be `1.2.3.4`, you should open `http://1.2.3.4:8082/jenkins`
+    in your browser.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The first thing you will notice is that you are required to introduce the Administrator
+    password. Quite a few enterprise users requested security hardening. As a result,
+    Jenkins cannot be accessed, anymore, without initializing a session. If you are
+    new to Jenkins, or, at least, *version 2*, you might wonder what the password
+    is. It is output to logs (in our case `stdout`) as well as to the file `secrets/initialAdminPassword`,
+    which will be removed at the end of the setup process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s see the content of the `secrets/initialAdminPassword` file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output will be a `long` string that represents the temporary password.
+    Please copy it, go back to the UI, paste it to the Administrator password field,
+    and click the Continue button:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/jenkins-setup-password.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 6-2: Unlock Jenkins screen'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Once you unlock Jenkins, you will be presented with a choice to Install suggested
+    plugins or select those that fit your needs. The recommended plugins fit most
+    commonly used scenarios so we'll go with that option.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Please click the Install suggested plugins button.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Once the plugins are downloaded and installed, we are presented with a screen
+    that allows us to Create the first admin user. Please use `admin` as both the
+    Username and the Password. Fill free to fill the rest of the fields with any value.
+    Once you''re done, click the `Save and Finish` button:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/jenkins-setup-admin-user.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 6-3: Create First Admin User screen'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Jenkins is ready. All that's left, for now, is to click the `Start using Jenkins`
+    button.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now we can test whether Jenkins failover works.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Jenkins failover
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Let''s stop the service and observe Swarm in action. To do that, we need to
+    find out the node it is running in, point our Docker client to it, and remove
+    the container:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: We listed Jenkins processes and applied the filter that will return only the
+    one with the desired state running `docker service ps -f desired-state=running
+    jenkins`. The output was piped to the tail command that removed the header `tail
+    -n +2` and, later on, piped again to the `awk` command that limited the output
+    to the fourth column `awk '{print $4}'` that contains the node the process is
+    running in. The final result was stored in the `NODE` variable.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Later on, we used the eval command to create environment variables that will
+    be used by our Docker client to operate the remote engine. Finally, we retrieved
+    the image ID and removed the container with the combination of the `ps` and `rm`
+    commands.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As we already learned in the previous chapters, if a container fails, Swarm
+    will run it again somewhere inside the cluster. When we created the service, we
+    told Swarm that the desired state is to have one instance running and Swarm is
+    doing its best to make sure our expectations are fulfilled.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let us confirm that the service is, indeed, running:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If Swarm decided to re-run Jenkins on a different node, it might take a few
+    moments until the image is pulled. After a while, the output of the `service ps`
+    command should be as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/error.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'We can do a final confirmation by reopening the the UI:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: '**A note to Windows users**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Git Bash might not be able to use the open command. If that''s the case, execute `docker-machine
+    ip <SERVER_NAME>` to find out the IP of the machine and open the URL directly
+    in your browser of choice. For example, the command above should be replaced with
+    the command that follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`docker-machine ip swarm-1`'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If the output would be `1.2.3.4`, you should open `http://1.2.3.4:8082/jenkins`
+    in your browser.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Since Jenkins does not allow unauthenticated users, you'll have to login. Please
+    use `admin` as both the User and the Password.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You'll notice that, this time, we did not have to repeat the setup process.
+    Even though a fresh new Jenkins image is run on a different node, the state is
+    still preserved thanks to the host directory we mounted.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We managed to make Jenkins fault tolerant, but we did not manage to make it
+    run without any downtime. Due to its architecture, Jenkins master cannot be scaled.
+    As a result, when we simulated a failure by removing the container, there was
+    no second instance to absorb the traffic. Even though Swarm re-scheduled it on
+    a different node, there was some downtime. During a short period, the service
+    was not accessible. While that is not a perfect situation, we managed to reduce
+    downtime to a minimum. We made it fault tolerant, but could not make it run without
+    downtime. Considering its architecture, we did the best we could.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now is the time to hook up Jenkins agents that will run our Continuous Deployment
+    flow.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Jenkins agent
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: There are quite a few ways to run Jenkins agents. The problem with most of them
+    is that they force us to add agents separately through Jenkins UI. Instead of
+    adding agents one by one, we'll try to leverage Docker Swarms ability to scale
+    services.
+  prefs: []
+  type: TYPE_NORMAL
+- en: One way we can accomplish the quest for making scalable agents is the Jenkins
+    Swarm Plugin ([https://wiki.jenkins-ci.org/display/JENKINS/Swarm+Plugin](https://wiki.jenkins-ci.org/display/JENKINS/Swarm+Plugin)).
+    Before you start making wrong conclusions, I must state that this plugin has nothing
+    to do with Docker Swarm. The only thing they share is the word Swarm.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Jenkins Swarm Plugin ([https://wiki.jenkins-ci.org/display/JENKINS/Swarm+Plugin](https://wiki.jenkins-ci.org/display/JENKINS/Swarm+Plugin))
+    allows us to auto-discover nearby masters and join them automatically. We'll use
+    it only for the second feature. We'll create a Docker Swarm service that will
+    act as a Jenkins agent and join the master automatically.
+  prefs: []
+  type: TYPE_NORMAL
+- en: First things first. We need to install the plugin.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Please open the Plugin Manager screen as shown in the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: '**A note to Windows users**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Git Bash might not be able to use the open command. If that''s the case, execute `docker-machine
+    ip <SERVER_NAME>` to find out the IP of the machine and open the URL directly
+    in your browser of choice. For example, the command above should be replaced with
+    the command that follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`docker-machine ip swarm-1`'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If the output would be `1.2.3.4`, you should open `http://1.2.3.4:8082/jenkins/pluginManager/available`
+    in your browser.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next, we need to search for the *Self-Organizing Swarm Plug-in Modules plugin*.
+    The easiest way to do that is by typing the plugin name inside the Filter field
+    located in the top-right corner of the screen. Once you locate the plugin, please
+    select it and click the `Install without restart` button.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that the plugin is installed, we can set up our second cluster that will
+    consist of three nodes. As before, we'll call it `swarm-test`. We'll use the script
+    `scripts/dm-test-swarm-2.sh` ([https://github.com/vfarcic/cloud-provisioning/blob/master/scripts/dm-test-swarm-2.sh](https://github.com/vfarcic/cloud-provisioning/blob/master/scripts/dm-test-swarm-2.sh))
+    to run all the commands required to create the machines and join them into the
+    cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output of the `node ls` command is as follows (IDs are removed for brevity):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: The only significant difference between the script we just ran and the one we
+    used before `dm-test-swarm.sh` is that this one adds a few labels. The first node
+    is labeled `jenkins-agent`, while the other two are labeled `prod-like`. The reason
+    behind those labels is that we're trying to differentiate nodes that will be used
+    to run tasks like building and testing `jenkins-agent` from those that will be
+    used to run services in the environment that simulate production `prod-like`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s inspect the `swarm-test-1` node:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'As you can see, this node has the label with the key `env` and the value `jenkins-agent`.
+    If you inspect the other two nodes, you will see that they are also labeled but,
+    this time, with the value `prod-like`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/cd-environment-jenkins-both-clusters.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 6-4: Create First Admin User screen'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now that the `swarm-test` cluster is set up, we are ready to create the Jenkins
+    agent service. However, before we do that, let''s take a quick look at the definition
+    of the image we are going to use. The `vfarcic/jenkins-swarm-agent Dockerfile`
+    ([https://github.com/vfarcic/docker-jenkins-slave-dind/blob/master/Dockerfile](https://github.com/vfarcic/docker-jenkins-slave-dind/blob/master/Dockerfile))
+    is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: It uses `docker` as the base image followed by a few environment variables that
+    define versions of the software that will be installed. Since Jenkins runs as
+    a `jenkins user`, we added it as well. That is followed by the installation of
+    OpenJDK, Python, and pip. JDK is required for the Jenkins Swarm client and the
+    rest for Docker Compose. With all the prerequisites set, we download the Swarm
+    JAR and use pip to install Docker Compose.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finally, we copy the `run.sh` ([https://github.com/vfarcic/docker-jenkins-slave-dind/blob/master/run.sh](https://github.com/vfarcic/docker-jenkins-slave-dind/blob/master/run.sh))
+    script, set its permissions to execute, and define the runtime command to run
+    it. The script uses Java to run the Jenkins Swarm client.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Before we proceed with the Jenkins agents service, we''ll need to create the
+    `/workspace` directory in each of the hosts where the agents will run. At the
+    moment, that is only the `swarm-test-1` node. Soon you''ll see why we need this
+    directory:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: We entered the node `swarm-test-1`, created the directory, gave it full permissions,
+    and exited the machine.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Equipped with the understanding of the `vfarcic/jenkins-swarm-agent` image
+    (or, at least, what it contains), we can move on and create the service:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**A note to Windows users**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For mounts used in the next command to work, you have to stop Git Bash from
+    altering file system paths. Set this environment variable as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`export MSYS_NO_PATHCONV=1`'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `service create` command is, this time, a bit longer than what we're used
+    to. The `COMMAND_OPTIONS` environment variable contains all the information the
+    agent needs to connect to the master. We specified the address of the `master
+    -master http://$(docker-machine ip swarm-1):8082/jenkins`, defined the `username`
+    and `password` `-username $USER -password $PASSWORD`, labeled the agent `-labels
+    'docker'`, and set the number of executors `-executors 5`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Further on, we declared the service to be global and constrained it to the `jenkins-agent`
+    nodes. That means that it will run on every node that has the matching label.
+    At the moment, that is only one server. Soon we'll see the benefits such a setup
+    provides.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We mounted Docker socket. As a result, any command sent to the Docker client
+    running inside the container will run against Docker Engine on the host (in this
+    case Docker Machine). As a result, we'll avoid pitfalls that could be created
+    by running `Docker inside Docker`  or  `DinD`. For more information, please read
+    the article Using Docker-in-Docker for your CI or testing environment? Think twice
+    ([http://jpetazzo.github.io/2015/09/03/do-not-use-docker-in-](http://jpetazzo.github.io/2015/09/03/do-not-use-docker-in-docker-for-ci/)[docker-for-ci/](http://jpetazzo.github.io/2015/09/03/do-not-use-docker-in-docker-for-ci/)).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We also mounted the host (laptop) directory that contains the keys. That will
+    allow us to send requests to engines running inside the other cluster. The final
+    mount exposes the host directory `/workspace` inside the container. All builds
+    running inside Jenkins agents will use that directory:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/cd-environment-jenkins-agent.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 6-5: Jenkins agent run as a global service'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s take a look at the service processes:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows (IDs are removed for brevity):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/output1.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: As you can see, the service is global, so the desired state is for it to run
+    on every node. However, since we restricted it to the nodes with the label `jenkins-agent`,
+    containers are running only inside those that have the matching label. In other
+    words, the service is running only on `jenkins-agent` nodes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s open the Jenkins screen that displays registered agents:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: '**A note to Windows users**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Git Bash might not be able to use the open command. If that’s the case, execute `docker-machine
+    ip <SERVER_NAME>` to find out the IP of the machine and open the URL directly
+    in your browser of choice. For example, the command above should be replaced with
+    the command that follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`docker-machine ip swarm-1`'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If the output would be `1.2.3.4`, you should open `http://1.2.3.4:8082/jenkins/computer`
+    in your browser.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'As you can see, two agents are registered. The master agent is running by default
+    with every Jenkins instance. On my machine, the agent running as the `jenkins-agent`
+    service is identified as `e0961f7c1801-d9bf7835`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/jenkins-agent.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 6-6: Jenkins Swarm agent added to the master'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Since we used labels to restrict the service to the `swarm-test-1` node, at
+    the moment we have only one agent registered (besides the master that, in most
+    cases, should not be used).
+  prefs: []
+  type: TYPE_NORMAL
+- en: The agent is configured to use five executors. That means that five builds can
+    be executed in parallel. Please note that, in this case, the number of executors
+    is artificially high. Each machine has only one CPU. Without any additional information,
+    I would probably set the number of executors to be the same as the number of CPUs.
+    That would be only the basic calculation that would change with time. If the tasks
+    we're running through those executors are CPU demanding, we might lower the number
+    of executors. However, for the purpose of this exercise, five executors should
+    be *OK*. We have only one service, so we won't run builds in parallel.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's imagine that this is the real system with more builds running in parallel
+    than the number of executors. In such a situation, some would be queued waiting
+    for an executor to finish and free its resources. If this was a temporary case,
+    we wouldn't need to do anything. The executing builds would end, free the resources,
+    and run the queued builds. However, if this is a reoccurring situation, the number
+    of queued builds would probably start increasing and everything would slow down.
+    Since we already established that the speed is the critical element of Continuous
+    Integration, Delivery, and Deployment processes, when things start to get in the
+    way, we need to do something. In this case, that something is the increase of
+    available executors and, consequently, the number of agents.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s imagine that we hit the limit and need to increase the number of agents.
+    Knowing how global Swarm services work, all we have to do is create a new node:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: We created the `swarm-test-4` node and, inside it, the `/workspace` directory.
+    Then we got the token and joined the newly created service to the cluster as a
+    worker.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s confirm that the new node is, indeed, added to the cluster:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output of the `node ls` command is as follows (IDs are removed for brevity):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Is the Jenkins agent running inside the newly created node? Let’s take a look:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output of the `service ps` command is as follows (IDs are removed for brevity):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: Since the node is not labeled as `jenkins-agent`, the agent is not running inside
+    the `swarm-test-4` server.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s add the label:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This time, the output is a bit different (IDs are removed for brevity):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/output4-1.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Swarm detected the new label, run the container, and changed the state to running.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s go back to the Jenkins screen that lists the connected agents:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: '**A note to Windows users**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Git Bash might not be able to use the open command. If that''s the case, execute
+                         `docker-machine ip <SERVER_NAME>` to find out the IP of the
+    machine and open the URL directly in your browser of choice. For example, the
+    command above should be replaced with the command that follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`docker-machine ip swarm-1`'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If the output would be `1.2.3.4`, you should open `http://1.2.3.4:8082/jenkins/computer`
+    in your browser.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'As you can see, the new agent b76e943ffe6c-d9bf7835 was added to the list:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/jenkins-agents.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 6-7: The second Jenkins Swarm agent added to the master'
+  prefs: []
+  type: TYPE_NORMAL
+- en: This was very easy, wasn't it? Usually, we'd need not only to create a new server
+    but also to run the agent and add it to Jenkins configuration through the UI.
+    By combining *Jenkins Swarm* plugin and *Docker Swarm* global services, we managed
+    to automate most of the steps. All we have to do is create a new node and add
+    it to the Swarm cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Before we proceed and automate the Continuous Deployment flow through Jenkins,
+    we should create the services in production and production-like environments.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Creating services in production and production-like environments
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Since a service is created only once and updated whenever some of its aspects
+    change (example:new image with the new release), there is no strong incentive
+    to add service creation to the Continuous Deployment flow. All we'd get is increased
+    complexity without any tangible benefit. Therefore, we'll create all the services
+    manually and, later on, discuss how to automate the flow that will be triggered
+    with each new release.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We already created `go-demo`, `go-demo-db`, `proxy`, `jenkins`, and `registry`
+    services quite a few times so we''ll skip the explanation and run `scripts/dm-swarm-services-2.sh` ([https://github.com/vfarcic/cloud-provisioning/blob/master/scripts/dm-swarm-services-2.sh](https://github.com/vfarcic/cloud-provisioning/blob/master/scripts/dm-swarm-services-2.sh))
+    that will recreate the situation we had in the previous chapters:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output of the `service ls` command is as follows (IDs are removed for brevity):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: All the services are running. The only difference between the script we ran
+    now and the one we used before `scripts/dm-swarm-services.sh` ([https://github.com/vfarcic/cloud-provisioning/blob/master/scripts/dm-swarm-services.sh](https://github.com/vfarcic/cloud-provisioning/blob/master/scripts/dm-swarm-services.sh))
+    is that, this time, we added `registry` to the mix.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that the production environment is up and running, let's create the same
+    set of services inside the `swarm-test` cluster. Since this cluster is shared
+    between services running in the production-like environment as well as Jenkins
+    agents, we'll constrain services to `prod-like` nodes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'As with the production cluster, we''ll run the services through a script. This
+    time we''ll use `scripts/dm-test-swarm-services-2.sh` ([https://github.com/vfarcic/cloud-provisioning/blob/master/scripts/dm-test-swarm-services-2.sh](https://github.com/vfarcic/cloud-provisioning/blob/master/scripts/dm-test-swarm-services-2.sh)):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output of the `service ls` command is as follows (IDs are removed for brevity):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now that the services are running in both the production and production-like
+    environments, we can proceed with the discussion about the approach we'll take
+    for the CD flow automation with Jenkins.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Automating Continuous Deployment flow with Jenkins
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Jenkins is based on plugins. Almost every feature is a plugin. If we need to
+    use Git, there is a plugin for it. If we want to use Active Directory for authentication,
+    there is a plugin. You get the point. Almost everything is a plugin. Moreover,
+    most plugins were created and are maintained by the community. When we are in
+    doubt how to accomplish something, the *plugins directory* ([https://wiki.jenkins-ci.org/display/JENKINS/Plugins](https://wiki.jenkins-ci.org/display/JENKINS/Plugins)) is
+    usually the first place we start looking.
+  prefs: []
+  type: TYPE_NORMAL
+- en: With more than `1200` plugins available, it's no wonder that, given such a huge
+    variety, most users are compelled to use a plugin for almost any type of task.
+    Jenkins old-timers would create a Freestyle job that, for example, clones the
+    code and builds the binaries. It would be followed by another job that would run
+    unit tests, another for running functional tests, and so on. All those Freestyle
+    jobs would be connected. When the first is finished, it would invoke the second,
+    the second would call the third, and so on. Freestyle jobs foment heavy plugins
+    usage.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We would choose one appropriate for a given task, fill in some fields, and click
+    save. Such an approach allows us to automate the steps without the need for the
+    knowledge of how different tools work. Need to execute some Gradle tasks? Just
+    choose the Gradle plugin, fill in a few fields, and off you go.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Such an approach based on heavy usage of plugins can be disastrous. Understanding
+    automation and the tools behind it is essential. Moreover, the usage of *Freestyle*
+    jobs breaks one of the fundamental principles in our industry. Everything should
+    be stored in a code repository, be prone to code reviews, versioned, and so on.
+    There is no good reason why coding practices should not apply to the automation
+    code.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We'll take a different approach.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I am a huge believer that the steps that form a CI/CD Pipeline should be specified
+    outside the tools like Jenkins. We should be able to define all the commands without
+    CI/CD tools and, once we’re comfortable that everything works as expected, proceed
+    by translating those commands to the CI/CD friendly format. In other words, automation
+    comes first, and CI/CD tools later.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Fortunately, not long ago, Jenkins introduced a new concept called *Jenkins
+    Pipeline*. Unlike *Freestyle* jobs that were defined through Jenkins UI, *Pipeline*
+    allows us to define CD flow as code. Since we already have a well-defined set
+    of commands, converting them into *Jenkins Pipeline* should be relatively straightforward.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's give it a try.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Creating Jenkins Pipeline jobs
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We’ll start by defining a few environment variables. The reason behind declaring
+    those variables is that we want to have a single place where critical information
+    is stored. That way, when something changes (example:entry point to the cluster)
+    we can modify a variable or two, and the changes will be propagated throughout
+    all jobs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Off we go. First, we need to open Jenkins global configuration screen:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: '**A note to Windows users:**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Git Bash might not be able to use the open command. If that''s the case, execute `docker-machine
+    ip <SERVER_NAME>` to find out the IP of the machine and open the URL directly
+    in your browser of choice. For example, the command above should be replaced with
+    the command that follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`docker-machine ip swarm-1` If the output would be `1.2.3.4`, you should open
+    `http://1.2.3.4:8082/jenkins/configure` in your browser.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Once inside the configuration screen, please click the Environment variables
+    checkbox followed with the Add button. You will be presented with the fields Name
+    and Value. The first variable we'll add will hold the production IP. However,
+    before we type it, we need to find it out. The routing mesh redirects requests
+    from any node to the destination service or, to be more precise, to the service
+    that exposes the same port as the request. Therefore, we can use any server in
+    the production cluster `swarm` as our entry point.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To get the IP of one of the nodes, we can use the `docker-machine ip` command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The result will differ from one case to another. On my laptop, the output is
+    as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: Please copy the IP and go back to the Jenkins configuration screen. Type `PROD_IP`
+    as Name and paste the IP into the Value field. It is worth noting that we just
+    introduced a single point of failure. If the `swarm-1` node fails, all our jobs
+    that use this variable will fail as well. The good news is that we can fix that
+    quickly by changing the value of this environment variable. The bad news is that
+    we can do better, but not with Docker machines. If, for example, we were to use
+    AWS, we'd be able to utilize Elastic IP. However, we have not reached the AWS
+    chapter yet, so changing the variable is our best option.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next, we should add another variable that will represent the name of the production
+    node. We'll see the usage of this variable later. For now, please create a new
+    variable with `PROD_NAME` as Name and swarm-1 as value.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We''ll need similar variables for our production-like cluster `swarm-test`.
+    Please enter variables `PROD_LIKE_IP` with the IP of the `swarm-test-1` node `docker-machine
+    ip swarm-test-1` and `PROD_LIKE_NAME` with the value `swarm-test-1`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/jenkins-configuration-variables.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 6-8: Jenkins global configuration screen with defined environment variables'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Once done with the Environment variables, please click the Save button.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that the environment variables are defined, we can proceed and create a
+    Jenkins Pipeline job that will automate the execution of the CD steps we practiced.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To create the new job, please click the New Item link located in the left-hand
+    menu. Type `go-demo` as the item name, select Pipeline, and click the OK button.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A Jenkins Pipeline definition contains three primary levels; node, stage, and
+    step. We'll define the go-demo Pipeline code by going through these levels one
+    by one.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Defining Pipeline nodes
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In the Jenkins Pipeline DSL, a *node* is a step that does two things, typically
+    by enlisting help from available executors on agents.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A node schedules the steps contained within it by adding them to the Jenkins
+    build queue. That way, as soon as an executor slot is free on a node, the appropriate
+    steps will be run.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It also creates a workspace, meaning a file directory specific to a particular
+    job, where resource-intensive processing can occur without negatively impacting
+    your Pipeline performance. Workspaces created by a node are automatically removed
+    after all the steps contained inside the node declaration finish executing. It
+    is a best practice to do all material work, such as building or running shell
+    scripts, within nodes, because node blocks in a stage tell Jenkins that the steps
+    within them are resource-intensive enough to be scheduled, request help from the
+    agent pool, and lock a workspace only as long as they need it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If that definition of the node confuses you, think of it as a location where
+    the steps will run. It specifies a server (agent) that will execute tasks. That
+    specification can be the name of the server (generally a bad idea, due to tight
+    coupling of node configuration to agent), or a set of labels that must match those
+    set inside an agent. If you recall the command we used to start the Jenkins Swarm
+    agent service, you'll remember that we used `-labels docker` as one of the command
+    options. Since Docker Engine and Compose are the only executables we need, that
+    was the only label we needed as our node specification.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Please type the following code into the Pipeline script field of the go-demo
+    job configuration and press the Save button:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: We just wrote the first iteration of the Pipeline. Let's run it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Please click the Build Now button.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The job started running and displayed the message stating that This Pipeline
+    has run successfully, but does not define any stages*.* We''ll correct that in
+    a moment. For now, let''s take a look at the logs:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/jenkins-pipeline-build-node.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 6-9: The first build of the Jenkins Pipeline job'
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can access the logs by clicking the icon in the shape of a ball next to
+    the build number in this case *#1*. Builds can be accessed from the *Build History*
+    widget located in the left-hand side of the screen.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: Not much happened in this build. Jenkins parsed the node definition and decided
+    to use the agent `be61529c010a-d9bf7835` (one of the two Jenkins Swarm service
+    instances) and run the steps inside the directory `/workspace/go-demo`. The directory
+    structure is simple. All files generated by a build are located in a directory
+    that matches the job name. In this case, the directory is `go-demo`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Since we did not specify any step inside the node, the Pipeline finished executing
+    almost immediately and the result was a success. Let's spice it up a bit with
+    stages.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Defining Pipeline stages
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: A **stage** is a logically distinct part of the execution of any task, with
+    parameters for locking, ordering, and labeling its part of a process relative
+    to other parts of the same process. Pipeline syntax is often comprised of stages.
+    Each stage step can have one or more build steps within it. It is a best practice
+    to work within stages because they help with organization by lending logical divisions
+    to Pipelines, and because the Jenkins Pipeline visualization feature displays
+    stages as unique segments of the Pipeline.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'What would be the stages of the flow we practiced with manual commands? We
+    could divide the commands we defined into the following groups:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Pull the latest code from the repository.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Run unit tests and build the service and Docker images.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Deploy to staging environment and run tests.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Tag Docker images and push them to the registry.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Use the latest image to update the service running in production-like environment
+    and run tests.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Use the latest image to update the service running in production environment
+    and run tests.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'When those groups of tasks are translated into Pipeline stages, the code inside
+    the node is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: We should combine the node we defined earlier with those stages. To be more
+    precise, they should all be defined inside the node block.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Please replace the existing Pipeline definition by copying and pasting the code
+    from `scripts/go-demo-stages.groovy` ([https://github.com/vfarcic/cloud-provisioning/blob/master/scripts/go-demo-stages.groovy](https://github.com/vfarcic/cloud-provisioning/blob/master/scripts/go-demo-stages.groovy)).
+    You can access the job configuration by clicking the go-demo link inside breadcrumbs
+    located in the top part of the screen. Once inside the main job page, please click
+    the Configure button located in the left-hand menu. Once you are done writing
+    or pasting the new Pipeline definition, save it and re-run the job by clicking
+    the Build Now button.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We still do not execute any actions. However, this time, the Stage View screen
+    is much more informative. It displays the stages we defined earlier:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/jenkins-pipeline-stage-view.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 6-10: The Jenkins Pipeline Stage View screen'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now we are ready to define the steps that will be executed inside each of the
+    stages.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Defining Pipeline steps
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Before we start writing the steps, I must, briefly, mention that there are a
+    couple of different approaches people use to define Jenkins jobs. Some prefer
+    to utilize Jenkins plugins to their maximum. When taken to an extreme, such approach
+    results in every action being executed through a plugin. Do you need to run some
+    Gradle tasks? There is a Gradle plugin (or two). Do you need to do something with
+    Docker? There are roughly a dozen Docker plugins. How about configuration management
+    with Ansible? There is a plugin as well.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I do not think that heavy reliance on plugins is a good thing. I believe that
+    we should be capable of creating most, if not all the automation without Jenkins.
+    After all, does it even make sense to use a plugin that would save us from writing
+    a single line of command? I don't believe it does. That doesn't mean that we should
+    not use plugins. We should, but only when they bring a real and tangible additional
+    value. An example would be the Git plugin. It evaluates whether the code should
+    be cloned or pulled. It manages authentication. It provides a few auto-populated
+    environment variables we can use in conjunction with other steps.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Should we use the Git plugin always? We shouldn''t. Let''s say that all we
+    have to do is perform a simple pull inside an already cloned repository, that
+    we do not need authentication, and that there will be no usage of some of the
+    pull information in later steps (example: commit ID). In such a case, the simplest
+    solution possible might be the best choice. What is the easiest way to pull the
+    code from a Git repository? Most likely that''s git `pull` command executed through
+    Shell.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Only once we know what we're doing and the process is done in a CI/CD tool agnostic
+    way, we should proceed and tie it all together through Jenkins (or whatever is
+    your tool of choice). That way we understand the process and have a firm handle
+    on what should be done, not only from a pure automation perspective, but also
+    as a choice of tools, processes, and architecture as well. All pieces need to
+    work together in an organic and efficient way. If we manage to accomplish that,
+    Jenkins acts as glue that ties it all together, and not as a base we start with.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's define the steps required for the first stage. The objective is very simple.
+    Get the code from the Git repository. To make things slightly more complicated,
+    we might need to clone or pull the code. The first build will have nothing so
+    we must clone. All consecutive builds should only perform a pull into the already
+    cloned code. While writing a script that performs that logic is relatively straightforward,
+    this will be a good case of using a Jenkins plugin. To be more precise, we'll
+    use Jenkins Pipeline step git that uses one of the Git plugins in the background.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `Pull` stage stage of the Pipeline is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: The git step is one of the many available through Pipelines **Domain Specific
+    Language** (**DSL**). It clones the code. If that action was already done, the
+    code will be pulled instead. You can find more information in the *Pipeline Steps
+    Reference* ([https://jenkins.io/doc/pipeline/steps/](https://jenkins.io/doc/pipeline/steps/))
+    page.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Please note that in the real world situation we would create a webhook inside
+    the code repository. It would trigger this job whenever a new commit is made.
+    For now, we'll simulate a web hook by triggering the job execution manually.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Feel free to replace the existing Pipeline definition by copying and pasting
+    the code from `scripts/go-demo-pull.groovy` ([https://github.com/vfarcic/cloud-provisioning/blob/master/scripts/go-demo-pull.groovy](https://github.com/vfarcic/cloud-provisioning/blob/master/scripts/go-demo-pull.groovy)).
+    Once you're done, please run the job and observe the build log.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's move on.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The code that follows is the translation of the commands we used in the previous
+    chapters to run unit tests and build a new Docker image:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE38]'
+  prefs: []
+  type: TYPE_PRE
+- en: We enveloped the whole stage inside the `withEnv` block that defines the `COMPOSE_FILE`
+    variable. That way, we won't need to repeat the `-f docker-compose-test-local.yml`
+    argument every time we execute `docker-compose`. Please note that all the other
+    stages we'll define soon should also be inside the `withEnv` block.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The steps inside the Unit stage are the same as those we practiced while we
+    run the flow manually. The only difference is that, this time, we put the commands
+    inside the `sh DSL` step. It's purpose is simple. It runs a shell command.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We''ll skip running the job and proceed to the next stage:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE39]'
+  prefs: []
+  type: TYPE_PRE
+- en: The Staging stage is a bit more complex. The commands are inside the `try/catch/finally`
+    block. The reasons for such an approach is in the way Jenkins behaves when something
+    fails. If one of the steps in the previous stage Unit should fail, the whole Pipeline
+    build would be aborted. That suits us well when there are no additional actions
+    to perform. However, in the case of the Staging steps, we want to remove all the
+    dependency containers and free the resources for something else. In other words,
+    `docker-compose down` should be executed no matter the outcome of the Staging
+    tests. If you are a programmer, you probably already know that the finally statement
+    is always executed regardless of whether the try statement produced an error or
+    not. In our case, the finally statement will bring down all the containers that
+    constitute this Docker Compose project.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Off we go to the `Publish` stage:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE40]'
+  prefs: []
+  type: TYPE_PRE
+- en: There's no mystery around this stage. We are repeating the same commands we
+    executed in previous chapters. The image is tagged and pushed to the registry.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Please note that we are using `BUILD_NUMBER` to provide a unique release number
+    to the tag. It is one of Jenkins built-in environment variables that holds the
+    value of the currently executing build ID.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `Prod-like` stage will introduce an additional caveat. It is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE41]'
+  prefs: []
+  type: TYPE_PRE
+- en: Since we are using rolling updates to replace the old with the new release,
+    we have to run tests throughout the whole process. We could create a script that
+    would verify whether all instances are updated but I wanted to keep it simple
+    (this time). Instead, we are running the tests ten times. You might need to tweak
+    it a bit for your needs depending on the average duration of your tests and the
+    time required to update all instances. For demonstration purposes, ten rounds
+    of testing in the `production-like` environment should be enough.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To summarize, in this stage we are updating the service with the new release
+    and running ten rounds of tests during the update process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Please note that we declared a few more environment variables. Specifically,
+    we defined all those required for the Docker client to connect to the Docker Engine
+    running on a remote host.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We're almost done. Now that the service is tested in the `production-like` environment,
+    we can deploy it to the production cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `Prod` stage is almost the same as `Prod-like`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE42]'
+  prefs: []
+  type: TYPE_PRE
+- en: The only difference is that, this time, the `DOCKER_HOST` and `PROD_IP` variables
+    point to one of the servers of the production cluster. The rest is the same as
+    the `Prod-like` stage.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Feel free to replace the existing Pipeline definition with the code from `scripts/go-demo.groovy`.
+    Once you're done, please run the job and observe the build log.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'After a short while, the job will finish executing, and the new release will
+    be running in the production cluster:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/jenkins-pipeline-stage-view-2.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 6-11: The Jenkins Pipeline Stage View screen'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We can confirm that the service update with the new release was indeed successful
+    by executing the `service ps` command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE43]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output of the `service ps` command is as follows (IDs are removed for brevity):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/ID-removed.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: That's it! We have a full Continuous Deployment Pipeline alive and kicking.
+    If we'd add a webhook to the GitHub repository that hosts the code, the Pipeline
+    would run every time a new commit is made. As a result, the new release would
+    be deployed to production unless one of the steps in the Pipeline fails.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What now?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The ability to use the code to define the steps of a Continuous Deployment flow
+    gives us more flexibility than we had before with *Freestyle* jobs. Docker Compose
+    allowed us to run any type of tasks without the need to set up any special infrastructure.
+    Anything can run as long as it is inside a container. Finally, Docker Swarm simplified
+    the Deployment to production-like and production environments considerably.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We only scratched the surface of using Jenkins Pipeline to automate our Continuous
+    Deployment flow. There are quite a few improvements we could do. For example,
+    we might use the *Pipeline Shared Groovy Libraries Plugin* ([https://wiki.jenkins-ci.org/display/JENKINS/Pipeline+Shared+Groovy+Libraries+Plugin](https://wiki.jenkins-ci.org/display/JENKINS/Pipeline+Shared+Groovy+Libraries+Plugin))
+    and move steps, or even whole stages into functions and reduce code repetition.
+    We could also create a *Jenkinsfile* ([https://jenkins.io/doc/book/pipeline/jenkinsfile/](https://jenkins.io/doc/book/pipeline/jenkinsfile/))
+    that would move the Pipeline definition from Jenkins into the service repository
+    thus keeping everything related to a single service in one place. We could, also,
+    run production tests continuously (not only when making a new release) and ensure
+    that we are notified if a service is not working or if it does not perform as
+    expected.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We'll leave those and other possible improvements for some other time. While
+    not perfect nor optimum, the go-demo Pipeline should be good enough for now.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'It is the time to take a break before diving into the next chapter. As before,
+    we''ll destroy the machines we created and start fresh:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE44]'
+  prefs: []
+  type: TYPE_PRE

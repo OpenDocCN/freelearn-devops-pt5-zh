@@ -1,0 +1,1715 @@
+- en: Security in OpenShift
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Previously, we worked with advanced OpenShift resources, such as ImageStreams,
+    ConfigMaps, and templates. Those resources allow you to simplify OpenShift resource
+    management and the application delivery process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this chapter, we will introduce you to the realm of security in OpenShift.
+    Any business' success depends on many factors, one of which is the company's ability
+    to implement different security strategies for different users, departments, and
+    applications. OpenShift is an enterprise-ready application platform that supports
+    multiple security features, making it possible to integrate it into any corporate
+    security landscape.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This chapter will provide you with an understanding of the following concepts:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Authentication—users and identities, service accounts, and identity providers
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Authorization and role-based access control
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Admission controllers
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Security context constraints
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Storing sensitive data in OpenShift
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'For this section, we will have to make use of Vagrant to demonstrate the difference
+    between these methods, as we will require two VMs: one for single-node OpenShift
+    cluster, and the other for the FreeIPA server. Use the following Vagrantfile to
+    spin up an environment:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: The preceding file may seem complicated compared to the one from the [Chapter
+    6](part0129.html#3R0OI0-78aafb146b304cdeb9b3261a70edabde), *OpenShift Installation*,
+    but all it does is automates the steps, performed in that chapter manually, because
+    the purpose of this chapter is to discuss security while building on the knowledge
+    you gained up to this point. Also, it sets up FreeIPA server on another VM and
+    creates a user that will be used later in this chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The command `systemctl restart dbus` is necessary to prevent installation of
+    FreeIPA from failing during restart of certification manager.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We used the same simple password for both the directory manager and IPA admin
+    for simplicity, but in a production setup, make sure that you use complex and
+    unique passwords!
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Run `vagrant up` and wait until it finishes all the work. It may take up to
+    30 mins depending on your internet connectivity and compute resources:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Once it''s done, open SSH session into the `openshift` VM and become root:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: Do not be alarmed by some of the output in red produced by the command above.
+    Many CentOS commands, like yum, send warning, errors, and even other information
+    alike to the standard error, which all gets interpreted as errors by Vagrant.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Then use the following Ansible inventory file to install OpenShift on the `openshift`
+    VM. If you went through the [Chapter 6](part0129.html#3R0OI0-78aafb146b304cdeb9b3261a70edabde), *OpenShift
+    Installation*, you will notice that this is the same file with added `openshift_master_identity_providers`
+    variable:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: Even though `openshift_schedulable` variable appears to be on a separate line,
+    it's actually on the previous line. If you just copy this file as it is from the
+    one provided with other materials on this book, it will work.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Run the following playbooks to perform prerequisites check and actual installation,
+    respectively:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: In our exercise, we will be using two identity providers: **LDAP** and **HTPasswd**.
+    We will discuss in more detail in subsequent subsections. Notice that we specified
+    the `claim` mapping method for both of them to demonstrate how it works with multiple
+    providers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'After OpenShift is installed, use the following command provided by the `httpd-tools` package
+    to create an `htpasswd` file with the user `alice` and the hashed password `supersecret`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now we are ready to proceed further.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Authentication
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The term authentication refers to the process of validating one's identity.
+    Usually, users aren't created in OpenShift itself, but provided by an external
+    entity, such as the LDAP server or GitHub. The only part where OpenShift steps
+    in is authorization—determining roles and, therefore, permissions for a user.
+    OpenShift supports integration with various identity management solutions used
+    in corporate environments, such as FreeIPA/Identity Management, Active Directory, GitHub,
+    Gitlab, OpenStack Keystone, and OpenID. For the purpose of brevity, we will only
+    discuss the most commonly used ones, but you can refer to [https://docs.openshift.org/latest/install_config/configuring_authentication.html](https://docs.openshift.org/latest/install_config/configuring_authentication.html)
+    for the complete documentation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Users and identities
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: A user is any human actor that can make requests to the OpenShift API to access
+    resources and perform actions. Users are typically created in an external identity
+    provider, usually a corporate identity management solution such as **Lightweight
+    Directory Access Protocol** (**LDAP**) or Active Directory.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To support multiple identity providers, OpenShift relies on the concept of
+    identities serving as a bridge between users and identity providers. By default,
+    a new user and identity are created upon the first login. There are four ways
+    to map users to identities:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| **Method** | **Description** |'
+  prefs: []
+  type: TYPE_TB
+- en: '| claim | If a user with the same name already exists and is mapped to another
+    identity, creation of another identity and login will fail. This is useful when
+    you want to maintain a clear separation between identities provided by several
+    providers in the case of identical usernames. A potential use case for this method
+    would be transitioning from one authentication scheme to another. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| add | If a user with the same name already exists and is mapped to another
+    identity, another identity mapped to the same user is created. This is useful
+    if you need to provide users from separate organizational entities that have their
+    own identity management solutions with the ability to authenticate using mechanisms
+    that are convenient for them. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| lookup | OpenShift looks up an existing user, identity, and mapping, but
+    doesn''t create any of them, so these entities must exist prior to the user being
+    able to log in. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| generate | If a user with the same name already exists and is mapped to another
+    identity, a separate user mapped to this identity is generated. |'
+  prefs: []
+  type: TYPE_TB
+- en: 'Go to `https://172.24.0.11:8443` in your web browser and you will see the login
+    page where you can choose from available identity providers:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/00059.jpeg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Log in via browser with the `LDAP` identity provider using the username `alice`
+    and the password `supersecret`, and observe that the user was created using CLI:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: Notice that identity's name is composed of its type and user locator, delimited
+    by colon. Locator is provider-specific and specifies how to request a particular
+    user from a specific provider.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You can also see that an identity was created as well and mapped to the user:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let''s try to log in with the `PASSWORD_FILE` provider using the same credentials:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/00060.jpeg)'
+  prefs: []
+  type: TYPE_IMG
+- en: The credentials are correct, but OpenShift was unable to create a new identity
+    and identity mapping to an existing user, as the user was already `claim`ed by
+    the LDAP provider. This is exactly what the message Could not create user indicates.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s delete the user and its identity to provide a clean slate for the upcoming
+    demonstrations:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Change the mapping method for the `PASSWORD_FILE` provider to `add`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'And restart the master API service:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Log in with `LDAP` using `alice:supersecret` again, just as you did the first time,
+    and then with `PASSWORD_FILE`using `alice:redhat123` . Notice that the second
+    identity was added to the existing one and mapped to the same user:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: The order in which you use identity providers to log in is important! As you
+    specified the `add` method for the `PASSWORD_FILE` provider only, if you try to
+    log in with it first, you won't be able to log in using **LDAP**, because it is
+    still set up to **claim** non-existing users and return an error if they already
+    exist.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In order to see that we now have two identities mapped to the same user more
+    clearly, run the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: Had the username been different, the second identity would have been mapped
+    to that separate user.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Delete the user and identities before continuing with the next demonstration:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now, change the mapping method for the same provider to `lookup`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Restart the master API to apply changes:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now login with `LDAP` using `alice:supersecret` first. It should allow you
+    to login. Then try to login with `PASSWORD_FILE`using `alice:redhat123`. You should
+    see a new error provided below:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/00061.jpeg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Could not find user means that we didn''t create an identity in OpenShift for
+    this provider and didn''t map it to any user, as `lookup` mapping method requires.
+    Let''s rectify this by creating the identity first:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Then, map it to the pre-existing user:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: After that, the login attempt will be successful.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Once you verified that you can login with `alice:redhat123` , you can delete
+    the user and both identities to proceed further.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: We didn't have to run `oc get identity` command again to get the list of all
+    identities, because you can delete an identity using its name, which depends on
+    the provider's name and the user's locator; since they hadn't changed, we could
+    just use the same command as before.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Lastly, change the mapping method to `generate`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Restart the master API:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Just as before, log in with `LDAP` using `alice:supersecret` and then with
+    `PASSWORD_FILE`using `alice:redhat123`. Let''s see what users were created:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: As you can see, this method creates a separate user with a `generate`d name
+    using a separate identity mapping if the user with the same name already exists.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You can see that two identities are now mapped to different users:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Finally, let''s delete the user and identities:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now that this exercise is over, we can stop our VMs from releasing system resources
+    for MiniShift for the rest of the chapter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: We suggest you to just  `halt` this lab, as it will be used in the section *Admission
+    controllers*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Service accounts
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Service accounts give us flexibility to control access to API without sharing
+    user’s credentials. In order to show you how it works we need to start the MiniShift
+    VM:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Next, `export PATH` to `oc` client:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now, switch your Docker client to point to the docker daemon inside the MiniShift
+    VM:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Finally, log in as the privileged user `system:admin` in order to be able to
+    perform privileged operations, such as adding SCCs and roles:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now, we are ready to get started.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Another type of user that we will be using is service accounts. They are used
+    by pods and other non-human actors to perform various actions and are a central
+    vehicle by which their access to resources is managed. By default, three service
+    accounts are created in each project:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| **Name** | **Description** |'
+  prefs: []
+  type: TYPE_TB
+- en: '| builder | Used by build pods and assigned the system:image-builder role,
+    which grants push capability into the internal registry to any image stream in
+    the project. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| deployer | Used by deploy pods and assigned the system:deployer role, which
+    allows modifying replication controllers in the project. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| default | Used by all other pods by default. |'
+  prefs: []
+  type: TYPE_TB
+- en: 'You can see them by running the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Each service account is represented by the `ServiceAccount` resource and is
+    associated with two additional secrets—for access to the OpenShift API and the
+    internal registry:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The service account can be created with a simple command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let''s delete it for now, as we will be creating it again later on in this
+    chapter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Every service account is also a member of two groups:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`system:serviceaccounts`, which includes all service accounts in the cluster'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`system:serviceaccounts:<project>`, which includes all service accounts in
+    the `project`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'You can grant privileges to groups of service accounts, which will effectively
+    grant those privileges to all accounts in the group. For example, to grant view
+    privileges to all service accounts in the cluster in the project `myproject`,
+    type the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: We specified `-n` only as a demonstration; as your current project is `myproject`,
+    you could have omitted it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s revert our changes and learn how to remove a particular role from a
+    user in the process:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: Identity providers
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Usually, users aren''t created in OpenShift directly, but rather are supplied
+    by an external identity management solution, which can be as complex as LDAP and
+    Active Directory with a trust relationship set up between them, or as simple as
+    a text password file with hashed passwords. Choosing a particular identity provider
+    is influenced by factors such as:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Your company's existing identity management solution
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: How often users are added and deleted
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Whether you need a centralized management
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'OpenShift implements the following identity providers:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: AllowAll
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: DenyAll
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: HTPasswd
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: LDAP
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Keystone
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: BasicAuth
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: RequestHeader
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: GitLab
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: GitHub
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: OpenID
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Google
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: For the sake of brevity, we will limit demonstrations to the first four providers
+    in the preceding list, while you can fill in the gaps by referring to [https://docs.openshift.org/latest/install_config/configuring_authentication.html](https://docs.openshift.org/latest/install_config/configuring_authentication.html)
+    . These configurations are to be applied to the master configuration file located
+    at `/etc/origin/master/master-config.yml`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You will need to bring your vagrant environment up if you want to test out the
+    configuratins below because it won't work with minishift.
+  prefs: []
+  type: TYPE_NORMAL
+- en: AllowAll
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: This is the default identity provider for MiniShift and OpenShift Origin, including
+    when the master is started without its configuration file. It allows all users
+    with all passwords, so no authentication is performed. It is only useful for debugging
+    purposes when you integrate your cluster with a corporate identity solution.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'A configuration snippet from the master configuration file for this provider
+    is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: DenyAll
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: This identity provider is the opposite of AllowAll, that is, it denies access
+    to everyone. It is useful when you want to temporarily lock your cluster from
+    everyone for maintenance or other purposes. This is the default provider for the
+    Red Hat OpenShift Container Platform.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'A configuration snippet of the master configuration file for this provider
+    is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE38]'
+  prefs: []
+  type: TYPE_PRE
+- en: As you can see, all it takes to enable it is changing `Allow` to `Deny`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: HTPasswd
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'This provider allows you to create a file with the a of users with hashed passwords,
+    giving you granular access control. While certainly better than having your installation
+    just either accept or deny everyone, this approach still has two disadvantages:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the case of HA installation with multiple masters, you will need to synchronize
+    changes to the password file between all masters, which is prone to errors and
+    inefficient. Sure, it can be automated using configuration management and the
+    **version control system** (**VCS**), but there are very few use cases where you
+    wouldn't want to integrate your cluster with the corporate identity management
+    server.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: It doesn't integrate with the corporate identity management solution, which
+    requires you to either create all users in the password file directly, or to set
+    up some sort of synchronization mechanism between your identity management server
+    and OpenShift masters/configuration management server.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'To enable this identity provider, we need to create the password file first,
+    which, in turn, requires the `httpd-tools` package to be installed:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE39]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Next, create the file and add users to it. Specify the `-c` flag when creating
+    the first user to create the file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE40]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now, we can enable this provider by changing AllowAll from the default configuration
+    to `htpasswd` and specifying the location of the password file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE41]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Lastly, restart master API service to have it pick up the changes:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE42]'
+  prefs: []
+  type: TYPE_PRE
+- en: LDAP
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: This is the identity provider you will most likely use in your organization
+    because of the popularity of LDAP (Lightweight Directory Access Protocol). If
+    you are building your OpenShift lab from scratch, you can use either FreeIPA or
+    IdM—they are very easy to set up. Like other centralized identity management solutions,
+    LDAP spares you the need to synchronize changes to password files between masters
+    in the case of multiple masters setup.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'A configuration snippet from the master configuration file for this provider
+    could look like the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE43]'
+  prefs: []
+  type: TYPE_PRE
+- en: You can set the `insecure` parameter to `false` if your LDAP server supports
+    the LDAPS secure protocol.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Authorization and role-based access control
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Authorization in OpenShift is built around the following concepts:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Rules:** Sets of actions allowed to be performed on specific resources.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Roles:** Collections of rules that allow them to be applied to a user according
+    to a specific usage profile. Roles can be applied either at the cluster or project
+    level.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Role bindings:** Associations between users/groups and roles. A given user
+    or group can be associated with multiple roles.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Let''s return to our MiniShift environment. To see a list of all available
+    cluster roles, run the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE44]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE45]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Use the `describe` command to understand what rules are in a particular role:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE46]'
+  prefs: []
+  type: TYPE_PRE
+- en: You can see from the preceding output that, for example, users with this role
+    can create and delete such resources as pods, configmaps, deploymentconfigs, imagestreams,
+    routes, and services, but cannot do anything with projects, other than view them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'On the other hand, if you describe the view role, you will notice that the
+    only actions allowed on resources are get, list, and watch, which makes it a perfect
+    choice if, for example, you want to grant a development team the ability to view
+    application resources in production, but not to modify any of them or create new
+    resources:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE47]'
+  prefs: []
+  type: TYPE_PRE
+- en: Using built-in roles
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Let''s see how we can use the `edit` pre-defined role to grant a user access
+    to another user''s project. First, login at MiniShift as `alice`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE48]'
+  prefs: []
+  type: TYPE_PRE
+- en: Just as with an OpenShift cluster deployed via Ansible, the default identity
+    provider is AllowAll, which allows you to use any credentials.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Next, create a new project called `alice-project`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE49]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Login as `bob` and observe that they weren''t added as a member to any project
+    by default:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE50]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let''s correct this by granting `bob` the privilege to `edit` most of the resources
+    in the `alice-project` project:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE51]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'You can use the following command to see the existing `rolebinding` in the
+    current `alice-project` project:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE52]'
+  prefs: []
+  type: TYPE_PRE
+- en: Notice that there are always two local bindings for the `deployer` and `builder`
+    service accounts, as well as one binding granting all service accounts in the
+    `alice-project` project the ability to pull images from the internal registry.
+    Another two bindings make `alice` the admin of her project and grant `bob` the
+    privilege of editing most of the resources in the project.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s see the details of the `edit` role binding:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE53]'
+  prefs: []
+  type: TYPE_PRE
+- en: The preceding output tells us that the user `bob` is bound to the `edit` role
+    in the project `alice-project`. The omitted output is the same as in the details
+    of the `edit` role.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Log back in as `bob` and see that now you have access to Alice''s project:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE54]'
+  prefs: []
+  type: TYPE_PRE
+- en: Creating custom roles
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'If pre-defined roles aren''t sufficient for you, you can always create custom
+    roles with just the specific rules you need. Let''s create a custom role that
+    can be used instead of the `edit` role to create and get pods:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE55]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE56]'
+  prefs: []
+  type: TYPE_PRE
+- en: Notice that we had to log in as cluster administrator to create a cluster role.
+    A cluster role is required to make its users members of a particular project.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'OpenShift''s `create clusterrole` command is limited to creating only one set
+    of resources and verbs, so we couldn''t add different verbs for pods. We can work
+    around this limitation by editing the role directly:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE57]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Next, delete the `edit` role from bob:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE58]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Assign the new role to `bob`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE59]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Login as `bob`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE60]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'And start a new pod, just as we did before:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE61]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'What happened? Let''s take a look into the pod''s logs:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE62]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This is expected, because we didn''t grant our custom role `alice-project-edit`
+    access to pods'' logs. If you look closely, this error message actually contains
+    a suggestion on what we need to do - grant access to `pods/log` resource. Let''s
+    fix that by logging as `system:admin` user, adding required section to the role''s
+    definition, and log back in as `bob`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE63]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE64]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Try listing the pod''s logs again:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE65]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This time it works and you are able to see that the container is having problems with
+    permissions. For now, run the following command to correct this, but we will address
+    this problem in more detail in the *Security context constraints* section:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE66]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'And now it works:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE67]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We just created a custom role that we can use to grant its users the ability
+    to only create pods. It''s not very useful as it is, as it won''t let you create
+    a service, for example:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE68]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now that this exercise is over, let''s clean everything up:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE69]'
+  prefs: []
+  type: TYPE_PRE
+- en: We had to login as `system:admin` to delete our pod as we didn't grant the `alice-project-edit`
+    role ability to delete pods, only to create them. This is yet another example
+    of how granular RBAC can be in OpenShift.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Admission controllers
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Due to the specific nature of this section, we won''t be using MiniShift, so
+    let''s stop it for now:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE70]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Then, start the Vagrant VMs instead:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE71]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Finally, open a session in the `openshift` VM:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE72]'
+  prefs: []
+  type: TYPE_PRE
+- en: An Admission Controller is a subroutine that's invoked after a request to the
+    API is authenticated and authorized, but before it's persisted to etcd. Admission
+    Controller serve the purpose of mutating and validating resources to be persisted,
+    such as adding various annotations and defaults and making sure that they conform
+    to specific restrictions. All admission controllers are chained, so that mutating
+    controllers are applied first and then validating ones.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The following diagram illustrates the overall resource admission process:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/00062.jpeg)'
+  prefs: []
+  type: TYPE_IMG
+- en: OpenShift resource admission chain
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'As you can see from the diagram above, the admission chain generally consists
+    of the following types of admission controller:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Default admission plugins that can be enabled in the `admissionConfig` section
+    of the master configuration file
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Mutating admission webhooks
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Validating admission webhooks
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The following are default admission controllers that are present in the master
+    configuration file, unless configured otherwise during installation via the openshift_master_admission_plugin_config
+    variable:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE73]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE74]'
+  prefs: []
+  type: TYPE_PRE
+- en: You won't find those admission plugins in the MiniShift master API configuration,
+    even if you ssh into the MiniShift VM and look at the master configuration file.
+    This is why we use our own installation of OpenShift.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'OpenShift supports the following admission control plugins out-of-the-box:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| **Admission Control Plugin** | **Description** |'
+  prefs: []
+  type: TYPE_TB
+- en: '| ProjectRequestLimit | Limits the number of self-provisioned projects per
+    user. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| BuildDefaults | Defines default configuration parameters, such as a git proxy
+    server or node to run builder pods on, for BuildConfigs. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| BuildOverrides | Can be used to override settings defined in a BuildConfig.
+    |'
+  prefs: []
+  type: TYPE_TB
+- en: '| RunOnceDuration | Limits the amount of time that builder and deployer pods
+    may run. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| PodPreset | Enables use of PodPresets to supply pods with such resources
+    as Secrets, ConfigMaps, and volumes. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| PodNodeConstraints | Confines pods to nodes with particular labels. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| PodNodeSelector | Confines pods to projects with particular labels. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| openshift.io/ImagePolicy | Controls which images can be used in the cluster
+    based on their registry and annotations. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| openshift.io/IngressAdmission | Disables host name collision prevention for
+    routes and ingress objects, allowing users without the `cluster-admin` cluster
+    role to change host names in these objects after they have been created. |'
+  prefs: []
+  type: TYPE_TB
+- en: Let's use the `ProjectRequestLimit` admission plugin to demonstrate how admission
+    controllers are configured.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Add the `ProjectRequestLimit` section to the end of the admission chain in
+    the master configuration file:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE75]'
+  prefs: []
+  type: TYPE_PRE
+- en: In this particular example we are creating 2 different limits. One is for 'ops'
+    department limiting the maximum number of projects to 2 , and another limitation
+    for everyone esle that limits number of projects to 3.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Restart the master API to apply the changes:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE76]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Log in as `alice` using password `supersecret`, so that the user itself and
+    its identity are created:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE77]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Log in as the cluster administrator to be able to create labels:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE78]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now, we need to `label` `alice` with a key/value pair that matches the selector
+    specified in the admission plugin''s configuration:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE79]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Log back in as `alice`:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE80]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'And try to create several projects:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE81]'
+  prefs: []
+  type: TYPE_PRE
+- en: As you can see, the request to create a third project was intercepted by the
+    admission plugin and rejected due to failed validation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's see how a global limit for all users works by creating a new user with
+    no labels associated with it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'First, create a new user called bob. You can use the same password `supersecret`
+    for simplicity:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE82]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Next, log in as the newly created user. This time, we will not associated it
+    with any labels:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE83]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let''s try to create projects until we hit the limit:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE84]'
+  prefs: []
+  type: TYPE_PRE
+- en: As you can see, `bob` wasn't able to create more than three projects, just as
+    was specified for unlabeled users in the admission plugin's configuration.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now that this exercise is over, let''s do a clean-up:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE85]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Also, delete the admission plugin''s section from the master configuration
+    file and restart the master API:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE86]'
+  prefs: []
+  type: TYPE_PRE
+- en: The first command in the preceding snippet deletes eight lines after the matching
+    string and the string itself.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'As we won''t need Vagrant for the remainder of this chapter, let''s stop its
+    VMs to prepare for the following exercises:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE87]'
+  prefs: []
+  type: TYPE_PRE
+- en: If you are finished experimenting with your Vagrant environment, you can run
+    `vagrant destroy` to wipe it clean.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Security context constraints
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Before we start, let''s bring up MiniShift environment again:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE88]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Another mechanism for controlling the behavior of pods is **security context
+    constraints** (**SCCs**). These cluster-level resources define what resources
+    can be accessed by pods and provide an additional level of control. By default,
+    OpenShift supports seven SCCs:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE89]'
+  prefs: []
+  type: TYPE_PRE
+- en: You may notice `anyuid` SCC we used in the subsection "Creating custom roles"
+    to solve the problem with container's permissions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: By default, all pods, except those for builds and deployments, use a `default`
+    service account assigned by the `restricted` SCC, which doesn't allow privileged
+    containers – that is, those running under the root user and listening on privileged
+    ports (<1024).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Use `docker inspect` to see what user is specified in the `nginx` image metadata:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE90]'
+  prefs: []
+  type: TYPE_PRE
+- en: Coincidentally, the metadata doesn't specify the user, which makes the image
+    run as root. This is exactly what restricted SCC is designed to prevent.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Previously, we just assigned the `anyuid` SCC to a default service account,
+    which means that ALL containers get to run as privileged, and that is a big security
+    risk. A good practice is to create a dedicated service account for our pod/container,
+    so let''s do this the right way:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE91]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Next, we have to assign the `anyuid` SCC to this account, but to do so we must
+    login as the cluster administrator first:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE92]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now, add our service account to the pod''s definition:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE93]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let''s try to create the pod again:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE94]'
+  prefs: []
+  type: TYPE_PRE
+- en: As you can see, now that we have added the appropriate SCC to the service account
+    used by the pod, it started successfully.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Instead of allowing your image to run as the root, an even better practice would
+    be to optimize it to run as an arbitrary user by specifying an unprivileged USER,
+    setting the appropriate permissions on files and directories, and configuring
+    your application to listen on unprivileged ports.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Clean up after our exercise, but leave `myserviceaccount` with the `anyuid`
+    SCC assigned in place – we will need it later on to run privileged pods:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE95]'
+  prefs: []
+  type: TYPE_PRE
+- en: Storing sensitive data in OpenShift
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In the modern world, applications are so complex that they are made up of multitudes
+    of services interacting with each other via REST/SOAP APIs, binary protocols,
+    message brokers, integration buses, and so on. An example of this is a backend
+    application in an e-store; managing client orders means that you need to have
+    access to the database with the products' details. Another example includes a
+    payment processing application that must have access to international payment
+    networks, such as SWIFT, in order to verify the card's details and process the
+    payment. These examples are very different in terms of the scope and the technologies
+    that are used, but they have a common trait—all services need some kind of authenticating
+    piece of data to introduce themselves to each other and this data has to be stored
+    somewhere.
+  prefs: []
+  type: TYPE_NORMAL
+- en: An obvious, but the most insecure, strategy would be to pass this data to pods
+    as plain text via config maps, like any other data. With this approach, sensitive
+    data can be viewed by anyone who has view access to project resources, so you
+    cannot implement granular access control.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Being an enterprise-grade PaaS solution, OpenShift incorporates a dedicated
+    security mechanism to secure such data against unwarranted disclosure—`Secret`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: While providing an adequate level of protection for sensitive information, OpenShift
+    is not a replacement for a specialized security solution. For example, if you
+    need to store encryption/decryption keys in a secure location, you might want
+    to consider using a **Hardware Security Module** (**HSM**).
+  prefs: []
+  type: TYPE_NORMAL
+- en: What data is considered sensitive?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Generally speaking, any data that must be protected against unauthorized access
+    is treated as sensitive. This includes login credentials, tokens, encryption keys,
+    smart cards, classified documents, and so on. Protection for various types of
+    sensitive data is regulated by many government-approved security information standards
+    and corporate policies, thus being the subject of an entire separate field of
+    Information Security. In the context of applications and microservices, we are
+    mostly interested in a subset of sensitive data, such as:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Login credentials (username/password)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: API tokens
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Encryption keys
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: X.509 certificate/key pairs
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Secrets
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Secrets are similar to config maps, which we discussed in the previous chapter,
+    in that they are also used to pass data to pods, but that''s where their similarities
+    end. A secret''s only use case is to store sensitive data consumed by applications—API
+    tokens, credentials, X.509 certificates/keys, and so on. They are backed by tmpfs
+    (an in-memory temporary filesystem) which prevents them from being stored on persistent
+    storage. Secrets are different from config maps in the following ways:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Many secrets are created automatically on OpenShift startup (so that pods are
+    able to access the OpenShift API and internal registry, for example)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Secret values are base64-encoded by default, which makes them impossible to
+    see until they are injected into a container
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'OpenShift supports three types of secret:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| **Type** | **Description** |'
+  prefs: []
+  type: TYPE_TB
+- en: '| generic | Arbitrary data, like the contents of a file, directory, or string.
+    |'
+  prefs: []
+  type: TYPE_TB
+- en: '| docker-registry | Docker registry credentials stored in the `.dockercfg`
+    file. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| tls | X.509 certificate and its corresponding key. We will use this type
+    of secret as an example later in this section. |'
+  prefs: []
+  type: TYPE_TB
+- en: 'First, login as `system:admin` user if you haven''t already done so:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE96]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Use the familiar `get` command to see all secrets in the current project:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE97]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Notice that there are three secrets for every service account in the project,
+    as was stated in the subsection on service accounts. Let''s see what data the
+    `dockercfg` token for the default service account actually has:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE98]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'You will see that the `data` attribute contains a long base64-encoded string,
+    representing docker client credentials for accessing the internal registry. Use
+    the following Python one-liner to decode the contents of `.dockercfg`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE99]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Notice that the `auth` and `password` values are the same for the two sections
+    of the document, as they specify credentials for the same registry. Let''s drill
+    further down and decode the value of the `auth` field:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE100]'
+  prefs: []
+  type: TYPE_PRE
+- en: You may have noticed that the string after the colon is actually the password
+    from the JSON document we decoded earlier. You may use the same one-liner to decode
+    it as well, but we haven't provided the output here, as it contains non-unicode
+    characters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now, we get to practice and create our own secret and use it in a pod. One of
+    the most typical use cases for secrets is a web server that's configured with
+    SSL/TLS support, where a secret is used to store a certificate/key pair.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'First, we need to create an X.509 certificate and its key:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE101]'
+  prefs: []
+  type: TYPE_PRE
+- en: It doesn't matter what you specify in the certificate's fields, as it will only
+    be used to demonstrate a working Nginx server with SSL configured.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Next, create a custom Nginx virtual host that''s listening on TCP port `443`
+    and configured with the locations of the certificate and key:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE102]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE103]'
+  prefs: []
+  type: TYPE_PRE
+- en: TLS secrets are mounted at subdirectory `..data` inside the mountPath of the
+    container – that's why the path to both the certificate and the key contains `..data`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Use the preceding configuration file to create a config map that will be used
+    later by the pod:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE104]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The next step is to create the secret using the certificate and key:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE105]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let''s take a look at the newly created secret''s definition:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE106]'
+  prefs: []
+  type: TYPE_PRE
+- en: Notice that the secret's keys `tls.crt` and `tls.key` store the certificate
+    and key, respectively. When a TLS secret is mounted on the pod, the certificate
+    and key are decrypted and placed in the files with the names of these keys – that's
+    why in the virtual host's configuration we had to specify key names and not the
+    file names as we created them with the `openssl` command.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The last building block we have to create is the pod itself. Use the appropriate
+    directives to mount the config map and secret as volumes in it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE107]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now, it''s time to create the pod:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE108]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Observe it being created:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE109]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE110]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Out of curiosity, let''s take a look inside the container to see how the certificate
+    and key are accessible:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE111]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Use the following command to see that the secret isn''t stored on the file
+    system (even though it''s ephemeral, in our case), but mounted in memory using
+    `tmpfs`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE112]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Create a service for the pod:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE113]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Then, `expose` the service to create an externally available route:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE114]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The route was created:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE115]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'As a final touch, we have to add TLS termination to the route and set its type
+    to `passthrough` so that the OpenShift router accepts encrypted traffic to the
+    service and doesn''t alter it in any way. One cannot create a secure route via
+    the `expose` CLI command, so we have to `patch` the route''s definition directly:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE116]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'To verify that our Nginx server was configured with TLS support correctly,
+    open your favorite web browser, go to the URL representing the route, and confirm
+    the security exception, as we used a self-signed certificate:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/00063.jpeg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Notice the little lock icon at the left end of the URL, indicating that a secure
+    connection has been established. The warning about invalid certificate, indicated
+    by the yellow triangle (as in Mozilla Firefox), is totally fine in our lab environment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In Google Chrome and Chromium web browsers you will see the Not secure warning
+    to the left of the URL field, which is the same.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now that this exercise is over, let''s clean up the current project:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE117]'
+  prefs: []
+  type: TYPE_PRE
+- en: You can specify unencoded data in plain text using the `stringData` section
+    instead of `data`. This can be useful for templates so that you can parameterize
+    various generated secrets, such as webhook keys.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, you learned about various identity providers that implement
+    authentication in OpenShift, service accounts, and gained an understanding of
+    the connection between users and identities. We also discussed the process of
+    authorization and granting privileges to users, admission controllers, and security
+    context constraints. Lastly, we talked about secrets and learned how they can
+    be used by applications.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next chapter, we will deal with networking on the upper level—OpenShift
+    SDN.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Questions
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'What mapping methods can be used to prevent the mapping of multiple identities
+    to the same user? choose two:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: lookup
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: generate
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: add
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: claim
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: What service account is used to run application pods?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: all
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: builder
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: deployer
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: default
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'What roles can be assigned to a user to grant the ability to create and delete
+    resources in a particular project? choose two:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: create
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: admin
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: view
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: edit
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: What admission control plugin can be used to limit the number of self-provisioned
+    projects per user?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: PodPreset
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: ProjectRequestNumber
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: ProjectRequestLimit
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: SelfProvisionedProjects
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'What SCCs can be used to run containers as root? choose 2:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: anyuid
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: restricted
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: hostmount-anyuid
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: privileged
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: What secret's attribute stores base64-encoded data?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: stringData
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: data
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: base64
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: spec
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Further reading
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: '**Users**: [https://docs.openshift.org/latest/admin_guide/manage_users.html](https://docs.openshift.org/latest/admin_guide/manage_users.html)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Service accounts**: [https://docs.openshift.org/latest/admin_guide/service_accounts.html](https://docs.openshift.org/latest/admin_guide/service_accounts.html)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**RBAC**: [https://docs.openshift.org/latest/admin_guide/manage_rbac.html](https://docs.openshift.org/latest/admin_guide/manage_rbac.html)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Identity providers**: [https://docs.openshift.org/latest/install_config/configuring_authentication.html](https://docs.openshift.org/latest/install_config/configuring_authentication.html)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Admission Controllers**: [https://docs.openshift.org/latest/architecture/additional_concepts/admission_controllers.html](https://docs.openshift.org/latest/architecture/additional_concepts/admission_controllers.html)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Security context constraints**: [https://docs.openshift.org/latest/admin_guide/manage_scc.html](https://docs.openshift.org/latest/admin_guide/manage_scc.html)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Secrets**: [https://docs.openshift.org/latest/dev_guide/secrets.html](https://docs.openshift.org/latest/dev_guide/secrets.html)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL

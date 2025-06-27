@@ -1,0 +1,836 @@
+- en: Appendix A. Docker Flow
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Docker Flow is a project aimed towards creating an easy to use continuous deployment
+    flow. It depends on Docker Engine, Docker Compose, Consul, and Registrator. Each
+    of those tools is proven to bring value and are recommended for any Docker deployment.
+    If you read the whole book, you should be familiar those tools as well as the
+    process we're about to explore.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The goal of the project is to add features and processes that are currently
+    missing inside the Docker ecosystem. The project, at the moment, solves the problems
+    of blue-green deployments, relative scaling, and proxy service discovery and reconfiguration.
+    Many additional features will be added soon.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The current list of features is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Blue-green deployment
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Relative scaling
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Proxy reconfiguration
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The latest release can be found at [https://github.com/vfarcic/docker-flow/releases/tag/v1.0.2](https://github.com/vfarcic/docker-flow/releases/tag/v1.0.2).
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Background
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: While working with different clients as well as writing the examples for this
+    book, I realized that I end up writing different flavours of the same scripts.
+    Some written in *Bash*, others as *Jenkins Pipeline*, some in *Go*, and so on.
+    So, as soon as I finished writing the book, I decided to start a project that
+    will envelop many of the practices we explored. The result is the Docker Flow
+    project.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Standard Setup
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: We'll start by exploring a typical Swarm cluster setup and discuss some of the
+    problems we might face when using it as the cluster orchestrator. If you are already
+    familiar with Docker Swarm, feel free to skip this section and jump straight into
+    The Problems.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As a minimum, each node inside a Swarm cluster has to have Docker Engine and
+    the Swarm container running. The later container should act as a node. On top
+    of the cluster, we need at least one Swarm container running as master, and all
+    Swarm nodes should announce their existence to it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A combination of Swarm master(s) and nodes are a minimal setup that, in most
+    cases, is far from sufficient. Optimum utilization of a cluster means that we
+    are not in control anymore. Swarm is. It will decide which node is the most appropriate
+    place for a container to run. That choice can be as simple as a node with the
+    least number of containers running, or can be based on a more complex calculation
+    that involves the amount of available CPU and memory, type of hard disk, affinity,
+    and so on. No matter the strategy we choose, the fact is that we will not know
+    where a container will run. On top of that, we should not specify ports our services
+    should expose. "Hard-coded" ports reduce our ability to scale services and can
+    result in conflicts. After all, two separate processes cannot listen to the same
+    port. Long story short, once we adopt Swarm, both IPs and ports of our services
+    will become unknown. So, the next step in setting up a Swarm cluster is to create
+    a mechanism that will detect deployed services and store their information in
+    a distributed registry so that the information is easily available.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Registrator is one of the tools that we can use to monitor Docker Engine events
+    and send the information about deployed or stopped containers to a service registry.
+    While there are many different service registries we can use, Consul proved to
+    be, currently, the best one. Please read the Service Discovery: The Key to Distributed
+    Services chapter for more information.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'With `Registrator` and `Consul`, we can obtain information about any of the
+    services running inside the Swarm cluster. A diagram of the setup we discussed,
+    is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The Standard Setup](img/B05848_App_01.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Swarm cluster with basic service discovery
+  prefs: []
+  type: TYPE_NORMAL
+- en: Please note that anything but a small cluster would have multiple Swarm masters
+    and Consul instances thus preventing any loss of information or downtime in case
+    one of them fails.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The process of deploying containers, in such a setup, is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The operator sends a request to `Swarm master` to deploy a service consisting
+    of one or multiple containers. This request can be sent through `Docker CLI` by
+    defining the `DOCKER_HOST` environment variable with the IP and the port of the
+    `Swarm master`.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Depending on criteria sent in the request (CPU, memory, affinity, and so on),
+    `Swarm master` makes the decision where to run the containers and sends requests
+    to chosen `Swarm nodes`.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`Swarm node`, upon receiving the request to run (or stop) a container, invokes
+    local *Docker Engine*, which, in turn, runs (or stops) the desired container and
+    publishes the result as an event.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*Registrator* monitors *Docker Engine* and, upon detecting a new event, sends
+    the information to *Consul*.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Anyone interested in data about containers running inside the cluster can consult
+    *Consul*.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: While this process is a vast improvement when compared to the ways we were operating
+    clusters in the past, it is far from complete and creates quite a few problems
+    that should be solved.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Problems
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In this chapter, I will focus on three major problems or, to be more precise,
+    features missing in the previously described setup.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deploying Without Downtime
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: When a new release is pulled, running `docker-compose up` will stop the containers
+    running the old release and run the new one in their place. The problem with that
+    approach is downtime. Between stopping the old release and running the new in
+    its place, there is downtime. No matter whether it is one millisecond or a full
+    minute, a new container needs to start, and the service inside it needs to initialize.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We can solve this by setting up a proxy with health checks. However, that would
+    still require running multiple instances of the service (as you definitely should).
+    The process would be to stop one instance and bring the new release in its place.
+    During the downtime of that instance, the proxy would redirect the requests to
+    one of the other instances. Then, when the first instance is running the new release
+    and the service inside it is initialized, we would continue repeating the process
+    with the other instances. This process can become very complicated and would prevent
+    you from using Docker Compose `scale` command.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The better solution is to deploy the new release using the *blue-green* deployment
+    process. If you are unfamiliar with it, please read the [Chapter 13](ch13.html
+    "Chapter 13. Blue-Green Deployment"), *Blue-Green* *Deployment*. In a nutshell,
+    the process deploys the new release in parallel with the old one. Throughout the
+    process, the proxy should continue sending all requests to the old release. Once
+    the deployment is finished and the service inside the container is initialized,
+    the proxy should be reconfigured to send all the requests to the new release and
+    the old one can be stopped. With a process like this, we can avoid downtime. The
+    problem is that Swarm does not support *blue-green* deployment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Scaling Containers using Relative Numbers
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: '*Docker Compose* makes it very easy to scale services to a fixed number. We
+    can specify how many instances of a container we want to run and watch the magic
+    unfold. When combined with Docker Swarm, the result is an easy way to manage containers
+    inside a cluster. Depending on how many instances are already running, Docker
+    Compose will increase (or decrease) the number of running containers so that the
+    desired result is achieved.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The problem is that Docker Compose always expects a fixed number as the parameter.
+    That can be very limiting when dealing with production deployments. In many cases,
+    we do not want to know how many instances are already running but send a signal
+    to increase (or decrease) the capacity by some factor. For example, we might have
+    an increase in traffic and want to increase the capacity by three instances. Similarly,
+    if the demand for some service decreases, we might want the number of running
+    instances to decrease by some factor and, in that way, free resources for other
+    services and processes. This necessity is even more evident when we move towards
+    autonomous and automated [Chapter 13](ch13.html "Chapter 13. Blue-Green Deployment"),
+    *Self-Healing Systems* where human interactions are reduced to a minimum.
+  prefs: []
+  type: TYPE_NORMAL
+- en: On top of the lack of relative scaling, *Docker Compose* does not know how to
+    maintain the same number of running instances when a new container is deployed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Proxy Reconfiguration after the New Release Is Tested
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The need for dynamic reconfiguration of the proxy becomes evident soon after
+    we adopt microservices architecture. Containers allow us to pack them as immutable
+    entities and Swarm lets us deploy them inside a cluster. The adoption of immutability
+    through containers and cluster orchestrators like Swarm resulted in a huge increase
+    in interest and adoption of microservices and, with them, the increase in deployment
+    frequency. Unlike monolithic applications that forced us to deploy infrequently,
+    now we can deploy often. Even if you do not adopt continuous deployment (each
+    commit goes to production), you are likely to start deploying your microservices
+    more often. That might be once a week, once a day, or multiple times a day. No
+    matter the frequency, there is a high need to reconfigure the proxy every time
+    a new release is deployed. Swarm will run containers somewhere inside the cluster,
+    and proxy needs to be reconfigured to redirect requests to all the instances of
+    the new release. That reconfiguration needs to be dynamic. That means that there
+    must be a process that retrieves information from the service registry, changes
+    the configuration of the proxy and, finally, reloads it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There are several commonly used approaches to this problem.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Manual proxy reconfiguration should be discarded for obvious reasons. Frequent
+    deploys mean that there is no time for an operator to change the configuration
+    manually. Even if time is not of the essence, manual reconfiguration adds "human
+    factor" to the process, and we are known to make mistakes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There are quite a few tools that monitor Docker events or entries to the registry
+    and reconfigure proxy whenever a new container is run or an old one is stopped.
+    The problem with those tools is that they do not give us enough time to test the
+    new release. If there is a bug or a feature is not entirely complete, our users
+    will suffer. Proxy reconfiguration should be performed only after a set of tests
+    is run, and the new release is validated.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We can use tools like `Consul Template` or `ConfD` into our deployment scripts.
+    Both are great and work well but require quite a lot of plumbing before they are
+    truly incorporated into the deployment process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Solving The Problems
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Docker Flow is the project that solves the problems we discussed. Its goal is
+    to provide features that are not currently available in the Docker's ecosystem.
+    It does not replace any of the ecosystem's features but builds on top of them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Docker Flow Walkthrough
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The examples that follow will use Vagrant to simulate a Docker Swarm cluster.
+    That does not mean that the usage of Docker Flow is limited to Vagrant. You can
+    use it with a single Docker Engine or a Swarm cluster set up in any other way.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For similar examples based on Docker Machine (tested on Linux and OS X), please
+    read the project ([https://github.com/vfarcic/docker-flow](https://github.com/vfarcic/docker-flow)).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Setting it up
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Before jumping into examples, please make sure that Vagrant is installed. You
+    will not need anything else since the Ansible playbooks we are about to run will
+    make sure that all the tools are correctly provisioned.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Please clone the code from the `vfarcic/docker-flow` repository:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'With the code downloaded, we can run Vagrant and create the cluster we''ll
+    use throughout this chapter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Once VMs are created and provisioned, the setup will be the same as explained
+    in *The Standard Setup* section of this chapter. The `master` server will contain
+    `Swarm master` while nodes `1` and `2` will form the cluster. Each of those nodes
+    will have `Registrator` pointing to the `Consul` instance running in the `proxy`
+    server:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Setting it up](img/B05848_App_02.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Swarm cluster setup through Vagrant
+  prefs: []
+  type: TYPE_NORMAL
+- en: Please note that this setup is for demo purposes only. While the same principle
+    should be applied in production, you should aim at having multiple Swarm masters
+    and Consul instances to avoid potential downtime in case one of them fails.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Once the `vagrant up` command is finished, we can enter the `proxy` VM and
+    see *Docker Flow* in action:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: We'll run all the examples from the `proxy` machine. However, in production,
+    you should run deployment commands from a separate machine (even your laptop).
+  prefs: []
+  type: TYPE_NORMAL
+- en: The latest release of *docker-flow* binary has been downloaded and ready to
+    use, and the `/books-ms` directory contains the `docker-compose.yml` file we'll
+    use in the examples that follow.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s enter the directory:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: Reconfiguring Proxy after Deployment
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Docker Flow requires the address of the Consul instance as well as the information
+    about the node the proxy is (or will be) running on. It allows three ways to provide
+    the necessary information. We can define arguments inside the `docker-flow.yml`
+    file, as environment variables, or as command line arguments. In this example,
+    we'll use all three input methods so that you can get familiar with them and choose
+    the combination that suits you needs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s start by defining proxy and Consul data through environment variables:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `FLOW_PROXY_HOST` variable is the IP of the host where the proxy is running
+    while the `FLOW_CONSUL_ADDRESS` represents the full address of the Consul API.
+    The `FLOW_PROXY_DOCKER_HOST` is the host of the Docker Engine running on the server
+    where the proxy container is (or will be) running. The last variable (`DOCKER_HOST`)
+    is the address of the `Swarm master`. Docker Flow is designed to run operations
+    on multiple servers at the same time, so we need to provide all the information
+    it needs to do its tasks. In the examples we are exploring, it will deploy containers
+    on the Swarm cluster, use Consul instance to store and retrieve information, and
+    reconfigure the proxy every time a new service is deployed. Finally, we set the
+    environment variable `BOOKS_MS_VERSION` to *latest*. The `docker-compose.yml`
+    uses it do determine which version we want to run.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now we are ready to deploy the first release of our sample service:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: We instructed `docker-flow` to use the *blue-green deployment* process and that
+    the target (defined in `docker-compose.yml`) is `app`. We also told it that the
+    service exposes an API on the address `/api/v1/books` and that it requires a side
+    (or secondary) target `db`. Finally, through the `--flow` arguments we specified
+    that the we want it to *deploy* the targets and reconfigure the `proxy`. A lot
+    happened in that single command so we'll explore the result in more detail.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s take a look at our servers and see what happened. We''ll start with
+    the Swarm cluster:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output of the `ps` command is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: Docker Flow run our main target `app` together with the side target named books-ms-db.
+    Both targets are defined in `docker-compose.yml`. Container names depend on many
+    different factors, some of which are the Docker Compose project (defaults to the
+    current directory as in the case of the `app` target) or can be specified inside
+    the `docker-compose.yml` through the `container_name` argument (as in the case
+    of the `db` target). The first difference you'll notice is that *Docker Flow*
+    added *blue* to the container name. The reason behind that is in the `--blue-green`
+    argument. If present, `Docker Flow` will use the *blue-green* process to run the
+    primary target. Since this was the first deployment, *Docker Flow* decided that
+    it will be called *blue*. If you are unfamiliar with the process, please read
+    the [Chapter 13](ch13.html "Chapter 13. Blue-Green Deployment"), *Blue-Green Deployment*
+    for general information.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s take a look at the `proxy` node as well:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output of the `ps` command is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Docker Flow detected that there was no `proxy` on that node and run it for
+    us. The `docker-flow-proxy` container contains *HAProxy* together with custom
+    code that reconfigures it every time a new service is run. For more information
+    about the *Docker Flow: Proxy*, please read the project ([https://github.com/vfarcic/docker-flow-proxy](https://github.com/vfarcic/docker-flow-proxy)).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Since we instructed Swarm to deploy the service somewhere inside the cluster,
+    we could not know in advance which server will be chosen. In this particular case,
+    our service ended up running inside the `node-2`. Moreover, to avoid potential
+    conflicts and allow easier scaling, we did not specify which port the service
+    should expose. In other words, both the IP and the port of the service were not
+    defined in advance. Among other things, *Docker Flow* solves this by running `Docker
+    Flow: Proxy` and instructing it to reconfigure itself with the information gathered
+    after the container is run. We can confirm that the proxy reconfiguration was
+    indeed successful by sending an HTTP request to the newly deployed service:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output of the `curl` command is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The flow of the events was as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Docker Flow inspected Consul to find out which release (blue or green) should
+    be deployed next. Since this is the first deployment and no release was running,
+    it decided to deploy it as blue.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Docker Flow sent the request to deploy the blue release to Swarm Master, which,
+    in turn, decided to run the container in the node-2\. Registrator detected the
+    new event created by Docker Engine and registered the service information in Consul.
+    Similarly, the request was sent to deploy the side target db.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Docker Flow retrieved the service information from Consul.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Docker Flow inspected the server that should host the proxy, realized that it
+    is not running, and deployed it.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Docker Flow updated HAProxy with service information.![Reconfiguring Proxy after
+    Deployment](img/B05848_App_03.jpg)
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The first deployment through Docker Flow
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Even though our service is running in one of the servers chosen by Swarm and
+    is exposing a random port, the proxy was reconfigured, and our users can access
+    it through the fixed IP and without a port (to be more precise through the standard
+    HTTP port `80` or HTTPS port `443`).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Reconfiguring Proxy after Deployment](img/B05848_App_04.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Users can access the service through the proxy
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's see what happens when the second release is deployed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deploying a New Release without Downtime
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: After some time, a developer will push a new commit, and we'll want to deploy
+    a new release of the service. We do not want to have any downtime so we'll continue
+    using the *blue-green* process. Since the current release is *blue*, the new one
+    will be named *green*. Downtime will be avoided by running the new release (*green*)
+    in parallel with the old one (*blue*) and, after it is fully up and running, reconfigure
+    the proxy so that all requests are sent to the new release. Only after the proxy
+    is reconfigured, we want the old release to stop running and free the resources
+    it was using. We can accomplish all that by running the same `docker-flow` command.
+    However, this time, we'll leverage the `docker-flow.yml` file that already has
+    some of the arguments we used before.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The content of the `docker-flow.yml` is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let''s run the new release:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Just like before, let''s explore Docker processes and see the result:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output of the `ps` command is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: From the output, we can observe that the new release (*green*) is running and
+    that the old (*blue*) was stopped. The reason the old release was only stopped
+    and not entirely removed lies in potential need to rollback quickly in case a
+    problem is discovered at some later moment in time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s confirm that the proxy was reconfigured as well:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output of the curl command is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The flow of the events was as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Docker Flow inspected Consul to find out which release (blue or green) should
+    be deployed next. Since the previous release was blue, it decided to deploy it
+    as green.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Docker Flow sent the request to Swarm Master to deploy the green release, which,
+    in turn, decided to run the container in the node-1\. Registrator detected the
+    new event created by Docker Engine and registered the service information in Consul.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Docker Flow retrieved the service information from Consul.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Docker Flow updated HAProxy with service information.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Docker Flow stopped the old release.![Deploying a New Release without Downtime](img/B05848_App_05.jpg)
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The second deployment through Docker Flow
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'Throughout the first three steps of the flow, HAProxy continued sending all
+    requests to the old release. As the result, users were oblivious that deployment
+    is in progress:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Deploying a New Release without Downtime](img/B05848_App_06.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: During the deployment, users continue interacting with the old release
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Only after the deployment is finished, HAProxy was reconfigured, and users
+    were redirected to the new release. As the result, there was no downtime caused
+    by deployment:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Deploying a New Release without Downtime](img/B05848_App_07.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: After the deployment, users are redirected to the new release
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we have a safe way to deploy new releases, let us turn our attention
+    to relative scaling.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Scaling the service
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: One of the great benefits *Docker Compose* provides is scaling. We can use it
+    to scale to any number of instances. However, it allows only absolute scaling.
+    We cannot instruct *Docker Compose* to apply relative scaling. That makes the
+    automation of some of the processes difficult. For example, we might have an increase
+    in traffic that requires us to increase the number of instances by two. In such
+    a scenario, the automation script would need to obtain the number of instances
+    that are currently running, do some simple math to get to the desired number,
+    and pass the result to Docker Compose. On top of all that, proxy still needs to
+    be reconfigured as well. *Docker Flow* makes this process much easier.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s see it in action:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The scaling result can be observed by listing the currently running Docker
+    processes:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output of the `ps` command is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: The number of instances was increased by two. While only one instance was running
+    before, now we have three.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Similarly, the proxy was reconfigured as well and, from now on, it will load
+    balance all requests between those three instances.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The flow of the events was as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Docker Flow inspected Consul to find out how many instances are currently running.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Since only one instance was running and we specified that we want to increase
+    that number by two, Docker Flow sent the request to Swarm Master to scale the
+    green release to three, which, in turn, decided to run one container on node-1
+    and the other on node-2\. Registrator detected the new events created by Docker
+    Engine and registered two new instances in Consul.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Docker Flow retrieved the service information from Consul.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Docker Flow updated HAProxy with the service information and set it up to perform
+    load balancing among all three instances.![Scaling the service](img/B05848_App_08.jpg)
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Relative scaling through Docker Flow
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'From the users perspective, they continue receiving responses from the current
+    release but, this time, their requests are load balanced among all instances of
+    the service. As a result, service performance is improved:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Scaling the service](img/B05848_App_09.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Users requests are load balanced across all instances of the service
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We can use the same method to de-scale the number of instances by prefixing
+    the value of the `--scale` argument with the minus sign (`-`). Following the same
+    example, when the traffic returns to normal, we can de-scale the number of instances
+    to the original amount by running the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: Testing Deployments to Production
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The major downside of the proxy examples we run by now is the inability to verify
+    the release before reconfiguring the proxy. Ideally, we should use the *blue-green*
+    process to deploy the new release in parallel with the old one, run a set of tests
+    that validate that everything is working as expected, and, finally, reconfigure
+    the proxy only if all tests were successful. We can accomplish that easily by
+    running `docker-flow` twice.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Many tools aim at providing zero-downtime deployments but only a few of them
+    (if any), take into account that a set of tests should be run before the proxy
+    is reconfigured.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'First, we should deploy the new version:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let''s list the Docker processes:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output of the `ps` command is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: At this moment, the new release (*blue*) is running in parallel with the old
+    release (*green*). Since we did not specify the *--flow=proxy* argument, the proxy
+    is left unchanged and still redirects to all the instances of the old release.
+    What this means is that the users of our service still see the old release, while
+    we have the opportunity to test it. We can run integration, functional, or any
+    other type of tests and validate that the new release indeed meets the expectations
+    we have. While testing in production does not exclude testing in other environments
+    (e.g. staging), this approach gives us greater level of trust by being able to
+    validate the software under the same circumstances our users will use it, while,
+    at the same time, not affecting them during the process (they are still oblivious
+    to the existence of the new release).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Please note that even though we did not specify the number of instances that
+    should be deployed, *Docker Flow* deployed the new release and scaled it to the
+    same number of instances as we had before.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The flow of the events was as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Docker Flow inspected Consul to find out the color of the current release and
+    how many instances are currently running.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Since two instances of the old release (*green*) were running and we didn't
+    specify that we want to change that number, Docker Flow sent the request to *Swarm
+    Master* to deploy the new release (*blue*) and scale it to two instances.![Testing
+    Deployments to Production](img/B05848_App_10.jpg)
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Deployment without reconfiguring proxy
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'From the users perspective, they continue receiving responses from the old
+    release since we did not specify that we want to reconfigure the proxy:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Testing Deployments to Production](img/B05848_App_11.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Users requests are still redirected to the old release
+  prefs: []
+  type: TYPE_NORMAL
+- en: From this moment, you can run tests in production against the new release. Assuming
+    that you do not overload the server (e.g. stress tests), tests can run for any
+    period without affecting users.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'After the tests execution is finished, there are two paths we can take. If
+    one of the tests failed, we can just stop the new release and fix the problem.
+    Since the proxy is still redirecting all requests to the old release, our users
+    would not be affected by a failure, and we can dedicate our time towards fixing
+    the problem. On the other hand, if all tests were successful, we can run the rest
+    of the `flow` that will reconfigure the proxy and stop the old release:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: The command reconfigured the proxy and stopped the old release.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The flow of the events was as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Docker Flow inspected Consul to find out the color of the current release and
+    how many instances are running.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Docker Flow updated the proxy with service information.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Docker Flow stopped the old release.![Testing Deployments to Production](img/B05848_App_12.jpg)
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Proxy reconfiguration without deployment
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'From the user''s perspective, all new requests are redirected to the new release:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Testing Deployments to Production](img/B05848_App_13.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Users requests are redirected to the new release
+  prefs: []
+  type: TYPE_NORMAL
+- en: That concludes the quick tour through some of the features *Docker Flow* provides.
+    Please explore the *Usage* section for more details.
+  prefs: []
+  type: TYPE_NORMAL

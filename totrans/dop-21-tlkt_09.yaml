@@ -1,0 +1,863 @@
+- en: Defining Logging Strategy
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Most software today is very much like an Egyptian pyramid with millions of bricks
+    piled on top of each other, with no structural integrity, but just done by brute
+    force and thousands of slaves.
+  prefs: []
+  type: TYPE_NORMAL
+- en: –Alan Kay
+  prefs: []
+  type: TYPE_NORMAL
+- en: We've reached the point where we have a fully operating Swarm cluster and a
+    defined Continuous Deployment Pipeline that'll update our services on each commit.
+    Now we can spend time coding and pushing commits to our repository knowing that
+    the rest of the process is automated. We can, finally, spend our time on tasks
+    that bring real value to the organization we're working for. We can dedicate our
+    time to producing new features for the services we're working on. However, when
+    something goes wrong, we need to stop churning new features and investigate the
+    problem.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The first thing we tend to do when we detect an issue is to check logs. They
+    are, by no means, not the only source of data we can use for debugging problem.
+    We'll also need a lot of metrics (more on that in the next chapter). However,
+    even if logs are not the only thing we should look at, they are often a good start.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**A note to The DevOps 2.0 Toolkit readers**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The text that follows is identical to the one published in *The DevOps 2.0 Toolkit*.
+    If it is still fresh in your mind, feel free to jump to the *Setting up LogStash
+    and ElasticSearch as the logging Database *(`#logging-es`) sub-chapter. Since
+    I wrote the *2.0*, I discovered a few better ways to treat logs, especially inside
+    a Swarm cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Our exploration of DevOps practices and tools led us towards clustering and
+    scaling. As a result, we developed a system that allows us to deploy services
+    to a cluster, in an easy and efficient way. The result is an ever increasing number
+    of containers running inside a cluster consisting of, potentially, many servers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Monitoring one server is easy. Monitoring many services on a single server poses
+    some difficulties. Monitoring many services on many servers requires a whole new
+    way of thinking and a new set of tools. As you start embracing microservices,
+    containers, and clusters, the number of created services and their instances will
+    begin increasing rapidly. The same holds true for servers that form the cluster.
+    We cannot, anymore, log into a node and look at logs. There are too many to look
+    at. On top of that, they are distributed among many servers. While yesterday we
+    had two instances of a service deployed on a single server, tomorrow we might
+    have eight instances deployed to six servers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We need historical and (near) real time information about our system. That information
+    can be in the form of logs, hardware utilization, health checking, network traffic,
+    and many other things. The need to store historical data is not new and has been
+    in use for a long time. However, the direction that information travels has changed
+    over time. While, in the past, most solutions were based on centralized data collectors,
+    today, due to the very dynamic nature of services and servers, we tend to have
+    them decentralized.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What we need for cluster logging and monitoring is a combination of decentralized
+    data collectors that are sending information to a centralized parsing service
+    and data storage. There are plenty of products specially designed to fulfill this
+    requirement, ranging from on-premise to cloud solutions, and everything in between.
+    *FluentD* ([http://www.fluentd.org/](http://www.fluentd.org/)), *Loggly* ([https://www.loggly.com/](https://www.loggly.com/)),
+    *GrayLog* ([https://www.graylog.org/](https://www.graylog.org/)), *Splunk* ([http://www.splunk.com/](http://www.splunk.com/)),
+    and *DataDog* ([https://www.datadoghq.com/](https://www.datadoghq.com/)) are only
+    a few of the solutions we can employ. I chose to show you the concepts through
+    the ELK stack (*ElasticSearch* ([https://www.elastic.co/products/elasticsearch](https://www.elastic.co/products/elasticsearch)),
+    *LogStash* ([https://www.elastic.co/products/logstash](https://www.elastic.co/products/logstash)),
+    and *Kibana* ([https://www.elastic.co/products/kibana](https://www.elastic.co/products/kibana))).
+    The stack has the advantage of being free, well documented, efficient, and widely
+    used. *ElasticSearch* ([https://www.elastic.co/products/elasticsearch](https://www.elastic.co/products/elasticsearch))
+    established itself as one of the best databases for real-time search and analytics.
+    It is distributed, scalable, highly available, and provides a sophisticated API.
+    *LogStash* ([https://www.elastic.co/products/logstash](https://www.elastic.co/products/logstash))
+    allows us to centralize data processing. It can be easily extended to custom data
+    formats and offers a lot of plugins that can fulfill almost any need. Finally,
+    *Kibana* ([https://www.elastic.co/products/kibana](https://www.elastic.co/products/kibana))
+    is an analytics and visualization platform with intuitive interface sitting on
+    top of ElasticSearch.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The fact that we'll use the ELK stack does not mean that it is better than the
+    other solutions. It all depends on specific use cases and particular needs. I'll
+    walk you through the principles of centralized logging and monitoring using the
+    ELK stack. Once those principles are understood, you should have no problem applying
+    them to a different stack if you choose to do so.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We switched the order of things and chose the tools before discussing the need
+    for centralized logging. Let's remedy that.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The need for centralized logging
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In most cases, log messages are written to files. That is not to say that files
+    are the only, nor the most efficient way of storing logs. However, since most
+    teams are using file-based logs in one form or another, for the time being, I'll
+    assume that is your case as well. If it is, we identified the first thing we should
+    fix. Containers expect us to send logs to `stdout` and `stderr`. Only log entries
+    forwarded to the standard output are retrievable with `docker logs` command. Moreover,
+    tools designed to work with container logs will expect just that. They'll assume
+    that entries are not written to a file but sent to the output. Even without containers,
+    I believe that `stdout` and `stderr` are where our services should log things.
+    However, that's a story for some other time. For now, we'll concentrate on containers
+    and assume that you are outputting your logs to `stdout` and `stderr.` If you're
+    not, most logging libraries will allow you to change your logging destination
+    to standard output and error.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Most of the time, we do not care what is written in logs. When things are working
+    well, there is not much need to spend valuable time browsing through them. A log
+    is not a novel we read to pass the time with, nor it is a technical book we read
+    as a way to improve our knowledge. Logs are there to provide valuable info when
+    something, somewhere, went wrong.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The situation seems to be simple. We write information to logs that we ignore
+    most of the time, and when something goes wrong, we consult them and find the
+    cause of the problem in no time. At least, that's what many are hoping for. The
+    reality is far more complicated than that. In all but the most trivial systems,
+    the debugging process is much more challenging. Applications and services are
+    almost always interconnected, and it is often not easy to know which one caused
+    the problem. While it might manifest in one application, investigation often shows
+    that the cause is in another. For example, a service might have failed to instantiate.
+    After some time spent browsing its logs, we might discover that the cause is in
+    the database. The service could not connect to it and failed to launch. We got
+    the symptom, but not the cause. We need to switch to the database log to find
+    it out. With this simple example, we've already gotten to the point where looking
+    at one log is not enough.
+  prefs: []
+  type: TYPE_NORMAL
+- en: With distributed services running on a cluster, the situation complicates exponentially.
+    Which instance of the service is failing? Which server is it running on? What
+    are the upstream services that initiated the request? What are the memory and
+    hard disk usage in the node where the culprit resides? As you might have guessed,
+    finding, gathering, and filtering the information needed for the successful discovery
+    of the cause is often very complicated. The bigger the system, the harder it gets.
+    Even with monolithic applications, things can easily get out of hand.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If a microservices approach is adopted, those problems are multiplied. Centralized
+    logging is a must for all but the simplest and smallest systems. Instead, many
+    of us, when things go wrong, start running from one server to another and jumping
+    from one file to the other. Like a chicken with its head cut off - running around
+    with no direction. We tend to accept the chaos logging creates, and consider it
+    part of our profession.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'What do we look for in centralized logging? As it happens, many things, but
+    the most important are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: A way to parse data and send them to a central database in near real-time
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The capacity of the database to handle near real-time data querying and analytics
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A visual representation of the data through filtered tables, dashboards, and
+    so on
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: We already chose the tools that will be able to fulfill all those requirements
+    (and more). The ELK stack (ElasticSearch, LogStash, and Kibana) can do all that.
+    As in the case of all other tools we explored, this stack can easily be extended
+    to satisfy the particular needs we'll set in front of us.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we have a vague idea what we want to accomplish, and have the tools
+    to do that, let us explore a few of the logging strategies we can use. We'll start
+    with the most commonly used scenario and, slowly, move towards more complicated
+    and more efficient ways to define our logging strategy.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Without further ado, let's create the environments we'll use to experiment with
+    centralized logging and, later on, monitoring.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Setting up ElasticSearch as the logging database
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'As in quite a few cases before, we''ll start by creating the already familiar
+    nodes (`swarm-1`, `swarm-2`, and `swarm-3`):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: All the commands from this chapter are available in the `08-logging.sh` ([https://gist.github.com/vfarcic/c89b73ebd32dbf8f849531a842739c4d](https://gist.github.com/vfarcic/c89b73ebd32dbf8f849531a842739c4d))
+    Gist.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The first service we''ll create is *Elastic Search* ([https://hub.docker.com/_/elasticsearch](https://hub.docker.com/_/elasticsearch)).
+    Since we''ll need it to be accessible from a few other services, we''ll also create
+    a network called `elk`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: After a few moments, the `elasticsearch` service will be up and running.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We can check the status using the `service ps` command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows (IDs and ERROR PORTS columns are removed for brevity):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: If `elasticsearch` is still not running, please wait a few moments before proceeding.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we have a database where we can store our logs, the next step is to
+    create a service that will parse log entries and forward the results to ElasticSearch.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Setting up LogStash as the logs parser and forwarder
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'We did *E* from the *ELK* stack. Now let''s move to *L*. *LogStash* requires
+    a configuration file. We''ll use one that is already available inside the `vfarcic/cloud-provisioning` ([https://github.com/vfarcic/cloud-provisioning](https://github.com/vfarcic/cloud-provisioning))
+    repository. We’ll create a new directory, copy the `conf/logstash.conf` ([https://github.com/vfarcic/cloud-provisioning/blob/master/conf/logstash.conf](https://github.com/vfarcic/cloud-provisioning/blob/master/conf/logstash.conf))
+    configuration, and use it inside the `logstash` service:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The content of the `logstash.conf` file is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: This is a very simple *LogStash* configuration. If will listen on port `51415`
+    for `syslog` entries.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Each entry will be sent to two outputs; `elasticsearch` and `stdout`. Since
+    both `logstash` and `elasticsearch` will be attached to the same network, all
+    we had to do is put the service name as the host.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The second output will send everything to `stdout`. Please note that this entry
+    should be removed before running *LogStash* in production. It creates an unnecessary
+    overhead that, if there are many services, can be substantial. The only reason
+    we have it is to show you how logs are passing through LogStash. In production,
+    you'll have no need to look at its output. Instead, you'll use Kibana to explore
+    the logs from the whole system.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s move on and create the second service:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**A note to Windows users**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For mounts used in the next command to work, you have to stop Git Bash from
+    altering file system paths. Set this environment variable:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`export MSYS_NO_PATHCONV=1`'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: We created a service called `logstash` and mounted the host volume `docker/logstash
+    as /conf` inside the container. That way we'll have the configuration file currently
+    residing on the host available inside the container.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Please note that mounting a volume is not the best way to put the configuration
+    inside the container. Instead, we should have built our own image with the configuration
+    inside. We should have created a Dockerfile. It could be as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: This configuration file should not change often (if ever), so the option of
+    creating a new image based on `logstash` is much better than mounting a volume.
+    However, for simplicity reasons, we used the mount. Just remember to build your
+    own image once you start applying what you learned from this chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We also defined the environment variable `LOGSPOUT`. It is not relevant right
+    now. We'll comment on it later on.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `logStash` service should be up and running by now. Let''s double check
+    it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output should be as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: If the current state is still not running, please wait a few moments and repeat
+    the `service ps` command. We can proceed only after `logstash` is operational.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now we can confirm that `logStash` was initialized correctly. We''ll need to
+    find out which node it is running in, get the `ID` of the container, and output
+    the logs:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output of the previous command `logs` is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: '`Pipeline main started` means that LogStash is running and waiting for input.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Before we set up a solution that will ship logs from all the containers inside
+    the cluster, we''ll make an intermediary step and confirm that LogStash can indeed
+    accept `syslog` entries on port `51415`. We''ll create a temporary service called
+    `logger-test`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: The service is attached to the `elk` network so that it can communicate with
+    the `logstash` service.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We had to specify `restart-condition` as `none`. Otherwise, when the process
+    is finished, the container would stop, Swarm would detect it as a failure and
+    reschedule it. In other words, without the restart condition set to none, Swarm
+    would enter into an endless loop trying to reschedule containers that almost immediately
+    stop.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The command we're executing sends a `syslog` message `logger`, to `logstash`
+    running on port `51415`. The message is `hello world`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s output LogStash logs one more time:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: First Swarm had to download the debian image and, once the logger message was
+    sent, LogStash had to start accepting entries. It takes a bit of time until LogStash
+    processes the first entry. All subsequent entries will be processed almost instantly.
+    If your output is not similar to the one above, please wait a moment and repeat
+    the logs command.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As you can see, LogStash received the message hello world. It also recorded
+    a few other fields like the `timestamp` and `host`. Ignore the error message `_grokparsefailure_sysloginput`.
+    We could configure LogStash to parse `logger` messages correctly but, since we
+    won't be using it anymore, it would be a waste of time. Soon we'll see a much
+    better way to forward logs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: LogStash acted as a parser of the message and forwarded it to ElasticSearch.
+    At the moment, you'll have to take my word for it. Soon we'll see how are those
+    messages stored and how we can explore them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We’ll remove the `logger-test` service. Its purpose was only to demonstrate
+    that we have a LogStash instance that accepts `syslog` messages:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: Sending messages by invoking logger is great but is not what we're trying to
+    accomplish. The goal is to forward the logs from all the containers running anywhere
+    inside the cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Forwarding logs from all containers running anywhere inside a Swarm cluster
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: How can we forward logs from all the containers no matter where they’re running?
+    One possible solution would be to *configure logging drivers* ([https://docs.docker.com/engine/admin/logging/overview/](https://docs.docker.com/engine/admin/logging/overview/)).
+    We could use the `--log-driver` argument to specify a driver for each service.
+    The driver could be `syslog` or any other supported option. That would solve our
+    log shipping problem. However, using the argument for each service is tedious
+    and, more importantly, we could easily forget to specify it for a service or two
+    and discover the omission only after we encounter a problem and are in need of
+    logs. Let's see if there is another option to accomplish the same result.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We could specify a log driver as a configuration option of the Docker daemon
+    on each node. That would certainly make the setup easier. After all, there are
+    probably fewer servers than services. If we were to choose between setting a driver
+    when creating a service or as the daemon configuration, I'd choose the latter.
+    However, we managed to get thus far without changing the default daemon configuration
+    and I'd prefer if we can continue working without involving any special provisioning
+    tools. Luckily, we still did not exhaust all our options.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We can ship logs from all our containers with the project called `logspout` ([https://github.com/gliderlabs/logspout](https://github.com/gliderlabs/logspout))
+  prefs: []
+  type: TYPE_NORMAL
+- en: LogSpout is a log router for Docker containers that runs inside Docker. It attaches
+    to all containers on a host, then routes their logs wherever we want. It also
+    has an extensible module system. It's a mostly stateless log appliance. It's not
+    meant for managing log files or looking at history. It is just a tool to get your
+    logs out to live somewhere else, where they belong.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you go through the project documentation, you'll notice that there are no
+    instructions on how to run it as a Docker service. That should not matter since,
+    by this time, you can consider yourself an expert in creating services.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What do we need from a service that should forward logs from all the containers
+    running inside all the nodes that form a cluster? Since we want to forward them
+    to LogStash that is already attached to the `elk` network, we should attach LogSpout
+    to it as well. We need it to ship logs from all the nodes so the service should
+    be global. It needs to know that the destination is the service called `logstash`
+    and that it listens on port `51415`. Finally, one of the requirement for LogSpout
+    is that the Docker socket from the host is mounted inside the service containers.
+    That’s what it'll use to monitor the logs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The command that creates the service that fulfills all those objectives and
+    requirements is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**A note to Windows users**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For mounts used in the next command to work, you have to stop Git Bash from
+    altering file system paths. Set this environment variable:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`export MSYS_NO_PATHCONV=1`'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: We created a service called `logspout`, attached it to the `elk` network, set
+    it to be global, and mounted the Docker socket. The command that will be executed
+    once containers are created is `syslog://logstash:51415`. This tells LogSpout
+    that we want to use `syslog` protocol to send logs to `logstash` running on port
+    `51415`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This project is an example of the usefulness behind the Docker Remote API. The
+    `logspout` containers will use it to retrieve the list of all currently running
+    containers and stream their logs. This is already the second product inside our
+    cluster that uses the API (the first being *Docker Flow Swarm Listener* ([https://github.com/vfarcic/docker-flow-swarm-listener](https://github.com/vfarcic/docker-flow-swarm-listener))).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s see the status of the service we just created:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output is as follows (IDs & ERROR PORTS column are removed for brevity):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: The service is running in global mode resulting in an instance inside each node.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s test whether the `logspout` service is indeed sending all the logs to
+    LogStash. All we have to do is create a service that generates some logs and observe
+    them from the output of LogStash . We''ll use the registry to test the setup we
+    have made so far:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Before we check the LogStash logs, we should wait until the registry is running:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: If the current state is still not running, please wait a few moments.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now we can take a look at `logstash` logs and confirm that `logspout` sent
+    it log entries generated by the `registry`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'One of the entries from the output is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: As before when we tested LogStash input with logger, we have the message, `timestamp`,
+    `host`, and a few other `syslog` fields. We also got `logsource` that holds the
+    `ID` of the container that produced the log as well as program that holds the
+    container name. Both will be useful when debugging which service and container
+    produced a bug.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you go back to the command we used to create the `logstash` service, you'll
+    notice the environment variable `LOGSPOUT=ignore`. It tells LogSpout that the
+    service or, to be more precise, all containers that form the service, should be
+    ignored. If we did not define it, LogSpout would forward all `logstash` logs to
+    `logstash` thus creating an infinite loop. As we already discussed, in production
+    we should not output LogStash entries to `stdout`. We did it only to get a better
+    understanding of how it works. If `stdout` output is removed from the logstash
+    configuration, there would be no need for the environment variable `LOGSPOUT=ignore`.
+    As a result `logstash` logs would also be stored in ElasticSearch.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we are shipping all the logs to LogStash and from there to ElasticSearch,
+    we should explore the ways to consult them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Exploring logs
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Having all the logs in a central database is a good start, but it does not allow
+    us to explore them in an easy and user-friendly way. We cannot expect developers
+    to start issuing requests to the ElasticSearch API whenever they want to explore
+    what went wrong. We need a UI that allows us to visualize and filter logs. We
+    need *K* from the *ELK* stack.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**A note to Windows users**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You might experience a problem with volumes not being mapped correctly with
+    Docker Compose. If you may see an *Invalid volume specification* error, please
+    export the environment variable `COMPOSE_CONVERT_WINDOWS_PATHS set` to `0`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`export COMPOSE_CONVERT_WINDOWS_PATHS=0`'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Please make sure that the variable is exported every time you run `docker-compose`
+    or `docker stack deploy`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s create one more service. This time, it''ll be Kibana. Besides the need
+    for this service to communicate with `logspout` and `elasticsearch` services,
+    we want to expose it through the proxy, so we''ll create swarm-listener and `proxy`
+    services as well. Let''s get to it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: We created the `proxy` network, downloaded Compose file with the service definitions,
+    and deployed the proxy stack which consists of `swarm-listener` and `proxy` services.
+    They are the same commands as those we executed in the [Chapter 8](c47e8687-ec20-4f84-9a79-ea2c6f9eb185.xhtml), *Using
+    Docker Stack and Compose YAML Files to Deploy Swarm Services*, so there’s no need
+    to explain them again.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The only thing missing before we create the `kibana` service is to wait until
+    both swarm-listener and proxy are up and running.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Please execute `docker service ls` command to confirm that both services have
+    their replicas running.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now we''re ready to create the `kibana` service:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**A note to Windows users**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For mounts used in the next command to work, you have to stop Git Bash from
+    altering file system paths. Set this environment variable:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`export MSYS_NO_PATHCONV=1`'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: We attached it to both the elk and `proxy` networks. The first is needed so
+    that it can communicate with the `elasticsearch` service, while the second is
+    required for communication with the proxy. We also set up the `ELASTICSEARCH_URL`
+    environment variable that tells Kibana the address of the database, and reserved
+    `50m` of memory. Finally, we defined a few labels that will be used by the `swarm-listener`
+    to notify the proxy about the services existence. This time, the `com.df.servicePath`
+    label has three paths that match those used by Kibana.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Le''s confirm that `kibana` is running before opening its UI:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The UI can be opened through the command that follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: '**A note to Windows users**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Git Bash might not be able to use the open command. If that’s the case, execute
+                            `docker-machine ip <SERVER_NAME>` to find out the IP of
+    the machine and open the URL directly in your browser of choice. For example,
+    the command above should be replaced with the command that follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`docker-machine ip swarm-1`'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If the output would be `1.2.3.4`, you should open `http://1.2.3.4:8082/jenkins`
+    in your browser.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You should see the screen that lets you configure ElasticSearch indexes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now we can explore the logs by clicking the Discover button from the top menu.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Kibana, by default, displays the logs generated during the last fifteen minutes.
+    Depending on the time that passed since we produced the logs, fifteen minutes
+    might be less than the actual time that passed. We'll increase the duration to
+    twenty-four hours.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Please select `@timestamp` as Time-field name and click the *Create* button
+    to generate LogStash indexes in ElasticSearch:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/kibana-index-config.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 8-1: Configure an index pattern Kibana screen'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Please click the Last 15 minutes from the top-right menu. You'll see a plethora
+    of options we can use to filter the results based on time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Please click the Last 24 hours link and observe that the time from the top-right
+    menu changed accordingly. Now click the Last 24 hours button to hide the filters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'More information can be found in the *Setting the Time Filter* ([https://www.elastic.co/guide/en/kibana/current/discover.html#set-time-filter](https://www.elastic.co/guide/en/kibana/current/discover.html#set-time-filter))
+    section of the documentation for Kibana :'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/kibana-time-filters.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 8-2: Time filters in Kibanas Discover screen'
+  prefs: []
+  type: TYPE_NORMAL
+- en: At the moment, the central part of the screen displays all the logs that match
+    the given `time-span`. Most of the time, on a "real" production system, we would
+    not be interested in all the logs produced inside the cluster. Instead, we'd filter
+    them based on some criteria.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's say we want to see all the logs generated by the `proxy` service. We often
+    don't need to know the exact name of the program that generated them. This is
+    true because Swarm adds an instance number and a hashtag into container names,
+    and we are often unsure what the exact name is, or which instance produced a problem.
+    Instead, we'll filter the logs to display all those that have a program containing
+    the word `proxy`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Please type `program: "proxy_proxy"` in the Search field located in the upper
+    part of the screen and press enter. The result will be that only logs that contain
+    `proxy_proxy` in the program name field are displayed in the main part of the
+    screen. Similarly, we can change the search to the previous state and list all
+    the logs that match the given time frame. All we have to do is type `*` in the
+    Search field and press Enter.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: More information can be found in the *Searching Your Data* ([https://www.elastic.](https://www.elastic.co/guide/en/kibana/current/discover.html#search)[co/guide/en/kibana/current/discover.html#search](https://www.elastic.co/guide/en/kibana/current/discover.html#search)) section
+    of documentation for Kibanas .
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The list of all fields that match the current query is located in the left-hand
+    menu. We can see the top values of one of those fields by clicking on it. For
+    example, we can click on the *program* field and see all the programs that produced
+    logs during the specified time. We can use those values as another way to filter
+    the results. Please click the + sign next to `proxy.1.4psvagyv4bky2lftjg4a` (in
+    your case the hash will be different). We just accomplished the same result as
+    if we typed `program: "proxy.1.4psvagyv4bky2lftjg4a:` in the Search field.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: More information can be found in the *Filtering by Field* ([https://www.elastic.co/guide/en/kibana/current/discover.html#field-filter](https://www.elastic.co/guide/en/kibana/current/discover.html#field-filter))
+    section of documentation for Kibana .
+  prefs: []
+  type: TYPE_NORMAL
+- en: The main body of the screen displays the selected fields in each row, with the
+    option to drill down and show all the information. The truth is that the default
+    fields (Time and _source) are not very helpful so we'll change them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Please click the Add button next to program in the left-hand menu. You'll see
+    that the program column was added to the Time column. Let's add a few more. Please
+    repeat the process with the host, and @timestamp fields as well.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To see more information about a particular entry, please click the arrow pointing
+    to the right. A table with all the fields will appear below it, and you will be
+    able to explore all the details related to the particular logs entry.
+  prefs: []
+  type: TYPE_NORMAL
+- en: More information can be found in the *Filtering by Field* ([https://www.elastic.co/guide/en/kibana/current/discover.html#document-data](https://www.elastic.co/guide/en/kibana/current/discover.html#document-data))
+    section of documentation for Kibana .
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The only thing left in this short tour around Kibana is to save the filter
+    we just created. Please click the Save Search button in the top menu to save what
+    we created by now. Type a name for your search and click the Save button. Your
+    filters are now saved and can be accessed through the Load Saved Search button
+    located in the top menu:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/kibana-discover.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 8-3: Discover screen in Kibana'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'That''s it. Now you know the basics how to explore your logs stored in ElasticSearch.
+    If you''re wondering what can be done with Visualize and Dashboard screens, I''ll
+    only state that they are not very useful for logs. They become much more interesting,
+    however, if we start adding other types of information like resource usage (example:
+    memory, CPU, network traffic, and so on).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Discussing other logging solutions
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Is ELK the solution you should choose for your logging purposes? That a hard
+    question to answer. There are a plethora of similar tools in the market, and it
+    would be close to impossible to give a universal answer.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Do you prefer a free solution? If you do, then ELK ( *ElasticSearch* ([https://www.elastic.co/products/elasticsearch](https://www.elastic.co/products/elasticsearch)),
+    *LogStash* ([https://www.elastic.co/products/logstash](https://www.elastic.co/products/logstash)),
+    and *Kibana* ([https://www.elastic.co/products/kibana](https://www.elastic.co/products/kibana)))
+    is an excellent choice. If you’re looking for an equally cheap (free) alternative,
+    *FluentD* ([http://www.fluentd.org/](http://www.fluentd.org/)) is something worth
+    trying out. Many other solutions might fit your needs. A simple Google search
+    will reveal a plethora of options.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Are you more interested in a solution provided as a service? Would you like
+    someone else taking care of your logging infrastructure? If you do, many services
+    offer, for a fee, to host your logs in their database and provide nice interfaces
+    you can use to explore them. I won't list examples since I decided to base this
+    book fully on open source solutions you can run yourself. Again, Google is your
+    friend if you'd prefer a service maintained by someone else.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What now?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We touched only the surface of what the ELK stack can do. ElasticSearch is a
+    very powerful database that can be scaled easily and store vast amounts of data.
+    LogStash provides almost unlimited possibilities that allow us to use virtually
+    any data source as input (in our case `syslog`), transform it into any form we
+    find useful, and output to many different destinations (in our case ElasticSearch).
+    When a need occurs, you can use Kibana to go through the logs generated by your
+    system. Finally, the tool that made all that happen is LogSpout. It ensured that
+    all the logs produced by any of the containers running inside our cluster are
+    collected and shipped to LogStash.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This goal of the chapter was to explore a potential solution to deal with massive
+    quantities of logs and give you a base understanding how to collect them from
+    services running inside a Swarm cluster. Do you know everything you should know
+    about logging? You probably don't. However, I hope you have a good base to explore
+    the subject in more details.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Even if you choose to use a different set of tools, the process will still be
+    the same. Use a tool to collect logs from your services, ship them to some database,
+    use a UI to explore them when needed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now we have logs that provide only part of the information we'll need to find
+    a cause of an issue. Logs by themselves are often not enough. We need metrics
+    from the system. Maybe our services use more memory than our cluster provides.
+    Maybe the system takes too much time to respond. Or maybe we have a memory leak
+    in one of our services. Those things would be very hard to find out through logs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We need to know not only current metrics of the system but also how it behaved
+    in the past. Even if we do have those metrics, we need a process that will notify
+    us of problems. Looking at logs and metrics provides a lot of information we can
+    use to debug issues, but we wouldn't know that a problem exists in the first place.
+    We need a process that will notify us when something goes wrong or, even better,
+    before the actual problem happens. Even with such a system in place, we should
+    go even further and try to prevent problems from happening. Such prevention can
+    often be automated. After all, why should we fix all the problems manually when
+    some of them can be fixed automatically by the system itself? The ultimate goal
+    is to make a self-healing system and involve humans only when unexpected things
+    happen.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Metrics, notifications, self-healing systems, and other pending tasks in front
+    of us are too much for a single chapter so we'll do one step at a time. For now,
+    we’re finished with logs and will jump into a discussion about different ways
+    to collect metrics and use them to monitor our cluster and services running inside
+    it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'As always, we''ll end with a destructive note:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
