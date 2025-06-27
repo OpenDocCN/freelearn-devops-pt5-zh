@@ -1,523 +1,813 @@
 - en: Chapter 5. Ever-Ready to Deploy Using Continuous Delivery
+  id: totrans-0
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 第 5 章：通过持续交付随时准备部署
 - en: Thanks to the Continuous Integration setup we examined in the previous chapter,
     we now have a way of continuously producing deployable artifacts from our source
     code.
+  id: totrans-1
   prefs: []
   type: TYPE_NORMAL
+  zh: 多亏了我们在上一章中检查的持续集成设置，我们现在可以从源代码中持续生成可部署的工件。
 - en: 'Our next goal will be to upgrade the pipeline from a Continuous Integration
     to an **Integration** plus **Delivery** one. To illustrate, we are in the middle
     of a three stage workflow:'
+  id: totrans-2
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们的下一个目标是将流水线从持续集成升级为**集成**加**交付**的流水线。为了说明，我们处于一个三阶段的工作流中：
 - en: '![Ever-Ready to Deploy Using Continuous Delivery](img/image_05_001.jpg)'
+  id: totrans-3
   prefs: []
   type: TYPE_IMG
+  zh: '![随时准备通过持续交付进行部署](img/image_05_001.jpg)'
 - en: 'That is to say, following a successful Integration run, we trigger the Delivery
     stage that will do the following:'
+  id: totrans-4
   prefs: []
   type: TYPE_NORMAL
+  zh: 也就是说，在成功的集成运行之后，我们触发交付阶段，执行以下操作：
 - en: Launch a vanilla EC2 instance
+  id: totrans-5
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 启动一个普通的 EC2 实例
 - en: 'Apply configuration management to it:'
+  id: totrans-6
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 应用配置管理：
 - en: Install the `demo-app` RPM we produced
+  id: totrans-7
   prefs:
   - PREF_IND
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 安装我们生成的`demo-app` RPM
 - en: Install other required packages to turn it into a web server
+  id: totrans-8
   prefs:
   - PREF_IND
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 安装其他必要的软件包，将其转化为 web 服务器
 - en: Test the applied configuration (using **Serverspec**)
+  id: totrans-9
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 测试应用的配置（使用**Serverspec**）
 - en: Produce an AMI out of the configured instance (using **Packer**)
+  id: totrans-10
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 从配置好的实例生成 AMI（使用**Packer**）
 - en: Launch an EC2 instance from the produced AMI
+  id: totrans-11
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 从生成的 AMI 启动 EC2 实例
 - en: Run additional tests against the new EC2 instance
+  id: totrans-12
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 对新 EC2 实例运行额外的测试
 - en: This pipeline will ensure that the application RPM installs correctly, our configuration
     management gets applied as expected, and our new AMI artifact is fit for purpose.
     At the end we should be left with a sparkling, prebaked, production-ready AMI
     of a web server with our `demo-app` on it.
+  id: totrans-13
   prefs: []
   type: TYPE_NORMAL
+  zh: 该流水线将确保应用的 RPM 正确安装，配置管理按预期应用，我们的新 AMI 工件符合目标。最后，我们应该得到一个闪亮的、预先配置好的、生产就绪的 AMI，其中包含我们的`demo-app`
+    web 服务器。
 - en: To accomplish these tasks, we are going to introduce two new tools to the mix
     - Packer and Serverspec (more details as we go).
+  id: totrans-14
   prefs: []
   type: TYPE_NORMAL
+  zh: 为了完成这些任务，我们将引入两种新工具——Packer 和 Serverspec（详细信息将在后续章节介绍）。
 - en: We will be able to reuse a significant part of our work so far, given that we
     are building on top of it. As before, we will start by preparing our code, deploying
     it to AWS, and configuring our Jenkins Pipeline.
+  id: totrans-15
   prefs: []
   type: TYPE_NORMAL
+  zh: 由于我们是在此基础上构建的，我们将能够重用到目前为止的大部分工作。如同之前一样，我们将从准备代码、将其部署到 AWS 并配置 Jenkins Pipeline
+    开始。
 - en: Feel free to skip some of the following steps if you have kept the AWS environment
     from the previous chapter running. Although I think that it might be better to
     start from scratch to avoid any confusion.
+  id: totrans-16
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果你在上一章保持了 AWS 环境运行，可以跳过部分以下步骤。虽然我认为从头开始可能更好，以避免任何混淆。
 - en: Preparing Terraform templates
+  id: totrans-17
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 准备 Terraform 模板
 - en: In addition to the usual VPC, IGW, and subnet that we need for Jenkins, we are
     going to deploy NAT and ELB for our `demo-app` web server scenario.
+  id: totrans-18
   prefs: []
   type: TYPE_NORMAL
+  zh: 除了我们为 Jenkins 所需的常规 VPC、IGW 和子网外，我们还将为 `demo-app` web 服务器场景部署 NAT 和 ELB。
 - en: Resources
+  id: totrans-19
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 资源
 - en: Note
+  id: totrans-20
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 注意事项
 - en: Please refer to [https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_05_CodeFiles/Terraform/resources.tf](https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_05_CodeFiles/Terraform/resources.tf).
+  id: totrans-21
   prefs: []
   type: TYPE_NORMAL
+  zh: 请参考[https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_05_CodeFiles/Terraform/resources.tf](https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_05_CodeFiles/Terraform/resources.tf)。
 - en: 'We start with VPC, IGW, and NAT:'
+  id: totrans-22
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们从 VPC、IGW 和 NAT 开始：
 - en: '[PRE0]'
+  id: totrans-23
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE0]'
 - en: 'We add a `public` subnet for Jenkins and ELB, plus a `private` one to be used
     by the EC2 web server:'
+  id: totrans-24
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们为 Jenkins 和 ELB 添加一个`public`子网，并为 EC2 web 服务器添加一个`private`子网：
 - en: '[PRE1]'
+  id: totrans-25
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE1]'
 - en: 'Next is IAM. We need a role for Jenkins:'
+  id: totrans-26
   prefs: []
   type: TYPE_NORMAL
+  zh: 接下来是 IAM。我们需要为 Jenkins 创建一个角色：
 - en: '[PRE2]'
+  id: totrans-27
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE2]'
 - en: 'And another one for the `demo-app` web server:'
+  id: totrans-28
   prefs: []
   type: TYPE_NORMAL
+  zh: 另一个用于`demo-app` web 服务器的配置：
 - en: '[PRE3]'
+  id: totrans-29
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE3]'
 - en: 'They will be sharing a common policy, allowing them to access CodeCommit, where
     we keep our infrastructure and application code and S3, where we store our RPM
     artifacts:'
+  id: totrans-30
   prefs: []
   type: TYPE_NORMAL
+  zh: 它们将共享一个公共策略，允许它们访问 CodeCommit（我们将基础设施和应用代码保存在这里）和 S3（我们存储 RPM 工件的地方）：
 - en: '[PRE4]'
+  id: totrans-31
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE4]'
 - en: 'The newcomer, Packer, is going to require a separate policy to allow for the
     manipulation of EC2 resources. We are going to use it to start/stop/terminate
     instances and create AMIs:'
+  id: totrans-32
   prefs: []
   type: TYPE_NORMAL
+  zh: 新加入的 Packer 将需要一个单独的策略，以允许操作 EC2 资源。我们将使用它来启动/停止/终止实例并创建 AMI：
 - en: '[PRE5]'
+  id: totrans-33
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE5]'
 - en: The need to allow `PassRole` represents an IAM security feature which helps
     prevent users/services granting themselves more privileges than they are supposed
     to have (refer to: [https://blogs.aws.amazon.com/security/post/Tx3M0IFB5XBOCQX/Granting-Permission-to-Launch-EC2-Instances-with-IAM-Roles-PassRole-Permission](https://blogs.aws.amazon.com/security/post/Tx3M0IFB5XBOCQX/Granting-Permission-to-Launch-EC2-Instances-with-IAM-Roles-PassRole-Permission)).
+  id: totrans-34
   prefs: []
   type: TYPE_NORMAL
+  zh: 需要允许 `PassRole` 是一个 IAM 安全功能，有助于防止用户/服务授予自己超出应有权限的操作（参见：[https://blogs.aws.amazon.com/security/post/Tx3M0IFB5XBOCQX/Granting-Permission-to-Launch-EC2-Instances-with-IAM-Roles-PassRole-Permission](https://blogs.aws.amazon.com/security/post/Tx3M0IFB5XBOCQX/Granting-Permission-to-Launch-EC2-Instances-with-IAM-Roles-PassRole-Permission)）。
 - en: 'We are going to need a security group for ELB, accepting HTTP traffic from
     the World:'
+  id: totrans-35
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们需要为 ELB 创建一个安全组，接受来自全球的 HTTP 流量：
 - en: '[PRE6]'
+  id: totrans-36
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE6]'
 - en: 'Then, ELB itself:'
+  id: totrans-37
   prefs: []
   type: TYPE_NORMAL
+  zh: 然后是 ELB 本身：
 - en: '[PRE7]'
+  id: totrans-38
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE7]'
 - en: 'We create a security group for Jenkins permitting SSH and HTTP/S traffic from
     anywhere:'
+  id: totrans-39
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们为 Jenkins 创建了一个安全组，允许来自任何地方的 SSH 和 HTTP/S 流量：
 - en: '[PRE8]'
+  id: totrans-40
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE8]'
 - en: 'The next one is for the web server, accepting HTTP from ELB and SSH from Jenkins:'
+  id: totrans-41
   prefs: []
   type: TYPE_NORMAL
+  zh: 接下来的部分是针对 Web 服务器，接受来自 ELB 的 HTTP 请求以及来自 Jenkins 的 SSH 请求：
 - en: '[PRE9]'
+  id: totrans-42
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE9]'
 - en: 'To bootstrap the Jenkins node, we need the user-data we used in the past, with
     one important addition:'
+  id: totrans-43
   prefs: []
   type: TYPE_NORMAL
+  zh: 为了启动 Jenkins 节点，我们需要使用以前的用户数据，并做一个重要的修改：
 - en: '[PRE10]'
+  id: totrans-44
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE10]'
 - en: 'You will note that after we have installed SaltStack and put the masterless
     minion configuration in place, we also add a custom Grains file. The roles list
     that it holds will help us assign the Salt States later on (since we are now going
     to have two different types of hosts under configuration management: `jenkins`
     and our `demo-app` web server).'
+  id: totrans-45
   prefs: []
   type: TYPE_NORMAL
+  zh: 你会注意到，在我们安装 SaltStack 并配置好无主从节点（masterless minion）后，我们还添加了一个自定义的 Grains 文件。它包含的角色列表将帮助我们稍后分配
+    Salt States（因为我们现在将有两种不同类型的主机在配置管理下：`jenkins` 和我们的 `demo-app` Web 服务器）。
 - en: Variables
+  id: totrans-46
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 变量
 - en: Note
+  id: totrans-47
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 注意
 - en: Please refer to [https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_05_CodeFiles/Terraform/variables.tf](https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_05_CodeFiles/Terraform/variables.tf).
+  id: totrans-48
   prefs: []
   type: TYPE_NORMAL
+  zh: 请参考 [https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_05_CodeFiles/Terraform/variables.tf](https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_05_CodeFiles/Terraform/variables.tf)。
 - en: No change from [Chapter 4](ch04.html "Chapter 4. Build, Test, and Release Faster
     with Continuous Integration"), *Build, Test, and Release Faster with Continuous
     Integration*, we set just a few VPC- and EC2 (Jenkins)-related variables.
+  id: totrans-49
   prefs: []
   type: TYPE_NORMAL
+  zh: 与 [第 4 章](ch04.html "第 4 章。通过持续集成加速构建、测试和发布") 相同，*通过持续集成加速构建、测试和发布*，我们只设置了几个与
+    VPC 和 EC2（Jenkins）相关的变量。
 - en: Variables (values)
+  id: totrans-50
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 变量（值）
 - en: Note
+  id: totrans-51
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 注意
 - en: Please refer to [https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_05_CodeFiles/Terraform/terraform.tfvars](https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_05_CodeFiles/Terraform/terraform.tfvars).
+  id: totrans-52
   prefs: []
   type: TYPE_NORMAL
+  zh: 请参考 [https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_05_CodeFiles/Terraform/terraform.tfvars](https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_05_CodeFiles/Terraform/terraform.tfvars)。
 - en: Same as our previous deployment, we specify the values for the VPC and Jenkins
     variables.
+  id: totrans-53
   prefs: []
   type: TYPE_NORMAL
+  zh: 和我们之前的部署一样，我们指定了 VPC 和 Jenkins 变量的值。
 - en: Outputs
+  id: totrans-54
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 输出
 - en: Note
+  id: totrans-55
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 注意
 - en: Please refer to [https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_05_CodeFiles/Terraform/outputs.tf](https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_05_CodeFiles/Terraform/outputs.tf).
+  id: totrans-56
   prefs: []
   type: TYPE_NORMAL
+  zh: 请参考 [https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_05_CodeFiles/Terraform/outputs.tf](https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_05_CodeFiles/Terraform/outputs.tf)。
 - en: 'Some new `outputs` reflect the additional `resources`. The ELB endpoint and
     the ID of our Private subnet and the `demo-app` security group:'
+  id: totrans-57
   prefs: []
   type: TYPE_NORMAL
+  zh: 一些新的 `outputs` 反映了额外的 `resources`。ELB 端点和我们私有子网的 ID 以及 `demo-app` 安全组：
 - en: '[PRE11]'
+  id: totrans-58
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE11]'
 - en: This is certainly not an exhaustive list, and if we need more information later,
     we can always retrieve a detailed description of our deployed infrastructure via
     the `terraform show` command.
+  id: totrans-59
   prefs: []
   type: TYPE_NORMAL
+  zh: 这当然不是一个详尽无遗的列表，如果以后需要更多的信息，我们可以随时通过 `terraform show` 命令检索到我们部署的基础设施的详细描述。
 - en: Prepareing Salt code
+  id: totrans-60
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 准备 Salt 代码
 - en: 'We will be using SaltStack to apply configuration management on both our Jenkins
     and `demo-app` web server nodes. We will be using Grains to define which States/Pillars
     apply to which host. Let us have a look at the code:'
+  id: totrans-61
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们将使用 SaltStack 在 Jenkins 和 `demo-app` Web 服务器节点上应用配置管理。我们将使用 Grains 来定义哪些 States/Pillars
+    应用于哪些主机。让我们来看看代码：
 - en: States
+  id: totrans-62
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 状态
 - en: Note
+  id: totrans-63
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 注意
 - en: Please refer to [https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/tree/master/5585_05_CodeFiles/CodeCommit/salt/states](https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/tree/master/5585_05_CodeFiles/CodeCommit/salt/states).
+  id: totrans-64
   prefs: []
   type: TYPE_NORMAL
+  zh: 请参考 [https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/tree/master/5585_05_CodeFiles/CodeCommit/salt/states](https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/tree/master/5585_05_CodeFiles/CodeCommit/salt/states)。
 - en: top.sls
+  id: totrans-65
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: top.sls
 - en: 'The `top` file shows us that some states are shared between all hosts/roles
     while others are assigned based on the role:'
+  id: totrans-66
   prefs: []
   type: TYPE_NORMAL
+  zh: '`top` 文件告诉我们，某些状态是所有主机/角色之间共享的，而其他状态则根据角色分配：'
 - en: '[PRE12]'
+  id: totrans-67
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE12]'
 - en: You are already familiar with the users and the `yum-s3` States. Now this is
     a good time to add an account and an SSH key for yourself.
+  id: totrans-68
   prefs: []
   type: TYPE_NORMAL
+  zh: 你已经熟悉了用户和 `yum-s3` States。现在是时候为自己添加一个帐户和 SSH 密钥了。
 - en: jenkins
+  id: totrans-69
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: jenkins
 - en: 'We install the service as before plus a couple of extra tools:'
+  id: totrans-70
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们安装与之前相同的服务，并增加了一些额外的工具：
 - en: '[PRE13]'
+  id: totrans-71
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE13]'
 - en: We will be using `jq` to parse JSON output and `ab` from the `httpd-tools` package
     for basic HTTP load testing.
+  id: totrans-72
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们将使用 `jq` 来解析 JSON 输出，并使用来自 `httpd-tools` 包的 `ab` 进行基本的 HTTP 负载测试。
 - en: nginx
+  id: totrans-73
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: nginx
 - en: 'This time we split the NGINX State into three parts:'
+  id: totrans-74
   prefs: []
   type: TYPE_NORMAL
+  zh: 这一次我们将 NGINX 状态分成三部分：
 - en: '**init.sls**'
+  id: totrans-75
   prefs: []
   type: TYPE_NORMAL
+  zh: '**init.sls**'
 - en: 'This installs the main package and sets up the service daemon:'
+  id: totrans-76
   prefs: []
   type: TYPE_NORMAL
+  zh: 这将安装主要的包并设置服务守护进程：
 - en: '[PRE14]'
+  id: totrans-77
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE14]'
 - en: '**jenkins.sls**'
+  id: totrans-78
   prefs: []
   type: TYPE_NORMAL
+  zh: '**jenkins.sls**'
 - en: 'This deploys the NGINX configuration and related file needed for the Jenkins
     service:'
+  id: totrans-79
   prefs: []
   type: TYPE_NORMAL
+  zh: 这将部署 NGINX 配置和为 Jenkins 服务所需的相关文件：
 - en: '[PRE15]'
+  id: totrans-80
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE15]'
 - en: '**demo-app.sls**'
+  id: totrans-81
   prefs: []
   type: TYPE_NORMAL
+  zh: '**demo-app.sls**'
 - en: 'This deploys the NGINX configuration and related file needed for the `demo-app`
     web server:'
+  id: totrans-82
   prefs: []
   type: TYPE_NORMAL
+  zh: 这将部署 NGINX 配置和为 `demo-app` Web 服务器所需的相关文件：
 - en: '[PRE16]'
+  id: totrans-83
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE16]'
 - en: 'In both cases, we include `init.sls` also known as NGINX, which provides shared
     functionality, Docker remains the same, whereas Packer is a new addition which
     we will get to play with shortly:'
+  id: totrans-84
   prefs: []
   type: TYPE_NORMAL
+  zh: 在这两种情况下，我们都包含了 `init.sls`，也就是 NGINX，它提供了共享功能，Docker 保持不变，而 Packer 是一个新的新增功能，我们很快就可以开始使用：
 - en: '[PRE17]'
+  id: totrans-85
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE17]'
 - en: The archive module conveniently downloads and extracts the Packer zip file for
     us. After that we ensure that the binary is executable with `cmd.wait`, which
     gets triggered on package change (that is watch archive).
+  id: totrans-86
   prefs: []
   type: TYPE_NORMAL
+  zh: archive 模块方便地为我们下载并解压了 Packer 的 zip 文件。之后，我们通过 `cmd.wait` 确保二进制文件是可执行的，`cmd.wait`
+    在包更改时触发（即监视 archive）。
 - en: '**php-fpm**'
+  id: totrans-87
   prefs: []
   type: TYPE_NORMAL
+  zh: '**php-fpm**'
 - en: 'We need PHP in order to be able to serve our PHP `application` (`demo-app)`:'
+  id: totrans-88
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们需要 PHP 才能提供我们的 PHP `application`（`demo-app`）：
 - en: '[PRE18]'
+  id: totrans-89
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE18]'
 - en: 'And finally, the `demo-app` State, which installs a selected version the application
     `rpm`. We will discuss how we populate `/tmp/APP_VERSION` a bit later:'
+  id: totrans-90
   prefs: []
   type: TYPE_NORMAL
+  zh: 最后是 `demo-app` 状态，它安装了一个选定版本的应用程序 `rpm`。我们稍后会讨论如何填充 `/tmp/APP_VERSION`：
 - en: '[PRE19]'
+  id: totrans-91
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE19]'
 - en: Pillars
+  id: totrans-92
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: Pillars
 - en: Note
+  id: totrans-93
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 注意
 - en: Please refer to [https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/tree/master/5585_05_CodeFiles/CodeCommit/salt/pillars](https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/tree/master/5585_05_CodeFiles/CodeCommit/salt/pillars).
+  id: totrans-94
   prefs: []
   type: TYPE_NORMAL
+  zh: 请参考 [https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/tree/master/5585_05_CodeFiles/CodeCommit/salt/pillars](https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/tree/master/5585_05_CodeFiles/CodeCommit/salt/pillars)。
 - en: We will reuse the `nginx` and `users` Pillars from the previous chapter.
+  id: totrans-95
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们将重用上一章中的 `nginx` 和 `users` Pillars。
 - en: Minion configuration
+  id: totrans-96
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: Minion 配置
 - en: Note
+  id: totrans-97
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 注意
 - en: Please refer to [https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/tree/master/5585_05_CodeFiles/CodeCommit/salt/minion.d](https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/tree/master/5585_05_CodeFiles/CodeCommit/salt/minion.d).
+  id: totrans-98
   prefs: []
   type: TYPE_NORMAL
+  zh: 请参考 [https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/tree/master/5585_05_CodeFiles/CodeCommit/salt/minion.d](https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/tree/master/5585_05_CodeFiles/CodeCommit/salt/minion.d)。
 - en: While `masterless.conf` remains the same as before, we are extending the `minion`
     configuration with a custom role Grain, which we set via UserData for Jenkins
     and a config file for the `demo-app` web server (discussed later in the chapter).
+  id: totrans-99
   prefs: []
   type: TYPE_NORMAL
+  zh: 虽然 `masterless.conf` 保持不变，但我们正在通过 UserData 为 Jenkins 设置一个自定义角色的 Grain，并通过配置文件为
+    `demo-app` Web 服务器设置（稍后在章节中讨论）。
 - en: Preparing Jenkins code
+  id: totrans-100
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 准备 Jenkins 代码
 - en: Before we proceed with Jenkins, allow me to introduce the two new helpers –
     Packer and Serverspec.
+  id: totrans-101
   prefs: []
   type: TYPE_NORMAL
+  zh: 在我们继续进行 Jenkins 配置之前，允许我介绍两个新的助手——Packer 和 Serverspec。
 - en: Packer
+  id: totrans-102
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: Packer
 - en: Note
+  id: totrans-103
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 注意
 - en: Please refer to [https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/tree/master/5585_05_CodeFiles/CodeCommit/demo-app-cdelivery/packer](https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/tree/master/5585_05_CodeFiles/CodeCommit/demo-app-cdelivery/packer).
+  id: totrans-104
   prefs: []
   type: TYPE_NORMAL
+  zh: 请参考 [https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/tree/master/5585_05_CodeFiles/CodeCommit/demo-app-cdelivery/packer](https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/tree/master/5585_05_CodeFiles/CodeCommit/demo-app-cdelivery/packer)。
 - en: 'As described:'
+  id: totrans-105
   prefs: []
   type: TYPE_NORMAL
+  zh: 如所描述：
 - en: '|   | *"Packer is a tool for creating machine and container images for multiple
     platforms from a single source configuration."* |   |'
+  id: totrans-106
   prefs: []
   type: TYPE_TB
+  zh: '|   | *“Packer 是一个用于从单一源配置创建多个平台的机器和容器镜像的工具。”* |   |'
 - en: '|   | --*https://www.packer.io* |'
+  id: totrans-107
   prefs: []
   type: TYPE_TB
+  zh: '|   | --*https://www.packer.io* |'
 - en: Essentially, Packer is going to, well, pack things for us. We will feed it a
     template, based on which it will launch an EC2 instance, perform requested tasks
     (over SSH), then create an AMI from it. Packer can talk to various platforms (AWS,
     GCE, OpenStack, and so on) to provision resources via local shell, remote (SSH),
     Salt, Ansible, Chef, and others. As a HashiCorp product, it does not come as a
     surprise that Packer uses a templating system very similar to Terraform's.
+  id: totrans-108
   prefs: []
   type: TYPE_NORMAL
+  zh: 本质上，Packer 将为我们“打包”内容。我们将向它提供一个模板，基于该模板，它将启动一个 EC2 实例，执行请求的任务（通过 SSH），然后从中创建一个
+    AMI。Packer 可以与多个平台（如 AWS、GCE、OpenStack 等）进行交互，通过本地 shell、远程（SSH）、Salt、Ansible、Chef
+    等工具来配置资源。作为 HashiCorp 的产品，Packer 使用的模板系统与 Terraform 类似，这并不令人惊讶。
 - en: demo-app.json
+  id: totrans-109
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: demo-app.json
 - en: 'Here, we define what and how it should be provisioned. At the top, we set our
     `variables`:'
+  id: totrans-110
   prefs: []
   type: TYPE_NORMAL
+  zh: 在这里，我们定义了要配置的内容及其配置方式。首先，我们设置了我们的 `variables`：
 - en: '[PRE20]'
+  id: totrans-111
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE20]'
 - en: 'We have exported the actual values to a `variables` file (see later). Setting
     a value to null here, makes it required. We could also fix values here or make
     use of environment variables (refer to [https://www.packer.io/docs/templates/user-variables.html](https://www.packer.io/docs/templates/user-variables.html)).
     Once defined, you can refer to variables with this syntax: ``{{user `srcAmiId`}}``.'
+  id: totrans-112
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们已经将实际的值导出到一个 `variables` 文件中（稍后会提到）。在此将某个值设置为 null，将使其变为必填项。我们还可以在此处固定值或使用环境变量（参考
+    [https://www.packer.io/docs/templates/user-variables.html](https://www.packer.io/docs/templates/user-variables.html)）。定义后，你可以通过以下语法引用变量：``{{user
+    `srcAmiId`}}``。
 - en: 'The next section lists the `builders`, in our case, AWS EC2:'
+  id: totrans-113
   prefs: []
   type: TYPE_NORMAL
+  zh: 接下来的部分列出了 `builders`，在我们的情况下是 AWS EC2：
 - en: '[PRE21]'
+  id: totrans-114
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE21]'
 - en: 'We are asking for an EBS-backed nano instance in the US-East-1 region. It is
     to be bootstrapped via UserData (see later in the text) and tagged as `"CreatedBy":
     "Jenkins"`.'
+  id: totrans-115
   prefs: []
   type: TYPE_NORMAL
+  zh: '我们要求在 US-East-1 区域创建一个基于 EBS 的 nano 实例。该实例将通过 UserData 引导（稍后在文中介绍），并标记为 `"CreatedBy":
+    "Jenkins"`。'
 - en: 'Naturally, after launching the instance, we would like to provision it:'
+  id: totrans-116
   prefs: []
   type: TYPE_NORMAL
+  zh: 自然地，在启动实例后，我们希望对其进行配置：
 - en: '[PRE22]'
+  id: totrans-117
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE22]'
 - en: Here, our first `provisioners` is a shell command to be executed over SSH by
     Packer (refer to [https://www.packer.io/docs/provisioners/shell.html](https://www.packer.io/docs/provisioners/shell.html)).
     It pauses for 30 seconds to allow the node to complete its boot process, then
     creates the `APP_VERSION` file needed by the Salt `php-fpm` State.
+  id: totrans-118
   prefs: []
   type: TYPE_NORMAL
+  zh: 在这里，我们的第一个 `provisioners` 是一个通过 SSH 由 Packer 执行的 shell 命令（参考 [https://www.packer.io/docs/provisioners/shell.html](https://www.packer.io/docs/provisioners/shell.html)）。它会暂停
+    30 秒，以便节点完成启动过程，然后创建 Salt `php-fpm` State 所需的 `APP_VERSION` 文件。
 - en: 'Next, we run SaltStack:'
+  id: totrans-119
   prefs: []
   type: TYPE_NORMAL
+  zh: 接下来，我们运行 SaltStack：
 - en: '[PRE23]'
+  id: totrans-120
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE23]'
 - en: 'Packer already knows how to run Salt via the salt-masterless `provisioner`.
     It only needs a source of States and Pillars (refer to: [https://www.packer.io/docs/provisioners/salt-masterless.html](https://www.packer.io/docs/provisioners/salt-masterless.html)).
     We define a relative path of `salt/`, which is part of a checked out Git repository
     (see `demo-app-cdelivery` here). We are opting to install Salt via UserData, hence
     `skip_bootstrap: true`.'
+  id: totrans-121
   prefs: []
   type: TYPE_NORMAL
+  zh: 'Packer 已经知道如何通过 salt-masterless `provisioner` 运行 Salt。它只需要 States 和 Pillars
+    的来源（参考： [https://www.packer.io/docs/provisioners/salt-masterless.html](https://www.packer.io/docs/provisioners/salt-masterless.html)）。我们定义了
+    `salt/` 的相对路径，该路径是一个已检出的 Git 仓库的一部分（见 `demo-app-cdelivery`）。我们选择通过 UserData 安装
+    Salt，因此设置了 `skip_bootstrap: true`。'
 - en: 'We will get to Serverspec in a moment, but here is how we run it:'
+  id: totrans-122
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们稍后会介绍 Serverspec，但这就是我们如何运行它的方式：
 - en: '[PRE24]'
+  id: totrans-123
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE24]'
 - en: The file `provisioners` is used to transfer data between the remote instance
     and Packer (refer to [https://www.packer.io/docs/provisioners/file.html](https://www.packer.io/docs/provisioners/file.html)).
     We push the local `"serverspec/"` folder containing our Serverspec tests to `"/tmp"`
     on the remote side. Then, run a few shell commands to install the Serverspec ruby
     gem and run the tests.
+  id: totrans-124
   prefs: []
   type: TYPE_NORMAL
+  zh: '`provisioners` 文件用于在远程实例和 Packer 之间传输数据（参考 [https://www.packer.io/docs/provisioners/file.html](https://www.packer.io/docs/provisioners/file.html)）。我们将本地的
+    `"serverspec/"` 文件夹（其中包含我们的 Serverspec 测试）推送到远程的`"/tmp"`目录。然后，运行一些 shell 命令来安装
+    Serverspec Ruby gem 并执行测试。'
 - en: demo-app_vars.json
+  id: totrans-125
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: demo-app_vars.json
 - en: 'The values for the variables we defined earlier (alternatively, you could set
     these as a list of `-var ''key=value''` cmd line arguments):'
+  id: totrans-126
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们之前定义的变量值（另外，你也可以将其设置为一组`-var 'key=value'`命令行参数）：
 - en: '[PRE25]'
+  id: totrans-127
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE25]'
 - en: demo-app_userdata.sh
+  id: totrans-128
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: demo-app_userdata.sh
 - en: 'The EC2 UserData to bootstrap our test instance:'
+  id: totrans-129
   prefs: []
   type: TYPE_NORMAL
+  zh: 用于引导测试实例的 EC2 UserData：
 - en: '[PRE26]'
+  id: totrans-130
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE26]'
 - en: Much like the one we use for Jenkins. It gets SaltStack installed and puts the
     roles Grain in place.
+  id: totrans-131
   prefs: []
   type: TYPE_NORMAL
+  zh: 与我们为 Jenkins 使用的类似。它安装了 SaltStack 并设置了角色 Grain。
 - en: Serverspec
+  id: totrans-132
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: Serverspec
 - en: Note
+  id: totrans-133
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 注意
 - en: Please refer to [https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/tree/master/5585_05_CodeFiles/CodeCommit/demo-app-cdelivery/serverspec](https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/tree/master/5585_05_CodeFiles/CodeCommit/demo-app-cdelivery/serverspec).
+  id: totrans-134
   prefs: []
   type: TYPE_NORMAL
+  zh: 请参考 [https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/tree/master/5585_05_CodeFiles/CodeCommit/demo-app-cdelivery/serverspec](https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/tree/master/5585_05_CodeFiles/CodeCommit/demo-app-cdelivery/serverspec)。
 - en: 'Straight out of the front page:'
+  id: totrans-135
   prefs: []
   type: TYPE_NORMAL
+  zh: 直接从首页开始：
 - en: '|   | *"RSpec tests for your servers configured by CFEngine, Puppet, Ansible,
     Itamae or anything else. With Serverspec, you can write RSpec tests for checking
     your servers are configured correctly. Serverspec tests your servers'' actual
@@ -526,11 +816,17 @@
     use any configuration management tools, Puppet, Ansible, CFEngine, Itamae and
     so on. But the true aim of Serverspec is to help refactoring infrastructure code."*
     |   |'
+  id: totrans-136
   prefs: []
   type: TYPE_TB
+  zh: '|   | *“适用于通过 CFEngine、Puppet、Ansible、Itamae 或其他任何方式配置的服务器的 RSpec 测试。通过 Serverspec，您可以编写
+    RSpec 测试来检查您的服务器是否正确配置。Serverspec 通过本地执行命令、通过 SSH、WinRM、Docker API 等方式测试服务器的实际状态。所以您无需在服务器上安装任何代理软件，并且可以使用任何配置管理工具，Puppet、Ansible、CFEngine、Itamae
+    等等。但 Serverspec 的真正目标是帮助重构基础设施代码。”* |   |'
 - en: '|   | --*http://serverspec.org* |'
+  id: totrans-137
   prefs: []
   type: TYPE_TB
+  zh: '|   | --*http://serverspec.org* |'
 - en: We are going to use Serverspec to assert the final state of the EC2 instance
     after all other configuration tasks have been completed. It should help verify
     that any nonconfiguration management changes have taken effect (for example, shell
@@ -539,409 +835,619 @@
     and some will rightly question whether it is needed in addition to a SaltStack
     run, so it remains a personal preference. I see it as a second layer of verification
     or a safety net.
+  id: totrans-138
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们将使用 Serverspec 来验证在完成所有其他配置任务后 EC2 实例的最终状态。这有助于验证任何非配置管理的更改是否生效（例如，shell 命令），并确保配置管理已正确应用（例如，状态中没有竞争条件/重叠/冲突）。这确实会引入一些额外开销，有些人可能会质疑除了
+    SaltStack 执行外是否还需要它，因此这仍然是个人偏好。我将其视为第二层验证或安全网。
 - en: 'The content under the `serverspec/` folder has been created by running `serverspec-init`
     (refer to [http://serverspec.org](http://serverspec.org)), selecting UNIX and
     then SSH. We replace the sample `spec.rb` file with our own:'
+  id: totrans-139
   prefs: []
   type: TYPE_NORMAL
+  zh: 在 `serverspec/` 文件夹下的内容是通过运行 `serverspec-init` 创建的（请参考 [http://serverspec.org](http://serverspec.org)），选择
+    UNIX，然后选择 SSH。我们将示例的 `spec.rb` 文件替换为自己的：
 - en: spec/localhost/demo-app_spec.rb
+  id: totrans-140
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: spec/localhost/demo-app_spec.rb
 - en: '[PRE27]'
+  id: totrans-141
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE27]'
 - en: Serverspec performs tests on supported resource types (refer to [http://serverspec.org/resource_types.html](http://serverspec.org/resource_types.html)).
+  id: totrans-142
   prefs: []
   type: TYPE_NORMAL
+  zh: Serverspec 对支持的资源类型执行测试（请参考 [http://serverspec.org/resource_types.html](http://serverspec.org/resource_types.html)）。
 - en: 'In the preceding brief example we assert that:'
+  id: totrans-143
   prefs: []
   type: TYPE_NORMAL
+  zh: 在前面的简短示例中，我们断言：
 - en: A specific version of our `demo-app` package has been installed
+  id: totrans-144
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 我们的 `demo-app` 包的特定版本已被安装
 - en: PHP-FPM and NGINX are running and enabled on boot
+  id: totrans-145
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: PHP-FPM 和 NGINX 正在运行并在启动时启用
 - en: The SSH `authorized_keys` file for a given user has the expected contents
+  id: totrans-146
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 给定用户的 SSH `authorized_keys` 文件包含预期内容
 - en: 'Our Serverspec tests can be run from the containing folder like so:'
+  id: totrans-147
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们可以从包含文件夹运行 Serverspec 测试，方法如下：
 - en: '[PRE28]'
+  id: totrans-148
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE28]'
 - en: It will parse any files it finds ending in `_spec.rb`. We use `sudo` only because,
     in this case, we are trying to read a private file (`authorized_keys`).
+  id: totrans-149
   prefs: []
   type: TYPE_NORMAL
+  zh: 它将解析所有以 `_spec.rb` 结尾的文件。我们仅使用 `sudo`，因为在这种情况下，我们尝试读取一个私密文件（`authorized_keys`）。
 - en: And back to Jenkins. We are already familiar with the concept of a `Jenkinsfile`
     (as used by our Integration job). In this example, we will be adding a second
     (Delivery) pipeline using the same approach.
+  id: totrans-150
   prefs: []
   type: TYPE_NORMAL
+  zh: 回到 Jenkins。我们已经熟悉 `Jenkinsfile` 的概念（如我们的集成作业中使用的）。在这个示例中，我们将使用相同的方法添加第二个（交付）管道。
 - en: Let us examine both pipeline jobs.
+  id: totrans-151
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们来检查这两个管道作业。
 - en: demo-app
+  id: totrans-152
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: demo-app
 - en: Note
+  id: totrans-153
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 注意
 - en: Please refer to [https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_05_CodeFiles/CodeCommit/demo-app/Jenkinsfile](https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_05_CodeFiles/CodeCommit/demo-app/Jenkinsfile).
+  id: totrans-154
   prefs: []
   type: TYPE_NORMAL
+  zh: 请参考[https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_05_CodeFiles/CodeCommit/demo-app/Jenkinsfile](https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_05_CodeFiles/CodeCommit/demo-app/Jenkinsfile)。
 - en: 'This is our old Integration job that downloads the application code, runs tests
     against it, produces an RPM package and uploads the package to a YUM repository.
     We are going to add one more stage to this process:'
+  id: totrans-155
   prefs: []
   type: TYPE_NORMAL
+  zh: 这是我们旧的集成作业，下载应用代码，针对它运行测试，生成RPM包并将包上传到YUM仓库。我们将为这个过程添加一个新阶段：
 - en: '[PRE29]'
+  id: totrans-156
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE29]'
 - en: This final stage triggers our next job that is the Delivery pipeline and passes
     an `APP_VERSION` parameter to it.
+  id: totrans-157
   prefs: []
   type: TYPE_NORMAL
+  zh: 最后阶段触发了我们的下一个作业，即Delivery流水线，并将`APP_VERSION`参数传递给它。
 - en: The value of this parameter is the `gitHash` which we have been using so far
     as a version string for our `demo-app RPM package`.
+  id: totrans-158
   prefs: []
   type: TYPE_NORMAL
+  zh: 该参数的值是`gitHash`，我们一直用它作为`demo-app RPM包`的版本字符串。
 - en: The `-1` you see appended to the `gitHash` represents the rpm's minor version
     number which you can safely ignore at this time.
+  id: totrans-159
   prefs: []
   type: TYPE_NORMAL
+  zh: 你看到的`gitHash`后面附加的`-1`表示rpm的次版本号，你现在可以放心忽略它。
 - en: Setting `wait` to `false` means that we don't want to keep the current job running,
     waiting for the subsequently triggered one to complete.
+  id: totrans-160
   prefs: []
   type: TYPE_NORMAL
+  zh: 将`wait`设置为`false`意味着我们不希望保持当前作业运行，等待随后触发的作业完成。
 - en: demo-app-cdelivery
+  id: totrans-161
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: demo-app-cdelivery
 - en: Note
+  id: totrans-162
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 注意
 - en: Please refer to [https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_05_CodeFiles/CodeCommit/demo-app-cdelivery/Jenkinsfile](https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_05_CodeFiles/CodeCommit/demo-app-cdelivery/Jenkinsfile).
+  id: totrans-163
   prefs: []
   type: TYPE_NORMAL
+  zh: 请参考[https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_05_CodeFiles/CodeCommit/demo-app-cdelivery/Jenkinsfile](https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_05_CodeFiles/CodeCommit/demo-app-cdelivery/Jenkinsfile)。
 - en: Now the fun part. The Delivery job has been passed an `APP_VERSION` and is ready
     to start, let us follow the process described in the `Jenkinsfile`.
+  id: totrans-164
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在进入有趣的部分。Delivery作业已传递`APP_VERSION`并准备启动，让我们按照`Jenkinsfile`中描述的流程进行操作。
 - en: 'We start by cleaning up our workspace, checking out the `demo-app-cdelivery`
     repository, then adding the SaltStack code on top of it. We need both codebases
     in order to launch an instance and configure it to be a web server:'
+  id: totrans-165
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们从清理工作区开始，检出`demo-app-cdelivery`仓库，然后在其上添加SaltStack代码。我们需要这两个代码库，以便启动一个实例并配置它作为Web服务器：
 - en: '[PRE30]'
+  id: totrans-166
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE30]'
 - en: 'After this, we are ready to run Packer:'
+  id: totrans-167
   prefs: []
   type: TYPE_NORMAL
+  zh: 之后，我们准备运行Packer：
 - en: '[PRE31]'
+  id: totrans-168
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE31]'
 - en: First, we validate our template and then execute, requesting a machine-readable
     output. Packer is going to spin up an instance, connect over SSH to it, apply
     all relevant Salt States, run Serverspec tests, and produce an AMI of what is
     essentially a web server that has the `demo-app` and all its prerequisites installed.
+  id: totrans-169
   prefs: []
   type: TYPE_NORMAL
+  zh: 首先，我们验证模板，然后执行，要求输出机器可读的结果。Packer将启动一个实例，通过SSH连接，应用所有相关的Salt States，运行Serverspec测试，并生成一个AMI，这个AMI本质上是一个已经安装了`demo-app`及其所有前置条件的Web服务器。
 - en: 'Then, we go ahead and launch a second EC2 instance; this time, form the AMI
     we just created:'
+  id: totrans-170
   prefs: []
   type: TYPE_NORMAL
+  zh: 然后，我们继续启动第二个EC2实例；这次使用我们刚刚创建的AMI：
 - en: '[PRE32]'
+  id: totrans-171
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE32]'
 - en: The variables seen at the top we get from Terraform (`terraform show`).
+  id: totrans-172
   prefs: []
   type: TYPE_NORMAL
+  zh: 顶部看到的变量是我们从Terraform获取的（`terraform show`）。
 - en: We use the `aws cli` to launch the instance inside the Private VPC subnet, attach
     the `demo-app` security group, the Terraform key, and `demo-app` instance profile
     to it. You will notice that we need not pass any EC2 credentials here as Jenkins
     is already authorized via the IAM role we assigned to it earlier.
+  id: totrans-173
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们使用`aws cli`在私有VPC子网内启动实例，附加`demo-app`安全组、Terraform密钥和`demo-app`实例配置文件。你会注意到，这里不需要传递任何EC2凭证，因为Jenkins已经通过我们之前分配给它的IAM角色获得授权。
 - en: Next, we retrieve the `instanceId` by parsing the `aws cli` JSON output with
     `jq` (refer to [https://stedolan.github.io/jq](https://stedolan.github.io/jq)).
+  id: totrans-174
   prefs: []
   type: TYPE_NORMAL
+  zh: 接下来，我们通过解析`aws cli`的JSON输出并使用`jq`来获取`instanceId`（参考[https://stedolan.github.io/jq](https://stedolan.github.io/jq)）。
 - en: 'After we have launched the instance, we set its tags, register it with ELB,
     and loop until its ELB status becomes `InService`:'
+  id: totrans-175
   prefs: []
   type: TYPE_NORMAL
+  zh: 在我们启动实例之后，我们为其设置标签，注册到ELB，并循环直到其ELB状态变为`InService`：
 - en: '[PRE33]'
+  id: totrans-176
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE33]'
 - en: 'Now that the node is ready to serve, we can launch our improvised Load Test
     using AB:'
+  id: totrans-177
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在节点已经准备好服务，我们可以使用AB工具启动我们即兴设计的负载测试：
 - en: '[PRE34]'
+  id: totrans-178
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE34]'
 - en: At the end of the AB test, the various reported metrics are compared with preset
     thresholds and logged.
+  id: totrans-179
   prefs: []
   type: TYPE_NORMAL
+  zh: 在AB测试结束时，各种报告的指标将与预设的阈值进行比较并记录。
 - en: 'The EC2 instance is no longer needed, so it can be terminated:'
+  id: totrans-180
   prefs: []
   type: TYPE_NORMAL
+  zh: 不再需要 EC2 实例，因此可以终止：
 - en: '[PRE35]'
+  id: totrans-181
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE35]'
 - en: 'In the final stage, the job''s exit code is determined by the AB test results:'
+  id: totrans-182
   prefs: []
   type: TYPE_NORMAL
+  zh: 在最后阶段，任务的退出代码由 AB 测试结果决定：
 - en: '[PRE36]'
+  id: totrans-183
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE36]'
 - en: Preparing CodeCommit repositories
+  id: totrans-184
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 准备 CodeCommit 仓库
 - en: 'Ideally, we would put all the preceding code under revision control, so let
     us create some repositories. We need an IAM user with enough privileges to do
     that:'
+  id: totrans-185
   prefs: []
   type: TYPE_NORMAL
+  zh: 理想情况下，我们会将所有前述代码放入版本控制中，因此我们需要创建一些仓库。我们需要一个具有足够权限的 IAM 用户来执行此操作：
 - en: Note
+  id: totrans-186
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 注意
 - en: Please refer to [https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_05_CodeFiles/CodeCommit/demo-app-cdelivery/Jenkinsfile](https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_05_CodeFiles/CodeCommit/demo-app-cdelivery/Jenkinsfile).
+  id: totrans-187
   prefs: []
   type: TYPE_NORMAL
+  zh: 请参阅 [https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_05_CodeFiles/CodeCommit/demo-app-cdelivery/Jenkinsfile](https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/blob/master/5585_05_CodeFiles/CodeCommit/demo-app-cdelivery/Jenkinsfile)。
 - en: '[PRE37]'
+  id: totrans-188
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE37]'
 - en: We create a `terraform` IAM user with the preceding policy that grants us privileges
     to carry out the CodeCommit tasks and also do the Terraform deployment later (remember
     to write down the API keys).
+  id: totrans-189
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们创建一个具有前述策略的 `terraform` IAM 用户，授予我们执行 CodeCommit 任务的权限，并且稍后也能进行 Terraform
+    部署（记得写下 API 密钥）。
 - en: 'Please refer to the previous chapter on how to export the API keys and create
     three CodeCommit repositories: `salt`, `demo-app`, and `demo-app-cdelivery`.'
+  id: totrans-190
   prefs: []
   type: TYPE_NORMAL
+  zh: 请参阅上一章了解如何导出 API 密钥并创建三个 CodeCommit 仓库：`salt`、`demo-app` 和 `demo-app-cdelivery`。
 - en: 'You will need to clone the repositories locally and populate each with the
     code we prepared earlier respectively (refer to: [https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/tree/master/5585_05_CodeFiles/CodeCommit](https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/tree/master/5585_05_CodeFiles/CodeCommit)).'
+  id: totrans-191
   prefs: []
   type: TYPE_NORMAL
+  zh: 你需要在本地克隆仓库，并分别用我们之前准备的代码填充每个仓库（参见：[https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/tree/master/5585_05_CodeFiles/CodeCommit](https://github.com/PacktPublishing/Implementing-DevOps-on-AWS/tree/master/5585_05_CodeFiles/CodeCommit)）。
 - en: Deploy Terraform templates
+  id: totrans-192
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 部署 Terraform 模板
 - en: Create a `terraform` EC2 key pair, then run terraform plan, terraform validate,
     and finally terraform apply inside the Terraform templates folder (if needed,
     please refer to the previous chapter for details on how to do all of this).
+  id: totrans-193
   prefs: []
   type: TYPE_NORMAL
+  zh: 创建一个 `terraform` EC2 密钥对，然后在 Terraform 模板文件夹中运行 terraform plan、terraform validate，最后运行
+    terraform apply（如果需要，请参考上一章了解如何执行这些操作）。
 - en: Initializing Jenkins
+  id: totrans-194
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 初始化 Jenkins
 - en: 'Once Terraform has finished the deployment, you will get the Jenkins EIP value
     in the outputs. Do a hostname lookup on it and load the resulting address in your
     browser. You should see the **Getting Started** page (screenshots and instructions
     in previous chapter):'
+  id: totrans-195
   prefs: []
   type: TYPE_NORMAL
+  zh: 一旦 Terraform 完成部署，你将获得 Jenkins EIP 值输出。对其进行主机名查找并在浏览器中加载得到的地址。你应该能看到**入门**页面（截图和说明见上一章）：
 - en: Unlock jenkins
+  id: totrans-196
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 解锁 Jenkins
 - en: Install suggested plugins
+  id: totrans-197
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 安装推荐的插件
 - en: Create an Admin user
+  id: totrans-198
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 创建管理员用户
 - en: Configuring Jenkins jobs
+  id: totrans-199
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 配置 Jenkins 任务
 - en: Prior to recreating the Continuous Integration pipeline job, we need a S3 bucket
     for our YUM repository. Create a bucket (unless you've kept the old one around),
     update the `demo-app/Jenkinsfile` script accordingly then commit and push Git
     changes upstream.
+  id: totrans-200
   prefs: []
   type: TYPE_NORMAL
+  zh: 在重新创建持续集成管道任务之前，我们需要一个用于 YUM 仓库的 S3 存储桶。创建一个存储桶（除非你保留了旧的存储桶），然后相应更新 `demo-app/Jenkinsfile`
+    脚本，提交并推送 Git 更改到上游。
 - en: demo-app pipeline
+  id: totrans-201
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: demo-app 管道
 - en: Refer to the *Setting up the pipeline* steps from the previous chapter to create
     the Continuous Integration job. Let us call it `demo-app` this time around. The
     script path remains the same ([https://git-codecommit.us-east-1.amazonaws.com/v1/repos/demo-app](https://git-codecommit.us-east-1.amazonaws.com/v1/repos/demo-app)).
+  id: totrans-202
   prefs: []
   type: TYPE_NORMAL
+  zh: 请参阅上一章的*设置管道*步骤，创建持续集成任务。这次我们称之为 `demo-app`。脚本路径保持不变（[https://git-codecommit.us-east-1.amazonaws.com/v1/repos/demo-app](https://git-codecommit.us-east-1.amazonaws.com/v1/repos/demo-app)）。
 - en: 'You should now have this:'
+  id: totrans-203
   prefs: []
   type: TYPE_NORMAL
+  zh: 你现在应该有这个：
 - en: '![demo-app pipeline](img/image_05_002.jpg)'
+  id: totrans-204
   prefs: []
   type: TYPE_IMG
+  zh: '![demo-app 管道](img/image_05_002.jpg)'
 - en: 'The pipeline is going to fail as we do not have our YUM repository configured
     yet:'
+  id: totrans-205
   prefs: []
   type: TYPE_NORMAL
+  zh: 由于我们还没有配置 YUM 仓库，管道将会失败：
 - en: '![demo-app pipeline](img/image_05_003.jpg)'
+  id: totrans-206
   prefs: []
   type: TYPE_IMG
+  zh: '![demo-app 管道](img/image_05_003.jpg)'
 - en: The repository contents have already been uploaded to S3 by this first job run.
     Now we need to update the `salt/states/yum-s3/files/s3.repo` file with the S3
     URL and set the repository to `enabled`. Commit and push the Salt changes to the
     Git repository, then pull and apply on the Jenkins node.
+  id: totrans-207
   prefs: []
   type: TYPE_NORMAL
+  zh: 第一个作业运行已经将代码库内容上传到S3。现在，我们需要更新`salt/states/yum-s3/files/s3.repo`文件，加入S3 URL，并将仓库设置为`enabled`。提交并推送Salt更改到Git仓库，然后在Jenkins节点上拉取并应用这些更改。
 - en: 'A subsequent pipeline run takes us a step further:'
+  id: totrans-208
   prefs: []
   type: TYPE_NORMAL
+  zh: 随后的管道运行让我们更进一步：
 - en: '![demo-app pipeline](img/image_05_004.jpg)'
+  id: totrans-209
   prefs: []
   type: TYPE_IMG
+  zh: '![demo-app pipeline](img/image_05_004.jpg)'
 - en: This time the failure is because our downstream job is not quite ready yet.
     Let us fix that next.
+  id: totrans-210
   prefs: []
   type: TYPE_NORMAL
+  zh: 这次的失败是因为我们的下游作业尚未准备好。我们接下来修复这个问题。
 - en: demo-app-cdelivery pipeline
+  id: totrans-211
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: demo-app-cdelivery管道
 - en: 'From the Jenkin''s dashboard, we select  **New Item**:'
+  id: totrans-212
   prefs: []
   type: TYPE_NORMAL
+  zh: 从Jenkins的仪表盘中，我们选择**新建项目**：
 - en: '![demo-app-cdelivery pipeline](img/image_05_005.jpg)'
+  id: totrans-213
   prefs: []
   type: TYPE_IMG
+  zh: '![demo-app-cdelivery pipeline](img/image_05_005.jpg)'
 - en: 'We shall call it `demo-app-cdelivery`:'
+  id: totrans-214
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们将其称为`demo-app-cdelivery`：
 - en: '![demo-app-cdelivery pipeline](img/image_05_006.jpg)'
+  id: totrans-215
   prefs: []
   type: TYPE_IMG
+  zh: '![demo-app-cdelivery pipeline](img/image_05_006.jpg)'
 - en: 'This job will be triggered by another one, so no need to poll SCM. Also, we
     have a parameter being passed to this pipeline:'
+  id: totrans-216
   prefs: []
   type: TYPE_NORMAL
+  zh: 这个作业将由另一个作业触发，因此无需轮询SCM。此外，我们将一个参数传递到这个管道中：
 - en: '![demo-app-cdelivery pipeline](img/image_05_007.jpg)'
+  id: totrans-217
   prefs: []
   type: TYPE_IMG
+  zh: '![demo-app-cdelivery pipeline](img/image_05_007.jpg)'
 - en: 'Finally, we set the location of the `Jenkinsfile` ([https://git-codecommit.us-east-1.amazonaws.com/v1/repos/demo-app-cdelivery](https://git-codecommit.us-east-1.amazonaws.com/v1/repos/demo-app-cdelivery)):'
+  id: totrans-218
   prefs: []
   type: TYPE_NORMAL
+  zh: 最后，我们设置了`Jenkinsfile`的位置（[https://git-codecommit.us-east-1.amazonaws.com/v1/repos/demo-app-cdelivery](https://git-codecommit.us-east-1.amazonaws.com/v1/repos/demo-app-cdelivery)）：
 - en: '![demo-app-cdelivery pipeline](img/image_05_008.jpg)'
+  id: totrans-219
   prefs: []
   type: TYPE_IMG
+  zh: '![demo-app-cdelivery pipeline](img/image_05_008.jpg)'
 - en: 'Do you remember the VPC details we specified in the Packer `variables` file
     and also the `Jenkinsfile` for this pipeline? We need to set those to match our
     current VPC:'
+  id: totrans-220
   prefs: []
   type: TYPE_NORMAL
+  zh: 你还记得我们在Packer的`variables`文件中指定的VPC详情，以及在这个管道中的`Jenkinsfile`吗？我们需要将它们设置为匹配当前的VPC：
 - en: Update the variables in `packer/demo-app_vars.json`
+  id: totrans-221
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 更新`packer/demo-app_vars.json`中的变量
 - en: '`srcAmiId` could be the latest AmazonLinux AMI'
+  id: totrans-222
   prefs:
   - PREF_IND
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '`srcAmiId`可以是最新的AmazonLinux AMI'
 - en: '`subnetId` is the ID of the Private subnet'
+  id: totrans-223
   prefs:
   - PREF_IND
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '`subnetId`是私有子网的ID'
 - en: '`vpcId`'
+  id: totrans-224
   prefs:
   - PREF_IND
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '`vpcId`'
 - en: 'Update `demo-app-cdelivery/Jenkinsfile`:'
+  id: totrans-225
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 更新`demo-app-cdelivery/Jenkinsfile`：
 - en: 'In the **Deploy AMI** stage:'
+  id: totrans-226
   prefs:
   - PREF_IND
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 在**部署AMI**阶段：
 - en: '`secGroup`is the ID of the `demo-app` security group'
+  id: totrans-227
   prefs:
   - PREF_IND
   - PREF_IND
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '`secGroup`是`demo-app`安全组的ID'
 - en: '`subnetId`is the ID of the Private VPC subnet as mentioned earlier'
+  id: totrans-228
   prefs:
   - PREF_IND
   - PREF_IND
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '`subnetId`是前面提到的私有VPC子网的ID'
 - en: In **Run AB test**
+  id: totrans-229
   prefs:
   - PREF_IND
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 在**运行AB测试**阶段
 - en: '`elbUri`is the endpoint address of the `demo-app-elb` ELB'
+  id: totrans-230
   prefs:
   - PREF_IND
   - PREF_IND
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '`elbUri`是`demo-app-elb` ELB的端点地址'
 - en: Commit and push your changes.
+  id: totrans-231
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 提交并推送你的更改。
 - en: 'Here, we are with our two pipelines ready for action:'
+  id: totrans-232
   prefs: []
   type: TYPE_NORMAL
+  zh: 在这里，我们准备好了两个管道，准备开始执行：
 - en: '![demo-app-cdelivery pipeline](img/image_05_009.jpg)'
+  id: totrans-233
   prefs: []
   type: TYPE_IMG
+  zh: '![demo-app-cdelivery pipeline](img/image_05_009.jpg)'
 - en: Let us trigger a `demo-app` run by changing the `$full_name` in `demo-app/src/index.php`.
     You should see it running after detecting the Git change. At the end of the run,
     it should trigger the downstream `demo-app-cdelivery` pipeline, and after another
     approximately10 minutes, there should be a brand new `demo-app AMI` waiting for
     you (check the AWS console).
+  id: totrans-234
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们通过更改`demo-app/src/index.php`中的`$full_name`来触发`demo-app`运行。你应该会在检测到Git更改后看到它运行。运行结束时，它应该会触发下游的`demo-app-cdelivery`管道，再过大约10分钟，你应该能看到一个全新的`demo-app
+    AMI`等待你（查看AWS控制台）。
 - en: Note
+  id: totrans-235
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 注意
 - en: Please remember to delete any AWS resources used in the mentioned examples (VPC,
     EC2, S3, IAM, CodeCommit, and so on) to avoid unnecessary charges.
+  id: totrans-236
   prefs: []
   type: TYPE_NORMAL
+  zh: 请记得删除示例中使用的任何AWS资源（VPC、EC2、S3、IAM、CodeCommit等），以避免不必要的费用。
 - en: Summary
+  id: totrans-237
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 概要
 - en: In this chapter, we extended our Jenkins pipeline to deploy and test our application
     artifact on an EC2 instance in a VPC environment. You learned how to use Packer
     to template the provisioning of instances as well as how to use Serverspec to
     apply extra verification of our infrastructure.
+  id: totrans-238
   prefs: []
   type: TYPE_NORMAL
+  zh: 在本章中，我们扩展了Jenkins管道，以便在VPC环境中的EC2实例上部署和测试我们的应用程序工件。你学会了如何使用Packer模板化实例的配置，并且如何使用Serverspec进行额外的基础设施验证。
 - en: In the next chapter, we are going to finalize our Jenkins pipeline setup by
     adding the Continuous Deployment element to it. We will examine ways to deploy
     AMIs created during the Delivery stage into a production environment.
+  id: totrans-239
   prefs: []
   type: TYPE_NORMAL
+  zh: 在下一章中，我们将通过添加持续部署元素来完成Jenkins管道的设置。我们将探讨如何将交付阶段创建的AMI部署到生产环境中。
