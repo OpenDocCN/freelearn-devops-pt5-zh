@@ -1,6 +1,6 @@
-# Github DevOps 加速指南
+# Dynamic365 应用开发指南
 
-> 原文：[`annas-archive.org/md5/677f27c30764b3701bc2b6cf6de3a30e`](https://annas-archive.org/md5/677f27c30764b3701bc2b6cf6de3a30e)
+> 原文：[`annas-archive.org/md5/0efaacf1c2685069338ee9023fc77627`](https://annas-archive.org/md5/0efaacf1c2685069338ee9023fc77627)
 > 
 > 译者：[飞龙](https://github.com/wizardforcel)
 > 

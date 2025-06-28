@@ -1,6 +1,6 @@
-# Github DevOps 加速指南
+# 微软 Azure 解决方案构建备考指南 70-53
 
-> 原文：[`annas-archive.org/md5/677f27c30764b3701bc2b6cf6de3a30e`](https://annas-archive.org/md5/677f27c30764b3701bc2b6cf6de3a30e)
+> 原文：[`annas-archive.org/md5/1015eaeaa85ca3a27c36ddb9ff0514d9`](https://annas-archive.org/md5/1015eaeaa85ca3a27c36ddb9ff0514d9)
 > 
 > 译者：[飞龙](https://github.com/wizardforcel)
 > 
