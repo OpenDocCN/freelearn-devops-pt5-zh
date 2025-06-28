@@ -1,735 +1,1085 @@
 - en: '19'
+  id: totrans-0
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: '19'
 - en: Monitoring and Troubleshooting an Application Running in Production
+  id: totrans-1
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 监控和排查在生产环境中运行的应用程序
 - en: In the previous chapter, we got an overview of the three most popular ways of
     running containerized applications in the cloud – AWS EKS, Azure AKS, and Google
     GKE. We then explored each of the hosted solutions and discussed their pros and
     cons.
+  id: totrans-2
   prefs: []
   type: TYPE_NORMAL
+  zh: 在上一章中，我们概览了在云中运行容器化应用程序的三种最流行方式——AWS EKS、Azure AKS 和 Google GKE。然后我们探索了每个托管解决方案，并讨论了它们的优缺点。
 - en: This chapter looks at different techniques used to instrument and monitor an
     individual service or a whole distributed application running on a Kubernetes
     cluster. You will be introduced to the concept of alerting based on key metrics.
     The chapter also shows how one can troubleshoot an application service that is
     running in production without altering the cluster or the cluster nodes on which
     the service is running.
+  id: totrans-3
   prefs: []
   type: TYPE_NORMAL
+  zh: 本章介绍了用于为在 Kubernetes 集群上运行的单个服务或整个分布式应用程序进行监控和添加监控的方法。你将学习基于关键指标进行警报的概念。本章还展示了如何在不改变集群或集群节点的情况下，排查生产环境中运行的应用服务问题。
 - en: 'Here is a list of topics we are going to discuss in this chapter:'
+  id: totrans-4
   prefs: []
   type: TYPE_NORMAL
+  zh: 以下是我们将在本章中讨论的主题：
 - en: Monitoring an individual service
+  id: totrans-5
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 监控单个服务
 - en: Using OpenTracing for distributed tracing
+  id: totrans-6
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 使用 OpenTracing 进行分布式追踪
 - en: Leveraging Prometheus and Grafana to monitor a distributed application
+  id: totrans-7
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 利用 Prometheus 和 Grafana 监控分布式应用程序
 - en: Defining alerts based on key metrics
+  id: totrans-8
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 基于关键指标定义警报
 - en: Troubleshooting a service running in production
+  id: totrans-9
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 排查在生产环境中运行的服务故障
 - en: 'After reading this chapter and following the exercises carefully, you will
     have acquired the following skills:'
+  id: totrans-10
   prefs: []
   type: TYPE_NORMAL
+  zh: 阅读本章并仔细完成练习后，你将掌握以下技能：
 - en: Instrumenting your services with OpenTracing
+  id: totrans-11
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 使用 OpenTracing 为你的服务添加监控
 - en: Configuring application-level monitoring for a service
+  id: totrans-12
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 配置应用程序级别的服务监控
 - en: Using Prometheus to collect and centrally aggregate relevant application metrics
+  id: totrans-13
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 使用 Prometheus 收集并集中聚合相关的应用程序指标
 - en: Using Grafana to monitor the application
+  id: totrans-14
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 使用 Grafana 监控应用程序
 - en: Defining and wiring alerts triggered based on rules defined for key metrics
+  id: totrans-15
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 定义并连接基于关键指标规则触发的警报
 - en: Troubleshooting a service running in production using a special tools container
+  id: totrans-16
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 使用特殊工具容器排查在生产环境中运行的服务故障
 - en: Without further ado, let’s dive into the chapter.
+  id: totrans-17
   prefs: []
   type: TYPE_NORMAL
+  zh: 不再多说，让我们直接进入本章内容。
 - en: Technical requirements
+  id: totrans-18
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 技术要求
 - en: We are going to use Docker Desktop and its single-node Kubernetes cluster in
     this chapter. Make sure you have Docker Desktop installed and properly configured
     as described in [*Chapter 2*](B19199_02.xhtml#_idTextAnchor027), *Setting Up a*
     *Working Environment*.
+  id: totrans-19
   prefs: []
   type: TYPE_NORMAL
+  zh: 在本章中，我们将使用 Docker Desktop 及其单节点 Kubernetes 集群。确保你已按照[*第二章*](B19199_02.xhtml#_idTextAnchor027)《设置工作环境》的说明正确安装并配置
+    Docker Desktop。
 - en: We’ll also use the files in the `~/The-Ultimate-Docker-Container-Book/sample-solutions/ch19`
     folder of our labs repository from GitHub, at [https://github.com/PacktPublishing/The-Ultimate-Docker-Container-Book/tree/main/sample-solutions/ch19](https://github.com/PacktPublishing/The-Ultimate-Docker-Container-Book/tree/main/sample-solutions/ch19).
+  id: totrans-20
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们还将使用来自 GitHub 实验室仓库中`~/The-Ultimate-Docker-Container-Book/sample-solutions/ch19`文件夹的文件，访问链接：[https://github.com/PacktPublishing/The-Ultimate-Docker-Container-Book/tree/main/sample-solutions/ch19](https://github.com/PacktPublishing/The-Ultimate-Docker-Container-Book/tree/main/sample-solutions/ch19)。
 - en: Monitoring an individual service
+  id: totrans-21
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 监控单个服务
 - en: Effective monitoring of distributed, mission-critical applications is crucial,
     akin to the instrumentation in a nuclear power plant or airplane cockpit. Our
     application services and infrastructure need “sensors” that collect important
     data, functioning similarly to the sensors monitoring the temperature or flow
     rate in complex systems.
+  id: totrans-22
   prefs: []
   type: TYPE_NORMAL
+  zh: 对分布式、关键任务应用程序的有效监控至关重要，这类似于核电站或飞机驾驶舱中的仪表。我们的应用服务和基础设施需要类似“传感器”的设备来收集重要数据，这些传感器的功能类似于监控复杂系统中温度或流量的传感器。
 - en: These “sensors” collect values – or metrics – to provide insight into our application’s
     performance. Metrics can be both functional, which provide business-relevant data,
     and non-functional, which give insight into system performance irrespective of
     the application’s business type.
+  id: totrans-23
   prefs: []
   type: TYPE_NORMAL
+  zh: 这些“传感器”收集数值——或指标——以提供我们应用性能的洞察。指标可以是功能性指标，即提供与业务相关的数据，也可以是非功能性指标，即无论应用程序的业务类型如何，均能提供系统性能的洞察。
 - en: Functional metrics might include the rate of checkouts per minute on an e-commerce
     platform or the five most streamed songs in the last 24 hours for a music streaming
     service. Non-functional metrics could show the average latency of a web request,
     the number of 4xx status codes returned, or resource usage such as RAM or CPU
     cycles.
+  id: totrans-24
   prefs: []
   type: TYPE_NORMAL
+  zh: 功能性指标可能包括在电子商务平台上的每分钟结账数量，或者在过去 24 小时内音乐流媒体服务中播放次数最多的五首歌曲。非功能性指标可能显示网页请求的平均延迟、返回的
+    4xx 状态码数量，或资源使用情况，如 RAM 或 CPU 周期。
 - en: In a distributed system, a centralized service is needed to aggregate these
     metrics. This is similar to how an airplane cockpit consolidates all necessary
     readings, eliminating the need for pilots to inspect each part of the plane during
     a flight.
+  id: totrans-25
   prefs: []
   type: TYPE_NORMAL
+  zh: 在分布式系统中，需要一个集中式服务来汇总这些指标。这类似于飞机驾驶舱整合所有必要的读数，消除了飞行员在飞行过程中检查飞机各个部件的需要。
 - en: Prometheus, an open source project donated to the **Cloud Native Computing Foundation**
     (**CNCF**), is a popular service for metrics exposure, collection, and storage.
     It integrates well with Docker containers, Kubernetes, and many other systems.
     We will use Prometheus to demonstrate metric instrumentation for a service in
     this chapter.
+  id: totrans-26
   prefs: []
   type: TYPE_NORMAL
+  zh: Prometheus 是一个开源项目，捐赠给了**云原生计算基金会**（**CNCF**），它是一个流行的服务，用于指标的暴露、收集和存储。它与 Docker
+    容器、Kubernetes 以及许多其他系统兼容良好。在本章中，我们将使用 Prometheus 来演示如何为服务添加指标工具。
 - en: Using OpenTracing for distributed tracing
+  id: totrans-27
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 使用 OpenTracing 进行分布式追踪
 - en: OpenTracing is an open standard for distributed tracing that provides a vendor-neutral
     API and instrumentation for distributed systems. In OpenTracing, a trace tells
     the story of a transaction or workflow as it propagates through a distributed
     system. The concept of the trace borrows a tool from the scientific community
     called a **directed acyclic graph** (**DAG**), which stages the parts of a process
     from a clear start to a clear end.
+  id: totrans-28
   prefs: []
   type: TYPE_NORMAL
+  zh: OpenTracing 是一种用于分布式追踪的开放标准，它提供了一个厂商中立的 API 和分布式系统的工具。 在 OpenTracing 中，追踪记录了事务或工作流在分布式系统中传播的过程。追踪的概念借用了科学界的一种工具，称为**有向无环图**（**DAG**），它将一个过程的各个部分从清晰的开始到清晰的结束进行分阶段。
 - en: '**Distributed tracing** is a way to track a single request and log a single
     request as it crosses through all of the services in our infrastructure. It can
     help us understand how long each service takes to process the request and identify
     bottlenecks in our system. It can also help us identify which service is causing
     an issue when something goes wrong.'
+  id: totrans-29
   prefs: []
   type: TYPE_NORMAL
+  zh: '**分布式追踪**是一种跟踪单个请求并记录请求在通过我们基础设施中的所有服务时的方式。它可以帮助我们了解每个服务处理请求所需的时间，并识别系统中的瓶颈。它还可以帮助我们识别在出现问题时，哪个服务是导致问题的根源。'
 - en: Using OpenTracing for distributed tracing can help us gain visibility into our
     distributed system and understand how requests are flowing through it. It can
     also help us identify performance issues and troubleshoot problems more quickly.
+  id: totrans-30
   prefs: []
   type: TYPE_NORMAL
+  zh: 使用 OpenTracing 进行分布式追踪可以帮助我们深入了解分布式系统，理解请求是如何在其中流动的。它还可以帮助我们识别性能问题，并更快地排查问题。
 - en: A Java example
+  id: totrans-31
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 一个 Java 示例
 - en: 'Let’s create the simplest possible Java example with a Spring Boot example
     that uses OpenTracing:'
+  id: totrans-32
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们创建一个最简单的 Java 示例，使用 Spring Boot 示例来实现 OpenTracing：
 - en: 'Start by navigating to your source code folder:'
+  id: totrans-33
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 从导航到你的源代码文件夹开始：
 - en: '[PRE0]'
+  id: totrans-34
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE0]'
 - en: 'Then create a subfolder, `ch19`, and navigate to it:'
+  id: totrans-35
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 然后创建一个子文件夹 `ch19` 并导航到它：
 - en: '[PRE1]'
+  id: totrans-36
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE1]'
 - en: Go to [https://start.spring.io/](https://start.spring.io/) to create a `SpringBoot`
     application.
+  id: totrans-37
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 访问 [https://start.spring.io/](https://start.spring.io/) 创建一个 `SpringBoot` 应用程序。
 - en: Use `Gradle – Groovy` as the project and `Java` as the language.
+  id: totrans-38
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 使用 `Gradle – Groovy` 作为项目，`Java` 作为语言。
 - en: Leave all the other defaults.
+  id: totrans-39
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 保持其他所有默认设置。
 - en: Create the application and download the ZIP file.
+  id: totrans-40
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 创建应用程序并下载 ZIP 文件。
 - en: Extract it into the `ch19/java` subfolder.
+  id: totrans-41
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 将其解压到 `ch19/java` 子文件夹中。
 - en: 'Modify your `build.gradle` file such that it looks like this one:'
+  id: totrans-42
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 修改你的 `build.gradle` 文件，使其看起来像这样：
 - en: '![Figure 19.1 – build.gradle file when using OpenTracing](img/Figure_19.01_B19199.jpg)'
+  id: totrans-43
   prefs: []
   type: TYPE_IMG
+  zh: '![图 19.1 – 使用 OpenTracing 时的 build.gradle 文件](img/Figure_19.01_B19199.jpg)'
 - en: Figure 19.1 – build.gradle file when using OpenTracing
+  id: totrans-44
   prefs: []
   type: TYPE_NORMAL
+  zh: 图 19.1 – 使用 OpenTracing 时的 build.gradle 文件
 - en: 'Modify your `DemoApplication.java` file such that it looks like this:'
+  id: totrans-45
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 修改你的 `DemoApplication.java` 文件，使其看起来像这样：
 - en: '![Figure 19.2 – DemoApplication.java file demoing OpenTracing](img/Figure_19.02_B19199.jpg)'
+  id: totrans-46
   prefs: []
   type: TYPE_IMG
+  zh: '![图 19.2 – 演示 OpenTracing 的 DemoApplication.java 文件](img/Figure_19.02_B19199.jpg)'
 - en: Figure 19.2 – DemoApplication.java file demoing OpenTracing
+  id: totrans-47
   prefs: []
   type: TYPE_NORMAL
+  zh: 图 19.2 – 演示 OpenTracing 的 DemoApplication.java 文件
 - en: Run the application by clicking on the `main` method of the `DemoApplication`
     class.
+  id: totrans-48
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 通过点击`DemoApplication`类的`main`方法来运行应用程序。
 - en: In a terminal window, use `curl` to hit the http://localhost:8080 endpoint.
     The response should be `Hello, World!`.
+  id: totrans-49
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 在终端窗口中，使用`curl`访问http://localhost:8080端点。响应应该是`Hello, World!`。
 - en: 'Observe the output in the Terminal window of VS Code. You should see something
     like this:'
+  id: totrans-50
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 观察VS Code终端窗口中的输出。你应该会看到类似这样的内容：
 - en: '![Figure 19.3 – OpenTracing used in a simple Java and Spring Boot application](img/Figure_19.03_B19199.jpg)'
+  id: totrans-51
   prefs: []
   type: TYPE_IMG
+  zh: '![图19.3 – 在一个简单的Java和Spring Boot应用中使用OpenTracing](img/Figure_19.03_B19199.jpg)'
 - en: Figure 19.3 – OpenTracing used in a simple Java and Spring Boot application
+  id: totrans-52
   prefs: []
   type: TYPE_NORMAL
+  zh: 图19.3 – 在一个简单的Java和Spring Boot应用中使用OpenTracing
 - en: This shows that a span has been created and reported.
+  id: totrans-53
   prefs: []
   type: TYPE_NORMAL
+  zh: 这表明一个span已被创建并上报。
 - en: Next, let’s see how we can instrument a Node.js service.
+  id: totrans-54
   prefs: []
   type: TYPE_NORMAL
+  zh: 接下来，让我们看看如何为Node.js服务添加监控。
 - en: Instrumenting a Node.js-based service
+  id: totrans-55
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 为Node.js服务添加监控
 - en: 'In this section, we will learn how to instrument a microservice authored in
     Node.js by following these steps:'
+  id: totrans-56
   prefs: []
   type: TYPE_NORMAL
+  zh: 在本节中，我们将学习如何通过以下步骤为Node.js编写的微服务添加监控：
 - en: 'Navigate to your source code folder:'
+  id: totrans-57
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 进入你的源代码文件夹：
 - en: '[PRE2]'
+  id: totrans-58
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE2]'
 - en: 'Create a new folder called `node` and navigate to it:'
+  id: totrans-59
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 创建一个名为`node`的新文件夹，并进入该文件夹：
 - en: '[PRE3]'
+  id: totrans-60
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE3]'
 - en: Run `npm init` in this folder, and accept all defaults except the entry point,
     which you change from the `index.js` default to `server.js`.
+  id: totrans-61
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 在此文件夹中运行`npm init`，并接受所有默认选项，除了入口点，将其从默认的`index.js`更改为`server.js`。
 - en: 'We need to add `express` to our project with the following:'
+  id: totrans-62
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 我们需要使用以下命令将`express`添加到项目中：
 - en: '[PRE4]'
+  id: totrans-63
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE4]'
 - en: Note
+  id: totrans-64
   prefs: []
   type: TYPE_NORMAL
+  zh: 注意
 - en: As of npm 5.0.0, you no longer need to use this option. Now, npm saves all installed
     packages as dependencies by default.
+  id: totrans-65
   prefs: []
   type: TYPE_NORMAL
+  zh: 从npm 5.0.0版本开始，你不再需要使用这个选项。现在，npm默认会将所有已安装的包作为依赖项保存。
 - en: 'Now we need to install the Prometheus adapter for Node Express with the following:'
+  id: totrans-66
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 现在，我们需要使用以下命令安装Prometheus适配器到Node Express中：
 - en: '[PRE5]'
+  id: totrans-67
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE5]'
 - en: 'Add a file called `server.js` to the folder with this content:'
+  id: totrans-68
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 向文件夹中添加一个名为`server.js`的文件，内容如下：
 - en: '[PRE6]'
+  id: totrans-69
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE6]'
 - en: This is a very simple Node Express app with a single endpoint – `/``hello`.
+  id: totrans-70
   prefs: []
   type: TYPE_NORMAL
+  zh: 这是一个非常简单的Node Express应用，只有一个端点 – `/``hello`。
 - en: 'To the preceding code, after line 1, add the following snippet to initialize
     the Prometheus client:'
+  id: totrans-71
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 在前面的代码中，第1行之后添加以下代码片段来初始化Prometheus客户端：
 - en: '[PRE7]'
+  id: totrans-72
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE7]'
 - en: 'Next, add an endpoint to expose the metrics. You can add it right after the
     definition of the `/``hello` endpoint:'
+  id: totrans-73
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 接下来，添加一个端点来暴露指标。你可以在定义`/``hello`端点之后直接添加它：
 - en: '[PRE8]'
+  id: totrans-74
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE8]'
 - en: 'Now let’s run this sample microservice:'
+  id: totrans-75
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 现在让我们运行这个示例微服务：
 - en: '[PRE9]'
+  id: totrans-76
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE9]'
 - en: 'You should see an output similar to this:'
+  id: totrans-77
   prefs: []
   type: TYPE_NORMAL
+  zh: 你应该会看到类似这样的输出：
 - en: '[PRE10]'
+  id: totrans-78
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE10]'
 - en: We can see in the preceding output that the service is listening on port `3000`.
+  id: totrans-79
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们可以在前面的输出中看到该服务正在监听`3000`端口。
 - en: 'Let’s now try to access the metrics at the `/metrics` endpoint, as we defined
     in the code. For this, open a new terminal window and use this command:'
+  id: totrans-80
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 现在，让我们尝试访问我们在代码中定义的`/metrics`端点的指标。为此，打开一个新的终端窗口，并使用以下命令：
 - en: '[PRE11]'
+  id: totrans-81
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE11]'
 - en: 'You should see output similar to this:'
+  id: totrans-82
   prefs: []
   type: TYPE_NORMAL
+  zh: 你应该会看到类似这样的输出：
 - en: '[PRE12]'
+  id: totrans-83
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE12]'
 - en: Note that the preceding output has been shortened for readability. What we get
     as output is a pretty long list of metrics, ready for consumption by a Prometheus
     server.
+  id: totrans-84
   prefs: []
   type: TYPE_NORMAL
+  zh: 请注意，前面的输出已被缩短以便于阅读。我们得到的输出是一个相当长的指标列表，准备供Prometheus服务器使用。
 - en: This was pretty easy, wasn’t it? By adding a Node package and adding a few trivial
     lines of code to our application startup, we have gained access to a plethora
     of system metrics.
+  id: totrans-85
   prefs: []
   type: TYPE_NORMAL
+  zh: 这其实很简单，不是吗？通过添加一个Node包并在我们的应用程序启动时添加几行简单的代码，我们就能访问到大量的系统指标。
 - en: 'Now let’s define our own custom metric. We will make it a `counter` object:'
+  id: totrans-86
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在让我们定义我们自己的自定义指标。我们将它定义为一个`counter`对象：
 - en: 'Add the following code snippet to `server.js` to define a custom counter called
     `my_hello_counter`:'
+  id: totrans-87
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 将以下代码片段添加到`server.js`中，以定义一个名为`my_hello_counter`的自定义计数器：
 - en: '[PRE13]'
+  id: totrans-88
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE13]'
 - en: 'To our existing `/hello` endpoint, add code to increase the counter. The modified
     endpoint should look like this:'
+  id: totrans-89
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 在现有的`/hello`端点中，添加代码来增加计数器。修改后的端点应该如下所示：
 - en: '[PRE14]'
+  id: totrans-90
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE14]'
 - en: Rerun the application with `npm start`.
+  id: totrans-91
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 使用`npm start`重新运行应用程序。
 - en: 'To test the new counter, let’s access our `/hello` endpoint twice:'
+  id: totrans-92
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 为了测试新的计数器，让我们两次访问我们的`/hello`端点：
 - en: '[PRE15]'
+  id: totrans-93
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE15]'
 - en: 'We will get this output when accessing the `/``metrics` endpoint:'
+  id: totrans-94
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 访问`/``metrics`端点时，我们将得到这个输出：
 - en: '[PRE16]'
+  id: totrans-95
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE16]'
 - en: 'Analyze the output generated by the preceding command and look for something
     like this toward the end of the output:'
+  id: totrans-96
   prefs: []
   type: TYPE_NORMAL
+  zh: 分析前面命令生成的输出，并在输出的末尾找到类似这样的内容：
 - en: '[PRE17]'
+  id: totrans-97
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE17]'
 - en: The counter we defined in the code clearly works and is output with the `HELP`
     text we added.
+  id: totrans-98
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们在代码中定义的计数器显然起作用，并且输出了我们添加的`HELP`文本。
 - en: Now that we know how to instrument a Node Express application, let’s do the
     same for a .NET-based microservice.
+  id: totrans-99
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在我们知道如何为Node Express应用程序添加指标，接下来我们做同样的操作，为基于.NET的微服务添加指标。
 - en: Instrumenting a .NET service
+  id: totrans-100
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 为.NET服务添加指标
 - en: 'Let’s start by creating a simple .NET microservice based on the Web API template:'
+  id: totrans-101
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们从创建一个基于Web API模板的简单.NET微服务开始：
 - en: 'Navigate to your source code folder:'
+  id: totrans-102
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 导航到你的源代码文件夹：
 - en: '[PRE18]'
+  id: totrans-103
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE18]'
 - en: 'Create a new `dotnet` folder, and navigate to it:'
+  id: totrans-104
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 创建一个新的`dotnet`文件夹，并导航到该文件夹：
 - en: '[PRE19]'
+  id: totrans-105
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE19]'
 - en: 'Use the `dotnet` tool to scaffold a new microservice called `sample-api`:'
+  id: totrans-106
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 使用`dotnet`工具来搭建一个名为`sample-api`的新微服务：
 - en: '[PRE20]'
+  id: totrans-107
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE20]'
 - en: 'We will use the Prometheus adapter for .NET, which is available to us as a
     NuGet package called `prometheus-net.AspNetCore`. Add this package to the `sample-api`
     project with the following command:'
+  id: totrans-108
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 我们将使用用于.NET的Prometheus适配器，它是作为一个名为`prometheus-net.AspNetCore`的NuGet包提供的。使用以下命令将该包添加到`sample-api`项目中：
 - en: '[PRE21]'
+  id: totrans-109
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE21]'
 - en: 'Open the project in your favorite code editor; for example, when using VS Code,
     execute the following:'
+  id: totrans-110
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 打开你喜欢的代码编辑器；例如，使用VS Code时，执行以下操作：
 - en: '[PRE22]'
+  id: totrans-111
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE22]'
 - en: 'Locate the `Program.cs` file, and open it. At the beginning of the file, add
     a `using` statement:'
+  id: totrans-112
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 定位到`Program.cs`文件并打开它。在文件的开始处，添加一个`using`语句：
 - en: '[PRE23]'
+  id: totrans-113
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE23]'
 - en: 'Then, in the code of the file, right after the `app.MapControllers()` command,
     add the `app.MapMetrics()` command. Your code should look as follows:'
+  id: totrans-114
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 然后，在文件的代码中，紧跟`app.MapControllers()`命令后面，添加`app.MapMetrics()`命令。你的代码应该如下所示：
 - en: '[PRE24]'
+  id: totrans-115
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE24]'
 - en: Note that the preceding is valid for version 7.x of .NET or newer. If you’re
     on an earlier version, the configuration might look slightly different. Consult
     the repo for more details, at [https://github.com/prometheus-net/prometheus-net](https://github.com/prometheus-net/prometheus-net).
+  id: totrans-116
   prefs: []
   type: TYPE_NORMAL
+  zh: 请注意，上述内容适用于7.x版本或更新版本的.NET。如果你使用的是早期版本，配置可能略有不同。有关更多详细信息，请查阅[https://github.com/prometheus-net/prometheus-net](https://github.com/prometheus-net/prometheus-net)。
 - en: 'With this, the Prometheus component will start publishing the request metrics
     of ASP.NET. Let’s try it. First, start the application with the following:'
+  id: totrans-117
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 这样，Prometheus组件将开始发布ASP.NET的请求指标。让我们试试吧。首先，使用以下命令启动应用程序：
 - en: '[PRE25]'
+  id: totrans-118
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE25]'
 - en: 'The output of the preceding command should look like this:'
+  id: totrans-119
   prefs: []
   type: TYPE_NORMAL
+  zh: 上面命令的输出应该如下所示：
 - en: '[PRE26]'
+  id: totrans-120
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE26]'
 - en: The preceding output tells us that the microservice is listening at http://localhost:5204.
+  id: totrans-121
   prefs: []
   type: TYPE_NORMAL
+  zh: 上述输出告诉我们，微服务正在监听http://localhost:5204。
 - en: 'We can now use `curl` to call the metrics endpoint of the service:'
+  id: totrans-122
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 现在，我们可以使用`curl`来调用服务的指标端点：
 - en: '[PRE27]'
+  id: totrans-123
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE27]'
 - en: 'The (shortened) output of the preceding command looks similar to this:'
+  id: totrans-124
   prefs: []
   type: TYPE_NORMAL
+  zh: 上面命令的（简化）输出类似于以下内容：
 - en: '[PRE28]'
+  id: totrans-125
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE28]'
 - en: 'What we get is a list of system metrics for our microservice. That was easy:
     we only needed to add a NuGet package and a single line of code to get our service
     instrumented!'
+  id: totrans-126
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们得到的是微服务的系统指标列表。过程非常简单：我们只需要添加一个NuGet包和一行代码，就能让我们的服务实现指标采集！
 - en: What if we want to add our own (functional) metrics? This is equally straightforward.
     Assume we want to measure the number of concurrent accesses to the `/weatherforecast`
     endpoint that .NET scaffolding created for us. To do this, we define a gauge and
     use it to wrap the logic in the appropriate endpoint with this gauge.
+  id: totrans-127
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果我们想要添加我们自己的（功能性）指标呢？这同样简单。假设我们想测量对`.NET scaffolding`为我们创建的`/weatherforecast`端点的并发访问数量。为此，我们定义一个仪表，并使用它将适当端点的逻辑包装起来。
 - en: Metric types
+  id: totrans-128
   prefs: []
   type: TYPE_NORMAL
+  zh: 指标类型
 - en: 'Prometheus supports four types of metrics:'
+  id: totrans-129
   prefs: []
   type: TYPE_NORMAL
+  zh: Prometheus支持四种类型的指标：
 - en: '**Counter**: A cumulative metric that represents a single monotonically increasing
     counter whose value can only increase or be reset to zero on restart.'
+  id: totrans-130
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**计数器**：一个累积型指标，表示一个单一的单调递增计数器，其值只能增加或在重启时重置为零。'
 - en: '**Gauge**: A metric that represents a single numerical value that can arbitrarily
     go up and down. Gauges are typically used for measured values such as temperatures
     or current memory usage.'
+  id: totrans-131
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**仪表**：一个表示单一数值的指标，该值可以任意上升或下降。仪表通常用于衡量温度或当前内存使用量等值。'
 - en: '**Histogram**: A metric that samples observations (usually things such as request
     durations or response sizes) and counts them in configurable buckets. It also
     provides a sum of all observed values.'
+  id: totrans-132
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**直方图**：一种采样观察结果的指标（通常是请求时长或响应大小等），并将其计数在可配置的桶中。它还提供所有观察值的总和。'
 - en: '**Summary**: Similar to a histogram, a summary samples observations. While
     it also provides a total count of observations and a sum of all observed values,
     it calculates configurable quantiles over a sliding time window.'
+  id: totrans-133
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**总结**：类似于直方图，摘要会对观察结果进行采样。它不仅提供了观察结果的总计数和所有观察值的总和，还会计算在滑动时间窗口上的可配置分位数。'
 - en: 'We can define our own gauge by following these steps:'
+  id: totrans-134
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们可以通过以下步骤定义我们自己的量表：
 - en: Locate the `WeatherForecastController.cs` class in the `Controllers` folder.
+  id: totrans-135
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 在 `Controllers` 文件夹中找到 `WeatherForecastController.cs` 类。
 - en: Add `using Prometheus;` to the top of the file.
+  id: totrans-136
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 在文件顶部添加`using Prometheus;`。
 - en: 'Define a private instance `callsInProgress` variable of the `Gauge` type in
     the `WeatherForecastController` class:'
+  id: totrans-137
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 在`WeatherForecastController`类中定义一个私有的 `Gauge` 类型变量 `callsInProgress`：
 - en: '[PRE29]'
+  id: totrans-138
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE29]'
 - en: 'Wrap the logic of the `Get` method with a `using` statement:'
+  id: totrans-139
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 用 `using` 语句包裹 `Get` 方法的逻辑：
 - en: '[PRE30]'
+  id: totrans-140
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE30]'
 - en: Restart the microservice.
+  id: totrans-141
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 重启微服务。
 - en: 'Call the `/weatherforecast` endpoint a couple of times using `curl`:'
+  id: totrans-142
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 使用 `curl` 调用 `/weatherforecast` 端点几次：
 - en: '[PRE31]'
+  id: totrans-143
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE31]'
 - en: 'Use `curl` to get the metrics, as done earlier in this section:'
+  id: totrans-144
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 使用 `curl` 获取度量，方法和本节前面所做的相同：
 - en: '[PRE32]'
+  id: totrans-145
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE32]'
 - en: 'You should see an output similar to the following one (shortened):'
+  id: totrans-146
   prefs: []
   type: TYPE_NORMAL
+  zh: 你应该看到类似以下的输出（已简化）：
 - en: '[PRE33]'
+  id: totrans-147
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE33]'
 - en: You will notice that there is now a new metric called `myapp_weather_forecasts_in_progress`
     available in the list. Its value will be zero since, currently, you are not running
     any requests against the tracked endpoint, and a gauge-type metric only measures
     the number of ongoing requests.
+  id: totrans-148
   prefs: []
   type: TYPE_NORMAL
+  zh: 你会注意到，列表中现在有一个新的度量叫做`myapp_weather_forecasts_in_progress`。它的值为零，因为当前你没有对跟踪的端点发出任何请求，量表类型的度量仅衡量正在进行的请求数量。
 - en: Congratulations, you have just defined your first functional metric! This is
     only a start; many more sophisticated possibilities are readily available to you.
+  id: totrans-149
   prefs: []
   type: TYPE_NORMAL
+  zh: 恭喜，你刚刚定义了第一个功能性度量！这只是一个开始；还有许多更复杂的可能性等待你探索。
 - en: Node.js- or .NET-based application services are by no means special. It is just
     as straightforward and easy to instrument services written in other languages,
     such as Kotlin, Python, or Go.
+  id: totrans-150
   prefs: []
   type: TYPE_NORMAL
+  zh: 基于 Node.js 或 .NET 的应用服务并不特殊。对用其他语言编写的服务（如 Kotlin、Python 或 Go）进行监控同样简单直接。
 - en: Having learned how to instrument an application service so that it exposes important
     metrics, let’s now have a look at how we can use Prometheus to collect and aggregate
     those values to allow us to monitor a distributed application.
+  id: totrans-151
   prefs: []
   type: TYPE_NORMAL
+  zh: 在学习如何对应用服务进行监控，以便它暴露出重要的度量后，让我们来看看如何使用 Prometheus 来收集和聚合这些值，以便我们监控一个分布式应用。
 - en: Leveraging Prometheus and Grafana to monitor a distributed application
+  id: totrans-152
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 利用 Prometheus 和 Grafana 监控分布式应用
 - en: Now that we have learned how to instrument an application service to expose
     Prometheus metrics, it’s time to show how we can collect the metrics and forward
     them to a Prometheus server where all metrics will be aggregated and stored. We
     can then either use the (simple) web UI of Prometheus or a more sophisticated
     solution such as Grafana to display important metrics on a dashboard.
+  id: totrans-153
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在我们已经学习了如何对应用服务进行监控，使其暴露 Prometheus 度量，接下来是展示如何收集这些度量并将它们转发到 Prometheus 服务器，在那里所有度量将被聚合并存储。然后，我们可以使用
+    Prometheus 的（简单）Web UI 或者更复杂的解决方案，如 Grafana，在仪表盘上显示重要的度量。
 - en: Unlike most other tools that are used to collect metrics from application services
     and infrastructure components, the Prometheus server takes the load of work and
     periodically scrapes all the defined targets. This way, applications and services
     don’t need to worry about forwarding data. You can also describe this as pulling
     metrics, versus pushing them.
+  id: totrans-154
   prefs: []
   type: TYPE_NORMAL
+  zh: 与大多数用于收集应用服务和基础设施组件度量的工具不同，Prometheus 服务器承担了工作负载并定期抓取所有定义的目标。这样，应用程序和服务就无需担心转发数据。你也可以把它描述为拉取度量，而不是推送度量。
 - en: This makes Prometheus servers an excellent fit for our case. We will now discuss
     how to deploy Prometheus to Kubernetes, followed by our two sample application
     services. Finally, we will deploy Grafana to the cluster, and use it to display
     our custom metrics on a dashboard.
+  id: totrans-155
   prefs: []
   type: TYPE_NORMAL
+  zh: 这使得 Prometheus 服务器非常适合我们的案例。我们现在将讨论如何将 Prometheus 部署到 Kubernetes，然后是我们两个示例应用服务。最后，我们将把
+    Grafana 部署到集群中，并使用它在仪表盘上显示我们的自定义度量。
 - en: Architecture
+  id: totrans-156
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 架构
 - en: 'Let’s have a quick overview of the architecture of the planned system. As mentioned
     before, we have our microservices, the Prometheus server, and Grafana. Furthermore,
     everything will be deployed to Kubernetes. The following diagram shows the relationships:'
+  id: totrans-157
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们快速概述一下计划系统的架构。如前所述，我们有微服务、Prometheus 服务器和 Grafana。此外，一切将部署到 Kubernetes。以下图示显示了它们之间的关系：
 - en: '![Figure 19.4 – High-level overview of an application using Prometheus and
     Grafana for monitoring](img/Figure_19.04_B19199.jpg)'
+  id: totrans-158
   prefs: []
   type: TYPE_IMG
+  zh: '![图 19.4 – 使用 Prometheus 和 Grafana 进行监控的应用程序高层概述](img/Figure_19.04_B19199.jpg)'
 - en: Figure 19.4 – High-level overview of an application using Prometheus and Grafana
     for monitoring
+  id: totrans-159
   prefs: []
   type: TYPE_NORMAL
+  zh: 图 19.4 – 使用 Prometheus 和 Grafana 进行监控的应用程序概览
 - en: At the top center of the diagram, we have Prometheus, which periodically scrapes
     metrics from Kubernetes, shown on the left. It also periodically scrapes metrics
     from the services, in our case from the Node.js and .NET sample services we created
     and instrumented in the previous section. Finally, on the right-hand side of the
     diagram, we have Grafana, which pulls data periodically from Prometheus to then
     display it on graphical dashboards.
+  id: totrans-160
   prefs: []
   type: TYPE_NORMAL
+  zh: 在图表的顶部中央，我们有 Prometheus，它定期从 Kubernetes 中抓取指标，如左侧所示。它还定期从服务中抓取指标，在我们的案例中是从之前章节中创建和配置的
+    Node.js 和 .NET 示例服务中抓取。最后，在图表的右侧，我们有 Grafana，它定期从 Prometheus 拉取数据，然后将其显示在图形化仪表板上。
 - en: Deploying Prometheus to Kubernetes
+  id: totrans-161
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 将 Prometheus 部署到 Kubernetes
 - en: 'As indicated, we start by deploying Prometheus to Kubernetes. Let’s first define
     the Kubernetes YAML file that we can use to do so. First, we need to define a
     Kubernetes Deployment that will create a ReplicaSet of Prometheus server instances,
     and then we will define a Kubernetes service to expose Prometheus to us, so that
     we can access it from within a browser tab, or so that Grafana can access it.
     Let’s do it:'
+  id: totrans-162
   prefs: []
   type: TYPE_NORMAL
+  zh: 如上所示，我们首先将 Prometheus 部署到 Kubernetes。让我们首先定义一个 Kubernetes YAML 文件，用于部署 Prometheus。我们需要定义一个
+    Kubernetes Deployment，它将创建一个 Prometheus 服务器实例的 ReplicaSet，然后我们将定义一个 Kubernetes
+    服务，将 Prometheus 暴露给我们，这样我们就可以从浏览器标签页中访问它，或者 Grafana 可以访问它。让我们开始吧：
 - en: 'Navigate to the source folder:'
+  id: totrans-163
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 导航到源文件夹：
 - en: '[PRE34]'
+  id: totrans-164
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE34]'
 - en: 'Create a `kube` folder, and navigate to it:'
+  id: totrans-165
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 创建一个名为`kube`的文件夹，并进入该文件夹：
 - en: '[PRE35]'
+  id: totrans-166
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE35]'
 - en: Add a file called `prometheus.yaml` to this folder.
+  id: totrans-167
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 向此文件夹添加一个名为`prometheus.yaml`的文件。
 - en: 'Add the following code snippet to this file; it defines a Deployment for Prometheus:'
+  id: totrans-168
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 将以下代码片段添加到此文件中；它定义了 Prometheus 的 Deployment：
 - en: '![Figure 19.5 – Deployment for Prometheus](img/Figure_19.05_B19199.jpg)'
+  id: totrans-169
   prefs: []
   type: TYPE_IMG
+  zh: '![图 19.5 – Prometheus 部署](img/Figure_19.05_B19199.jpg)'
 - en: Figure 19.5 – Deployment for Prometheus
+  id: totrans-170
   prefs: []
   type: TYPE_NORMAL
+  zh: 图 19.5 – Prometheus 部署
 - en: 'We are defining a ReplicaSet with two instances of Prometheus. Each instance
     is assigned two labels, `app: prometheus` and `purpose: monitoring-demo`, for
     identification purposes. The interesting part is in the `volumeMounts` section
@@ -738,648 +1088,963 @@
     the location where Prometheus expects its configuration file(s) to be. The volume
     of the `ConfigMap` type is defined in the last four lines of the preceding code
     snippet.'
+  id: totrans-171
   prefs: []
   type: TYPE_NORMAL
+  zh: '我们正在定义一个包含两个 Prometheus 实例的 ReplicaSet。每个实例都被分配了两个标签，`app: prometheus`和`purpose:
+    monitoring-demo`，用于标识。值得注意的是，在容器规格的`volumeMounts`部分。我们在此处将一个名为`prometheus-cm`的
+    Kubernetes `ConfigMap` 对象挂载到容器中，这个对象包含 Prometheus 配置，挂载位置是 Prometheus 期望其配置文件存在的地方。`ConfigMap`
+    类型的卷在前面代码片段的最后四行中进行了定义。'
 - en: Note that we will define the ConfigMap later on.
+  id: totrans-172
   prefs: []
   type: TYPE_NORMAL
+  zh: 请注意，我们稍后会定义 ConfigMap。
 - en: 'Now let’s define the Kubernetes service for Prometheus. Append this snippet
     to the previous file:'
+  id: totrans-173
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 现在，让我们定义 Prometheus 的 Kubernetes 服务。将这个片段追加到之前的文件中：
 - en: '![Figure 19.6 – Service for Prometheus](img/Figure_19.06_B19199.jpg)'
+  id: totrans-174
   prefs: []
   type: TYPE_IMG
+  zh: '![图 19.6 – Prometheus 服务](img/Figure_19.06_B19199.jpg)'
 - en: Figure 19.6 – Service for Prometheus
+  id: totrans-175
   prefs: []
   type: TYPE_NORMAL
+  zh: 图 19.6 – Prometheus 服务
 - en: Please note the three dashes (`---`) at the beginning of the snippet are needed
     to separate individual object definitions in our YAML file.
+  id: totrans-176
   prefs: []
   type: TYPE_NORMAL
+  zh: 请注意，片段开头的三个破折号（`---`）是必须的，用于在 YAML 文件中分隔各个对象定义。
 - en: We call our service `prometheus-svc` and make it `NodePort` (and not just a
     service of the `ClusterIP` type) to be able to access the Prometheus web UI from
     the host.
+  id: totrans-177
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们将服务命名为`prometheus-svc`，并将其设置为`NodePort`（而不仅仅是`ClusterIP`类型的服务），以便能够从主机访问 Prometheus
+    的 Web UI。
 - en: 'Now we can define a simple configuration file for Prometheus. This file basically
     instructs the Prometheus server which services to scrape metrics from and how
     often to do so. First, create a `ch19/kube/config` subfolder:'
+  id: totrans-178
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 现在我们可以为 Prometheus 定义一个简单的配置文件。此文件基本上指示 Prometheus 服务器从哪些服务抓取指标，以及抓取的频率。首先，创建一个名为`ch19/kube/config`的子文件夹：
 - en: '[PRE36]'
+  id: totrans-179
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE36]'
 - en: 'Add a file called `prometheus.yml` to the `config` folder, and add the following
     content to it:'
+  id: totrans-180
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 向`config`文件夹添加一个名为`prometheus.yml`的文件，并向其中添加以下内容：
 - en: '![Figure 19.7 – Prometheus configuration](img/Figure_19.07_B19199.jpg)'
+  id: totrans-181
   prefs: []
   type: TYPE_IMG
+  zh: '![图 19.7 – Prometheus 配置](img/Figure_19.07_B19199.jpg)'
 - en: Figure 19.7 – Prometheus configuration
+  id: totrans-182
   prefs: []
   type: TYPE_NORMAL
+  zh: 图 19.7 – Prometheus 配置
 - en: 'In the preceding file, we define three jobs for Prometheus:'
+  id: totrans-183
   prefs: []
   type: TYPE_NORMAL
+  zh: 在前面的文件中，我们为 Prometheus 定义了三个作业：
 - en: The first one, called `prometheus`, scrapes metrics every five seconds from
     the Prometheus server itself. It finds those metrics at the `localhost:9090` target.
     Note that, by default, the metrics should be exposed on the `/``metrics` endpoint.
+  id: totrans-184
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 第一个任务，名为 `prometheus`，每五秒从 Prometheus 服务器本身抓取一次指标。它在 `localhost:9090` 目标处找到这些指标。请注意，默认情况下，指标应该暴露在
+    `/metrics` 端点上。
 - en: The second job, called `dotnet`, scrapes metrics from a service found at `dotnet-api-svc:80`,
     which will be our .NET Core service that we defined and instrumented previously.
+  id: totrans-185
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 第二个任务，名为 `dotnet`，从位于 `dotnet-api-svc:80` 的服务抓取指标，这将是我们之前定义和配置的 .NET Core 服务。
 - en: Finally, the third job does the same for our Node service. Note that we have
     also added a group `'production'` label to this job. This allows further grouping
     of jobs or tasks.
+  id: totrans-186
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 最后，第三个任务对我们的 Node 服务做了相同的操作。请注意，我们还为该任务添加了一个名为 `'production'` 的标签。这样可以进一步对任务进行分组。
 - en: 'Now we can define the `ConfigMap` object in our Kubernetes cluster with the
     next command. From within the `ch19/kube` folder, execute the following:'
+  id: totrans-187
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 现在我们可以在 Kubernetes 集群中使用下一个命令定义 `ConfigMap` 对象。从 `ch19/kube` 文件夹中执行以下命令：
 - en: '[PRE37]'
+  id: totrans-188
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE37]'
 - en: What is a Kubernetes ConfigMap?
+  id: totrans-189
   prefs: []
   type: TYPE_NORMAL
+  zh: 什么是 Kubernetes ConfigMap？
 - en: A Kubernetes ConfigMap is an API object used to store non-confidential configuration
     data in key-value pairs. This can include settings such as environment-specific
     URLs, command-line arguments, or any other parameters your applications need to
     run.
+  id: totrans-190
   prefs: []
   type: TYPE_NORMAL
+  zh: Kubernetes ConfigMap 是一个 API 对象，用于以键值对的形式存储非机密的配置数据。这可以包括环境特定的 URL、命令行参数或任何其他应用程序运行所需的参数。
 - en: The main advantage of ConfigMaps is that they allow you to decouple configuration
     details from your application code. This can help make your applications more
     portable and easier to scale.
+  id: totrans-191
   prefs: []
   type: TYPE_NORMAL
+  zh: ConfigMap 的主要优点是它允许你将配置细节与应用程序代码解耦。这有助于使你的应用程序更具可移植性，并更易于扩展。
 - en: 'ConfigMaps can be consumed by Pods in a variety of ways: as environment variables,
     as command-line arguments for a container, or as configuration files in a volume.
     This flexibility allows developers to choose the most suitable method for their
     use case.'
+  id: totrans-192
   prefs: []
   type: TYPE_NORMAL
+  zh: ConfigMap 可以通过多种方式被 Pods 消耗：作为环境变量、作为容器的命令行参数，或作为卷中的配置文件。这种灵活性使得开发人员能够根据具体情况选择最合适的方法。
 - en: 'We can now deploy Prometheus to our Kubernetes server with the following:'
+  id: totrans-193
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 现在我们可以使用以下命令将 Prometheus 部署到我们的 Kubernetes 服务器：
 - en: '[PRE38]'
+  id: totrans-194
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE38]'
 - en: 'This gives this response:'
+  id: totrans-195
   prefs: []
   type: TYPE_NORMAL
+  zh: 这会返回以下响应：
 - en: '[PRE39]'
+  id: totrans-196
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE39]'
 - en: 'Let’s double-check that the deployment succeeded:'
+  id: totrans-197
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 让我们再次确认部署是否成功：
 - en: '[PRE40]'
+  id: totrans-198
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE40]'
 - en: 'Here is the output of the preceding command:'
+  id: totrans-199
   prefs: []
   type: TYPE_NORMAL
+  zh: 下面是前面命令的输出：
 - en: '![Figure 19.8 – The Prometheus resources created on the Kubernetes cluster](img/Figure_19.08_B19199.jpg)'
+  id: totrans-200
   prefs: []
   type: TYPE_IMG
+  zh: '![图 19.8 – 在 Kubernetes 集群上创建的 Prometheus 资源](img/Figure_19.08_B19199.jpg)'
 - en: Figure 19.8 – The Prometheus resources created on the Kubernetes cluster
+  id: totrans-201
   prefs: []
   type: TYPE_NORMAL
+  zh: 图 19.8 – 在 Kubernetes 集群上创建的 Prometheus 资源
 - en: Keep a close eye on the list of Pods, and make sure they are all up and running.
     Please also note the port mapping of the `prometheus-svc` object. In the author’s
     case, the `9090` port is mapped to the `31421` host port. In your case, the latter
     may be different, but it will also be in the 3xxxx range.
+  id: totrans-202
   prefs: []
   type: TYPE_NORMAL
+  zh: 密切关注 Pods 列表，确保它们都已启动并正在运行。请注意 `prometheus-svc` 对象的端口映射。在作者的案例中，`9090` 端口映射到
+    `31421` 主机端口。在你的情况下，后者可能会有所不同，但它也会在 3xxxx 范围内。
 - en: 'We can now access the web UI of Prometheus. Open a new browser tab, and navigate
     to `http://localhost:<port>/targets` where `<port>` in the author’s case is `31421`.
     You should see something like this:'
+  id: totrans-203
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 现在我们可以访问 Prometheus 的 web UI。打开一个新的浏览器标签页，导航到 `http://localhost:<port>/targets`，其中
+    `<port>` 在作者的案例中是 `31421`。你应该会看到类似下面的内容：
 - en: '![Figure 19.9 – Prometheus web UI showing the configured targets](img/Figure_19.09_B19199.jpg)'
+  id: totrans-204
   prefs: []
   type: TYPE_IMG
+  zh: '![图 19.9 – Prometheus web UI 显示已配置的目标](img/Figure_19.09_B19199.jpg)'
 - en: Figure 19.9 – Prometheus web UI showing the configured targets
+  id: totrans-205
   prefs: []
   type: TYPE_NORMAL
+  zh: 图 19.9 – Prometheus web UI 显示已配置的目标
 - en: In the previous screenshot, we can see that we defined three targets for Prometheus.
     Only the third one in the list is up and accessible by Prometheus. It is the endpoint
     we defined in the configuration file for the job that scrapes metrics from Prometheus
     itself. The other two services are not running at this time, and thus their state
     is down.
+  id: totrans-206
   prefs: []
   type: TYPE_NORMAL
+  zh: 在前面的截图中，我们看到为 Prometheus 定义了三个目标。列表中的第三个目标处于运行状态，并且 Prometheus 可以访问它。它是我们在配置文件中为抓取来自
+    Prometheus 本身指标的任务定义的端点。其他两个服务目前未运行，因此它们的状态为关闭。
 - en: Now navigate to **Graph** by clicking on the respective link in the top menu
     of the UI.
+  id: totrans-207
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 现在通过点击 UI 顶部菜单中的相应链接，导航到 **Graph** 页面。
 - en: 'Start typing in the search box and a list of known metrics will appear in a
     list. Inspect all the listed metrics that Prometheus found. In this case, it is
     only the list of metrics defined by the Prometheus server itself:'
+  id: totrans-208
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 在搜索框中开始输入，已知的指标列表将会显示。检查Prometheus找到的所有列出的指标。在这种情况下，它仅是Prometheus服务器本身定义的指标列表：
 - en: '![Figure 19.10 – Prometheus web UI showing available metrics](img/Figure_19.10_B19199.jpg)'
+  id: totrans-209
   prefs: []
   type: TYPE_IMG
+  zh: '![图 19.10 – Prometheus web UI显示可用的指标](img/Figure_19.10_B19199.jpg)'
 - en: Figure 19.10 – Prometheus web UI showing available metrics
+  id: totrans-210
   prefs: []
   type: TYPE_NORMAL
+  zh: 图 19.10 – Prometheus web UI显示可用的指标
 - en: With that, we are ready to deploy the .NET and Node sample services we created
     earlier to Kubernetes.
+  id: totrans-211
   prefs: []
   type: TYPE_NORMAL
+  zh: 这样，我们就准备好将之前创建的.NET和Node示例服务部署到Kubernetes了。
 - en: Deploying our application services to Kubernetes
+  id: totrans-212
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 将我们的应用服务部署到Kubernetes
 - en: Before we can use the sample services we created earlier and deploy them to
     Kubernetes, we must create Docker images for them and push them to a container
     registry. In our case, we will just push them to Docker Hub.
+  id: totrans-213
   prefs: []
   type: TYPE_NORMAL
+  zh: 在我们能够使用之前创建的示例服务并将其部署到Kubernetes之前，必须为它们创建Docker镜像，并将其推送到容器注册中心。在我们的案例中，我们将它们推送到Docker
+    Hub。
 - en: 'Let’s start with the .NET Core sample:'
+  id: totrans-214
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们从.NET Core示例开始：
 - en: 'Add a Dockerfile with the following content to the `ch19/dotnet/sample-api`
     project folder:'
+  id: totrans-215
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 向`ch19/dotnet/sample-api`项目文件夹添加一个包含以下内容的Dockerfile：
 - en: '[PRE41]'
+  id: totrans-216
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE41]'
 - en: 'Create a Docker image by using this command from within the `dotnet/sample-api`
     project folder:'
+  id: totrans-217
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 使用此命令在`dotnet/sample-api`项目文件夹内创建Docker镜像：
 - en: '[PRE42]'
+  id: totrans-218
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE42]'
 - en: Note that you may want to replace `fundamentalsofdocker` with your own Docker
     Hub username in the preceding and subsequent commands.
+  id: totrans-219
   prefs: []
   type: TYPE_NORMAL
+  zh: 请注意，您可能需要将前面的和后续命令中的`fundamentalsofdocker`替换为您自己的Docker Hub用户名。
 - en: 'Make sure you are logged in to Docker. If not, use this command to do so:'
+  id: totrans-220
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 确保您已登录Docker。如果没有，请使用以下命令进行登录：
 - en: '[PRE43]'
+  id: totrans-221
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE43]'
 - en: 'Push the image to Docker Hub:'
+  id: totrans-222
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 将镜像推送到Docker Hub：
 - en: '[PRE44]'
+  id: totrans-223
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE44]'
 - en: 'Now we do the same with the Node sample API:'
+  id: totrans-224
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在我们对Node示例API做同样的操作：
 - en: 'Add a Dockerfile with the following content to the `ch19/node` project folder:'
+  id: totrans-225
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 向`ch19/node`项目文件夹添加一个包含以下内容的Dockerfile：
 - en: '[PRE45]'
+  id: totrans-226
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE45]'
 - en: 'Create a Docker image by using this command from within the `ch19/node` project
     folder:'
+  id: totrans-227
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 使用此命令在`ch19/node`项目文件夹内创建Docker镜像：
 - en: '[PRE46]'
+  id: totrans-228
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE46]'
 - en: Note once again that you may want to replace `fundamentalsofdocker` with your
     own Docker Hub username in the preceding and subsequent commands.
+  id: totrans-229
   prefs: []
   type: TYPE_NORMAL
+  zh: 再次提醒，您可能需要将前面和后续命令中的`fundamentalsofdocker`替换为您自己的Docker Hub用户名。
 - en: 'Push the image to Docker Hub:'
+  id: totrans-230
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 将镜像推送到Docker Hub：
 - en: '[PRE47]'
+  id: totrans-231
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE47]'
 - en: With this, we are ready to define the necessary Kubernetes objects for the deployment
     of the two services. The definition is somewhat lengthy and can be found in the
     `sample-solutions/ch19/kube/app-services.yaml` file in the repository.
+  id: totrans-232
   prefs: []
   type: TYPE_NORMAL
+  zh: 通过此操作，我们已经准备好定义部署这两个服务所需的Kubernetes对象。定义内容较长，可以在仓库中的`sample-solutions/ch19/kube/app-services.yaml`文件中找到。
 - en: Please open that file and analyze its content.
+  id: totrans-233
   prefs: []
   type: TYPE_NORMAL
+  zh: 请打开那个文件并分析其内容。
 - en: 'Let’s use this file to deploy the services:'
+  id: totrans-234
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们使用这个文件来部署服务：
 - en: Make sure you are in the `kube` subfolder.
+  id: totrans-235
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 确保您在`kube`子文件夹内。
 - en: 'Use the following command to deploy the two services:'
+  id: totrans-236
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 使用以下命令来部署这两个服务：
 - en: '[PRE48]'
+  id: totrans-237
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE48]'
 - en: 'This is the output:'
+  id: totrans-238
   prefs: []
   type: TYPE_NORMAL
+  zh: 这是输出结果：
 - en: '[PRE49]'
+  id: totrans-239
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE49]'
 - en: Double-check that the services are up and running using the `kubectl get all`
     command. Make sure all the Pods of the Node and .NET sample API services are up
     and running.
+  id: totrans-240
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 使用`kubectl get all`命令再次检查服务是否正常运行。确保Node和.NET示例API服务的所有Pod都已启动并运行。
 - en: 'List all Kubernetes services to find out the host ports for each application
     service:'
+  id: totrans-241
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 列出所有Kubernetes服务，以找出每个应用服务的主机端口：
 - en: '[PRE50]'
+  id: totrans-242
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE50]'
 - en: 'The output looks like this:'
+  id: totrans-243
   prefs: []
   type: TYPE_NORMAL
+  zh: 输出应如下所示：
 - en: '![Figure 19.11 – Output of kubectl get services](img/Figure_19.11_B19199.jpg)'
+  id: totrans-244
   prefs: []
   type: TYPE_IMG
+  zh: '![图 19.11 – kubectl get services 输出](img/Figure_19.11_B19199.jpg)'
 - en: Figure 19.11 – Output of kubectl get services
+  id: totrans-245
   prefs: []
   type: TYPE_NORMAL
+  zh: 图 19.11 – kubectl get services 输出
 - en: In the author’s case, the .NET API is mapped to port `30211`, and the Node API
     to port `30663`. Your ports may differ.
+  id: totrans-246
   prefs: []
   type: TYPE_NORMAL
+  zh: 在作者的案例中，.NET API映射到端口`30211`，Node API映射到端口`30663`。您的端口可能会有所不同。
 - en: 'Use `curl` to access the `/metrics` endpoint for the .NET service:'
+  id: totrans-247
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 使用`curl`访问.NET服务的`/metrics`端点：
 - en: '[PRE51]'
+  id: totrans-248
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE51]'
 - en: 'The output should look like this:'
+  id: totrans-249
   prefs: []
   type: TYPE_NORMAL
+  zh: 输出应如下所示：
 - en: '[PRE52]'
+  id: totrans-250
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE52]'
 - en: 'Now do the same for the Node service:'
+  id: totrans-251
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 现在对Node服务做同样的操作：
 - en: '[PRE53]'
+  id: totrans-252
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE53]'
 - en: 'This time, the output looks like this:'
+  id: totrans-253
   prefs: []
   type: TYPE_NORMAL
+  zh: 这次，输出结果如下所示：
 - en: '[PRE54]'
+  id: totrans-254
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE54]'
 - en: 'Double-check the `/targets` endpoint in Prometheus to make sure the two microservices
     are now reachable:'
+  id: totrans-255
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 在Prometheus中再次检查`/targets`端点，确保这两个微服务现在可以访问：
 - en: '![Figure 19.12 – Prometheus showing all targets are up and running](img/Figure_19.12_B19199.jpg)'
+  id: totrans-256
   prefs: []
   type: TYPE_IMG
+  zh: '![图 19.12 – Prometheus显示所有目标都已启动并运行](img/Figure_19.12_B19199.jpg)'
 - en: Figure 19.12 – Prometheus showing all targets are up and running
+  id: totrans-257
   prefs: []
   type: TYPE_NORMAL
+  zh: 图 19.12 – Prometheus显示所有目标都在运行
 - en: 'To make sure the custom metrics we defined for our Node.js and .NET services
     are defined and exposed, we need to access each service at least once. Thus use
     `curl` to access the respective endpoints a few times:'
+  id: totrans-258
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 为了确保我们为Node.js和.NET服务定义并暴露的自定义指标已经生效，我们需要至少访问一次每个服务。因此，使用`curl`多次访问各自的端点：
 - en: '[PRE55]'
+  id: totrans-259
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE55]'
 - en: 'We can also see the two metrics in the Prometheus Graph view:'
+  id: totrans-260
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 我们还可以在Prometheus的图形视图中看到这两个指标：
 - en: '![Figure 19.13 – Custom metrics in Prometheus](img/Figure_19.13_B19199.jpg)'
+  id: totrans-261
   prefs: []
   type: TYPE_IMG
+  zh: '![图 19.13 – Prometheus中的自定义指标](img/Figure_19.13_B19199.jpg)'
 - en: Figure 19.13 – Custom metrics in Prometheus
+  id: totrans-262
   prefs: []
   type: TYPE_NORMAL
+  zh: 图 19.13 – Prometheus中的自定义指标
 - en: The last step is to deploy Grafana to Kubernetes so that we have the ability
     to create sophisticated and graphically appealing dashboards displaying key metrics
     of our application services and/or infrastructure components.
+  id: totrans-263
   prefs: []
   type: TYPE_NORMAL
+  zh: 最后一步是将Grafana部署到Kubernetes，以便我们能够创建复杂且具有图形化吸引力的仪表盘，显示应用服务和/或基础设施组件的关键指标。
 - en: Deploying Grafana to Kubernetes
+  id: totrans-264
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 将Grafana部署到Kubernetes
 - en: Now let’s also deploy Grafana to our Kubernetes cluster, so that we can manage
     this tool the same way as all the other components of our distributed application.
     As the tool that allows us to create dashboards for monitoring the application,
     Grafana can be considered mission-critical and thus warrants this treatment.
+  id: totrans-265
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在让我们也将Grafana部署到我们的Kubernetes集群中，这样我们就可以像管理我们分布式应用的其他组件一样管理这个工具。作为允许我们创建用于监控应用的仪表盘的工具，Grafana可以被视为关键任务工具，因此需要这样处理。
 - en: 'Deploying Grafana to the cluster is pretty straightforward. Let’s do it as
     follows:'
+  id: totrans-266
   prefs: []
   type: TYPE_NORMAL
+  zh: 将Grafana部署到集群是非常直接的。我们可以按以下步骤操作：
 - en: Add a new file called `grafana.yaml` to the `ch19/kube` folder.
+  id: totrans-267
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 在`ch19/kube`文件夹中添加一个新的文件，命名为`grafana.yaml`。
 - en: 'To this file, add the definition for a Kubernetes Deployment for Grafana:'
+  id: totrans-268
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 在此文件中，添加Grafana的Kubernetes Deployment定义：
 - en: '![Figure 19.14 – The content of the grafana.yaml file](img/Figure_19.14_B19199.jpg)'
+  id: totrans-269
   prefs: []
   type: TYPE_IMG
+  zh: '![图 19.14 – grafana.yaml文件的内容](img/Figure_19.14_B19199.jpg)'
 - en: Figure 19.14 – The content of the grafana.yaml file
+  id: totrans-270
   prefs: []
   type: TYPE_NORMAL
+  zh: 图 19.14 – grafana.yaml文件的内容
 - en: If you prefer not to type the code yourself, then the file can be found in the
     `sample-solutions/ch19/kube` subfolder of your repo.
+  id: totrans-271
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果你不想自己输入代码，可以在你的仓库的`sample-solutions/ch19/kube`子文件夹中找到该文件。
 - en: There are no surprises in that definition. In this example, we are running a
     single instance of Grafana, and it uses the `app` and `purpose` labels for identification,
     similar to what we used for Prometheus. No special volume mapping is needed this
     time since we are only working with defaults.
+  id: totrans-272
   prefs: []
   type: TYPE_NORMAL
+  zh: 该定义没有什么意外。在这个示例中，我们运行的是单实例的Grafana，并且它使用`app`和`purpose`标签进行标识，类似于我们为Prometheus使用的标签。这次不需要特殊的卷映射，因为我们只使用默认配置。
 - en: 'We also need to expose Grafana, and thus append the following snippet to the
     preceding file to define a service for Grafana:'
+  id: totrans-273
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 我们还需要暴露Grafana，因此需要将以下代码片段附加到前面的文件中，以定义Grafana的服务：
 - en: '![Figure 19.15 – The Kubernetes service for Grafana](img/Figure_19.15_B19199.jpg)'
+  id: totrans-274
   prefs: []
   type: TYPE_IMG
+  zh: '![图 19.15 – Grafana的Kubernetes服务](img/Figure_19.15_B19199.jpg)'
 - en: Figure 19.15 – The Kubernetes service for Grafana
+  id: totrans-275
   prefs: []
   type: TYPE_NORMAL
+  zh: 图 19.15 – Grafana的Kubernetes服务
 - en: Once again, we are using a service of the `NodePort` type to be able to access
     the Grafana UI from our host.
+  id: totrans-276
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们再次使用了`NodePort`类型的服务，以便从主机访问Grafana UI。
 - en: 'We can now deploy Grafana with this command:'
+  id: totrans-277
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 现在我们可以使用以下命令部署Grafana：
 - en: '[PRE56]'
+  id: totrans-278
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE56]'
 - en: 'This results in this output:'
+  id: totrans-279
   prefs: []
   type: TYPE_NORMAL
+  zh: 这将产生以下输出：
 - en: '[PRE57]'
+  id: totrans-280
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE57]'
 - en: 'Let’s find out what the port number will be, over which we can access Grafana:'
+  id: totrans-281
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 让我们找出可以访问Grafana的端口号：
 - en: '[PRE58]'
+  id: totrans-282
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE58]'
 - en: 'This gives us this:'
+  id: totrans-283
   prefs: []
   type: TYPE_NORMAL
+  zh: 这将给我们带来以下内容：
 - en: '![Figure 19.16 – Get details of the Grafana service](img/Figure_19.16_B19199.jpg)'
+  id: totrans-284
   prefs: []
   type: TYPE_IMG
+  zh: '![图 19.16 – 获取Grafana服务的详细信息](img/Figure_19.16_B19199.jpg)'
 - en: Figure 19.16 – Get details of the Grafana service
+  id: totrans-285
   prefs: []
   type: TYPE_NORMAL
+  zh: 图 19.16 – 获取Grafana服务的详细信息
 - en: 'Open a new browser tab and navigate to `http://localhost:<port>`, where `<port>`
     is the port you identified in the previous step, and in my case is `32736`. You
     should see something like this:'
+  id: totrans-286
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 打开一个新的浏览器标签，导航至`http://localhost:<port>`，其中`<port>`是你在上一阶段识别的端口号，在我的情况下是`32736`。你应该看到类似这样的内容：
 - en: '![Figure 19.17 – Login screen of Grafana](img/Figure_19.17_B19199.jpg)'
+  id: totrans-287
   prefs: []
   type: TYPE_IMG
+  zh: '![图 19.17 – Grafana的登录界面](img/Figure_19.17_B19199.jpg)'
 - en: Figure 19.17 – Login screen of Grafana
+  id: totrans-288
   prefs: []
   type: TYPE_NORMAL
+  zh: 图 19.17 – Grafana的登录界面
 - en: Log in with the default username `admin`, and the password is also `admin`.
     When asked to change the password, click the **Skip** link for now. You will be
     redirected to the **Home** dashboard.
+  id: totrans-289
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 使用默认用户名`admin`登录，密码也是`admin`。当系统提示更改密码时，暂时点击**跳过**链接。你将被重定向到**首页**仪表盘。
 - en: On the **Home** dashboard, click on **Create your first data source**, and select
     **Prometheus** from the list of data sources.
+  id: totrans-290
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 在**首页**仪表盘上，点击**创建你的第一个数据源**，然后从数据源列表中选择**Prometheus**。
 - en: Add `http://prometheus-svc:9090` for the URL to Prometheus, and click the green
     **Save &** **Test** button.
+  id: totrans-291
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 添加`http://prometheus-svc:9090`作为 Prometheus 的 URL，并点击绿色的**保存 &** **测试**按钮。
 - en: In Grafana, navigate back to the **Home** dashboard, and then select the **New**
     **dashboard** link.
+  id: totrans-292
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 在 Grafana 中，返回到**首页**仪表盘，然后选择**新建** **仪表盘**链接。
 - en: 'Click **Add query**, and then from the **Metrics** drop-down menu, select the
     custom metric we defined in the .NET sample service:'
+  id: totrans-293
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 点击**添加查询**，然后从**指标**下拉菜单中选择我们在 .NET 示例服务中定义的自定义指标：
 - en: '![Figure 19.18 – Selecting the .NET custom metric in Grafana](img/Figure_19.18_B19199.jpg)'
+  id: totrans-294
   prefs: []
   type: TYPE_IMG
+  zh: '![图 19.18 – 在 Grafana 中选择 .NET 自定义指标](img/Figure_19.18_B19199.jpg)'
 - en: Figure 19.18 – Selecting the .NET custom metric in Grafana
+  id: totrans-295
   prefs: []
   type: TYPE_NORMAL
+  zh: 图 19.18 – 在 Grafana 中选择 .NET 自定义指标
 - en: Change the value of **Relative time** from **1h** to **5m** (5 minutes).
+  id: totrans-296
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 将**相对时间**的值从**1小时**改为**5分钟**（5m）。
 - en: Change the dashboard refresh rate, found in the upper-right corner of the view,
     to **5s** (5 seconds).
+  id: totrans-297
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 更改仪表盘的刷新率，刷新率位于视图的右上角，设置为**5秒**（5s）。
 - en: Repeat the same for the custom metric defined in the Node sample service, so
     that you will have two panels on your new dashboard.
+  id: totrans-298
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 对 Node 示例服务中定义的自定义指标做相同的操作，这样你将在新仪表盘上有两个面板。
 - en: Modify the dashboard and its panels to your liking by consulting the documentation
     at [https://grafana.com/docs/grafana/latest/guides/getting_started/](https://grafana.com/docs/grafana/latest/guides/getting_started/).
+  id: totrans-299
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 根据[https://grafana.com/docs/grafana/latest/guides/getting_started/](https://grafana.com/docs/grafana/latest/guides/getting_started/)的文档修改仪表盘及其面板，以便根据自己的喜好进行定制。
 - en: 'Use `curl` to access the two endpoints of the sample services, and observe
     the dashboard. It may look like this:'
+  id: totrans-300
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 使用`curl`访问示例服务的两个端点，并观察仪表盘。它可能看起来像这样：
 - en: '![Figure 19.19 – Grafana dashboard with our two custom metrics](img/Figure_19.19_B19199.jpg)'
+  id: totrans-301
   prefs: []
   type: TYPE_IMG
+  zh: '![图 19.19 – 带有我们两个自定义指标的 Grafana 仪表盘](img/Figure_19.19_B19199.jpg)'
 - en: Figure 19.19 – Grafana dashboard with our two custom metrics
+  id: totrans-302
   prefs: []
   type: TYPE_NORMAL
+  zh: 图 19.19 – 带有我们两个自定义指标的 Grafana 仪表盘
 - en: To summarize, we can say that Prometheus is a good fit to monitor our microservices
     because we just need to expose a metrics port, and thus don’t need to add too
     much complexity or run additional services. Prometheus then is in charge of periodically
     scraping the configured targets, so that our services don’t need to worry about
     emitting them.
+  id: totrans-303
   prefs: []
   type: TYPE_NORMAL
+  zh: 总结来说，我们可以说 Prometheus 非常适合用来监控我们的微服务，因为我们只需要暴露一个指标端口，因此不需要增加太多复杂性或运行额外的服务。Prometheus
+    然后负责定期抓取配置好的目标，这样我们的服务就不需要担心这些指标的输出。
 - en: Defining alerts based on key metrics
+  id: totrans-304
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 基于关键指标定义警报
 - en: You will be let down if you believe that gathering logs and metrics and showing
     them in attractive dashboards is sufficient. If we just use dashboards, some support
     staff will need to be stationed in front of a large number of monitors constantly,
     round the clock, every day of the year, just in case. To put it mildly, this job
     is tedious. What happens if the person nods off? We must adjust our approach.
     Let’s start by defining what metrics are.
+  id: totrans-305
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果你认为仅仅收集日志和指标并在吸引人的仪表盘中显示它们就足够了，你会感到失望。如果我们只是使用仪表盘，一些支持人员将需要不断站在大量监视器前，全天候、每年365天待命，以防万一。委婉地说，这份工作是枯燥的。如果那个人打瞌睡了怎么办？我们必须调整方法。让我们从定义什么是指标开始。
 - en: Metrics
+  id: totrans-306
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 指标
 - en: Metrics are used as input values in the rules on which alerts are based. Critical
     metrics must be identified, and if they surpass a predetermined value repeatedly
     or for an extended period of time, an alert is required. For illustration, consider
     CPU usage.
+  id: totrans-307
   prefs: []
   type: TYPE_NORMAL
+  zh: 指标作为警报规则的输入值。必须识别出关键指标，如果它们超过预设值并持续一段时间，就需要触发警报。例如，考虑 CPU 使用率。
 - en: Defining alerts based on key metrics is an important part of monitoring and
     maintaining the health of our Docker and Kubernetes systems. Alerts allow us to
     define conditions based on metrics and to send notifications when those conditions
     are met, allowing us to quickly respond to potential issues.
+  id: totrans-308
   prefs: []
   type: TYPE_NORMAL
+  zh: 基于关键指标定义警报是监控和维护 Docker 和 Kubernetes 系统健康的重要部分。警报使我们能够基于指标定义条件，并在这些条件满足时发送通知，从而使我们能够迅速响应潜在问题。
 - en: In Kubernetes, we can use tools such as Prometheus to define alerting rules
     based on PromQL expressions. These rules allow us to specify conditions based
     on metrics collected from our cluster and send notifications to an external service
     when those conditions are met. For example, we could define an alert that triggers
     when CPU or memory utilization on cluster nodes exceeds a certain threshold.
+  id: totrans-309
   prefs: []
   type: TYPE_NORMAL
+  zh: 在 Kubernetes 中，我们可以使用像 Prometheus 这样的工具，根据 PromQL 表达式定义警报规则。这些规则允许我们基于从集群收集的度量数据指定条件，并在这些条件满足时向外部服务发送通知。例如，我们可以定义一个警报，当集群节点的
+    CPU 或内存利用率超过某个阈值时触发。
 - en: In Docker, we can use tools such as cAdvisor or Docker stats to collect metrics
     from our containers, and then use a monitoring and alerting tool to define alerts
     based on those metrics. For example, we could define an alert that triggers when
     the number of running containers exceeds a certain threshold.
+  id: totrans-310
   prefs: []
   type: TYPE_NORMAL
+  zh: 在 Docker 中，我们可以使用像 cAdvisor 或 Docker stats 这样的工具来收集容器的度量数据，然后使用监控和警报工具根据这些度量数据定义警报。例如，我们可以定义一个警报，当运行的容器数量超过某个阈值时触发。
 - en: 'When defining alerts, it’s important for us to follow best practices to ensure
     that our alerts are effective and actionable. Some best practices for alerting
     on Kubernetes include the following:'
+  id: totrans-311
   prefs: []
   type: TYPE_NORMAL
+  zh: 在定义警报时，我们需要遵循最佳实践，确保警报既有效又可操作。关于 Kubernetes 的一些警报最佳实践包括以下内容：
 - en: '**Alerting on symptoms**: Alerts should be based on symptoms that have a noticeable
     impact, rather than unexpected values in metrics'
+  id: totrans-312
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**基于症状的警报**：警报应基于那些具有显著影响的症状，而不是基于度量数据中出现的异常值。'
 - en: '**Alerting on the host or Kubernetes node layer**: Monitor the health of your
     hosts and nodes to ensure that your cluster is running smoothly'
+  id: totrans-313
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**基于主机或 Kubernetes 节点层的警报**：监控主机和节点的健康状况，以确保集群平稳运行。'
 - en: '**Alerting on the Kubernetes infrastructure**: Monitor the health of the Kubernetes
     control plane and other internal services'
+  id: totrans-314
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**基于 Kubernetes 基础设施的警报**：监控 Kubernetes 控制平面和其他内部服务的健康状况。'
 - en: '**Alerting on services running on Kubernetes**: Monitor the health of your
     applications running on Kubernetes'
+  id: totrans-315
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**基于 Kubernetes 上运行的服务的警报**：监控在 Kubernetes 上运行的应用程序的健康状况。'
 - en: '**Alerting on application layer metrics**: Monitor application-specific metrics
     to ensure that your applications are running smoothly'
+  id: totrans-316
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**基于应用层度量的警报**：监控应用程序特定的度量数据，以确保应用程序顺利运行。'
 - en: Now let’s talk about alerting when an exceptional situation occurs.
+  id: totrans-317
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在让我们来讨论当发生异常情况时的警报处理。
 - en: Alerts
+  id: totrans-318
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 警报
 - en: Let’s define alerts, which are sent out when something unusual occurs. We may
     alert in different ways. If you are on duty, it may be a pager message, a text
     message, an email, or even the activation of an alarm sound and some blinking
     alert lights. Everything hinges on the use case. Let’s just state that the author
     has contributed to several programs that have employed all of the aforementioned
     methods of alerting users.
+  id: totrans-319
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们来定义警报，当出现异常情况时发送警报。我们可以通过不同的方式进行警报通知。如果你正在值班，可能会收到寻呼信息、短信、电子邮件，甚至是激活警报音和闪烁的警告灯。一切都取决于具体的使用场景。我们只需要说明，作者参与了多个程序，这些程序采用了上述所有的警报通知方式。
 - en: For illustration, consider CPU use. When a Kubernetes cluster node’s CPU use
     exceeds 95% for a period of more than a minute, the **System Reliability Engineer**
     (**SRE**) needs to be notified.
+  id: totrans-320
   prefs: []
   type: TYPE_NORMAL
+  zh: 以 CPU 使用情况为例。当一个 Kubernetes 集群节点的 CPU 使用率超过 95% 且持续超过一分钟时，**系统可靠性工程师**（**SRE**）需要收到通知。
 - en: But who must establish the guidelines, you might wonder? Operations – or, more
     precisely, the SREs – are responsible for determining what non-functional metrics
     are significant and when they wish to be notified, even in the middle of the night.
     The company must specify the functional metrics as well as the tolerance levels
     or other criteria that will cause an alert for each measure.
+  id: totrans-321
   prefs: []
   type: TYPE_NORMAL
+  zh: 但是，你可能会想，谁来制定这些指南呢？运营团队——或者更准确地说，是 SRE 们——负责确定哪些非功能性度量数据是重要的，并在需要时决定何时通知他们，即使是在深夜。公司必须明确规定功能性度量数据及其容忍度或其他标准，这些标准将触发每个度量的警报。
 - en: Defining alerts
+  id: totrans-322
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 定义警报
 - en: It is not sufficient to merely gather and display metrics, whether they pertain
     to infrastructure or the business. In order to develop **Service-Level Objectives**
     (**SLOs**) and **Service-Level Agreements** (**SLAs**) for those metrics, we must
@@ -1387,46 +2052,62 @@
     Following that, we establish guidelines for how frequently and for how long a
     measured metric may exceed the appropriate SLO or SLA. We send out an alert if
     one of these rules is broken.
+  id: totrans-323
   prefs: []
   type: TYPE_NORMAL
+  zh: 仅仅收集和展示度量数据是不够的，无论它们是与基础设施相关还是与业务相关。为了为这些度量数据制定**服务水平目标**（**SLOs**）和**服务水平协议**（**SLAs**），我们首先必须确定真正定义系统状态的关键指标。随后，我们制定指导方针，规定一个度量数据超出适当的SLO或SLA的频率和持续时间。如果违反这些规则，我们会发送警报。
 - en: Let’s define a few potential alert candidates to get a sense of this. The first
     sample is a system-level statistic, whereas the second is a functional, or business-relevant,
     metric. Can you distinguish between them?
+  id: totrans-324
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们定义几个潜在的警报候选项来了解这一点。第一个示例是系统级统计数据，而第二个是功能性或与业务相关的度量标准。你能区分它们吗？
 - en: We define the percentage of the total CPU utilized in a banking application
     as a statistic. *The proportion should not exceed 99%* could be the SLO. The rule
     might be that an alert should be sent out if the CPU percentage rises above 99%
     for more than 50% of a minute.
+  id: totrans-325
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 我们将银行应用程序中使用的总CPU百分比定义为一个统计数据。*该比例不应超过99%*可能是SLO。规则可能是：如果CPU百分比在一分钟内超过99%超过50%，则应发送警报。
 - en: We may designate the amount of time it takes to generate a quote for a customer
     interested in a quote as a critical statistic in an application providing life
     insurance. The SLA for this metric may then be that 99% of all quote requests
     must be processed within 50 milliseconds. No request can take more than 1,000
     milliseconds. If the SLA is breached more than three times in a single hour, an
     alert should be sent, according to a rule for alerts.
+  id: totrans-326
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 我们可以将为客户提供报价的时间指定为一个关键统计数据，适用于提供人寿保险的应用程序。该度量的SLA可能是：99%的报价请求必须在50毫秒内处理完毕。没有请求可以超过1,000毫秒。如果SLA在一个小时内被违反超过三次，根据警报规则，应该发送警报。
 - en: The former is a infrastructure metric, whereas the latter is an commercial metric.
+  id: totrans-327
   prefs: []
   type: TYPE_NORMAL
+  zh: 前者是一个基础设施度量，而后者是一个商业度量。
 - en: The chosen target individuals, such as SREs or developers, can then get alerts
     via a variety of channels, including email, text messages, automated phone calls,
     Slack messages, audio alarms, optical alarms, and others.
+  id: totrans-328
   prefs: []
   type: TYPE_NORMAL
+  zh: 选定的目标人员，例如SRE或开发人员，可以通过多种渠道接收警报，包括电子邮件、短信、自动电话、Slack消息、音频警报、光学警报等。
 - en: Service employees can now conduct other activities instead of actively monitoring
     the system once we have created and wired such alarms. They are guaranteed to
     be informed if anything significant or unusual occurs to which they must respond.
+  id: totrans-329
   prefs: []
   type: TYPE_NORMAL
+  zh: 一旦我们创建并配置了这些警报，服务人员就可以进行其他活动，而不必主动监控系统。如果发生任何重大或异常情况，他们将确保得到通知并作出响应。
 - en: Runbooks
+  id: totrans-330
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 运行手册
 - en: Say that an alert has been raised. What follows? Runbooks can help in this situation.
     A runbook outlines for each alert who must be notified, what this person must
     do to remedy the underlying problem, and to whom the problem must be escalated
@@ -1439,16 +2120,22 @@
     that your application is now devoid of a crucial requirement. In essence, you
     are unable to conduct business until the problem is fixed; don’t you think your
     CTO should be aware of this?
+  id: totrans-331
   prefs: []
   type: TYPE_NORMAL
+  zh: 假设已经触发了一个警报。那么接下来怎么办？运行手册可以在这种情况下提供帮助。运行手册概述了每个警报需要通知谁，该人员需要做什么来解决潜在问题，如果问题无法解决，应将问题升级到谁那里。创建运行手册是一个困难的过程，不容小觑。然而，它们是企业的关键工具。SRE的能力是有限的。有些生产问题非常严重，以至于必须通知C级管理人员。假设你经营一个在线商店，由于**支付服务提供商**（**PSP**）故障，无法在平台上处理支付，这意味着你的应用程序现在缺少一个关键的需求。实质上，在问题修复之前，你无法开展业务；你不认为CTO应该知道这个情况吗？
 - en: 'Let’s talk about a current hot topic: problems occurring with a production
     system. We need to swiftly identify the underlying cause of the problem.'
+  id: totrans-332
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们谈谈一个当前的热门话题：生产系统中出现的问题。我们需要迅速找出问题的根本原因。
 - en: Troubleshooting a service running in production
+  id: totrans-333
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 在生产环境中排查服务问题
 - en: It is a recommended best practice to create minimal images for production that
     don’t contain anything that is not absolutely needed. This includes common tools
     that are usually used to debug and troubleshoot an application, such as `netcat`,
@@ -1459,15 +2146,20 @@
     having to deal with vulnerabilities. Furthermore, a small image has the advantage
     of being downloaded quickly, using less space on disk and in memory, and showing
     faster startup times.
+  id: totrans-334
   prefs: []
   type: TYPE_NORMAL
+  zh: 最佳实践是创建仅包含绝对必要内容的最小化生产镜像。这包括通常用于调试和排查应用程序的常见工具，如 `netcat`、`iostat`、`ip` 等。理想情况下，生产系统仅在集群节点上安装容器编排软件（如
+    Kubernetes）和一个最小化操作系统（如 CoreOS）。而应用容器理想情况下只包含运行所必需的二进制文件。这可以最小化攻击面，并降低处理漏洞的风险。此外，小型镜像有一个优势，即下载速度快，占用的磁盘和内存空间少，启动速度更快。
 - en: But this can be a problem if one of the application services running on our
     Kubernetes cluster shows unexpected behavior and maybe even crashes. Sometimes
     we are not able to find the root cause of the problem just from the logs generated
     and collected, so we might need to troubleshoot the component on the cluster node
     itself.
+  id: totrans-335
   prefs: []
   type: TYPE_NORMAL
+  zh: 但如果我们在 Kubernetes 集群中运行的某个应用服务表现异常，甚至崩溃，这可能会成为一个问题。有时候我们无法仅通过生成并收集的日志来找到问题的根本原因，这时我们可能需要直接在集群节点上排查该组件。
 - en: We may be tempted to SSH into the given cluster node and run some diagnostic
     tools. But this is not possible since the cluster node only runs a minimal Linux
     distro with no such tools installed. As a developer, we could now just ask the
@@ -1479,109 +2171,159 @@
     developers direct access to nodes of a production cluster, no matter how much
     you trust them. Only a limited number of cluster administrators should ever be
     able to do so.
+  id: totrans-336
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们可能会想通过 SSH 连接到指定的集群节点，并运行一些诊断工具。但这是不可能的，因为集群节点仅运行一个最小化的 Linux 发行版，并未安装这些工具。作为开发者，我们现在可以请求集群管理员安装所有我们打算使用的
+    Linux 诊断工具。但这并不是一个好主意。首先，这会为集群节点上可能存在的易受攻击的软件敞开大门，危及在该节点上运行的所有其他 pod，也会为集群本身敞开一道门，黑客可能会利用这一点。此外，给予开发者对生产集群节点的直接访问始终是一个不好的主意，无论你多么信任他们。只有有限数量的集群管理员才应该有权限这么做。
 - en: A better solution is to have the cluster admin run a so-called bastion container
     on behalf of the developers. This bastion or troubleshooting container has all
     the tools installed that we need to pinpoint the root cause of the bug in the
     application service. It is also possible to run the bastion container in the host’s
     network namespace; thus, it will have full access to all the network traffic of
     the container host.
+  id: totrans-337
   prefs: []
   type: TYPE_NORMAL
+  zh: 更好的解决方案是让集群管理员代表开发者运行一个所谓的堡垒容器。这个堡垒容器或排错容器已经安装了我们需要的所有工具，帮助我们准确找出应用服务中 bug 的根本原因。它也可以在主机的网络命名空间中运行，因此它将能够完全访问容器主机的所有网络流量。
 - en: The netshoot container
+  id: totrans-338
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: netshoot 容器
 - en: 'Nicola Kabar, a former Docker employee, created a handy Docker image called
     `nicolaka/netshoot` that field engineers at Docker use all the time to troubleshoot
     applications running in production on Kubernetes or Docker Swarm. The purpose
     of this container, in the words of the creator, is as follows:'
+  id: totrans-339
   prefs: []
   type: TYPE_NORMAL
+  zh: 前 Docker 员工 Nicola Kabar 创建了一个实用的 Docker 镜像，名为 `nicolaka/netshoot`，这是 Docker
+    的现场工程师常用来排查在 Kubernetes 或 Docker Swarm 上运行的应用程序问题的工具。正如创建者所言，这个容器的目的如下：
 - en: '“Purpose: Docker and Kubernetes network troubleshooting can become complex.
     With proper understanding of how Docker and Kubernetes networking works and the
     right set of tools, you can troubleshoot and resolve these networking issues.
     The netshoot container has a set of powerful networking troubleshooting tools
     that can be used to troubleshoot Docker networking issues.”'
+  id: totrans-340
   prefs: []
   type: TYPE_NORMAL
+  zh: “目的：Docker 和 Kubernetes 网络故障排除可能会变得复杂。通过正确理解 Docker 和 Kubernetes 网络工作原理以及使用正确的工具，你可以进行故障排除并解决这些网络问题。netshoot
+    容器具有一套强大的网络故障排除工具，可以用于故障排除 Docker 网络问题。”
 - en: '- Nicola Kabar'
+  id: totrans-341
   prefs: []
   type: TYPE_NORMAL
+  zh: '- Nicola Kabar'
 - en: 'To use this container for debugging purposes, we can proceed as follows:'
+  id: totrans-342
   prefs: []
   type: TYPE_NORMAL
+  zh: 若要使用此容器进行调试，我们可以按如下步骤进行：
 - en: 'Spin up a throwaway bastion container for debugging on Kubernetes, using the
     following command:'
+  id: totrans-343
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 使用以下命令启动一个临时的堡垒容器，在 Kubernetes 上进行调试：
 - en: '[PRE59]'
+  id: totrans-344
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE59]'
 - en: 'You will be greeted by this prompt:'
+  id: totrans-345
   prefs: []
   type: TYPE_NORMAL
+  zh: 你将看到以下提示：
 - en: '[PRE60]'
+  id: totrans-346
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE60]'
 - en: 'You can now use tools such as `ip` from within this container:'
+  id: totrans-347
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 你现在可以在这个容器中使用像 `ip` 这样的工具：
 - en: '[PRE61]'
+  id: totrans-348
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE61]'
 - en: 'On my machine, this results in an output similar to the following if the pod
     is run on Docker Desktop:'
+  id: totrans-349
   prefs: []
   type: TYPE_NORMAL
+  zh: 在我的机器上，如果 pod 在 Docker Desktop 上运行，输出结果类似于以下内容：
 - en: '![Figure 19.20 – Output of the ip a command using the netshoot container](img/Figure_19.20_B19199.jpg)'
+  id: totrans-350
   prefs: []
   type: TYPE_IMG
+  zh: '![图 19.20 – 使用 netshoot 容器运行 `ip a` 命令的输出](img/Figure_19.20_B19199.jpg)'
 - en: Figure 19.20 – Output of the ip a command using the netshoot container
+  id: totrans-351
   prefs: []
   type: TYPE_NORMAL
+  zh: 图 19.20 – 使用 netshoot 容器运行 `ip a` 命令的输出
 - en: To leave this troubleshooting container, just press *Ctrl* + *D* or type `exit`
     and then hit *Enter*.
+  id: totrans-352
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 要退出这个故障排除容器，只需按 *Ctrl* + *D* 或键入 `exit` 然后按 *Enter*。
 - en: 'If we need to dig a bit deeper and run the container in the same network namespace
     as the Kubernetes host, then we can use this command instead:'
+  id: totrans-353
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 如果我们需要更深入地了解并在与 Kubernetes 主机相同的网络命名空间中运行容器，那么我们可以使用这个命令：
 - en: '[PRE62]'
+  id: totrans-354
   prefs:
   - PREF_IND
   type: TYPE_PRE
+  zh: '[PRE62]'
 - en: If we run `ip` again in this container, we will see everything that the container
     host sees too, for example, all the `veth` endpoints.
+  id: totrans-355
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 如果我们在这个容器中再次运行 `ip` 命令，我们也会看到容器主机所看到的一切，例如所有的 `veth` 端点。
 - en: The `netshoot` container has all the usual tools installed that an engineer
     ever needs to troubleshoot network-related problems. Some of the more familiar
     ones are `ctop`, `curl`, `dhcping`, `drill`, `ethtool`, `iftop`, `iperf`, and
     `iproute2`.
+  id: totrans-356
   prefs: []
   type: TYPE_NORMAL
+  zh: '`netshoot` 容器安装了工程师解决网络相关问题时所需的所有常用工具。更熟悉的一些工具有 `ctop`、`curl`、`dhcping`、`drill`、`ethtool`、`iftop`、`iperf`
+    和 `iproute2`。'
 - en: Summary
+  id: totrans-357
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 总结
 - en: In this last chapter of the book, we have looked at different techniques used
     to instrument and monitor an individual service or a whole distributed application
     running on a Kubernetes cluster. You have been introduced to the concept of alerting
     based on key metrics. Furthermore, you have been shown how one can troubleshoot
     an application service that is running in production without altering the cluster
     or the cluster nodes on which the service is running.
+  id: totrans-358
   prefs: []
   type: TYPE_NORMAL
+  zh: 在本书的最后一章，我们探讨了用于为单个服务或整个分布式应用程序添加监控和仪表化的不同技术，尤其是在 Kubernetes 集群上运行时。你已经了解了基于关键指标的告警概念。此外，我们还展示了如何在不改变集群或运行服务的集群节点的情况下，故障排除生产环境中运行的应用服务。
 - en: As we come to the end of this book, we would like to thank you for your interest
     and for persisting till the end. We hope that the information and examples provided
     have been helpful in deepening your understanding of Docker and Kubernetes. These
@@ -1589,42 +2331,61 @@
     and we hope that this book has given you the knowledge and confidence to use them
     effectively. Thank you again for reading, and we wish you all the best in your
     future endeavors!
+  id: totrans-359
   prefs: []
   type: TYPE_NORMAL
+  zh: 随着本书的结束，我们想感谢你对本书的兴趣并坚持读到最后。我们希望提供的信息和示例有助于加深你对 Docker 和 Kubernetes 的理解。这些技术是构建和部署现代应用程序的强大工具，我们希望本书能帮助你获得有效使用它们的知识和信心。再次感谢你的阅读，祝你未来一切顺利！
 - en: Questions
+  id: totrans-360
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 问题
 - en: 'To assess your learning progress, please answer the following questions:'
+  id: totrans-361
   prefs: []
   type: TYPE_NORMAL
+  zh: 为了评估你的学习进度，请回答以下问题：
 - en: Why is it important to instrument your application services?
+  id: totrans-362
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 为什么为你的应用服务添加监控是重要的？
 - en: Can you describe to an interested layperson what Prometheus is?
+  id: totrans-363
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 你能向一个感兴趣的外行人描述 Prometheus 是什么吗？
 - en: Exporting Prometheus metrics is easy. Can you describe in simple words how you
     can do this for a Node.js application?
+  id: totrans-364
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 导出 Prometheus 指标非常简单。你能用简单的语言描述如何为 Node.js 应用程序做这件事吗？
 - en: You need to debug a service running on Kubernetes in production. Unfortunately,
     the logs produced by this service alone don’t give enough information to pinpoint
     the root cause. You decide to troubleshoot the service directly on the respective
     Kubernetes cluster node. How do you proceed?
+  id: totrans-365
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 你需要调试一个在 Kubernetes 上运行的生产服务。不幸的是，仅凭该服务生成的日志无法提供足够的信息来定位根本原因。你决定直接在相应的 Kubernetes
+    集群节点上进行故障排查。你该如何进行？
 - en: Answers
+  id: totrans-366
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 答案
 - en: 'Here are sample answers to the preceding questions:'
+  id: totrans-367
   prefs: []
   type: TYPE_NORMAL
+  zh: 以下是前面问题的示例答案：
 - en: We cannot do any live debugging on a production system for performance and security
     reasons. This includes interactive or remote debugging. Yet application services
     can show unexpected behavior in response to code defects or other infrastructure-related
@@ -1634,48 +2395,63 @@
     about, and guide us to, the root cause of the error. When we instrument a service,
     we do exactly this – we produce as much information as is reasonable in the form
     of log entries and published metrics.
+  id: totrans-368
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 由于性能和安全原因，我们不能在生产系统上进行任何实时调试，包括交互式或远程调试。然而，应用服务可能会因为代码缺陷或其他基础设施相关问题（例如网络故障或外部服务不可用）而表现出异常行为。为了快速确定服务异常或失败的原因，我们需要尽可能多的日志信息。这些信息应该为我们提供线索，引导我们找到错误的根本原因。当我们对服务进行监控时，我们正是通过这种方式操作——以日志条目和已发布的度量标准的形式生成尽可能多的信息。
 - en: Prometheus is a service that is used to collect functional or non-functional
     metrics that are provided by other infrastructure services and, most importantly,
     by application services. Since Prometheus itself pulls those metrics periodically
     from all configured services, the services themselves do not have to worry about
     sending data. Prometheus also defines the format in which the metrics are to be
     presented by the producers.
+  id: totrans-369
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: Prometheus 是一个用于收集其他基础设施服务和最重要的应用服务提供的功能性或非功能性度量标准的服务。由于 Prometheus 本身会定期从所有配置的服务中拉取这些度量标准，因此服务本身无需担心发送数据。Prometheus
+    还定义了生产者呈现度量标准的格式。
 - en: 'To instrument a Node.js-based application service, we need to take the following
     four steps:'
+  id: totrans-370
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 为了对基于 Node.js 的应用服务进行监控，我们需要执行以下四个步骤：
 - en: Add a Prometheus adapter to the project. The maintainers of Prometheus recommend
     a library called `siimon/prom-client`.
+  id: totrans-371
   prefs:
   - PREF_IND
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 向项目中添加一个 Prometheus 适配器。Prometheus 的维护者推荐使用一个名为 `siimon/prom-client` 的库。
 - en: Configure the Prometheus client during the startup of the application. This
     includes the definition of a metrics registry.
+  id: totrans-372
   prefs:
   - PREF_IND
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 在应用程序启动时配置 Prometheus 客户端。这包括定义一个度量标准注册表。
 - en: Expose an HTTP GET endpoint/metrics where we return the collection of metrics
     defined in the metrics registry.
+  id: totrans-373
   prefs:
   - PREF_IND
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 暴露一个 HTTP GET 端点/metrics，在此端点返回在度量标准注册表中定义的度量标准集合。
 - en: Finally, define custom metrics of the counter, gauge, or histogram type, and
     use them in our code; for example, we increase a metric of the counter type each
     time a certain endpoint is called.
+  id: totrans-374
   prefs:
   - PREF_IND
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 最后，定义自定义的计数器、仪表盘或直方图类型的度量标准，并在我们的代码中使用它们；例如，我们每次调用某个端点时，都会增加一个计数器类型的度量标准。
 - en: Normally, in production, a Kubernetes cluster node only contains a minimal OS
     to keep its attack surface as limited as possible and to not waste precious resources.
     Thus, we cannot assume that the tools typically used to troubleshoot applications
@@ -1685,6 +2461,10 @@
     investigate network and other issues with the troubled service. A container that
     has been successfully used by many Docker field engineers at their customers’
     sites is `nicolaka/netshoot`.
+  id: totrans-375
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 通常在生产环境中，Kubernetes 集群节点仅包含最小化的操作系统，以保持尽可能小的攻击面并避免浪费宝贵的资源。因此，我们不能假设在相应主机上可以使用通常用于排查应用程序或进程问题的工具。一个强大且推荐的排查方法是在临时
+    Pod 中运行一个特殊的工具或排查容器。然后可以使用这个容器作为堡垒，帮助我们调查受影响服务的网络和其他问题。许多 Docker 领域工程师在客户现场成功使用的容器是
+    `nicolaka/netshoot`。
