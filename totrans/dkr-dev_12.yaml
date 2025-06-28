@@ -1,0 +1,1919 @@
+- en: '*Chapter 10*: Monitoring Docker Using Prometheus, Grafana, and Jaeger'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In order to understand how an application behaves when it runs in production,
+    developers and system operators rely on logging, monitoring, and alerting systems.
+    These systems can both give insight into whether an application and its environment
+    are operating normally and provide clues to follow if troubleshooting is needed.
+    As systems become more complex, the need for deeper insights into both applications
+    and their support software also grows. Systems that allow for deep inspection
+    of all these concerns without having to alter the code that runs on the system
+    can be said to have good **observability** characteristics.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this chapter, you will learn how to instrument your application and its runtime
+    environment to improve the observability of the entire system. You will learn
+    about many aspects of logging, monitoring, and alerting. Specifically, you will
+    learn how to view, query, and store logs from the Kubernetes cluster both within
+    the cluster and in CloudWatch and Amazon **Simple Storage Service** (**S3**).
+    You will learn how to implement liveness and readiness probes specific to the
+    needs of a cloud-native application, get alerts when something goes wrong, and
+    capture application metrics with Prometheus. You will learn how to visualize performance
+    and availability metrics using Grafana. Finally, we will dive deep into the application-specific
+    metrics at the code and database layer using Jaeger.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We will cover the following topics in this chapter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Docker logging and container runtime logging
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Use liveness and readiness probes in Kubernetes
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Gathering metrics and sending alerts with Prometheus
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Visualizing operational data with Grafana
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Application performance monitoring with Jaeger
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Next up, let's make sure that you are ready to test out these systems and learn
+    how to use them in concert to achieve observability for your system.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: This chapter focuses on the integration of Kubernetes with some AWS services,
+    including CloudWatch, Kinesis, and S3, so you must have a working AWS account
+    with administrator privileges. You will need to have a working Kubernetes cluster
+    in AWS, as set up in a previous chapter with AWS `eksctl`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You will also need to have a current version of the AWS CLI, `kubectl`, and
+    `helm` 3.x installed on your local workstation, as described in the previous chapter.
+    The `helm` commands in this chapter use the `helm` 3.x syntax.  The EKS cluster
+    must have a working ALB Ingress Controller setup.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You could use Spinnaker and Jenkins, as set up in previous chapters, to deploy
+    the applications in this chapter, but it is not required.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Check out the following video to see the Code in Action:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[https://bit.ly/3iIqgvM](https://bit.ly/3iIqgvM)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Setting up a demo application – ShipIt Clicker v7
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'In order to have a sample application to instrument and monitor, we will use
+    the version of ShipIt Clicker in the `chapter10` directory in the following GitHub
+    repository:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[https://github.com/PacktPublishing/Docker-for-Developers/](https://github.com/PacktPublishing/Docker-for-Developers/)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: This version of the application has some important production-readiness updates
+    in contrast to the version in the previous chapter. Instead of being tightly coupled
+    with a specific Redis installation, this version uses a Redis server installed
+    separately. We will need to deploy the Redis cluster onto Kubernetes before installing
+    the latest version of ShipIt Clicker.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To prepare our Kubernetes environments, both in the local learning environment
+    and the AWS cloud EKS cluster, we will first need to install Redis using Helm.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Installing Redis from the Bitnami Helm repository
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: In order to deploy this version, we are going to have to deploy the Redis server
+    independently of the ShipIt Clicker pod. This represents a more realistic scenario
+    than the one where the ShipIt Clicker Kubernetes pod had both the Redis server
+    and the stateless application container running in it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We are going to use the version of Redis maintained by Bitnami ([https://bitnami.com/](https://bitnami.com/)),
+    which offers separate reader and writer endpoints. Deploy Redis first through
+    Helm, both to your local Kubernetes installation and then to your cloud Kubernetes
+    installation (replace `docker-desktop` and the AWS ARN with the context IDs for
+    your installation when you run the following commands):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: This will deploy a Redis cluster with one node that accepts read and write,
+    and multiple nodes that are replicas that are read-only. The version of ShipIt
+    Clicker in this chapter has been adapted to use this external Redis service, which
+    uses a Kubernetes secret to store a password needed for authentication.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Offensive terms – master and slave considered harmful
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The Bitnami Redis template, and Redis itself, use *master* and *slave* terminology
+    to describe the roles of nodes in a distributed system. Please know that while
+    these terms are common in information technology, many people find this terminology
+    backward and offensive. Other terms, such as primary/secondary or reader/writer,
+    convey the same information without the negative connotations. See this article
+    for more on this controversial issue:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[https://medium.com/@zookkini/masters-and-slaves-in-the-tech-world-132ef1c87504](mailto:https://medium.com/@zookkini/masters-and-slaves-in-the-tech-world-132ef1c87504)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next, let's build and install ShipIt Clicker into our learning environment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Installing the latest version of ShipIt Clicker locally
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Next, we will build the ShipIt Clicker Docker container, tag it, and push it
+    to Docker Hub, as we did in previous chapters. Issue these commands, replacing
+    `dockerfordevelopers` with your Docker Hub username:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: Inspect the running pods and services using `kubectl get all` to verify that
+    the pod is running, note its name, then inspect the logs with `kubectl logs` to
+    see the startup logs. There should be no errors in the log.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next, let's install this version on EKS.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Installing the latest version of ShipIt Clicker on EKS through ECR
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Now that you have built the Docker containers and installed this locally, install
+    it to AWS EKS via `values.yaml` to give this a hostname in the Route 53 zone,
+    such as `shipit-v7.eks.example.com` (replace the ECR reference with the one corresponding
+    to your AWS account and region, and replace `example.com` with your domain name):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Inspect the Kubernetes logs to make sure the application has deployed cleanly
+    to the cluster:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: If all is well with the deployment, get the AWS ALB Ingress Controller ingress
+    address, as described in the previous chapter, and create DNS entries in the Route
+    53 console for the deployed application with the ALB address. You should then
+    be able to reach your application at a URL similar to `https://shipit-v7.eks.example.com/`
+    (replace `example.com` with your domain name).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Configuring Jenkins and Spinnaker for this chapter
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'You might wonder whether you can use the same Jenkins and Spinnaker configuration
+    you set up previously for this chapter. You can, by making a few simple configuration
+    changes to the Jenkins job in the `Spinnaker` multi-branch pipeline item and the
+    Spinnaker pipeline definitions. Start by fixing up Jenkins. Edit the configuration
+    of the job and change the `chapter10/Jenkinsfile`, and then hit the **Save** button:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/B11641_10_001.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 10.1 – The Jenkins Build Configuration setting for the Spinnaker multi-branch
+    pipeline item
+  prefs: []
+  type: TYPE_NORMAL
+- en: Jenkins will rescan the repository and use the files from `chapter10` instead
+    of `chapter9`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Then, go to Spinnaker and edit the pipeline for the staging environment in the
+    configuration pipeline stage, and change all the `chapter9` references to `chapter10`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can then use `git push --force origin HEAD:staging` as described in the
+    previous chapter to trigger a Kubernetes deployment from Spinnaker.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The Helm templates for ShipIt Clicker in this chapter have been packaged into
+    an archive file, `chapter10/helm.tar.gz`, using the following commands:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: If you alter the Helm Charts and you are using Spinnaker, be sure to use the
+    preceding commands to repackage the `helm.tar.gz` file, as Spinnaker expects the
+    charts in that specific file.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next, let's take a detailed look at logging for both the Docker containers and
+    the container runtime logs, such as those for the Kubernetes control plane.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Docker logging and container runtime logging
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: When you are trying to troubleshoot problems with your application, it helps
+    to have detailed logs for both the application itself and from whatever system
+    it runs. Every Docker container, whether it is run locally or with a cloud container
+    runtime manager such as Kubernetes, produces its own logs that you can query.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In previous chapters, we've used both the `docker logs` command and the `kubectl
+    logs` command in order to examine logs for the demo application when run both
+    on a local workstation and in the cloud with Kubernetes. These commands can yield
+    insight into events that are critical to your system, including both application
+    logging messages and error and exception logs. They are still the bedrock tools
+    you will reach for; but particularly when we need to scale out our application
+    with Kubernetes, we will need a more sophisticated approach.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understanding Kubernetes container logging
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Every Docker container running in every Kubernetes pod produces logs. The Kubernetes
+    runtime, by default, will temporarily store the last 10 MB of logs for every running
+    container. This makes it possible to sample the logs for every running application
+    using only the `kubectl logs` tool. When a pod is evicted from a node, or when
+    a container restarts, *Kubernetes will delete these ephemeral log files*; it will
+    *not* automatically save the logs to permanent storage. This is far from ideal
+    if you need to troubleshoot a problem, especially if the problem happened long
+    ago enough that those logs have rolled over and the older log entries are unavailable.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can use `kubectl` to examine multiple logs at once, as shown in the previous
+    chapter, with respect to showing multiple Spinnaker container logs, and you can
+    use common command-line tools, such as `grep`, `awk`, `jq`, and `less`, to carry
+    out further basic searching and filtering on logs. However, the issue with logs
+    rolling over will thwart some search attempts.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Given the constraints on the basic features of the Kubernetes system with respect
+    to both log retention and searching, it would be prudent to explore how we might
+    want to mitigate these issues. Let's talk about the characteristics we would want
+    from a log management system next.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Ideal characteristics for a log management system
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Ideally, you would want to use a system for managing your logs that has some
+    of the following characteristics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Having log messages be available to view in a central console
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Low latency from when a log event happens to when it is available for searches
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Collection of logs from multiple sources, including Kubernetes objects such
+    as pods, nodes, deployments, and Docker containers
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: An easy-to-use search interface, with the ability to save and reuse ad hoc queries
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A way to visualize a histogram of search results that includes the ability to
+    zoom in on the graph by clicking and dragging over the graph (a feature known
+    as *brushing*)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A way to send alerts based on the contents of log messages
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A way to configure the retention period of the log messages
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Various organizations have built many excellent log storage and analysis systems
+    over the past 20 years, including the following third-party log management systems:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Splunk ([https://www.splunk.com/](https://www.splunk.com/))
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Elasticsearch ([https://www.elastic.co/](https://www.elastic.co/))
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Loggly ([https://www.loggly.com/](https://www.loggly.com/))
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Papertrail ([https://www.papertrail.com/](https://www.papertrail.com/))
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: New Relic Logs ([https://newrelic.com/products/logs](https://newrelic.com/products/logs))
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Datadog Log Management ([https://docs.datadoghq.com/logs/](https://docs.datadoghq.com/logs/))
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Cloud providers also have built excellent integrated log storage and analysis
+    systems, including the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: AWS CloudWatch ([https://aws.amazon.com/cloudwatch/](https://aws.amazon.com/cloudwatch/))
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Google Cloud Logging ([https://cloud.google.com/logging](https://cloud.google.com/logging))
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Microsoft Azure Monitor Logs ([https://docs.microsoft.com/en-us/azure/azure-monitor/platform/data-platform-logs](https://docs.microsoft.com/en-us/azure/azure-monitor/platform/data-platform-logs))
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: As a developer or system operator, you can use these systems to store and search
+    log entries. However, in order to do so, you must use a **log shipper** to extract
+    the logs from their origins and forward them to the log management system.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We will examine how to forward Kubernetes container logs to one of these systems
+    shortly, but first, let''s examine another critical system aspect: logging for
+    the Kubernetes control plane that provides orchestration for nodes, pods, and
+    the rest of the family of Kubernetes objects.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Troubleshooting Kubernetes control plane issues with logs
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'If you run your own Kubernetes cluster, where you manage the control plane
+    servers, you may have a difficult time troubleshooting system-level issues. The
+    Kubernetes troubleshooting guide offers guidance about looking at various log
+    files on individual machines in the control plane cluster, which could be a painful
+    exercise:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[https://kubernetes.io/docs/tasks/debug-application-cluster/debug-cluster/](https://kubernetes.io/docs/tasks/debug-application-cluster/debug-cluster/
+    )'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'However, if you are using managed Kubernetes services, such as AWS EKS, you
+    will not have direct access to these systems. You might ask, *how do I get those
+    logs*? The managed Kubernetes service providers all have ways to ship those logs
+    to another system in order to aid in troubleshooting. Fortunately, AWS EKS has
+    an optional configuration setting that tells it to ship logs from its control
+    plane directly to CloudWatch:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[https://docs.aws.amazon.com/eks/latest/userguide/control-plane-logs.html](https://docs.aws.amazon.com/eks/latest/userguide/control-plane-logs.html)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If you used the AWS EKS Quick Start described in [*Chapter 8*](B11641_08_Final_AM_ePub.xhtml#_idTextAnchor157),
+    *Deploying Docker Apps to Kubernetes*, to create your EKS cluster, it sets this
+    up for you. You can go to the CloudWatch Logs console in the `us-east-2` region
+    to verify: [https://us-east-2.console.aws.amazon.com/cloudwatch/home?region=us-east-2#logs:](https://us-east-2.console.aws.amazon.com/cloudwatch/home?region=us-east-2#logs:)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You will see a listing of log groups similar to the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/B11641_10_002.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 10.2 – CloudWatch log groups showing EKS control plane logs
+  prefs: []
+  type: TYPE_NORMAL
+- en: The main Kubernetes control plan log group will be named similarly to `/aws/eks/EKS-8PWG76O8/cluster`,
+    but with your EKS cluster name. You can navigate to this and examine the logs
+    there in detail through the console.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If you used `eksctl` to create your EKS cluster, you may not have enabled CloudWatch
+    logging. You can use the instructions here to add CloudWatch logging to EKS through
+    `eksctl`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[https://eksctl.io/usage/cloudwatch-cluster-logging/](https://eksctl.io/usage/cloudwatch-cluster-logging/)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that you have verified that your EKS cluster control plane is logging to
+    CloudWatch and have learned how to get a basic viewing of the logs, let's proceed
+    to capture the rest of the Kubernetes logs in CloudWatch Logs and analyze them
+    with CloudWatch Logs Insights.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Storing logs with CloudWatch Logs
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: AWS operates a cloud-scale service to handle logging, time-series metrics, data
+    ingestion, storage, and analysis called **CloudWatch**. Many AWS services, including
+    EKS, offer logging integration through CloudWatch. As with so many AWS services,
+    you only pay for what you use. You can learn more about the basics of CloudWatch
+    at [https://aws.amazon.com/cloudwatch/](https://aws.amazon.com/cloudwatch/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: We saw in the previous section that AWS allows us to configure the EKS control
+    plane to send logs directly to CloudWatch. This is good, but if we are going to
+    manage our logs in a central place, we should try to store *all* of our logs there.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next, we will look at how we can ship more logs to CloudWatch, using the solution
+    that AWS recommends in the EKS documentation – Fluent Bit ([https://fluentbit.io/](https://fluentbit.io/)).
+  prefs: []
+  type: TYPE_NORMAL
+- en: AWS provides an excellent tutorial on setting up Fluent Bit with EKS at [https://aws.amazon.com/blogs/containers/kubernetes-logging-powered-by-aws-for-fluent-bit/](https://aws.amazon.com/blogs/containers/kubernetes-logging-powered-by-aws-for-fluent-bit/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: The scripts and configuration files described later in this chapter are inspired
+    by and partially derived from that article.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next, we will learn how we can use a script to install Fluent Bit and supporting
+    AWS resources quickly and repeatably.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Installing Fluent Bit to ship logs to CloudWatch
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'While you could go through the steps in the previously referenced AWS blogs
+    by hand, in order to streamline these operations and make them work more seamlessly
+    with the AWS EKS Quick Start, you can use the `install-fluentbit-daemonset.sh`
+    script in this chapter to install Fluent Bit as a DaemonSet in your EKS cluster,
+    with a configuration that ships logs to CloudWatch Logs. Give it the name of the
+    CloudFormation template for your EKS cluster CloudFormation template as a command-line
+    parameter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: Setting up Fluent Bit to work with AWS requires a bit more work than it does
+    with some other cloud platforms; for example, if you were using Google Cloud Platform's
+    GKE, it would be installed automatically for you.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Once you have the logs for the containers streaming into CloudWatch, you can
+    use the CloudWatch AWS console to view the container logs, as well as the control
+    plane logs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Changing the CloudWatch log retention periods
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'By default, CloudWatch will store logs indefinitely. To save on log storage
+    fees, you should consider setting a relatively short retention period for your
+    CloudWatch logs – such as 60 days. You can do that from the console or the command
+    line, as follows, where this command sets the period for the `fluentbit-cloudwatch`
+    log group created by the `install-fluentbit-daemonset.sh` script:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: You might consider doing this for each of the CloudWatch log groups, even the
+    ones created by the AWS EKS Quick Start CloudFormation template.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next, let's see how we can store logs in S3.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Storing logs for the long term with AWS S3
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In order to economically store log data for the long term, over a period of
+    months or years, you can use an inexpensive cloud object storage system, such
+    as Amazon S3 ([https://aws.amazon.com/s3/](https://aws.amazon.com/s3/)).
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you have a serious need to retain logs for the long term – for example, if
+    you have a sensitive financial application where regulations mandate 5 years of
+    storage for all application logs – S3 could be a good fit. You can make long-term
+    storage even less expensive by setting up S3 life cycle rules on the bucket to
+    move objects to less expensive storage tiers, migrate them to Amazon Glacier ([https://aws.amazon.com/glacier/](https://aws.amazon.com/glacier/)),
+    or expire and delete older records.
+  prefs: []
+  type: TYPE_NORMAL
+- en: AWS published a blog article ([https://aws.amazon.com/blogs/opensource/centralized-container-logging-fluent-bit/](https://aws.amazon.com/blogs/opensource/centralized-container-logging-fluent-bit/))
+    that outlines a path that you could use to stream the logs into S3 using Kinesis
+    Firehose as an additional Fluent Bit target. You could follow the instructions
+    in the blog under the *Log analysis across clusters* section to get the logs streaming
+    to S3 that way, but it will probably be challenging to do so as you would have
+    to adapt the scripts to the EKS Quick Start in many ways, including changing the
+    AWS region and dealing with the assumption that you used `eksctl` to set up your
+    cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A project called `CloudWatch2S3` that was inspired by that blog can help with
+    this process by deploying one CloudFormation template. This has the advantage
+    that it can send *all* of the CloudWatch log groups to S3, and you can install
+    it by applying a single CloudFormation template. It can also collect CloudWatch
+    logs from multiple AWS accounts should you choose to do that. Clone the GitHub
+    repository at  [https://github.com/CloudSnorkel/CloudWatch2S3](https://github.com/CloudSnorkel/CloudWatch2S3)
+    to your workstation and follow the directions there to set up the streaming of
+    CloudWatch logs to S3\. Before you proceed, you might consider creating an Amazon
+    **Key Management Service** (**KMS**) key to encrypt the Kinesis Firehose and S3
+    bucket contents. Install the CloudFormation template using the AWS console or
+    CLI, as you prefer.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we have seen how to store logs in both CloudWatch and S3, it would
+    be nice to learn how we might query those logs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Analyzing logs with CloudWatch Insights and Amazon Athena
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that you have logs stored in both CloudWatch and S3, you can query them
+    with either CloudWatch Insights or Amazon Athena.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Analyzing logs stored in CloudWatch with CloudWatch Insights
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The easiest way to perform queries on the logs stored in AWS is with CloudWatch
+    Insights. This web-based query interface provides an interactive query builder
+    and a way to visualize the results in both histogram and tabular data formats.
+    It features a saved query manager, which is a key feature because it lets you
+    build and refine a set of queries that can span one or more log groups. The documentation
+    for CloudWatch Insights is available at [https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/AnalyzingLogData.html](https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/AnalyzingLogData.html).
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can explore the sample queries in the AWS console for that service to get
+    a better feel for what CloudWatch Insights has to offer.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Analyzing logs stored in S3 with AWS Athena
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'When logs are stored in S3, you won''t be able to query them in exactly the
+    same way you would if you used CloudWatch Insights or another log management system.
+    However, there are ways to efficiently query logs stored in S3\. The most direct
+    way is with a query tool called Amazon Athena:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[https://aws.amazon.com/athena/](https://aws.amazon.com/athena/)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Athena will let you use a SQL-like query language on semi-structured data stored
+    in S3 buckets. You pay by the query, according to how much data is scanned and
+    how much processing time it requires. In order to get Athena to understand the
+    structure of your S3 data, you would need to configure virtual tables using the
+    AWS Glue catalog:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[https://docs.aws.amazon.com/athena/latest/ug/glue-athena.html](https://docs.aws.amazon.com/athena/latest/ug/glue-athena.html)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Setting up the combination of AWS Glue and Athena is pretty complex and is beyond
+    the scope of what we can show in this chapter. See the links in the *Further reading*
+    section at the end of this chapter for more information on setting up Athena so
+    that you can use it to query the data stored in S3.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Exercise – finding the number of ShipIt Clicker games played
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The ShipIt Clicker demo application emits a log message every time a game is
+    started of the form:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: Create a query in CloudWatch Insights that counts the total number of games
+    that have been created. For CloudWatch Insights, you will have to select the `fluentbit-cloudwatch`
+    log group.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Solution
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Refer to the following file for the solution:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[https://github.com/PacktPublishing/Docker-for-Developers/tree/master/chapter10/cloudwatch-insights.txt](https://github.com/PacktPublishing/Docker-for-Developers/tree/master/chapter10/cloudwatch-insights.txt)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using the liveness, readiness, and startup probes in Kubernetes
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Kubernetes has multiple types of health checks, called **probes**, to ensure
+    that the Docker containers it runs are in shape to process traffic. You can read
+    about them in detail at [https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/](https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The types of probes deal with different concerns:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Liveness**: Determines whether an application can process requests at all.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Readiness**: Determines whether a container is ready to receive real traffic,
+    especially if it depends on external resources that have to be reachable or connected.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Startup**: Determines whether a container is ready to start taking the other
+    two types of traffic, intended for slow-starting legacy applications to give them
+    time to start. As these are mostly needed for legacy applications, we won''t cover
+    them in detail.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: You can configure probes to execute commands inside a running container, perform
+    a TCP port check, or check an HTTP endpoint. Probes have sensible default values
+    for timeouts and check intervals—by default, a probe will check every 10 seconds
+    and will fail with a timeout with 1 second. By default, a probe must fail three
+    times in a row before the probe enters the failure state, and it must succeed
+    once before it enters a success state. You can override these values through template
+    annotations, in `deployment.yaml` in your Helm Charts, for example.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If a liveness probe for a container fails enough times, Kubernetes will kill
+    the container and restart it. If a readiness probe for a container in a pod is
+    failing, Kubernetes will not direct any traffic for a service depending on that
+    pod to the container. We are going to examine liveness and readiness probes in
+    detail next.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using a liveness probe to see whether a container can respond
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'For a service such as ShipIt Clicker, a good liveness check would be one where
+    the application can rely solely on internally configured resources to respond
+    – for example, relying on containers deployed in the same pod. In previous chapters,
+    the liveness and readiness checks for this application were set to retrieve the
+    `/` resource via HTTP. The liveness check stays the same for this chapter, as
+    the ability to serve a simple HTML page is a good liveness check for an Express
+    application. Observe the following excerpt from `chapter10/shipitclicker/templates/deployment.yaml`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: This makes Express serve the file in `chapter10/src/public/index.html`. This
+    makes a decent liveness probe, but it does not mean that a pod is ready to process
+    requests that reach out to external resources. For that, we should use a readiness
+    check.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using a readiness probe to ensure that a service can receive traffic
+  prefs: []
+  type: TYPE_NORMAL
+- en: Some applications have to complete a wave of initialization where they make
+    database calls and call on external services before they are ready to take traffic.
+    For ShipIt Clicker, the application must be able to contact Redis before it is
+    ready to receive traffic. Next, we are going to examine a defect in the prior
+    versions of ShipIt Clicker and the fix that had to be made to support both liveness
+    and readiness probes, as these changes are illustrative of the type of changes
+    that you might have in your application.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Changing ShipIt Clicker to support separate liveness and readiness probes
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Previous versions of ShipIt Clicker would suffer a fatal exception if any connection
+    to Redis failed. This would happen as soon as the initialization routines in `src/server/index.js`
+    loaded, as the modules it loaded would instantiate the `RedisDatabase` class in
+    `src/server/api/services/redis-service.js`, which would immediately connect to
+    the Redis server. This class lacked a Redis error handler, so the error it threw
+    was fatal and caused the process to terminate.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This failure would repeat immediately as Kubernetes tried to start another container
+    and would trigger a series of crashes that engaged the Kubernetes crash loop detector.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The new error handler in the `RedisDatabase.init()` method in `chapter10/src/server/api/services/redis.service.js`
+    looks like this, and will log all Redis errors to the console – and, therefore,
+    to the Kubernetes logging system – to make it easier to troubleshoot:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This chapter''s code also uses a lazy loading pattern to avoid having to immediately
+    connect to Redis when the classes are instantiated. With lazy loading, you defer
+    the creation of an object or resource until you actually need it. We achieve lazy
+    loading by using by the `RedisDatabase.instance()` method, which uses the singleton
+    design pattern for the Redis client connection:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Using lazy loading will allow us to defer connecting to the Redis server until
+    a request arrives that really requires it. Recall that in this version of the
+    application, we split the Redis server out from the ShipIt Clicker service and
+    have it running separately. Given this, a readiness probe should reach out to
+    the Redis server and make sure that ShipIt Clicker can indeed talk to it, before
+    accepting traffic. This version has a new API endpoint, `/api/v2/games/ready`,
+    which performs a Redis `PING` operation to ensure that the application is ready
+    to take traffic:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: If the Redis server is not available, this readiness probe will fail and Kubernetes
+    will remove the container that fails the health check from the service.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Exercise – forcing ShipIt Clicker to fail the readiness check
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Next, we will run an experiment to see what happens when the liveness probe
+    passes but the readiness check fails. Use `kubectl` to switch to your local learning
+    environment Kubernetes context. Temporarily alter the `chapter10/shipitclicker/template/configmap.yaml`
+    file to break the Redis installation by changing the `REDIS_PORT` value to an
+    invalid number, such as `1234`. Then, use Helm to install the chart with the alternative
+    `shipit-ready-fail` name. Use `kubectl get pods` to verify that the new pod is
+    in the `RUNNING` state but has `0/1` pods that are marked `READY`. Your output
+    should look something like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: The readiness checks for this installation of ShipIt Clicker will start failing
+    immediately. If you describe the pod, you will see that it is no longer ready.
+    When you are done, use Helm to uninstall the `shipit-ready-fail` chart and revert
+    the value in the `configmap.yaml` file to its original value.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Gathering metrics and sending alerts with Prometheus
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Prometheus is the dominant Kubernetes-based system for collecting metrics on
+    cluster operations. Prometheus sports a wide range of features related to handling
+    time-series data, visualizing data, querying it, and sending alerts based on metrics
+    data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This metrics data might include a variety of time-series data for CPU usage,
+    both for nodes and for pods; storage utilization; application health, as defined
+    by readiness probes; and other application-specific metrics. Prometheus uses a
+    pull model where it polls endpoints for numeric data. Pods, DaemonSets, and other
+    Kubernetes resources supporting Prometheus use annotations to advertise that Kubernetes
+    should scrape them for metrics data via HTTP, usually via a `/metrics` endpoint.
+    This can include data from Nodes, surfaced through a DaemonSet called `node_exporter`
+    that runs on each Node.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It stores the metrics data it receives by associating this data with a metric
+    name and a set of labels in key-value pair format, along with a millisecond-resolution
+    timestamp. This labeling allows both efficient storage and the querying of the
+    metrics in a time-series database. System operators and automated systems can
+    then query this database to investigate the system's health and performance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It not only provides a time-series database for metrics but also an alerting
+    subsystem so that system operators can proactively take action when applications
+    encounter trouble.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can read more about the overall Prometheus architecture and its feature
+    set at [https://prometheus.io/docs/introduction/overview/](https://prometheus.io/docs/introduction/overview/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Prometheus' history
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: While Prometheus was originally developed by SoundCloud in 2012, it became a
+    **Cloud Native Computing Foundation** (**CNCF**) top-level project in 2016 and
+    it is independent of any single company, just like Kubernetes itself. Its design
+    is inspired by Google's Borgmon system.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Exploring Prometheus through its query and graph web interface
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'If you installed an EKS cluster using the AWS EKS Quick Start CloudFormation
+    templates as described in [*Chapter 8*](B11641_08_Final_AM_ePub.xhtml#_idTextAnchor157),
+    *Deploying Docker Apps to Kubernetes*, you should already have a working Prometheus
+    application. If not, you can follow the instructions here to install it using
+    Helm:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[https://docs.aws.amazon.com/eks/latest/userguide/prometheus.html](https://docs.aws.amazon.com/eks/latest/userguide/prometheus.html)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You can connect to the Prometheus service and start exploring it by using `kubectl`
+    to create a port forwarding proxy to the Prometheus console web application. You
+    should connect the `prometheus-server` Kubernetes service to your local workstation
+    as follows (replace the expression after `use-context` with your AWS EKS cluster
+    ARN):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: Then, open a web browser and visit `http://localhost:9090/`, and you will see
+    the Prometheus query console.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A good starter query to use to test Prometheus is the `node_load1` term, which
+    shows the 1-minute load averages of the underlying Kubernetes nodes. Enter that
+    into the query field and hit the **Execute** button, and then activate the **Graph**
+    tab. You will see a graph showing those load averages.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The **Prometheus query language** is called **PromQL** and is quite different
+    from other time-series database query languages. You will need to learn more about
+    PromQL to formulate your own queries. Read more about that at [https://medium.com/@valyala/promql-tutorial-for-beginners-9ab455142085](mailto:https://medium.com/@valyala/promql-tutorial-for-beginners-9ab455142085).
+  prefs: []
+  type: TYPE_NORMAL
+- en: While Prometheus can graph query results on its own, Kubernetes users typically
+    use Grafana in conjunction with Prometheus to provide more sophisticated graphs
+    and dashboards. We will explore Grafana further later in this chapter. Next, let's
+    examine how you might add a Prometheus metric to an application.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Adding Prometheus metrics to an application
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In order to integrate an application with Prometheus, you need to expose a specially
+    structured HTTP API via a Prometheus client library. Prometheus offers official
+    client libraries for several languages, and the community has created many other
+    client libraries for different languages. You can read more about the general
+    process in the Prometheus documentation at [https://prometheus.io/docs/instrumenting/clientlibs/](https://prometheus.io/docs/instrumenting/clientlibs/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To demonstrate this integration, the version of ShipIt Clicker in this chapter
+    exposes both a set of default metrics and a custom metric in the form of a counter,
+    labeled `shipitclicker_deployments_total`. To do this, we integrate the Prometheus
+    client for JavaScript applications using Node.js:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[https://github.com/siimon/prom-client](https://github.com/siimon/prom-client)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: To perform the integration, we installed and saved the prom-client Node module
+    with an `npm install prom-client --save` command, and then integrated the client
+    loosely following the provided example code at [https://github.com/siimon/prom-client/blob/master/example/server.js](https://github.com/siimon/prom-client/blob/master/example/server.js).
+  prefs: []
+  type: TYPE_NORMAL
+- en: The structure of a metrics-enabled ShipIt Clicker program
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'The Prometheus metrics publishing code in ShipIt Clicker is organized conventionally
+    for a Node application written with the Express framework, with routes for metrics
+    added to the main router in `chapter10/src/server/routes.js` in the same modular
+    pattern as the routes for the game API. The main route imports `chapter10/src/server/api/controllers/metrics/router.js`,
+    which defines the HTTP routes for `/metrics` and a special route for `/metrics/shipitclicker_deployment_total`,
+    using the controller class defined in `chapter10/src/server/api/controllers/metrics/controller.js`.
+    This controller has methods that integrate with a Prometheus service class defined
+    in `chapter10/src/server/api/services/prometheus.service.js`, which integrates
+    with the `prom-client` library and exposes both the default metrics and the custom
+    `shipitclicker_deployments_total` metric. Refer to the following code excerpt
+    from the service to see how we encapsulate the `prom-client` library:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: The controller classes that serve up the metrics have proper exception-handling
+    and error-logging scaffolding that the baseline example from `prom-client` lacks.
+    If you wanted to, you could easily adapt the router, controller, and service classes
+    to a new application with minimal effort.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In order to simplify troubleshooting, the metrics are bound to the same HTTP
+    port as the rest of the application: port `3000`. This means that you can retrieve
+    the metrics from any installed version of ShipIt Clicker that has this code integrated
+    – for example, from [https://shipit-v7.eks.example.com/metrics](https://shipit-v7.eks.example.com/metrics)
+    (replace `example.com` with your domain name). You should see a long list of metrics,
+    starting with the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now that we have seen the raw metrics, let's examine how the configuration that
+    allows Prometheus to discover the demo application works.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Getting Prometheus to discover the ShipIt Clicker application
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'The installation of Prometheus configured through the AWS EKS Quick Start CloudFormation
+    template is configured to perform service discovery of pods that support Prometheus
+    metrics. In order for your Kubernetes pods to be discovered, they must be annotated
+    with Prometheus-specific metadata, including the `prometheus.io/scrape: "true"`
+    annotation. Refer to `chapter10/shipitclicker/template/deployment.yaml` for the
+    annotations used to expose ShipIt Clicker to Prometheus:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: As long as these annotations are on the pod, Prometheus will know that it must
+    scrape the pod's `/metrics` endpoint for data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we have seen how the program and its configuration templates have been
+    extended to support Prometheus metrics, let's query Prometheus for the custom
+    metric.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Querying Prometheus for a custom metric
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Play the game deployed at [https://shipit-v7.eks.example.com/](https://shipit-v7.eks.example.com/)
+    for a minute or two (replace `example.com` with your domain name). Then, connect
+    to the Prometheus console using the port forwarding method explained earlier in
+    this chapter, and issue a query for `shipitclicker_deployments_total`, then switch
+    to the `Graph` tab. You should see a graph that shows an increasing number of
+    deployments over time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you keep playing the game and keep re-issuing the query in the Prometheus
+    console, you will see the number of deployments go up. The default scrape interval
+    and targets that Prometheus uses are defined in a `prometheus.yml` file embedded
+    in the `prometheus-server` ConfigMap in the `prometheus` namespace. By default,
+    it is set to `30` seconds, so you will not see instantaneous changes in the query
+    results from Prometheus.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next, let's explore Prometheus' support for alerts.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Configuring Prometheus alerts
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Prometheus has the capability to query itself periodically in order to detect
+    important conditions – this is the basis of the alerts system. You can apply the
+    powerful Prometheus query language to detect when parts of your system that have
+    Prometheus metrics are overloaded, responding too slowly, or are not available.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For most applications, the foundational alert item must answer the question
+    *is the application available*? If the application is up, it is ready and available
+    to serve user requests. Prometheus has a metric called `up` that can help answer
+    that question – it will have a value of `1` if the service is up, and `0` if it
+    is down. If you query Prometheus for `up`, you will see the basic availability
+    status of every service it monitors. You might want to raise an alert if any service
+    has a value other than `1` for 5 minutes or more. That is the basic example given
+    in the Prometheus documentation for alerts (refer to [https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/](https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/)).
+    Next, we will show how to add the example `InstanceDown` rule from the documentation
+    to our Prometheus service configuration.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The AWS EKS Quick Start templates have a Prometheus installation that has no
+    alerts defined at the start, so we will have to define one or more ourselves.
+    If you installed Prometheus on your local workstation, you would edit configuration
+    files in the `/etc` directory to do this, and then trigger a configuration file
+    reload. However, in a Kubernetes setup, there has to be another mechanism in place
+    to allow the editing of these values.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The AWS EKS Quick Start Prometheus setup uses a Kubernetes ConfigMap in the
+    `prometheus` namespace called `prometheus-service` that has multiple embedded
+    YAML configuration files defined within it, and a container running in each Prometheus
+    server pod (refer to [https://github.com/jimmidyson/configmap-reload](https://github.com/jimmidyson/configmap-reload))
+    that monitors the ConfigMap files for changes and then sends an HTTP `POST` to
+    the Prometheus server running in the pod to get it to reload the changes. The
+    ConfigMap files are updated once per minute inside the pods. The editing cycle
+    for making config changes to alerts looks like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Edit the `prometheus-service` ConfigMap using `kubectl`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Wait 1 minute for the ConfigMap changes to propagate to the pods.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: View the alerts via the port-forwarded Prometheus console at `http://localhost:9090/alerts`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'In order to add the monitoring, we run the following command to edit the ConfigMap
+    and add the rules under the `alerts:` stanza, as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Look at the top of the file and make the `alerts:` stanza match the following
+    text:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: After you have edited the file, save it and it will propagate to the pods within
+    1 minute.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Troubleshooting note – YAML format files are exacting
+  prefs: []
+  type: TYPE_NORMAL
+- en: The capitalization and spacing in the `prometheus-server` pods) – or worse,
+    a silent failure to add the alert you intended.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You should then be able to see the alert definition in the Prometheus console
+    in the **Alerts** section; click on **InstanceDown** and it should show the alert
+    definition:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/B11641_10_003.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 10.3 – Prometheus alerts showing InstanceDown
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that you have an alert defined, you can configure Prometheus to send notifications
+    based on the alert.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Sending notifications with the Prometheus Alertmanager
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: One of the most powerful aspects of Prometheus is its support for sending notifications
+    of alerts, powered by a component called **Alertmanager**. This component takes
+    the raw alert information from Prometheus, performs additional processing on it,
+    and then sends notifications. You can find an in-depth overview of Prometheus
+    alerting at [https://prometheus.io/docs/alerting/overview/](https://prometheus.io/docs/alerting/overview/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: This alerting system supports multiple channels, including email, PagerDuty,
+    Pushover, Slack, and more through webhooks. We are going to configure a Slack
+    integration to demonstrate sending an alert. In order to do this, we are going
+    to alter the Alertmanager configuration, which is stored in a Kubernetes ConfigMap
+    called `prometheus-alertmanager`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To add the Slack integration, make sure you have a Slack account that is signed
+    in via a web browser, then go to [https://api.slack.com/](https://api.slack.com/)
+    and build a new app for Slack. In the **Features** configuration screen, configure
+    a new incoming webhook and select a channel in Slack to receive the notifications.
+    Then, copy the URL of the incoming hook to the clipboard and store it in a local
+    text file. You will need that when you configure Alertmanager. Configure any other
+    settings that you feel are relevant, including an icon for the Slack integration.
+    Then, edit the ConfigMap for the Alertmanager using the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The ConfigMap will have an empty `{}` clause for the `global:` section, which
+    we will remove, and then we add `slack_api_url` and the `slack_configs` section,
+    as follows (replace the value in single quotes for the Slack API URL with your
+    incoming webhook URL from the Slack application, and replace the channel with
+    the hashtag name of your Slack channel where alerts should appear):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This will give you a very basic alerting setup that you can expand on in order
+    to get notified of downtime. You can test that the Alertmanager is hooked up by
+    sending a test alert via the Prometheus Alertmanager API. First, port-forward
+    the Alertmanager service to your local machine:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In a different console window, issue the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'You should get a `{"status":"success"}` response from that `curl` command,
+    and then you should see the `Hello World` alert in your Slack:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/B11641_10_004.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 10.4 – Prometheus alert in Slack
+  prefs: []
+  type: TYPE_NORMAL
+- en: Exercise – deploy a broken ShipIt Clicker, expect an AlertManager notification
+  prefs: []
+  type: TYPE_NORMAL
+- en: Edit the `chapter10/shipitclicker/templates/deployment.yaml`file to redirect
+    Prometheus probes to port `3001` and deploy this broken ShipIt Clicker application
+    using Helm to see the alerting in action. Call the application `shipit-broken`.
+    Check the Prometheus console to verify that the alert enters the pending state.
+    This should happen in less than 1 minute. Within 10 minutes, you should see an
+    alert in Slack of the `[FIRING:1] (InstanceDown shipit-broken shipitclicker 10.0.87.39:3000
+    kubernetes-pods default shipit-broken-shipitclicker-6658f47599-pkxwk 6658f47599
+    page)` form. Once you get the alert, uninstall the`shipit-broken` Helm Chart,
+    revert the change to `deployment.yaml`, and you should stop getting notifications
+    about that specific issue.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Once you get the alert, uninstall the `shipit-broken` Helm Chart and you should
+    stop getting notifications about that specific issue.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Exploring Prometheus queries and external monitoring in-depth
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The topics about how to build Prometheus queries and how to extend Prometheus
+    to monitor external systems are quite deep and beyond the scope of this chapter.
+    Please consult the Prometheus documentation and the links in the *Further reading*
+    section at the end of this chapter to learn more about creating Prometheus queries
+    and configuring it to use additional metrics data sources.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next, let's examine how we can use Grafana to visualize the data that Prometheus
+    gathers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Visualizing operational data with Grafana
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Prometheus is often deployed with Grafana ([https://grafana.com/](https://grafana.com/))
+    to provide sophisticated dashboards and a more sophisticated UI for monitoring.
+    The installation of Kubernetes from the AWS EKS Quick Start includes Grafana,
+    configured with a few dashboards. Let's explore the Grafana installation and see
+    how it integrates with Prometheus.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Gaining access to Grafana
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The Grafana installation is exposed by default over a Kubernetes LoadBalancer,
+    which in EKS creates an AWS EC2-Classic `EXTERNAL-IP` field for the actual DNS
+    name of the ELB:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Put that DNS address into your web browser, prefixed with `http://`, and you
+    will get the Grafana login screen. You will need to retrieve the administrative
+    username and password from the Kubernetes secret to login:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: Use these values to log in to the Grafana console. You can then explore the
+    UI, including the dashboards and the Prometheus query explorer. Some of the dashboards
+    might not have values fully populated, such as the **Kubernetes All Nodes** dashboard,
+    but don't fret too much about it, as it is possible to add community-provided
+    dashboards that are extremely detailed and fully populated with cluster-wide statistics.
+    Look at the **Kubernetes Pods** dashboard and select different pods, including
+    the Redis pods and the ShipIt Clicker pod, to get a feel for how to use the dashboards.
+    Change the time window with the widget in the upper-right corner to show data
+    for a day or a week, and then click and drag over an interesting area to zoom
+    in.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next, let's add a couple of community-provided dashboards to get a flavor for
+    the full power that this system can deliver.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Adding a community-provided dashboard
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Grafana provides a repository of both official and community-provided dashboards
+    at [https://grafana.com/grafana/dashboards](https://grafana.com/grafana/dashboards).
+  prefs: []
+  type: TYPE_NORMAL
+- en: These include a bewildering variety of dashboards. You should explore this in
+    detail with your own needs in mind.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When you add a dashboard, one of the options presented is **Import**. Choose
+    this and it will ask you for a dashboard ID or URL from the community site.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here are four general-purpose dashboards that are worth adding to your installation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Cluster Monitoring for Kubernetes**: This compact dashboard from Pivotal
+    Observatory lets you see what pods are consuming the most CPU, memory, and network
+    resources at a glance – [https://grafana.com/grafana/dashboards/10000](https://grafana.com/grafana/dashboards/10000).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Kubernetes Cluster (Prometheus)**: A concise dashboard showing critical cluster-wide
+    metrics – [https://grafana.com/grafana/dashboards/6417](https://grafana.com/grafana/dashboards/6417).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**1 Node Exporter for Prometheus Dashboard EN v20191102**: A cluster-wide complex
+    dashboard that exposes many CPU, disk, and network metrics – [https://grafana.com/grafana/dashboards/11074](https://grafana.com/grafana/dashboards/11074).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Node Exporter Full**: This exposes every possible metric from the **Prometheus
+    Node Exporter**, a very popular dashboard on the site with over two million downloads
+    – [https://grafana.com/grafana/dashboards/1860](https://grafana.com/grafana/dashboards/1860).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Adding a new dashboard with a custom query
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The steps to add a new dashboard with a custom query are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the left menu, click on the **+** sign to add a new dashboard. Then, in
+    the **New Panel** area, click **Add Query**. Add the following query to the field
+    next to **Metrics**:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'It should look something like this:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '![](img/B11641_10_005.jpg)'
+  prefs:
+  - PREF_IND
+  type: TYPE_IMG
+- en: Figure 10.5 – Grafana custom dashboard item definition
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Then, in the `ShipIt Clicker Deployments`, and then click on the left-pointing
+    arrow in the top-left corner of the screen to return to defining the widget.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: In the top menu, click on the graph with the plus sign to add another widget:![](img/B11641_10_006.jpg)
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Figure 10.6 – The Grafana add widget
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'Add another similar panel with the following query with the title `ShipIt Clicker
+    Deployments Rate`:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Then, click on the gear icon in the top menu and change the name of the dashboard
+    to `ShipIt Clicker Dashboard`, and then save the dashboard.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Next, take a break and play the ShipIt Clicker game for a few minutes. This
+    will generate traffic that you will be able to see on the graph. A few minutes
+    after you stop playing, your dashboard might look like this:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![](img/B11641_10_007.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 10.7 – The ShipIt Clicker custom dashboard in Grafana
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understanding rates and counters
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note that the rate dashboard drops back down to 0 after you stopped playing,
+    but the one that counts only the total increases and stays as it is. Choosing
+    a rate query for a variable ending in `total` in Prometheus is usually what you
+    want to measure throughput.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now that we have seen how to graph application metrics and build dashboards
+    with Grafana, let''s explore another topic: application performance monitoring
+    and distributed tracing with Jaeger.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Application performance monitoring with Jaeger
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We are now going to take a brief tour of Jaeger to see how it can be used for
+    performance monitoring in a microservices architecture. One of the key problems
+    faced when implementing performance and error tracking in a microservice architecture
+    versus a monolithic application is that a microservices architecture is inherently
+    a distributed environment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Early attempts at solving this problem, such as OpenCensus ([https://opencensus.io/tracing/](https://opencensus.io/tracing/)),
+    suffered from disparate terminology and approaches and incompatible systems. To
+    solve this problem, the performance monitoring community created the OpenTracing
+    API.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understanding the OpenTracing API
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The **OpenTracing** project ([https://opentracing.io/](https://opentracing.io/))
+    is designed to allow engineers to add performance-monitoring features to their
+    projects using a common API specification that is non-vendor specific.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Some of the key features of OpenTracing that realize this goal are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The API specification itself ([https://github.com/opentracing/specification](https://github.com/opentracing/specification))
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Frameworks and libraries that implement the API specification
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Comprehensive documentation ([https://opentracing.io/docs/](https://opentracing.io/docs/))
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Let''s now look at the two most important core concepts of the specification:
+    spans and tracing.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Spans
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: A span represents a unit of work and is the basic building block of this type
+    of tracing system. Each span contains an operation name, the start and finish
+    time, a **SpanContext**, and finally, **tags** and **logs** key-value pairs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Your tag key-value pairs apply to the whole span and include information such
+    as `db.type` and `http.url`. A list of conventional tags can be found on GitHub
+    at [https://github.com/opentracing/specification/blob/master/semantic_conventions.md](https://github.com/opentracing/specification/blob/master/semantic_conventions.md).
+  prefs: []
+  type: TYPE_NORMAL
+- en: The logs key-value pair is used to define logging messages that refer to a specific
+    incident or event, rather than the span as a whole. For example, you could use
+    this collection of key-value pairs to record debugging information.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The final concept in a span is the SpanContext, which is used to carry data
+    across process boundaries. Its two key components are the state that denotes a
+    specific span within a trace and a concept known as **baggage items**. These are
+    essentially key-value pairs that cross a process boundary.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can read more about spans at the OpenTracing website's documentation at
+    [https://opentracing.io/docs/overview/spans/](https://opentracing.io/docs/overview/spans/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Traces and tracers
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The next concept we will look at is traces and tracers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A trace is a way of grouping one or more spans under a single identifier known
+    as the **trace identifier**. This can be used to understand a workflow through
+    a distributed system, such as a microservices architecture.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The tracer is the actual implementation of the OpenTracing API specification
+    that collects spans and publishes them. Examples of tracers that implement OpenTracing
+    include Datadog (which we will explore in [*Chapter 14*](B11641_14_Final_NM_ePub.xhtml#_idTextAnchor316),
+    *Advanced Docker Security – Secrets, Secret Commands, Tagging, and Labels*), Instana,
+    Lightstep, and Jaeger.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you want to read more around tracers and traces, you can find the official
+    documentation at [https://opentracing.io/docs/overview/tracers/](https://opentracing.io/docs/overview/tracers/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's explore a tool that implements the OpenTracing API – Jaeger.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Introduction to Jaeger
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Jaeger is an open source application-tracing framework that allows developers
+    and system operators to gather information from a running application and determine
+    both how the application spends its time and how it interacts with other distributed
+    system components, using the OpenTracing API. The Jaeger website is [https://www.jaegertracing.io/](https://www.jaegertracing.io/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Jaeger's history
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Jaeger, named after the German word for hunter, originally came from the transportation
+    company Uber. Engineers there, led by Yuri Shkuro, built this distributed tracing
+    framework. Inspired by the Google paper on their tracing framework, Dapper ([https://research.google/pubs/pub36356/](https://research.google/pubs/pub36356/)),
+    and the Zipkin tracing framework ([https://zipkin.io/](https://zipkin.io/)), they
+    created Jaeger as a cloud-native tracing framework. Uber has been using Jaeger
+    since 2015 and contributed it to the CNCF in 2017; the CNCF promoted it to a top-level
+    project in 2019\. You can read more about the history of Jaeger on the Uber engineering
+    blog at [https://eng.uber.com/distributed-tracing/](https://eng.uber.com/distributed-tracing/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Jaeger's components
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Some of the important components that make up the Jaeger ecosystem include
+    the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The client libraries available as packages or directly from GitHub
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Jaeger agents used to listen for spans
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The collector, responsible for aggregating data sent from agents
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Jaeger query, for analyzing data via a UI
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The Ingester, which allows us to gather data from Kafka topics and then write
+    the data to services such as AWS Elasticsearch
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Let's test Jaeger and see how it works in practice.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Exploring the Jaeger UI
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'To explore Jaeger, we can run the all-in-one latest image using Docker:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Then, we can open a web browser and visit `http://localhost:16686/` to see
+    the UI. The Jaeger search interface itself is instrumented to send traces to the
+    collector, so once you see the UI, reload the page once to make some more traces,
+    and populate the **Service** drop-down box. Then, press the **Find Traces** button.
+    It should look something like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/B11641_10_008.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 10.8 – The Jaeger UI search interface
+  prefs: []
+  type: TYPE_NORMAL
+- en: When you are done exploring, stop the running Docker container by pressing *Ctrl*
+    + *C*. Next, lets explore how you might instrument an application by seeing how
+    ShipIt Clicker is integrated with OpenTracing and Jaeger.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Exploring the Jaeger client with ShipIt Clicker
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The Jaeger client is available in a number of languages. Our example will use
+    Node.js, but there is also support for Go, Java, and Python, among others. You
+    can check the official client documentation at the following URL to learn more:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[https://www.jaegertracing.io/docs/1.18/client-libraries/](https://www.jaegertracing.io/docs/1.18/client-libraries/)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'ShipIt Clicker v7 already has a Jaeger client, a piece of OpenTracing JavaScript
+    Express middleware, and the OpenTracing API client installed:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The Jaeger client: [https://github.com/jaegertracing/jaeger-client-node](https://github.com/jaegertracing/jaeger-client-node)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Express middleware: [https://github.com/opentracing-contrib/javascript-express](https://github.com/opentracing-contrib/javascript-express)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The OpenTracing client: [https://github.com/opentracing/opentracing-javascript](
+    https://github.com/opentracing/opentracing-javascript)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'If you have an Express application that you want to use with Jaeger, you would
+    issue the following command to install the same combination of libraries:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In the GitHub repository ([https://github.com/PacktPublishing/Docker-for-Developers](https://github.com/PacktPublishing/Docker-for-Developers)),
+    the Jaeger client configuration in `chapter10/src/server/common/jaeger.js` has
+    an example of how to configure the Jaeger client using a mixture of environment
+    variables and default values. Both the `docker-compose` configuration files and
+    the Helm templates for ShipIt Clicker have been updated to use some environment
+    variables to configure Jaeger, to give `jaeger.js` the right context for those
+    environments; this file imports the `jaeger-client` module, configures it, and
+    exports a `tracer` object. We use the `tracer` object from the `express-opentracing`
+    middleware in the `chaper10/src/server/common/server.js` file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: Using middleware or other software that can hook into common libraries processes
+    provides us with lift and lets us avoid writing boilerplate code. The `express-opentracing`
+    middleware object decorates the Express `res` response object with a `span` attribute,
+    which lets us use an OpenTracing span from within our controllers and request
+    handlers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We can use a more explicit style also, where we create the spans and log entries
+    programmatically:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To see this in action, inspect the ShipItClicker''s API controller at `chapter10/src/server/api/controllers/games/controller.js`:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'The next stanza shows how to create a tag in the span that holds more detailed
+    tracing information:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'The preceding code initializes a child span for Redis, using the main span
+    through `req.span`. Then, we immediately call Redis, log the results, and finish
+    the span:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Next, we log a message in the span associated with the parent span:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Now, we log the message using the regular logging mechanism and update the
+    Prometheus custom metric if this request increments the `deploys` element:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'If we get this far, the Redis request has been successful, and we can return
+    a JSON response to the client:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'If the request fails – for example, if Redis is unavailable – we must carry
+    out error processing. First, we construct a message that has the detailed error
+    in it:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Then, we log the error to both the OpenTracing span and our regular error log,
+    and return a 404 Not Found HTTP response to the client:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: The preceding code shows how you can use the tracer object to initiate a child
+    span of the main span in `req.span`, and has logging elements that annotate both
+    spans with the results of the Redis operation.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'In order to make it easy to demonstrate the Jaeger integration, this chapter
+    has a Docker Compose file, `chapter10/docker-compose.yml`, that integrates the
+    ShipIt Clicker container, Redis, and Jaeger. You can run all of them by issuing
+    the following commands from the `chapter10` directory:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE38]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'You can then visit `http://localhost:3010/` to play the ShipIt Clicker game
+    for a minute to generate some traces, then visit `http://localhost:16686/` to
+    see the Jaeger query interface in action. Query the `shipitclicker-v7` service,
+    click on one of the traces in the graph, and then expand the two spans and the
+    logs revealed within and you should see something like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/B11641_10_009.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 10.9 – Jaeger trace showing the ShipIt Clicker HTTP transaction and Redis
+    spans
+  prefs: []
+  type: TYPE_NORMAL
+- en: In contrast to the `docker-compose.yml` file presented in [*Chapter 6*](B11641_06_Final_NM_ePub.xhtml#_idTextAnchor102),
+    *Deploying Applications with Docker Compose*, the one in this chapter is deliberately
+    set up for development, not as a production-hardened configuration. It exposes
+    both the Redis and Jaeger ports for convenience, so it is not suitable for production
+    use without additional hardening. However, this makes it very convenient for debugging
+    and developing the application. You can even run the ShipIt Clicker application
+    code on your local workstation by running `npm run dev` and have it connect to
+    the Docker-hosted Redis and Jaeger services – which is probably the fastest way
+    to try out changes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You could also install Jaeger in Kubernetes, both to your local learning environment
+    and to the AWS EKS Kubernetes cluster. To do that, we will use the Jaeger Operator.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Installing the Jaeger Operator
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: We've seen how we can use Jaeger locally through both a raw `docker` command
+    and through `docker-compose`. Next, we will learn how to deploy Jaeger to Kubernetes.
+    The Helm Charts for Jaeger ([https://github.com/jaegertracing/helm-charts](https://github.com/jaegertracing/helm-charts))
+    are not fully supported, and they may have issues with Helm 3\. The Jaeger team
+    is actively investing in Jaeger Operator as the primary method to install and
+    maintain this system. A Kubernetes **Operator** is a special type of resource
+    that orchestrates the installation and maintenance of a whole set of related objects
+    and configurations, often comprising a complex distributed system.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To deploy to a Kubernetes environment, we can use the following GitHub repository
+    as a guide:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[https://github.com/jaegertracing/jaeger-operator](https://github.com/jaegertracing/jaeger-operator)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Use the set of `kubectl` commands listed there to install the operator namespace
+    and the related Kubernetes objects for the Jaeger operator. Run not only the main
+    `kubectl` commands but also the set of `kubectl` commands to give the operator
+    cluster-wide permissions through a role binding. To get Jaeger to work smoothly
+    with all the namespaces, edit the deployment and remove the value from the `WATCH_NAMESPACE`
+    variable:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE39]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The part of the file with `WATCH_NAMESPACE` should then look as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE40]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now that you have done this, you can install a Jaeger Operator instance that
+    will itself spin up the services, pods, and DaemonSets for Jaeger. An example
+    Operator definition suitable for development or lightweight production use that
+    deploys Jaeger using a DaemonSet on all nodes using only memory for trace storage
+    is in `chapter10/jaeger.yaml`. Install it with `kubectl`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE41]'
+  prefs: []
+  type: TYPE_PRE
+- en: This will install all the required components, including a `jaeger-query` Ingress
+    Controller that does not have any annotations, so the EKS cluster will not connect
+    it to anything. See the `chapter10/jaeger-ingress.yaml` file for a version that
+    has annotations to connect it to the internet with the ALB Ingress Controller.
+    You can use the same basic procedures you used with other Kubernetes services
+    and Route 53 to expose the Jaeger console from Kubernetes; or, you can leave it
+    alone and connect to the Jaeger console only when you need to via port forwarding.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you are installing this on your local Kubernetes learning environment, you
+    could alternatively add NGINX Ingress Controller annotations to the Ingress Controller.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To further extend Jaeger, you might consider adding one of the storage backends,
+    such as Cassandra or Elasticsearch, so that traces will persist beyond the lifetime
+    of the Jaeger pod. We're going to leave it there with Jaeger, but feel free to
+    explore it in more detail.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next, we will review what we have learned in this chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, you have learned all about observability – how to perform logging
+    and monitoring for Docker applications using both Kubernetes cloud-native approaches
+    and using AWS services.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You learned about decoupling applications from common services (such as Redis)
+    to increase production-readiness. In order to aid troubleshooting and the analysis
+    of application and system problems, you learned how to extend logging beyond the
+    running containers in a Kubernetes cluster into AWS CloudWatch and S3, as well
+    as how to query those log storage systems using both CloudWatch Insights and AWS
+    Athena. You saw how you might add more sophisticated Kubernetes liveness and readiness
+    probes to an application, and how to make error handling more robust.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Then, you learned how to collect detailed metrics from both the application
+    and the supporting systems using Prometheus, how to query those metrics, and how
+    to set up alerts with the Prometheus Alertmanager. Prometheus and Grafana go hand
+    in hand; you discovered how to configure Grafana dashboards provided by the community
+    and how to add a custom dashboard that shows application-specific metrics. Finally,
+    you learned how to use Jaeger and the OpenTracing API to instrument an application
+    with traces that give deep insight into the performance of an application by using
+    both open source middleware and explicitly annotating the application.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next chapter, we will explore how we can scale out the application using
+    autoscaling, protect it from overloading using Envoy and the circuit breaker pattern,
+    and perform load testing using k6.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Further reading
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'You can explore the following resources to expand your knowledge of observability,
+    Kubernetes logging, Prometheus monitoring, Grafana, Jaeger, and managing Kubernetes
+    clusters:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Introduction to observability: [https://docs.honeycomb.io/learning-about-observability/intro-to-observability/](https://docs.honeycomb.io/learning-about-observability/intro-to-observability/).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Manage your Kubernetes clusters in style with k9s – a quick and easy terminal
+    interface similar to Midnight Commander that is an alternative to using `kubectl`
+    to query and control a Kubernetes cluster: [https://k9scli.io/](https://k9scli.io/).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Kail – Kubernetes'' log tail utility: [https://github.com/boz/kail](https://github.com/boz/kail).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Getting started with Athena: [https://docs.aws.amazon.com/athena/latest/ug/getting-started.html](https://docs.aws.amazon.com/athena/latest/ug/getting-started.html).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Query data from S3 files using AWS Athena: [https://towardsdatascience.com/query-data-from-s3-files-using-aws-athena-686a5b28e943](https://towardsdatascience.com/query-data-from-s3-files-using-aws-athena-686a5b28e943).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Getting started with Kubernetes – Observability: Are Your Applications Healthy?  Liveness
+    and Readiness Probes: [https://www.alibabacloud.com/blog/getting-started-with-kubernetes-%7C-observability-are-your-applications-healthy_596077](https://www.alibabacloud.com/blog/getting-started-with-kubernetes-%7C-observability-are-your-applications-healthy_596077).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*Kubernetes Liveness and Readiness Probes: How to Avoid Shooting Yourself in
+    the Foot*: [https://blog.colinbreck.com/kubernetes-liveness-and-readiness-probes-how-to-avoid-shooting-yourself-in-the-foot/](https://blog.colinbreck.com/kubernetes-liveness-and-readiness-probes-how-to-avoid-shooting-yourself-in-the-foot/)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Awesome Prometheus alerts – the mother lode of rules for not only Kubernetes
+    but also other systems that Prometheus can monitor, available under a Creative
+    Commons Attribution license: [https://awesome-prometheus-alerts.grep.to/rules](https://awesome-prometheus-alerts.grep.to/rules).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Configuring Prometheus Operator Helm Chart with AWS EKS has good examples of
+    more detailed Alertmanager configurations: [https://medium.com/zolo-engineering/configuring-prometheus-operator-helm-chart-with-aws-eks-c12fac3b671a](https://medium.com/zolo-engineering/configuring-prometheus-operator-helm-chart-with-aws-eks-c12fac3b671a).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Monitoring Distributed Systems – from the Google SRE book – pay special attention
+    to the **four Golden Signals**: [https://landing.google.com/sre/sre-book/chapters/monitoring-distributed-systems/](https://landing.google.com/sre/sre-book/chapters/monitoring-distributed-systems/).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'How to monitor Golden Signals in Kubernetes: [https://sysdig.com/blog/golden-signals-kubernetes/](https://sysdig.com/blog/golden-signals-kubernetes/).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'PromQL tutorial for beginners and humans: [https://medium.com/@valyala/promql-tutorial-for-beginners-9ab455142085](mailto:https://medium.com/@valyala/promql-tutorial-for-beginners-9ab455142085).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Understanding delays on Prometheus alerting: [https://pracucci.com/prometheus-understanding-the-delays-on-alerting.html](https://pracucci.com/prometheus-understanding-the-delays-on-alerting.html).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Kubernetes in Production – the Ultimate Guide to Monitoring Resource Metrics
+    with Prometheus: [https://www.replex.io/blog/kubernetes-in-production-the-ultimate-guide-to-monitoring-resource-metrics](https://www.replex.io/blog/kubernetes-in-production-the-ultimate-guide-to-monitoring-resource-metrics).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Kubernetes Monitoring with Prometheus – the ultimate guide (part 1) – yes,
+    it''s funny that multiple articles claim to be the ultimate guide, but this one
+    has really detailed information and a part 2 that also covers Grafana: [https://sysdig.com/blog/kubernetes-monitoring-prometheus/](https://sysdig.com/blog/kubernetes-monitoring-prometheus/).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Kubernetes: Monitoring with Prometheus — exporters, Service Discovery, and
+    its roles. Has a section on setting up a Redis exporter that you could use to
+    explore ShipIt Clicker''s operation better: [https://itnext.io/kubernetes-monitoring-with-prometheus-exporters-a-service-discovery-and-its-roles-ce63752e5a1](https://itnext.io/kubernetes-monitoring-with-prometheus-exporters-a-service-discovery-and-its-roles-ce63752e5a1).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Taking Advantage of Deadman''s Switch in Prometheus: [https://jpweber.io/blog/taking-advantage-of-deadmans-switch-in-prometheus/](https://jpweber.io/blog/taking-advantage-of-deadmans-switch-in-prometheus/)
+    (combine with [https://deadmanssnitch.com/](https://deadmanssnitch.com/) for a
+    complete Deadman''s Switch alerting system).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Using Prometheus Metrics in Amazon CloudWatch: [https://aws.amazon.com/blogs/containers/using-prometheus-metrics-in-amazon-cloudwatch/](https://aws.amazon.com/blogs/containers/using-prometheus-metrics-in-amazon-cloudwatch/).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'An alternative solution to the periodic export of CloudWatch logs to S3 via
+    a scheduled Lambda function: [https://medium.com/searce/exporting-cloudwatch-logs-to-s3-through-lambda-before-retention-period-f425df06d25f](https://medium.com/searce/exporting-cloudwatch-logs-to-s3-through-lambda-before-retention-period-f425df06d25f).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL

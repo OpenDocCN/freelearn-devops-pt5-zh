@@ -1,0 +1,1704 @@
+- en: Implementing an Enterprise-Grade Registry with DTR
+  prefs: []
+  type: TYPE_NORMAL
+- en: Docker Enterprise is a complete **Container as a Service** (**CaaS**) platform.
+    In previous chapters, we have learned how **Universal Control Plane** (**UCP**)
+    provides a complete control plane solution for the Docker Swarm and Kubernetes
+    orchestrators. We also learned about how UCP includes publishing features using
+    Interlock. An enterprise-ready platform should also cover the storage of images.
+    In this chapter, we will learn about **Docker Trusted Registry** (**DTR**), a
+    component of the Docker Enterprise platform designed to manage and ensure security
+    in Docker images.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this chapter, we will learn about DTR components and how to deploy and manage
+    a secure registry with high availability in terms of its components. We will also
+    learn about how DTR provides an enterprise solution using **Role-Based Access
+    Control** (**RBAC**), image scanning, and other security features. The final topics
+    covered will demonstrate how we can integrate DTR automation and promotion features
+    in our CI/CD workflow and strategies to ensure DTR's health. By the end of this
+    series of chapters about Docker Enterprise, you will have good knowledge of this
+    platform.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We will cover the following topics in this chapter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understanding DTR components and features
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Deploying DTR with high availability
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Learning about RBAC
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Image scanning and security features
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Integrating and automating image workflow
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Backup strategies
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Updates, health checks, and troubleshooting
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'You can find the code for this chapter in the GitHub repository: [https://github.com/PacktPublishing/Docker-Certified-Associate-DCA-Exam-Guide.git](https://github.com/PacktPublishing/Docker-Certified-Associate-DCA-Exam-Guide.git)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Check out the following video to see the Code in Action:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '"[https://bit.ly/32tg6sn](https://bit.ly/32tg6sn)"'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understanding DTR components and features
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: DTR is the Docker Enterprise's platform registry, used to store and manage images.
+    It is deployed on top of defined UCP worker nodes. DTR will run as a multi-container
+    application. This means that all containers will run together, associated with
+    just one defined node. In the case of node failure, no other nodes will take its
+    DTR containers. This is very important because we need to deploy multiple DTR
+    deployments, on different nodes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: DTR uses RethinkDB as a database to store and sync data between registry nodes.
+    To provide high availability to DTR, we need to deploy an odd number of replicas.
+    We will use three replicas, so we need to deploy DTR workloads on three worker
+    nodes. Synchronization will be done using overlay networking. DTR installation
+    will create a `dtr-ol` overlay network and this will be used internally for replica
+    synchronization.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Each replica will deploy the following processes:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| **Replica (DTR instance)**  | **Process** |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `dtr-api-<replica_id>` | This process exposes DTR''s API internally. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `dtr-garant-<replica_id>` | DTR''s authentication is managed by means of
+    this component. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `dtr-jobrunner-<replica_id>` | `jobrunner` is used to schedule different
+    internal DTR maintenance tasks. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `dtr-nginx-<replica_id>` | The `nginx` process acts as a reverse proxy, publishing
+    DTR''s API and web UI on ports `80` and `443` (secure). |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `dtr-notary-server-<replica_id>` and `dtr-notary-signer-<replica_id>` | These
+    processes help us to sign and maintain users'' signatures. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `dtr-registry-<replica_id>` | A community-based registry will be installed
+    as a core component in DTR. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `dtr-rethinkdb-<replica_id>` | RethinkDB is the database used to store DTR''s
+    repository information. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `dtr-scanningstore-<replica_id>` | This component manages and stores scanning
+    data. |'
+  prefs: []
+  type: TYPE_TB
+- en: Notice that all processes will have a common suffix to identify each replica
+    within the cluster. We will deploy different replicas, but their data will be
+    synchronized.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Notary server processes will also receive requests whenever any user pushes
+    or pulls images using a client with content trust enabled. A notary signer will
+    execute server-side timestamps and snapshots for image signatures.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Volumes will be used to persist DTR data. Each node running a DTR replica will
+    manage its own volumes. If DTR detects their existence, they will be used. This
+    prevents the destruction of previous installations (we have to use the previous
+    `replica_id` identification):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| **Replica (DTR instance)** | **Process** |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `dtr-ca-<replica_id>` | This volume manages the required key and root information
+    to issue DTR''s CA. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `dtr-notary-<replica_id>` | This volume stores notary keys and certificates.
+    |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `dtr-postgres-<replica_id>` | This volume is used by images'' vulnerability
+    scanning. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `dtr-registry-<replica_id>` and `dtr-nfs-registry-<replica_id>` | A registry''s
+    data is stored on this volume. This is the default option, but we are able to
+    integrate third-party storage. In fact, shared storage will be required to provide
+    DTR processes with high availability. `dtr-nfs-registry-<replica_id>` will be
+    used if the storage''s backend is NFS. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `dtr-rethink-<replica_id>` | This volume stores repository information. |'
+  prefs: []
+  type: TYPE_TB
+- en: DTR's data storage is key because this is where images will live. Take care
+    of your images' layers because DTR's backup does not back up their data and meta-information.
+    You have to deploy your own backup to be able to restore your images' data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'DTR can be deployed either on-premises or in the cloud. We can use Amazon,
+    Google, or Microsoft Azure. It supports the following storage backends:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: NFS
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Amazon S3
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Cleversafe
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Google Cloud Storage
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: OpenStack Swift
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Microsoft Azure
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: We can use any S3 object's storage-compatible solution (Minio, for example).
+    Object storage works great with an image's data if we have big layers with a lot
+    of content.
+  prefs: []
+  type: TYPE_NORMAL
+- en: DTR provides image caching for multi-site environments where communication latency
+    between users and the registry can become a problem. Image caching will be used
+    to ensure that users get the required images from the nearest registry node.
+  prefs: []
+  type: TYPE_NORMAL
+- en: RBAC is provided with DTR as it is in UCP. Both applications can be integrated
+    to have a single sign-on solution, but RBAC is independent. DTR will forward authentication
+    to UCP and this will verify a user's authentication, but each application will
+    manage different roles and profiles. This way, a UCP's power user can have limited
+    access to images in DTR.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Security in DTR is based on image security scanning and Docker Content Trust.
+    Image security scanning will search for an image's content vulnerabilities using
+    binaries' and libraries' **bills of materials** (**BOMs**). A **Common Vulnerabilities
+    and Exposures** (**CVE**) database is used to search for well-known issues in
+    our images.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A BOM is a detailed list of all the files present inside an image. A CVE database
+    is a public database of well-known vulnerabilities found in files around the world.
+    It is community-driven and there are many contributors reporting and looking for
+    vulnerabilities in applications' code.
+  prefs: []
+  type: TYPE_NORMAL
+- en: DTR also includes image promotion and task scheduling. These features allow
+    us to monitor image tagging and security to trigger different modifications or
+    interactions with either external or DTR-integrated tools.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Repository mirroring and caching will help us to integrate DTR in enterprise
+    environments.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We will learn how to deploy DTR with high availability in the next section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deploying DTR with high availability
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Deploying DTR with high availability requires more than one replica executing
+    all DTR components. We will deploy an odd number of replicas to ensure high availability.
+  prefs: []
+  type: TYPE_NORMAL
+- en: DTR should be deployed on dedicated worker nodes. This will ensure that none
+    of the non-system processes will impact DTR's behavior and vice versa. DTR's processes
+    can take a lot of CPU during scanning and other procedures. Therefore, we will
+    use three dedicated worker nodes. We usually admit DHCP on worker nodes, but we
+    will ask for fixed IP addresses on DTR's worker nodes. We will also require fixed
+    hostnames.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We can deploy the Docker Enterprise platform on-premises or in the cloud. DTR
+    requirements were described in brief in [Chapter 11](1879ea92-ae47-4230-ac84-784d4bc73185.xhtml),
+    *Universal Control Plane*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To deploy DTR on dedicated workers, these nodes require at least the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 16 GB of RAM
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 2 vCPUs (virtual CPUs)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'For production, we will ask for bigger nodes with more resources:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 32 GB of RAM
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 4 vCPUs
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: This increment of hardware resources is due to image-scanning features. This
+    will take a bunch of CPU and memory resources because it will load the content
+    of all images and create all binary and library `md5-checksum-hashes` to compare
+    these values against the CVE database.
+  prefs: []
+  type: TYPE_NORMAL
+- en: An image's data will be downloaded by default in the `dtr-registry-<REPLICA_ID>`
+    volume. If you deploy a standalone replica for testing, for example, ensure that
+    you have sufficient space for your images. A minimum of 25 GB is required, but
+    we recommend having at least 500 GB if you plan to manage Microsoft Windows images.
+  prefs: []
+  type: TYPE_NORMAL
+- en: At the time of writing this book, the latest DTR release is 2.7.6\. We will
+    first install a DTR replica. Once the first replica is installed, we will join
+    two other replicas. We recommend that you configure the first replica before continuing
+    with others. This will ensure the synchronization of configuration changes between
+    replicas. This is important for configuring DTR's data storage.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If we configured a license on UCP, this will be copied to the DTR. If not, we
+    will need to configure it in both environments.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'As we have seen in Docker''s UCP installation, `installation-container` will
+    have many actions associated with it, such as `backups`/`restore`, `install`,
+    and `join`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| **Command** | **Action** |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `install` | DTR will be installed using the `docker/dtr` image. We will launch
+    this process from any UCP node because the UCP URL will be used and the process
+    will be executed from manager nodes once the connection is established. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `join` | We will execute more than one DTR replica to provide high availability.
+    In this case, we will install the first replica and then we will join others to
+    this one. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `reconfigure` | We can modify DTR configurations using the DTR image. Some
+    configurations require restarting. We will configure DTR replicas to avoid downtime.
+    |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `remove` | Sometimes, we need to remove a number of DTR replicas. We will
+    use the `remove` action, available in the `docker/dtr` image, to delete replicas
+    from the DTR environment. This action will neatly remove replicas, updating other
+    replicas about this change. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `destroy` | This command will be used to forcefully remove all DTR replicas''
+    containers and volumes. This procedure should be used with care because replica
+    removal is forced and does not inform others about this condition, meaning that
+    a cluster can be left in an unhealthy state. Use this option to completely remove
+    DTR from your cluster. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `backup`/`restore` | This command creates a TAR file with all the information
+    and files required to restore a DTR replica, including non-image volumes and configurations.
+    This will not back up an image''s data layers. An image''s data must be stored
+    using third-party tools. Take care with this because you should be able to restore
+    your DTR cluster to a running state, but you could lose all your images. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `upgrade` | The `upgrade` option will help us to automatically deploy platform
+    upgrades. All DTR components will be updated to a defined upgrade release. If
+    we have deployed DTR with high availability, this process should not impact our
+    users. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `images` | We can download DTR''s required images prior to installation.
+    This is very useful, for example, when we have to execute an offline installation.
+    We will download DTR images using a Docker Engine instance with internet access.
+    |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `emergency-repair` | When all the replicas of DTR are unhealthy, but one
+    replica is running with healthy core processes, we will use the `emergency-repair`
+    action with this replica to recover the cluster. |'
+  prefs: []
+  type: TYPE_TB
+- en: 'We will usually have the following common arguments for the majority of the
+    actions:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| **Arguments** | **Actions** |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `--ucp-url` | This should be our valid UCP''s URL. We will use the cluster''s
+    **Fully Qualified Domain Name** (**FQDN**) and port (`443` by default). |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `--ucp-ca`and `--ucp-insecure-tls` | We will choose either of these options,
+    using UCP''s valid CA or insecure TLS, avoiding any CA authentication. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `--ucp-username`and `--ucp-password` | These options will provide UCP''s
+    user authentication. If none are used, we will be asked for them during execution.
+    These should be valid and must have administrator privileges. |'
+  prefs: []
+  type: TYPE_TB
+- en: Always use the appropriate `docker/dtr:<RELEASE>` version for all actions. Do
+    not mix releases unless you are doing a DTR upgrade. The current release, at the
+    time of writing this book, is 2.7.6.
+  prefs: []
+  type: TYPE_NORMAL
+- en: DTR installation requires UCP's URL and one administrator's username and password.
+    We can use these interactively, but as we learned in previous sections, it is
+    preferable to include installation as part of script-like structures. This will
+    help us to provide a reproducible configuration and installation methodology.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We will now describe DTR''s installation process. The first replica will be
+    installed using `docker container run docker/dtr:<RELEASE> install`. We will launch
+    the installation process from any cluster node. In fact, we can deploy DTR from
+    our laptop because we will include UCP''s URL and the administrator''s username
+    and password. Installation can be done using an interactive or automated process.
+    We will also choose which UCP node will run the first replica''s processes using
+    `--ucp-node`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: Since DTR's installation process will connect to UCP's API, TLS will be used,
+    and certificates will be sent. We added UCP's CA to validate its certificates.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Once the first replica is installed, we will configure and then join other replicas.
+    It is important to configure shared storage and other settings if you have not
+    changed them during the installation process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Notice the last line of the installation's output. It shows the `You can use
+    flag '--existing-replica-id c8a9ec361fde' when joining other replicas to your
+    Docker Trusted Registry Cluster` text message. Keep this replica's ID; we will
+    use it for reconfiguring it and joining other replicas.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We can configure the shared storage we need to execute the `reconfigure` action.
+    We can use either filesystem or object storage types:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Filesystem storage types**: **Network File System** (**NFS**), bind mount,
+    and volume'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Object storage (cloud) types**: Amazon S3, Openstack''s Swift, Microsoft
+    Azure, and Google Cloud Storage'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Object storage and NFS are valid options for shared storage. Each cloud provider
+    will require its own specifications. Common parameters will be the user or account
+    name, password, and bucket. Object storage is the preferred option for DTR shared
+    image storage. There are some on-premises solutions, such as Minio, that are easy
+    to implement in our data center. NFS is also valid and it is quite common in current
+    data centers. In this case, we will use the `--nfs-storage-url` parameter with
+    the `reconfigure` action. `nfs-storage-url` will require the following format:
+    `nfs://<ip|hostname>/<mountpoint>`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: DTR's storage backend configuration can also be managed using YAML format.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Many DTR options can be set using environment variables. To review available
+    variables, execute `docker container run docker/dtr:<RELEASE> <ACTION> --help`
+    to retrieve an action's help. Variables will be shown on each argument or option.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Joining replicas will provide high availability to DTR's processes. Replication
+    requires external storage for sharing images' blobs (data layers) and meta-information.
+    Therefore, we will reconfigure the first replica's storage if we did not choose
+    shared storage during installation. We have the first replica's ID and we will
+    use `docker/dtr:<RELEASE> reconfigure --existing-replica-id <FIRST_REPLICA'S_ID>`
+    to reconfigure the storage's backend. In this example, we will just use NFS, which
+    is common in our data centers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Before executing the storage's configuration, we will copy the registry volume's
+    data into our NFS filesystem.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The following lines provide us with a quick example of this migration mounting
+    NFS endpoint as a local directory on DTR''s host (we have used a sample IP address
+    and the ID of the replica created previously):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: This step will guarantee previous data if we use `--storage-migrated` with the
+    `reconfigure` action. If you are using NFS as a local volume, you should guarantee
+    that it is mounted on reboot using the appropriate line in your `fstab` file.
+    This was just an example. We will never use NFS locally mounted for DTR; we can
+    use NFS directly, using appropriate command-line options, to mount an NFS endpoint
+    as a DTR volume.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The following screenshot shows Amazon''s S3 options integrated in DTR''s web
+    UI. Each backend type will integrate different options:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/d58a7bc5-662f-4efe-b0c8-444c997bf89e.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'We have used variables for command parameters, but we have left the command''s
+    output intact because it is interesting how NFS and the current replica''s ID
+    are present:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: Notice the `--storage-migrated` argument. If we migrate storage after the creation
+    of a number of repositories, all this work will be lost if we do not migrate the
+    registry volume's data. In this case, we have just copied the volume's content.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now that we have a shared registry''s storage backend, we can join new replicas.
+    We will use the current replica''s ID because new replicas require a base replica
+    to sync with. We will use the `join` action on any cluster node because we will
+    select another worker node for this replica (we have mocked our example using
+    `<NEW_UCP_NODE>`):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: All values apart from the first replica's ID were mocked and the outputs of
+    the `join` command have been reduced for this book. Notice that we have used `--ucp-insecure-tls`
+    instead of adding UCP's CA. After `183` steps, the new replica was joined. At
+    least three replicas are required for high availability. All replicas are deployed
+    as multi-container applications on defined worker nodes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Starting in DTR 2.6, you should perform a backup before switching storage drivers.
+    This ensures that your images will be preserved if you decide to switch back to
+    your current storage driver.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'DTR will expose its API securely, using TLS. Therefore, certificates will be
+    used to create secure tunnels. By default, DTR will create a CA to sign server
+    certificates. We can use our corporation''s private or public certificates. They
+    can be applied during installation using `--dtr-ca` and `--dtr-cert`, but we can
+    change them later in DTR''s web UI or by using the `reconfigure` action. If you
+    used your custom certificate, your certificate will probably be included in your
+    system. If Docker created auto-signed certificates for us, these will not be trusted
+    in your system. Docker created a CA for use to sign DTR certificates and you will
+    probably get the following error message when you try to execute any registry
+    action from your command line:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'To avoid this issue, we can either avoid SSL verification, define an insecure
+    registry, or add DTR''s CA as trusted on our system:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Insecure registry**: To set up an insecure registry for our client, we will
+    add `"insecure-registries" : ["<DTR_FQDN>[:DTR_PORT]"]` to our Docker Engine `daemon.json`
+    file. This is not recommended and should be avoided in production because someone
+    could hijack our server''s identity.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Adding DTR''s CA to our system**: This procedure may change depending on
+    the Docker Engine host''s operating system. We will describe procedures for Ubuntu/Debian
+    and Red Hat/CentOS nodes. They are very common in our data centers:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: Including DTR's CA in our client systems is the preferred method because we
+    will still validate its certificates.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We can log in to DTR's web UI using the defined DTR's URL. Since login is integrated
+    with UCP by default, redirections will be integrated into this process and UCP
+    will authorize users.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The following screenshot shows DTR''s main interface once we are logged in.
+    Repositories will be shown in a tree-like structure. Users will only have access
+    to their resources:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/3f47db5f-1391-4c0f-b25d-39b447b06396.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'DTR''s web UI is quite simple. It allows administrators to manage users, teams,
+    organizations, and RBAC integrations. The following is a screenshot of the system''s
+    endpoint:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/bd8254c4-7514-475b-b57a-1e40a1076318.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'The system''s endpoint provides access to the following resources and configurations:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**The General tab**:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Allows us to manage DTR's license.
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: DTR's load-balanced URL.
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Integration of corporate proxies to download the required image-scanning CVE
+    database.
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Single sign-on integration within UCP and DTR.
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Configures browser cookies for clients. This will help us to forward requests
+    to specific DTR backends.
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Allows us to set whether repositories can be created on push. This allows users
+    to push images, and repositories will automatically be created if they do not
+    exist.
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**The Storage tab**: This tab allows us to configure all of DTR''s storage
+    backends. We can choose between filesystem or object storage (cloud), and each
+    backend will have different options.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**The Security tab**: Security is key for images. This tab allows us to configure
+    DTR''s image-scanning features.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**The Garbage collection tab**: Untagged images consume space and will increase
+    the risk if some use non-referenced layers. This tab allows us to schedule the
+    automatic removal of untagged images.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**The Job logs tab**: The logs of internal tasks can be reviewed on this tab.
+    This log will show us information regarding mirroring and image pruning, among
+    other internal features.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The following section will show us how to manage different access to consume
+    images stored in your DTR repositories.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Learning about RBAC
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: DTR provides a complete RBAC environment. DTR will authenticate and authorize
+    valid users. We can integrate third-party authentication solutions as we learned
+    in [Chapter 11](1879ea92-ae47-4230-ac84-784d4bc73185.xhtml), *Universal Control
+    Plane*. Integrating external **Lightweight Directory Access Protocol** (**LDAP**)/**Active
+    Directory** (**AD**) authentication mechanisms will allow us to delegate users'
+    passwords to them, while UCP and DTR will manage user authorization.
+  prefs: []
+  type: TYPE_NORMAL
+- en: By default, DTR redirects user authentications to UCP because single sign-on
+    is included. We can change this behavior in the System | General menu. It is recommended
+    to keep this setting so as to manage users in just one application. All authentication
+    will be delegated to UCP and this will route users to its integrated third-party
+    authentication mechanism (if configured).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Once we are authenticated to the DTR environment, we will get different permissions
+    to allow us to manage images from repositories or just pull different releases
+    from them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: By default, anonymous users will be able to pull images from public repositories.
+    You must ensure that only allowed images are stored in public repositories.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We can create users on either UCP or DTR because, by default, we will have a
+    single sign-on environment and users will be shared between both applications.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Users are managed in teams and organizations, as we also learned in [Chapter
+    11](1879ea92-ae47-4230-ac84-784d4bc73185.xhtml), *Universal Control Plane*. These
+    allow us to integrate teams into organizations, while users will be integrated
+    in those teams:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Organizations** will provide a logical level of abstraction and isolation.
+    They allow us to namespace other resources.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Teams** will allow us to assign user access to repositories.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Users will be integrated into organizations and teams. These allow us to restrict
+    access to images within organizations and with the permissions and allowed actions
+    given using teams.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Repositories'' accesses are managed by two concepts:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Ownership**: Repository creators'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Public accessibility**: Public or private repositories'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Owners of repositories can decide about access for others. As has been mentioned,
+    we can have public and private images.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Private repositories can only be consumed by owners and DTR administrators.
+    Other users cannot pull images from these repositories. Only repositories' owners
+    can push images to them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Within organizations, we will provide read and write access for specific teams
+    in an organization's private repositories. These teams will be able to push images
+    to these repositories. These teams are owners of these repositories and we can
+    provide read-only access to some teams. They will only be able to pull images.
+    All other teams will not have any access because we are talking about an organization's
+    private repositories.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Public repositories are different. Users' public repositories allow other users
+    to pull images from them, while only owners are able to push. They have read-write
+    access. An organization's public repositories will allow users to also pull images.
+    In these cases, only teams with read-write access will be allowed to push images.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The following table represents permissions that can be applied to repositories:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| **Permissions** | **Description** |'
+  prefs: []
+  type: TYPE_TB
+- en: '| **Read-only** | A user can browse/search and pull images from a repository.
+    Users will not be able to push to this repository. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| **Read and write** | A user can browse/search, pull, and push images to a
+    repository. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| **Owner** | The owner has read-write access to their repositories, but they
+    are also allowed to manage their permissions and descriptions. They can also set
+    a repository''s privacy level (public/private). |'
+  prefs: []
+  type: TYPE_TB
+- en: Organizations' members have read-only access to public images within this organization.
+    Therefore, an organization's users can always pull their public images. Organizations'
+    members can see other members and view all teams included within their organization.
+    But we need to integrate users within an organization's teams to provide management
+    and read-write access.
+  prefs: []
+  type: TYPE_NORMAL
+- en: An organization's members who are not included in any team cannot manage an
+    organization's repositories. They can only pull its public images.
+  prefs: []
+  type: TYPE_NORMAL
+- en: An organization's owners, on the other hand, will be able to manage the organization
+    and all its repositories. We can include any user within an organization as an
+    owner. These users can also manage teams within an organization and their level
+    of access.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We will use a simple example to help you understand how permissions and access
+    will be given to users in different repositories.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's imagine an organization named **myorganization**. Let's include a team
+    for **devops** and others for **developers** and **operations**. In this example,
+    the **devops** team will define core images, while **developers** will use them
+    for their applications.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**devops** group members will have read-write access, while **developers**
+    will have read-only access. These will just pull images to create their own ones.
+    They will use enterprise-defined core images, created by the **devops** team.
+    In this case, the **operations** team does not have access to these application
+    core images.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'On the other hand, the **devops** team created a series of images for testing
+    the platform, under the **testing image** repository. This repository is public
+    and all users within the organization will be able to use it on the Docker Enterprise
+    platform. The following diagram shows the RBAC situation described:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/0e1848d9-a860-4a6f-bf67-72db259d8679.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: In the next section, we will review image scanning and other security features
+    included in the DTR platform.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Image scanning and security features
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this section, we will review DTR's security features, such as security scanning
+    and image signing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Security scanning
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: DTR includes image security scanning as a built-in feature. It will scan each
+    image's layer for binaries and libraries. A scan report will include the aggregated
+    BOM for each layer. We now have a complete picture of an image's files and its
+    MD5 hashes. This ensures the immutability of each layer's content between image
+    releases. If we change a file within a layer, its hash changes and scanning will
+    be executed against the new layer's content. Image scanning will also download
+    and manage a CVE database provided by Docker. This will be used to correlate an
+    image's layer reports with the vulnerability information given.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Scanning will show us a report regarding the health of our image, reporting
+    all detected well-known vulnerabilities found on the image's layers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This CVE database should be updated frequently because new threats appear almost
+    daily. We can use either online synchronization or offline manual updates. In
+    both cases, we require a valid Docker Enterprise license. Online synchronization
+    requires a valid internet connection (we can use our corporate's proxies within
+    DTR, configuring the `--http-proxy` and/or `--https-proxy` options either on DTR's
+    installation or by reconfiguring the environment following the installation process).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Do not forget to use the `--no-proxy` option to configure all your enterprise's
+    internal FQDNs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Image scanning consumes a lot of DTR's hosts' resources. In fact, the first
+    security scan for each layer requires a lot of resources. Subsequent scans will
+    use previous layers' reports. If an image's layer size is large, scanning will
+    take a lot of resources to create the layer's report. All files' hashes should
+    be included in the report to correlate them with the database's data. If we use
+    common layers in our images, this process will only be executed once. A layer's
+    report will be updated if we change that layer's content. That layer will become
+    old and a new scan will be executed. Take care of these processes between image
+    changes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Scanning can be executed whenever an image is updated or created within DTR's
+    registry automatically. This will be set on each repository using the Scan on
+    push feature. We can periodically execute images' scans manually, but this could
+    prove hard to maintain without using DTR's API.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The image''s scanning report will be shown on each repository''s tag. We will
+    have a report of the health of the image''s vulnerabilities, as can be seen in
+    the following screenshot:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/34825d8e-f894-4155-b846-ac0a14a84639.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'The vulnerability status of the image can be as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Green**: No vulnerability was found. The image is secure.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Orange**: Some minor or major vulnerabilities were found.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Red**: Critical vulnerabilities were found and security could be compromised.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: We can dive into each tag's report by clicking on its details. We will be able
+    to review the full scan results, including the image's metadata, size, owner,
+    and the most recent scan.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We have two different views for a tag''s scan details:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The **Layers** view will show us a list of the image's layers in the order of
+    the image's construction. We will see each layer with the vulnerabilities identified
+    on it. We can click on each layer to drill down into its components.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The **Components** view will list all the image's components. Components will
+    be sorted according to the number of vulnerabilities identified because a file
+    can have multiple issues.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: We can integrate triggers to inform other processes or applications regarding
+    the scanning results once they are finished.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Image immutability
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Another interesting feature can be enabled for each image's repository. An image's
+    immutability will mean that the overwriting of tags will be avoided. This will
+    ensure the uniqueness of tags. This is interesting in terms of production releases.
+    No one will reuse a tag that has already been used, so the development life cycle
+    is not compromised because each release will have a unique ID.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Content trust in DTR
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: DTR has integration with **Docker Content Trust** (**DCT**). We have covered
+    this topic in [Chapter 6](e9fd3807-5bbd-4ea8-84f7-ee02d288643d.xhtml), *Introduction
+    to Docker Content Trust*. We learned that image signing improves cluster and application
+    security, ensuring image ownership, immutability, and provenance. If we have a
+    CI/CD pipeline that creates images as application artifacts, we can ensure that
+    the correct image will run in production. UCP allowed us to run only signed images
+    within our organization.
+  prefs: []
+  type: TYPE_NORMAL
+- en: DTR provides a notary server and a notary signer. These components are required
+    for DCT. Both application components will be accessed through an internal proxy
+    and integrated with UCP's roles and access environment. This integration enables
+    the signing of images that UCP can trust and execute securely.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Docker client will allow us to configure content trust for repositories
+    and sign images. We will use a simple Docker client command line to sign images.
+    The main difference in a corporate environment is that we need to ensure that
+    images are signed by enterprise users. We will use our own certificates, included
+    in our user's bundle. We will use `key.pem` and `cert.pem` as private and public
+    keys, respectively.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We will now describe the steps necessary for signing images in the Docker Enterprise
+    environment:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'First, we will download the user''s bundle. We have already described this
+    process in [Chapter 11](1879ea92-ae47-4230-ac84-784d4bc73185.xhtml), *Universal
+    Control Plane*. Once we have our bundle in our system (already decompressed and
+    ready to use), we will add a private key to our laptop''s or Docker client node''s
+    trust store. We will use `docker trust load`:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We will then initialize trust metadata for a specific repository. We should
+    add ourselves as signers on each repository where we will push images. Remember
+    that repositories should contain the registry''s FQDN and port. We will use the
+    `docker trust signer add` command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'With these few steps, we are ready to sign an image. Let''s review a simple
+    example with an `alpine` image. We will tag our image ready for our registry and
+    we will sign it using `docker trust sign`:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Once signed, we can push our image to the registry. Notice that we are using
+    `<DTR_FQDN>[:DTR_PORT]` as DTR''s registry:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We now have our signed image in the registry, as we can observe in the following
+    screenshot:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/3b868554-3c49-4786-ba85-890116e9fb18.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'We can review image ownership and its signatures using `docker trust inspect`:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: We have mocked this output and other output seen in this chapter, but you will
+    receive similar output. Your user should be shown under the `SIGNER KEYS` section
+    (we have `<MY_USERNAME>` in the previous command's output).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'There is also an important topic related to signing. Users can delegate image
+    signing. This concept will allow other users to sign for us or share signing within
+    a team. If we need to impersonate another user''s signing process, we need to
+    import their key. Therefore, we require the other user''s `key.pem` key file.
+    We will load this key in keeping with the steps covered previously:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: We mocked the users' names and IDs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We then add our teammate''s public key to our repository:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now, we can sign using both signatures:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now, we can conduct a further inspection and we will see both signatures:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: To delete the repository's DCT, we will use `notary delete <DTR_FQDN>[:DTR_PORT][/ORGANIZATION][/USERNAME][/REPOSITORY]
+    --remote`. You will require the `notary` application's binary in your host.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Remember that all client actions can be forced to be secure using `export DOCKER_CONTENT_TRUST=1`,
+    to enable content trust as regards all the commands executed in the current shell.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Content trust can be integrated into CI/CD with process orchestrators and other
+    automation tools. To avoid a user''s interaction as regards image signing procedures,
+    we can use the following variables:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`DOCKER_CONTENT_TRUST_ROOT_PASSPHRASE`: Will be used for the local root key
+    passphrase'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`DOCKER_CONTENT_TRUST_REPOSITORY_PASSPHRASE`: Will be used for the repository
+    passphrase'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: As we have learned, users will be available to sign their images using their
+    Docker bundle from UCP. It is also possible to generate keys using `docker trust
+    key generate command`, but these will not be included in DTR.
+  prefs: []
+  type: TYPE_NORMAL
+- en: DTR ships with Notary built in so that you can use DCT to sign and verify images.
+    For more information about managing Notary data in DTR, refer to the DTR-specific
+    notary documentation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The following section will show us how we can integrate Docker Enterprise into
+    our CI/CD pipeline using DTR's built-in features.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Integrating and automating image workflow
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'DTR provides built-in features aligned with CI/CD pipeline construction logic.
+    We will have webhooks that can be triggered to inform other applications or processes
+    regarding certain events, such as a completed image scan or a new image/tag arrival.
+    We also have image promotions. This feature will retag images between repositories.
+    The following diagram shows a simple workflow for building, distributing, and
+    executing an application. We are including some of the features provided by DTR:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/977b9776-a6eb-4af7-bde5-05a2759718a9.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: This workflow represents how to implement DTR in several development stages.
+    Promoting a scanned image for testing will ensure its security before going to
+    production in this example. Toward the end of this section, we will also be reviewing
+    image mirroring. This is a feature used to share images between different DTR
+    environments.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Image promotion
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: DTR allows us to automatically promote images between repositories. Promotion
+    is based on repository-defined policies. Therefore, policies are defined at the
+    repository level. When an image is pushed to this repository, policies are reviewed
+    and, if the rules match, a new push is done to another registry.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Image promotion is very useful in CI/CD pipeline stages. It is easier to understand
+    with the help of a quick example. Let's imagine a development repository for a
+    frontend application's component. Developers will push images to this `development/frontend`
+    repository. They manage all the updates in this repository. In fact, no one apart
+    from them has access to this repository. They will develop new updates with fixes
+    and new features. When a release has to be deployed to production, they will prepare
+    a `release` version. They will include a `release` string in this image's tag.
+    A policy will match this string and a new image will be created on the `Quality
+    Assurance` repository for the application's component.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This process creates a new image to be tested by the quality assurance team
+    when the `release` image is pushed. These users do not have access to non-release
+    images. Only those images tagged as `release` will be available to quality assurance
+    users. We know that only an image's ID is unique. We can have many tags for each
+    image. Therefore, we are not duplicating images. We are just adding new tags and
+    names for a defined image.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We can define policies based on the following attributes:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| **Attributes** | **Description** |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Tag name | We define a matching string for a repository''s image''s tags.
+    Matching tags can be equal, or can start with, end with, contain, or be one of
+    the image-defined ones. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Component name | This will be used to match if an image has a given component
+    and its name equals, starts with, ends with, or contains, or is one the specified
+    ones. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Vulnerabilities | We can define how many critical, major, or minor vulnerabilities
+    (or all vulnerabilities) will be monitored to promote an image to another repository.
+    We will use comparison expressions such as "is greater than," "greater than or
+    equal to," "less than or equal to," "equal," or "not" with the defined value and
+    the image will only be promoted if the equation is satisfied. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| License | This rule will match if the image uses a license. This is usually
+    used in relation to Microsoft Windows images. |'
+  prefs: []
+  type: TYPE_TB
+- en: We can apply more than one attribute to this policy's rules. Once we choose
+    which criteria will be applied, we can set up the new repository and tag. There
+    are a number of templates for the names of new image tags. These allow us to include
+    an image's source tag or timestamps.
+  prefs: []
+  type: TYPE_NORMAL
+- en: DTR webhooks
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: DTR has a series of integrated webhooks that will be triggered under special
+    circumstances. When some events occur, DTR will be able to send webhooks to third-party
+    applications. This is vital to integrating DTR in your CI/CD pipelines. DTR webhooks
+    can be secured using TLS if the receiver backend also has this feature.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We will cover most of the important webhooks, but this link provides an accurate
+    list of the current ones: [https://docs.docker.com/ee/dtr/admin/manage-webhooks/](https://docs.docker.com/ee/dtr/admin/manage-webhooks/):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| **Webhooks** | **Description** |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `TAG_PUSH`, `TAG_PULL`, and `TAG_DELETE` | Repositories'' tag events will
+    generate webhooks when someone pushes or pulls on a repository or when it is removed.
+    |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `SCAN_COMPLETED` and `SCANNER_UPDATE_COMPLETED` | Scanning is key to ensuring
+    security. We will send notifications when the image-scanning database is updated
+    or when a repository''s scan has ended correctly. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `PROMOTION` | Whenever a promotion policy is applied, we will send a webhook.
+    This will help us to follow DTR images'' internal workflow. |'
+  prefs: []
+  type: TYPE_TB
+- en: We must have administrative privileges on a repository to be able to configure
+    its webhooks using either DTR's web UI or its API. The web UI allows us to test
+    defined webhooks by clicking Test.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The following screenshot shows a repository''s webhook configuration:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/6824c1e9-c756-4b2e-b6fe-6d6b7ff6f6fd.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: The following section will show us how to implement registry mirroring.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Mirror images between registries
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Registry mirroring can also help us in our CI/CD. When images get pushed into
+    repositories and there is some mirroring configuration, DTR will push them into
+    another defined registry. This helps us to distribute repositories on different
+    registries, with high availability.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Mirroring configuration is based on the promotion logic covered previously.
+    We will first configure mirror direction to define which action will be used:
+    pull or push. DTR mirroring allows us to integrate Docker Hub with the on-premises
+    Docker Enterprise DTR environment.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We need to understand that DTR''s metadata is not synced between registries.
+    Therefore, image scanning and signing information from the first registry will
+    not be available on the second one. All these actions must also be executed on
+    the mirror registry. We can integrate scanning automatically when images are pushed
+    to the second registry. Image signing requires external integrations. The following
+    screenshot shows the mirroring configurations for a repository:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/42d76fea-b8cd-46b6-8986-b54a1f33a849.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Now that we have learned about the built-in features for automation, we will
+    review registry caching with a view to improving a developer's work.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Registry caching
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Registry caching will help us to manage images on distributed environments.
+    Users from remote locations can have latency problems and big images can take
+    forever to load. We can deploy intermediate registry caches to decrease pull times.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Caches are transparent to users because they will use the original DTR's URL.
+    When a user pulls an image, the DTR will check whether it is authorized and it
+    will then be redirected to a defined cache. This cache pulls an image's layers
+    from the DTR and keeps a copy for users. New requests do not require an image's
+    layers to be pulled from DTR again.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To deploy a registry cache service, we will use the `docker/dtr-content-cache:<RELEASE>`
+    image.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Registry caching help us to manage distributed environments. Docker clients
+    must be configured in order to use this feature. We will add `"registry-mirrors":
+    ["https://<REGISTRY''s_MIRROR_URL>"]` to the `daemon.json` configuration file
+    or configure users to use it by using the Users Settings page. For this to work,
+    it is necessary to register the deployed cache with DTR''s configuration using
+    DTR''s API. Detailed instructions can be found at the following link: [https://docs.docker.com/ee/dtr/admin/configure/deploy-caches/simple/](https://docs.docker.com/ee/dtr/admin/configure/deploy-caches/simple/)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: We will now learn about DTR's automated garbage deletion.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Garbage collection
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Garbage collection will remove unreferenced layers and manifests from DTR. Registry
+    data can consume a lot of space in our storage backend. This is not only a problem
+    for storage resources. Security can be compromised if unsecured layers remain.
+    It is recommended to remove all unused layers (also known as **dangling images**).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This process runs in two phases:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: DTR's garbage collector will search all registry manifests. Those with active
+    content, and image layers included within other images, will not be deleted.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The process will scan all the blobs. Those not included in the first phase's
+    list will be removed.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Garbage collection can be run manually from a registry''s container using `bin/registry
+    garbage-collect`. We will usually apply scheduled tasks integrated into DTR''s
+    web UI. Garbage collection options will allow us to configure the removal of unreferenced
+    layers periodically using cron-like logic. We will also establish for how long
+    we will allow the removal process to run because it can take a significant amount
+    of time. The following screenshot shows the Garbage collection configuration page:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/63c47699-4ee0-4425-85a4-ac79fb639906.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: In the next section, we will learn how to deploy DTR's backup.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Backup strategies
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: DTR's backup procedure does not result in any service interruption. A backup
+    process can be executed from any of the cluster nodes. It is recommended to create
+    all backups from the same replica. This will help us to recover at least this
+    replica. We will be able to recreate the full DTR's cluster environment using
+    this replica.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The following list shows which content will be stored as part of your DTR''s
+    backup TAR file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: DTR configurations
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Repository metadata
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: User access control and repository configurations
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: TLS certificates and keys required for DTR communication
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Images' signatures and digests, including the integration of Notary
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Images' scan results
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The following content will not be included within your backups:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Images' layers
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Users, teams, and organizations
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The vulnerability database used for image scanning
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Take care of the content of images because users, teams, and organizations will
+    be included in UCP's backup and the vulnerability database (CVE and reports) can
+    be recreated whenever we need it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: By default, DTR's web UI will show a warning message if we haven't performed
+    any backup.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We will find the healthy replica''s ID by using `REPLICA_ID=$(docker inspect
+    -f ''{{.Name}}'' $(docker ps -q -f name=dtr-rethink) | cut -f 3 -d ''-'') && echo
+    $REPLICA_ID` and we will then execute a backup using this ID:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: Remember, this file does not include an image's blobs or meta-information. We
+    need to include third-party backup solutions for DTR's storage backend.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We can use either `--ucp-ca` with a valid UCP CA certificate or `--ucp-insecure-tls`
+    to connect to UCP.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To restore DTR, we will use the same `docker/dtr` image release. We will use
+    `docker container run docker/dtr:<RELEASE> restore`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: This command will not restore images' blobs and meta-information as the backup
+    only provides information to recover all of DTR's processes and their configurations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The following section will help us to understand how to monitor DTR's health.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Updates, health checks, and troubleshooting
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: DTR application upgrades can sometimes integrate database modifications. Therefore,
+    you must ensure the correct upgrade path between releases. The `upgrade` command
+    can be executed from any node as we will execute this command against all DTR
+    replicas. We will use the replicas' IDs or interactive mode to upgrade each DTR
+    replica. The upgrade process will replace all replica containers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'It is recommended to review Docker''s documentation relating to updated procedures
+    at the following link: [https://docs.docker.com/ee/dtr/admin/upgrade](https://docs.docker.com/ee/dtr/admin/upgrade)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: DTR uses semantic versioning. This is key for following upgrade paths. Downgrading
+    is not supported because sometimes, an upgrade can modify database objects.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Upgrades between different patch releases can be skipped if a minor release
+    is applied. Patches do not modify the database, so CA can be applied without an
+    object's data changing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: On the other hand, upgrades between minor versions must follow the version number,
+    although we can skip intermediate patches, as has been mentioned.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Major version upgrades require upgrading to the latest minor/patch release before
+    going to the next major release. This procedure will implement a host of changes
+    and you must ensure that you have a valid backup before this upgrade. Remember
+    to verify a valid image's data backup.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To monitor DTR, we will use a common container's monitoring procedures. We can
+    also use UCP's stacks view because DTR is deployed as a multi-container application.
+    All replicas will be displayed. We can then click on each replica's link and inspect
+    its resources.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'DTR exposes the following endpoints for monitoring. We will use them to verify
+    its health:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| **Endpoints** | **Description** |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `/_ping` | This endpoint shows a replica''s status. We can verify status
+    using third-party monitoring tools. If the replica is fine, we will obtain `"Healthy":true`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: '|'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| `/nginx_status` | This shows us the common open source `nginx` status and
+    statistics page. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `/api/v0/meta/cluster_status` | For all replica statuses, we will use this
+    endpoint. This requires authentication because we will be accessing DTR''s API.
+    We will use any administrator''s access. An overall cluster state and a list of
+    replicas with their statuses will be shown. |'
+  prefs: []
+  type: TYPE_TB
+- en: We will also search for errors on DTR's container logs. In this case, we will
+    usually integrate these logs in third-party logging management applications.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Logging
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: As standard, DTR's container logs will show all application errors. DTR also
+    includes a view in its web UI with all job logs. We will have detailed information
+    regarding the many actions executed within the environment. This log view provides
+    useful audit information because it contains all images' management actions executed
+    in DTR.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The following section will show us how to recover an unhealthy DTR environment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: DTR disaster recovery
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: DTR is deployed using a high-availability strategy. Therefore, we have a variety
+    of situations, depending on how many replicas are unhealthy.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Some replicas are unhealthy, but we keep the cluster's quorum's state
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'In this case, the majority of replicas are healthy, so overall, the cluster''s
+    state is healthy. We will remove unhealthy replicas and add new ones as soon as
+    possible. It is important to only join replicas after unhealthy ones have been
+    removed. We will execute this procedure step by step, removing an unhealthy replica,
+    adding a new one, and so on. This will keep the overall cluster''s state intact.
+    We will only remove unhealthy replicas that have been identified, so we will first
+    need to identify which replicas are in a failing state using `docker ps --format
+    "{{.Names}}" | grep dtr`. Once identified, we will execute `docker container run
+    docker/dtr:<RELEASE> remove` to delete the replica in question:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Although the `--replica-ids` argument will allow us to remove a list of replicas,
+    it is recommended to follow this procedure on each unhealthy replica, adding a
+    new one with each removal:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: This will join a new replica. Always wait until synchronization has finished
+    before continuing with a new one.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The majority of replicas are unhealthy
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: If the majority of replicas are unhealthy, the cluster's state will be unhealthy
+    because it will have lost its quorum. However, if we still have at least one healthy
+    node, we can repair the cluster using this replica. We will execute an emergency
+    repair procedure using `docker container run docker/dtr:<RELEASE> emergency-repair`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We can find the healthy replica''s ID using `REPLICA_ID=$(docker inspect -f
+    ''{{.Name}}'' $(docker ps -q -f name=dtr-rethink) | cut -f 3 -d ''-'') && echo
+    $REPLICA_ID` and we will then execute the emergency repair procedure:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: This process should recover a replica completely and we will then add new replicas
+    to recover a cluster's consensus.
+  prefs: []
+  type: TYPE_NORMAL
+- en: All replicas are unhealthy
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'In this situation, we cannot recover the cluster without an existing backup.
+    We will use `docker container run docker/dtr:<RELEASE> restore`. It is critical
+    to have a valid DTR backup:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: This command will not restore Docker images. We have to implement a separate
+    procedure for this data. We will use the normal filesystem's backup and restore
+    procedures. Once we have a healthy replica, we will be able to join new ones in
+    keeping with the procedure described previously.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: This chapter covered DTR's features and components. We learned how to implement
+    DTR in production using a high-availability strategy. We reviewed different solutions
+    available for storing images securely.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We also covered image scanning and signing. Both options allow us to improve
+    image security by integrating with UCP's application deployment platform. Users
+    within organizations will have different levels of access to images thanks to
+    DTR's integrated RBAC system.
+  prefs: []
+  type: TYPE_NORMAL
+- en: CI/CD environments have changed the way we create and deploy applications nowadays.
+    We have reviewed different features built using DTR that help us to integrate
+    image building, sharing, and security in CI/CD pipelines. We also learned how
+    to mirror repositories and improve users' experiences with registry caching.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Knowledge of DTR and UCP is required for the exam. We need to know their component
+    distributions on cluster nodes and how they work. We also need to understand their
+    installation processes and how we can ensure their health.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is the last chapter related to the Docker Enterprise platform. Later chapters
+    will cover the content that is required for the exam, with some quick topic reviews
+    and further questions and answers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Questions
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Which features are included in DTR?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: a) Repository load balancing
+  prefs: []
+  type: TYPE_NORMAL
+- en: b) Repository mirroring
+  prefs: []
+  type: TYPE_NORMAL
+- en: c) Repository signing
+  prefs: []
+  type: TYPE_NORMAL
+- en: d) All of the above
+  prefs: []
+  type: TYPE_NORMAL
+- en: How many DTR replicas do we need in order to provide high availability for Docker
+    images' layers?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: a) We will need at least three DTR replicas to provide high availability.
+  prefs: []
+  type: TYPE_NORMAL
+- en: b) DTR does not manage the high availability of data. We need to provide third-party
+    solutions for DTR storage.
+  prefs: []
+  type: TYPE_NORMAL
+- en: c) DTR manages volume synchronization when we deploy more than one replica.
+  prefs: []
+  type: TYPE_NORMAL
+- en: d) All of the above statements are true.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Which processes are part of DTR?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: a) `garant`
+  prefs: []
+  type: TYPE_NORMAL
+- en: b) `jobrunner`
+  prefs: []
+  type: TYPE_NORMAL
+- en: c) `notary-client`
+  prefs: []
+  type: TYPE_NORMAL
+- en: d) `auth-store`
+  prefs: []
+  type: TYPE_NORMAL
+- en: Which of these statements are true in terms of how to deploy DTR with high availability?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: a) Configure a load balancer as a transparent reverse proxy. We will forward
+    all requests for DTR's FQDN to any of the replicas.
+  prefs: []
+  type: TYPE_NORMAL
+- en: b) Deploy shared storage to allow all DTR replicas to store an image's data
+    and meta-information at the same location.
+  prefs: []
+  type: TYPE_NORMAL
+- en: c) Deploy the first DTR replica with previously created shared storage on one
+    node. Then, add at least two more replicas on different nodes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: d) All of the above statements are true.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Which content is not included in DTR's backup?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: a) Repository metadata and images' layers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: b) RBAC configurations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: c) Image signatures.
+  prefs: []
+  type: TYPE_NORMAL
+- en: d) All of the above statements are true.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Further reading
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The following links will help us to understand some of the topics covered in
+    this chapter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Content trust integration in DTR: [https://docs.docker.com/engine/security/trust/content_trust/](https://docs.docker.com/engine/security/trust/content_trust/)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Deploying the registry cache: [https://docs.docker.com/ee/dtr/admin/configure/deploy-caches/simple/](https://docs.docker.com/ee/dtr/admin/configure/deploy-caches/simple/)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Authentication and authorization in DTR: [https://docs.docker.com/ee/dtr/admin/manage-users/](https://docs.docker.com/ee/dtr/admin/manage-users/)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL

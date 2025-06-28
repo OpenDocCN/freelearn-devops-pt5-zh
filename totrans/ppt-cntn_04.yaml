@@ -1,0 +1,370 @@
+- en: Chapter 4. Building Multicontainer Applications
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In the last few chapters, we built some cool stuff with Puppet and Docker. It
+    has all been straight forward. Now, we are getting into the more complex topics
+    such as how to keep a state and why to keep a state in a container. Docker is
+    known to couple hand in hand with the micro service architecture, where the container
+    would for the most part just be receiving data and transforming it into an output
+    for a downstream application or data source to ingest. Thus, the container never
+    keeps any state. Docker does not limit itself to such applications. In this chapter,
+    we are going to prove this by building a fully functional Bitbucket server with
+    a separate Postgres backend. We will mount the data that is stateful to the underlying
+    host and decouple the applications from that state.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The other good feature of building Bitbucket is that you can use it for your
+    Git server at home to make sure that all your future modules are in source control.
+    Atlasssian offers a $10 dollar license for start-ups or developers that allow
+    up to 10 users, which is a bargain.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this chapter, we will build applications using standard manifest resources
+    and then Docker Compose. Before we jump into coding, let''s talk a little more
+    about decoupling the state of an application from the actual application itself.
+    The following are the topics that we will cover in this chapter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Decoupling a state
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Docker_bitbucket (manifest resources)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Docker_bitbucket (Docker Compose)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Decoupling a state
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this topic, we are going to talk about state in containers. This topic will
+    be all theory, but don't worry, we are going to put that theory to test when we
+    write our module. We need to understand the theory behind state versus stateless
+    so that in future, when writing your own Puppet modules to ship Docker, you can
+    make the right design choice about states.
+  prefs: []
+  type: TYPE_NORMAL
+- en: State versus stateless
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'So, we briefly touched on the topic of state versus stateless in the preceding
+    section, but now, let''s get into the nuts and bolts of it. So, let''s look at
+    two example applications: one with state and one without. First, we will start
+    with a redis container. Its job is to be the backend store for activemq. The application
+    that uses the queue has logic to check whether the message has been received and
+    expects a response. If that fails, it will retry to send the message. Thus, the
+    queue itself is stateless. We are using redis as a cache. There is no need to
+    give the redis container state, as the information it holds is ephemeral. If the
+    container fails, we just respawn a new one and it will cache the queue again.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, let''s look at a container that needs state and the options we have to
+    keep state. In the application, we are going to build two containers. One is Bitbucket
+    itself, and then Postgres will be used as the backend database. So, both of these
+    need state. Let''s look at Bitbucket first. If we don''t give states to the Bitbucket
+    server, every time we restart the container, we would lose all the projects that
+    we checked in via Git. That doesn''t sound like it would be a viable solution.
+    Now, let''s look at the options that we have to give to the container''s state.
+    First, we could add volume to our Dockerfile:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![State versus stateless](img/B05201_04_01.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: This will give the container state; we can reboot the application and all the
+    data will be there, which is good. That is what we want. There is a downside to
+    this method. Volume resides inside the container and is not decoupled from the
+    application. So when we run into issues with this method, the main operational
+    issue is when we need to update the version of the application in the container.
+    As all our data lives in the container, we can't just pull the latest. So we are
+    stuck with the available options. Now, let's look at how to map a folder from
+    localhost to the container. We do this using `/data:/var/atlassian/application-data/bitbucket`.
+    The left side of the colon is the localhost running the Docker daemon and the
+    right side is the container.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Docker uses fully qualified paths, so it will create the `/data` directory.
+    Now, we have decoupled our application from our data. If we want to update the
+    version of Bitbucket, all we would need to do is change the `image` tag in our
+    Puppet code to the new version. Then, we would run Puppet. Once that is complete,
+    the new version of Bitbucket will boot with our existing data. Now, there is a
+    cost to using this method as well. We have now tied this container to the one
+    host. If you are using schedulers such as Kubernetes or Docker Swarm, this probably
+    isn't the best idea. This problem has been solved by the new volume driver added
+    to the Docker engine 1.8 and above. This allows us to create storage objects that
+    are external of the host on which the engine is running.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: This is out of the scope of this book, but if you would like to do some more
+    reading about the technology, I would recommend that you visit [https://clusterhq.com/flocker/introduction/](https://clusterhq.com/flocker/introduction/).
+    Now, we have a good understanding of state versus stateless containers. Let's
+    start the fun bit and get coding!
+  prefs: []
+  type: TYPE_NORMAL
+- en: Docker_bitbucket (manifest resources)
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this topic, we are going to write our module that will install Atlassian's
+    Bitbucket. The application will be comprised of two containers, among which one
+    will be Postgres as we mentioned earlier. We are actually going to tweak the container
+    to secure the backend and make it only accessible to Bitbucket. Then, we will
+    run the Bitbucket container, configure the user it will run as, and then map the
+    filesystem from the host machine to the container.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Creating our module skeleton
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: This is just going to be a quick refresher, as we covered this in the last chapter.
+    If you are still not feeling comfortable with this step, I would recommend you
+    to go over the last chapter again until you have a good grasp of the process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, we are going to open up our terminal and change directory or cd into the
+    root of our Vagrant repo. Then, we will type `vagrant up`, and once the box is
+    up, we will use SSH into it with `vagrant ssh`. The next step is to change to
+    root (`sudo -i`). Now that we are root, let's change the directory to `/vagrant`,
+    which maps back to our local machine. We are then going to issue the `puppet module
+    generate <AUTHOR>-docker_bitbucket` command. Again, there are a few more tweaks
+    that we need, but they are in the last chapter, so let's not repeat ourselves
+    here. Once you have completed the outstanding task, you can move on to the next
+    chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's code
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Now, we have our module skeleton and we have moved it into the `modules` directory
+    in the root of our Vagrant environment. We need to add two new files: `install.pp`
+    and `params.pp`. Our module should look like as shown in the following screenshot:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Let''s code](img/B05201_04_02.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'In this example, we have a few new things going on, so I have not used `params.pp`
+    in this example. This gives you a perfect opportunity to use the knowledge that
+    you gained in the last chapter and apply it. So, for now, we will leave `params.pp`
+    empty. Seeing as we are not putting parameters in `init.pp`, let''s look at that
+    first:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Let''s code](img/B05201_04_03.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'As you can see in the preceding screenshot, we are only calling the `docker_bitbucket::install`
+    class. We can now move on to the chunky `install.pp` class. Again, we are going
+    to brake this down into three parts. This will make it easier to explain the logic
+    of the class. Let''s look at part one, which is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Let''s code](img/B05201_04_04.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'In this top section of the class, we are installing the `device-mapper-libs`
+    package. This is a prerequisite for the RHEL family and Docker. The next thing
+    that we are declaring is the Docker class. In this resource, we are defining the
+    version of Docker that we want to be installed, the TCP bind that Docker will
+    use, and lastly, the Unix socket that Docker will bind to. This is the same configuration
+    that we used to define our Docker daemon in the last chapter. This will stay fairly
+    static until we move into Docker schedulers. Let''s now move to Postgres:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Let''s code](img/B05201_04_05.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: First, we will define the image of Postgres that we would like to use. For this
+    example, we are using Postgres 9.2\. So, the correct tag from Docker Hub is `postgres:9.2`.
+    Now, let's look at the `docker::run` class; this is where all the configurations
+    for Postgres will be defined. So, you can see that we are calling the image that
+    we set in the preceding resource `postgres:9.2`. We will then set the hostname
+    as `bitbucket-db`. This setting is important, so let's store it into our memory
+    for later use.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's look at the `env` resource declaration as we have a bit going on there.
+    In this one line, we are declaring the Postgres user, the database password, the
+    name of the database that we will connect with Bitbucket, and lastly the path
+    where Postgres with store the database. Lastly, we are declaring our volumes as
+    `/root/db:/var/lib/postgresql/data/pgdata`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'As mentioned earlier, the left-hand side of the colon is mapping the the local
+    machine and the right is mapping the container. There are two major call outs
+    with our configuration. First, the `/root/db` folder is arbitrary and not what
+    you would use in production. The second is that you will note that the left side
+    of the colon, `/var/lib/postgresql/data/pgdata`, and the value in env, `PGDATA`,
+    are the same. This is no coincidence; that folder holds the only state that we
+    care about: the actual database. That is the only state that we will keep. Nothing
+    more and nothing less. You will note that we have not exposed any ports from this
+    container. This is by design. We are going to link our Bitbucket container to
+    Postgres. What does link mean? It means that by default, the Postgres image exposes
+    port 5432\. This is the port that we will use to connect to our database. By linking
+    the containers, only the Bitbucket container has access to 5432; if we exposed
+    the port (5432:5432), any other application that has access to the host instance
+    could hit the port. Thus, linking is much more secure. So, we need to remember
+    a few things from this section of code for later use: the hostname and the entire
+    env line. For now, let''s move on to the Bitbucket container:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Let''s code](img/B05201_04_06.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: As you can see in the preceding screenshot, the image resources are the same,
+    but instead of calling Postgres, we are going to call `atlassian/bitbucket-server`.
+    The next resource we will declare is the ports resource. You will note that we
+    are declaring two ports `7990:7990`, which will be the port that we hit the web
+    UI on, and `7999:7999`, which is the port that Bitbucket uses for SSH. We will
+    set the username to `root`. This is recommended in Atlassian's documentation ([https://hub.docker.com/r/atlassian/bitbucket-server/](https://hub.docker.com/r/atlassian/bitbucket-server/)).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next, we are going to map our volume drive. In this case, we are only going
+    to map Bitbucket's data directory. This is where all our Git repo, user information,
+    and so on is kept. Again, `/data` is an arbitrary location; you could use any
+    location you like. The important location to note is on the left-hand side of
+    the colon, `/var/atlassian/application-data/bitbucket`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Lastly, we link our two containers. Another benefit of linking containers is
+    that the Docker daemon will write to both the containers' `/etc/hosts` files with
+    their hostname and IP address. So, the containers have no issue talking to each
+    other. There is no need to worry about the IP address, as it is arbitrary and
+    is looked after by the Docker daemon. Now that we have written our module, we
+    can build our application.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Running our module
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The first thing that we need to do is forward the correct ports on our `servers.yml`
+    file that allow us to hit the ports we forwarded to Bitbucket. To do this, we
+    need to modify the file so that it looks as shown in the following screenshot:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Running our module](img/B05201_04_07.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'So, let''s open our terminal and change the directory to the root of our Vagrant
+    repo and run `vagrant up`. You should get the following output after this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Running our module](img/B05201_04_08.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Now that our application is built, we can go to `http://127.0.0.1:7990`. We
+    should get the following page:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Running our module](img/B05201_04_09.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Earlier in the topic, we had remembered some details about our Postgres install.
+    Now is the time to use them, so let's begin. The first thing that we need to do
+    is use an external database. The next piece of configuration we need to choose
+    is the database type. Of course, we are going to choose Postgres.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The hostname will be set to the hostname of the `bitbucket-db` container, the
+    port is `5432`, and the database name is `bitbucket`, as we set in our code. We
+    will use PostgreSQL as the username and the password will be `Gr33nTe@`. Refer
+    to the following screenshot to know more:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Running our module](img/B05201_04_10.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Next, click on the **Test** button, and we should get the **Successfully established
+    database connection.** message, as shown in the following screenshot:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Running our module](img/B05201_04_11.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: I will let you finish the rest of the setup. But what we just set up was not
+    simple, and now, we have a very solid base to move on to more complex applications.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Docker_bitbucket (Docker Compose)
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this topic, we are going to build the same Bitbucket application. The difference
+    this time is that we are going to use `docker-compose` as a `.erb` file instead
+    of the resource declarations in a manifest.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's code – take 2
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'We covered a lot of what happens under the hood in the last topic. We will
+    not be repeating ourselves, so this topic will be just about the code. We are
+    going to keep both `init.pp` and `params.pp` the same as we did in the last topic.
+    So, let''s jump straight to `install.pp`. It will look very similar to `install.pp`
+    from the last chapter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Let''s code – take 2](img/B05201_04_12.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'All the magic happens in our template file. So, let''s jump to our `.erb` file
+    that lives in the `templates` folder in the root of our module:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Let''s code – take 2](img/B05201_04_13.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: As you can see in our `.erb` file in the preceding screenshot, all the configurations
+    are familiar. There are absolutely no changes to what we covered in our last topic.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Running our module – take 2
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Let''s open our terminal and change the directory to the root of our Vagrant
+    repo and run `vagrant up`. You should get the following output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Running our module – take 2](img/B05201_04_14.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Now, let''s just go to `http://127.0.0.1:7990`, and we should get the following
+    page:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Running our module – take 2](img/B05201_04_15.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Just follow the same setup as in the preceding topic to configure Bitbucket.
+    You can use a trail license to try the application, or as I mentioned earlier,
+    there is a development/startup license at [https://bitbucket.org/product/pricing?tab=server-pricing](https://bitbucket.org/product/pricing?tab=server-pricing)
+    with the proceeds of the $10 license going to charity.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: By building a multicontainer application, we learned and covered a lot. We first
+    looked at state versus stateless containers, the pros and cons of having state,
+    and what design choices we have to keep a state. We then looked at linked containers
+    and how they communicate with each other through their hostfiles. All the topics
+    in this chapter will set us up with the knowledge that we need to move forward
+    with topics such as service discovery and container schedulers.
+  prefs: []
+  type: TYPE_NORMAL

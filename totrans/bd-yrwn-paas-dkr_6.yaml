@@ -1,0 +1,595 @@
+- en: Chapter 6. Reverse Proxy Requests
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'One big problem in having many containers with public ports on the same server
+    is that they can''t all listen to the standard ports for their kinds of services.
+    If we have a MySQL backend service and have 10 MySQL containers running, only
+    one of them can listen to the MySQL standard port `3306`. For those who expose
+    a web server, the standard port `80` can only be used by one of their WordPress
+    containers. In this chapter, we''ll cover the following topics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Explaining the problem
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Coming up with a solution to the problem
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Implementing the solution with Nginx and HAProxy
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Automating the process of mapping domains
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Explaining the problem
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The problem in having many containers with the same services on the same host
+    is that there are standard ports used by user applications. Using a web browser
+    and entering the IP to a Docker host running a WordPress container will ask for
+    resources on port `80` by default. You can't expect your users to remember a nonstandard
+    port in order to enter your website.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Explaining the problem](img/3946OT_06_01.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: The only way to reach each of the three containers is to manually enter the
+    containers' exposed port number.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finding a solution
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Before we head to the solution, let me explain what a regular proxy server is,
+    in case you're not familiar with it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A proxy server is a server that connects to services on your behalf and forwards
+    all the results to you. After you've set up to route all your traffic through
+    the proxy server, you—as a user—won't notice it's there. Everything will work
+    as usual.
+  prefs: []
+  type: TYPE_NORMAL
+- en: However, service owners only see that a certain machine (the proxy server) is
+    connected to them. If another user uses the same proxy server and the same service
+    as you do, the service owner can't tell the difference and will perceive you as
+    one single user.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Finding a solution](img/3946OT_06_02.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Different users connecting through a proxy server appear as one user.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As you can see in the preceding diagram, the service owners just see that someone
+    with an IP of **213.12.12.3** has connected to them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, what if we use this on the Docker host? What if we put something in front
+    of all the containers? Depending on which domain name is being requested, this
+    thing will forward the request to the right container and port and then just forward
+    the request's response to the requesting user.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There are things especially made to solve this kind of problem. They're called
+    **reverse proxies** (reverse because the proxy is at the other end, making the
+    user only see one IP and forwarding the request).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If we install and configure a reverse proxy on our Docker host server, then
+    this is how the diagram will look:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Finding a solution](img/3946OT_06_03.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: A reverse proxy lets all Docker containers appear as one.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The reverse proxy listens to port `80`—the standard web port—and when a request
+    for `domain1.com` comes in, the proxy looks at its configuration to see whether
+    there is a specified forwarding endpoint for this domain. If there is, the reverse
+    proxy forwards the request to the right Docker container, waits for its response,
+    and forwards the container's response to the requesting users when it comes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is the solution we're after. The only question now is which reverse proxy
+    we are going to use. There are quite a bunch of them out there; some reverse proxies
+    have more specific purposes, such as load balancing, and some are services that
+    do a lot of other stuff and have this feature as well, such as a web server.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Implementing the solution
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: You will always have preferences when selecting a tool to solve a problem. Sometimes,
+    you select a tool because you're comfortable using it and it's good enough; sometimes,
+    you select it because it has great performance or because you just want to try
+    something new.
+  prefs: []
+  type: TYPE_NORMAL
+- en: That's why we will go through this problem and solve it with two different tools.
+    The end result will be the same, but the tools have a slightly different setup.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Before we start implementing the solutions, we use Crane to start an instance
+    of our three-container application and verify that it's working by connecting
+    it to the site. Have Docker decide the public port for you, so it's `491XX`. Remember
+    this port since we will use it when implementing the solutions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We need to point out the domain names we want to use to our Docker host's IP
+    address. We can do this either by setting the domain names A-record to our server's
+    IP address or by adding a line in our local `/etc/hosts` file, which directs requests
+    to the domain names to our server's IP address.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'I''ll go with the latter and enter this in my Mac''s `/etc/hosts` file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: Note
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Make sure you replace the above IP address with your server's IP address.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Implementation with HAProxy
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: HAProxy ([http://www.haproxy.org](http://www.haproxy.org)) is a load balancer,
+    which has the role of forwarding traffic to different services behind it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This is how HAProxy describe themselves:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*"HAProxy is a free, very fast and reliable solution offering high availability,
+    load balancing, and proxying for TCP and HTTP-based applications. It is particularly
+    suited for very high traffic web sites and powers quite a number of the world''s
+    most visited ones. Over the years it has become the de-facto standard open source
+    load balancer, is now shipped with most mainstream Linux distributions, and is
+    often deployed by default in cloud platforms."*'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: This sounds like something that fits our needs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Installing HAProxy
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: As noted in the quote, many systems are installed already and shipped with it.
+    If you can't find it, it should be available in you package manager if you use
+    Ubuntu or Debian (`apt-get install haproxy`) or in some other distro with a package
+    manager.
+  prefs: []
+  type: TYPE_NORMAL
+- en: On my Amazon EC2 instance that runs Amazon Linux, HAProxy can be installed using
+    `yum install haproxy`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The following output will be obtained as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Installing HAProxy](img/3946OT_06_04.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: It's not the most recent version, but that's OK for the things we are about
+    to do.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Configuring HAProxy
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: We'll write an HAProxy configuration in the file `/etc/haproxy/docker.cfg` so
+    that we don't have to remove everything in the default configuration file, as
+    it may be good for reference in the future.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'HAProxy divides its configuration into four parts: global, defaults, frontend,
+    and backend. Don''t confuse frontend and backend with frontend and backend development.
+    Here, frontend means the server part that''s facing the Internet, and backend
+    is the server part that''s behind HAProxy, which in our case are the Docker containers.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Open the configuration file and start by typing in the generic stuff, as shown
+    here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now, we enter the port to listen on and the backend configurations to use for
+    which domain:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: We define that regular incoming HTTP traffic on port `80` should be captured.
+    The `acl` here means access control list and is a flexible solution to take decisions
+    based on content extracted from the requests. The `hdr_end(host) -i domain1.com`
+    function call means that the end of the header host is case-insensitive, matched
+    against the string `domain1.com`. The result (Boolean) of this match is saved
+    in the `is_site1` variable.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note that this means that all the subdomains for `domain1.com` will be matched
+    with this setup. If you just want to match `www.domain1.com`, you can use `hdr(host)
+    -i www.domain1.com` instead.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we have the match result in the `is_site1` variable, we can send the
+    request to a backend configuration, named `site1`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We append this to our configuration file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: We define our backend name as `site1`, set a few options, and add the server
+    and the port to our WordPress container.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Make sure you enter your WordPress container's exposed port instead of `49187`
+    in the preceding code.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'It''s time to try this configuration. Save the configuration file and test
+    it in a shell with this command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: The output should say `Configuration file is valid`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Make sure you don't have something already listening to port `80` on your machine.
+    You can use something such as `netstat –a` to verify that `80` or HTTP isn't listed.
+    If they are, find the app that's listening and shut it down.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Start HAProxy with this command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `-D` option means that we want to run it as a daemon in the background.
+    You shouldn't see any output when you invoke this command.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's check whether HAProxy is running by invoking `ps aux | grep haproxy`.
+    You should see it listed there. Finally, let's verify that it is listening to
+    port `80` by invoking `netstat –a | grep http`. Now, you should have something
+    in that list.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The output obtained is displayed here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Configuring HAProxy](img/3946OT_06_05.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: It all looks good!
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Just to recap what we have done here: we set up a service that listens for
+    incoming requests on port `80` on our server. When a request on this port comes
+    in, a check on the request header''s host is performed to see whether it matches
+    `domain1.com`. If we have a match, the request is forwarded to the IP address
+    `127.0.0.1` and to the port `49187`. The response from this IP and port are sent
+    back to the requester.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now to the moment of truth. Open your web browser and enter the URL `domain1.com`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Make sure that you have entries for `domain1.com` in your host's file, pointing
+    it to your server.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'After you perform the preceding instructions, you will see the following website
+    screen:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Configuring HAProxy](img/3946OT_06_06.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: You can see that in the location bar, no port is specified. Wonderful!
+  prefs: []
+  type: TYPE_NORMAL
+- en: Adding more domains to HAProxy
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'We did not go through all this just to serve a single web application on port
+    `80`, which can be done without a reverse proxy. Start another WordPress application
+    with Crane by copying the old configuration to a new directory and change the
+    service''s names, as shown here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Open the HAProxy configuration file again and add two lines in the frontend:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'After that, add a new backend configuration named `site2`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: Make sure that you replace the port with the one you got. Restart HAProxy and
+    do the checks we did the last time we started it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To restart HAProxy, run `/etc/init.d/haproxy restart`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'HAProxy can reload a new configuration without dropping active sessions with
+    this command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: Open your browser and go to `domain1.com` in order to make sure that the old
+    one is working. If it does, go to `domain2.com`. You should see another WordPress
+    installation site. Just to be sure that it's not the same, go ahead and install
+    one of them. Or, go to `domain3.com` and see what happens when a domain points
+    to the server without having it match in HAProxy.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Implementation with Nginx
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Now, we are going to do the same thing as we did with HAProxy, but we will use
+    the excellent web server Nginx ([http://nginx.org/en/](http://nginx.org/en/))
+    as our reverse proxy instead. Nginx is a full featured and really fast web server
+    that leaves a small footprint in the memory.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This is how Nginx is described:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*"nginx [engine x] is an HTTP and reverse proxy server, as well as a mail proxy
+    server, written by Igor Sysoev. For a long time, it has been running on many heavily
+    loaded Russian sites including Yandex, Mail.Ru, VK, and Rambler. According to
+    Netcraft, nginx served or proxied 20.41% busiest sites in November 2014\. Here
+    are some of the success stories: Netflix, Wordpress.com, FastMail.FM."*'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: This also sounds like what we need, just like it did with HAProxy.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Installing Nginx
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Nginx is available in all Linux package managers, such as `aptitude`/`apt`,
+    `yum`, and others, so an install can be simply done with `apt-get install nginx`
+    or `yum install nginx`. Since it's open source, you can, of course, install it
+    from the source as well.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Configuring Nginx
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: We are going to add the configuration to a file named `/etc/nginx/conf.d/wp1.conf`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Create and open this file in your favorite text editor:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: This block, as you can see, makes the server listen to port `80` and to match
+    the domain `domain1.com` for this configuration to apply. It's always good to
+    specify the server charset so that the website text does not get the wrong encoding
+    during the forwarding process; so, we add that line as well. To just listen to
+    `domain1.com` and nothing else (Nginx uses the first configuration found as a
+    default configuration if there's no match in the server name part), we return
+    the HTTP status code `444` (no response) on the other requests that get in there.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What are we going to do with the requests on port `80` for `domain1.com` then?
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Add this inside the server''s scope (curly brackets):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `location` block will match all the requests since it matches `/`. We will
+    get back to the `proxy_pass` part in a while. Other than this, you'll see that
+    we set a lot of headers, most of them telling our Docker container the requesters'
+    real IP address and so on.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Back to the `proxy_pass` part. This is the part that actually forwards the request,
+    to something named `wp1`. This is called an upstream, which we have to define.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Add this outside the server''s scope:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The complete configuration file named `/etc/nginx/conf.d/wp1.conf` should look
+    like this now:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: Save the file and on most Linux systems, you can test it for syntax errors using
+    the command `sudo /etc/init.d/nginx configtest` or `sudo service nginx configtest`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Make sure that you have shut down HAProxy before you start Nginx, or you will
+    get an error saying that Nginx can''t bind to port `80`. You can do this with
+    the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: If the test was successful, we can now restart (or start) the Nginx server.
+    Again, use `sudo /etc/init.d/nginx restart` or `sudo service nginx restart` on
+    most systems.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Head over to your web browser and enter the URL `domain1.com` to take a look
+    at our WordPress installation site. To make sure nothing but `domain1.com` works,
+    try to go to `domain2.com` and expect no response.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Adding more domains to Nginx
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'To add another domain to match in Nginx, you can create a new file in the `/etc/nginx/conf.d/`
+    directory and reload the Nginx configuration, as shown in the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: Copy the configuration file, replace a few names, run `configtest`, and reload
+    Nginx.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Try `domain1.com` in your browser to make sure it still works. You should still
+    see the WordPress installation page (unless you installed WordPress, of course);
+    head over to `domain2.com` after that to see whether our new configuration is
+    used.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you want to take a site down, just change the file's extension from `.conf`
+    to something else and reload Nginx.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Automating the process of mapping domains
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The limitations in this setup are that it's manual and hands-on every time a
+    new domain is added. On my website ([http://oskarhane.com](http://oskarhane.com)),
+    I've written some blog posts about how this process could be automated and those
+    posts are my most-read posts of all time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I was very glad when I found **nginx-proxy** by Jason Wilder. nginx-proxy solves
+    this problem in a more clever way than me by monitoring Docker events via the
+    Docker Remote API.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: You can read more about nginx-proxy on its GitHub page ([https://github.com/jwilder/nginx-proxy](https://github.com/jwilder/nginx-proxy)).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`nginx-proxy` comes as a container and we can run it by executing the following
+    command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We are giving the container our Docker socket, so it can listen for the events
+    we are interested in, which are container starts and stops. We also bind the Docker
+    hosts'' port 80 to this new container, making it the entrance container for all
+    incoming web requests. Make sure you stop Nginx on the Docker host before starting
+    the `nginx-proxy` container. You can do this with the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: When a container starts, `nginx-proxy` creates an nginx reverse proxy `config`
+    file and reloads Nginx—just like we did, but fully automated with `nginx-proxy`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To tell `nginx-proxy` which domain we want mapped to which container, we must
+    run our containers with an environment variable named `VIRTUAL_HOST`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In our `crane.yaml file` , we add an environment variable in the `wp` run section:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now, we just have to lift this with crane again to have this container mapped
+    to the domain `domain1.com` on port `80`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we saw how you can solve the problem of having multiple containers
+    that want to serve data on the same public port. We learned what a proxy server
+    and reverse proxy server is and how a reverse proxy is used in load balancing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We installed and configured two different reverse proxies: HAProxy and Nginx.
+    In my workflow, the Nginx setup fits better, just copying a file, replacing a
+    few words, and then reloading Nginx to have it working. HAProxy might work better
+    in your setup; the choice is yours and one cannot be said to be better than the
+    other.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`nginx-proxy` automates the process of creating a reverse proxy for containers
+    that are started and is an OK solution for a PaaS, except for one thing: easy
+    and straightforward deployment. That''s what the next chapter is all about.'
+  prefs: []
+  type: TYPE_NORMAL

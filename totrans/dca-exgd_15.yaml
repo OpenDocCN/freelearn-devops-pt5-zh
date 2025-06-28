@@ -1,0 +1,946 @@
+- en: Publishing Applications in Docker Enterprise
+  prefs: []
+  type: TYPE_NORMAL
+- en: The previous chapter helped us to understand Docker Enterprise's control plane
+    components. Docker UCP deploys Docker Swarm and Kubernetes clusters over the same
+    nodes. Both orchestrators share host components and devices. Each orchestrator
+    will manage its own hardware resources. Information such as available memory and
+    CPU is not shared between orchestrators. Therefore, we have to take care if we
+    use both on a host simultaneously.
+  prefs: []
+  type: TYPE_NORMAL
+- en: But what about publishing applications deployed on them? We learned how to publish
+    applications on Docker Swarm and Kubernetes, but working on enterprise environments
+    must be secure. In this chapter, we will learn how to publish applications on
+    Docker Enterprise environments using either UCP-provided or community tools.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This chapter will show us the main publishing resources and features provided
+    by UCP for Docker Swarm and Kubernetes. These components will help us to publish
+    only front services, thereby ensuring an application's security. We will learn
+    about ingress controllers, which is the preferred solution for publishing applications
+    in Kubernetes, and Interlock, an enterprise-ready solution provided by UCP to
+    publish applications in Docker Swarm.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We will cover the following topics in this chapter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understanding publishing concepts and components
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Deep diving into your application's logic
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Ingress controllers
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Interlock
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Chapter labs
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: We will begin this chapter by reviewing some of the concepts learned in connection
+    with Docker Swarm and Kubernetes deployments.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'You can find the code for this chapter in the GitHub repository: [https://github.com/PacktPublishing/Docker-Certified-Associate-DCA-Exam-Guide.git](https://github.com/PacktPublishing/Docker-Certified-Associate-DCA-Exam-Guide.git)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Check out the following video to see the Code in Action:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '"[https://bit.ly/2EHobBy](https://bit.ly/2EHobBy)"'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understanding publishing concepts and components
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: '[Chapter 8](78af3b70-773d-4f5d-9835-71d1c15a104a.xhtml), *Orchestration Using
+    Docker Swarm*, showed us how applications work when deployed on top of a Docker
+    Swarm cluster.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: We will use service objects to deploy applications in Docker Swarm. Internal
+    communication between services is always allowed if they run in the same network.
+    Therefore, we will deploy an application's components in the same network and
+    they will interact with other published applications. If two applications have
+    to interact, they should share the network or be published.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Publishing applications is easy; we will just specify the ports that should
+    be listening on the host where the process is running. However, we learned that
+    Docker Swarm will publish an application's ports on all cluster hosts, and Router
+    Mesh will route internal traffic to reach an appropriate service's tasks. Let's
+    go back to these topics relating to containers and services before reviewing multi-service
+    applications.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We have different options to publish container applications, as we learned
+    in [Chapter 4](e7804d8c-ed8c-4013-8449-b746ee654210.xhtml), *Container Persistency
+    and Networking*. To make processes visible out of a container''s isolated network
+    namespace, we will use different network strategies:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Bridge networking**: This is the default option. A container''s processes
+    will be exposed using the host''s **Network Address Translation** (**NAT**) features.
+    Therefore, a container''s process listening on a port will be attached to a host''s
+    port. NAT rules will be applied either to Linux or Microsoft Windows containers.
+    This allows us to execute more than one container''s instances using different
+    hosts'' ports.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'We will publish container processes using the `--publish` or `-p` (or even
+    `--publish-all` or `-P` to publish all image-declared exposed ports) option with
+    the optional Docker host''s IP address and port alongside the published port and
+    protocol (TCP/UDP): `docker container run -p [HOST_IP:HOST_PORT:]<CONTAINER_PORT>[/PROTOCOL]`.
+    By default, all the host''s IP addresses and random ports within the `32768`-`65000`
+    range will be used.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**The host''s network namespace**: In this situation, we will use the host''s
+    network namespace. Processes will be directly available, listening on the host''s
+    ports. No port translation will be used between the container and the host. Since
+    the process port is attached directly, only one container''s instance is allowed
+    per host. We will use `docker container run --net=host` to associate a new container
+    with the host''s network namespace.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**MacVLAN**: This is a special case where a container will use its own namespace,
+    but it will be available at the host''s network level. This allows us to attach
+    VLANs (Virtual LANs) directly to containers and make them visible within an actual
+    network. Containers will receive their own MACs; hence, services will be available
+    in the network as if they were nodes.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: These were the basic options. We will use external DNS to announce how they
+    will be reached. We can also deploy containers on customized bridge networks.
+    Custom networks have their own DNS namespace and containers will reach one another
+    within the same network through their names or aliases. Services won't be published
+    for other services running in the same network. We will just publish them for
+    other networks or user access. In these cases, we will use NAT (common bridge
+    networking), a host's namespace, or MacVLAN.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'These will work on standalone hosts, but things will change if we distribute
+    our workloads cluster-wide. We will now introduce the Kubernetes network model.
+    This model must cover these situations:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Pods running on a node should be able to communicate with others running on
+    other hosts without NAT.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: System components (kubelet and control plane daemons) should be able to communicate
+    with pods running on a host.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Pods running in the host network of a node can communicate with all pods running
+    on other hosts without NAT.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: As we have learned, all containers within a pod share its IP address and all
+    pods run on a flat network. We do not have network segmentation in Kubernetes,
+    so we need other tools to isolate them. We will use network policies to implement
+    firewall-like or network ACL-like rules. These rules are also applied to publishing
+    services (ingress traffic).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Docker's network model is based on the **Container Network Model** (**CNM**)
+    standard, while Kubernetes' network model is implemented using the **Container
+    Network Interface** (**CNI**) model.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Docker's CNM manages **Internet Protocol Address Management** (**IPAM**) and
+    network plugins. IPAM will be used to manage address pools and containers' IP
+    addresses, while network plugins will be responsible for managing networks on
+    each Docker Engine. CNM is implemented on Docker Engine via its `libnetwork` library,
+    although we can add third-party plugins to replace this built-in Docker driver.
+  prefs: []
+  type: TYPE_NORMAL
+- en: On the other hand, CNI modes expose an interface for managing a container's
+    network. CNI will assign IP addresses to pods, although we can also add external
+    IPAM interfaces, describing its behavior using JSON format. These describe how
+    any CNI plugin must provide cluster and standalone networking when we add third-party
+    plugins. As mentioned previously, Docker Enterprise's default CNI plugin is Calico.
+    It provides cluster networking and security features using IP in IP encapsulation
+    (although it also provides VXLAN mode).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let's move on. Docker Engine provides all the networking features for hosts,
+    and Kubernetes will also provide cluster-wide networking using CNI. Docker Swarm
+    includes cluster-wide networking out of the box using VXLAN. An overlay network
+    driver creates a distributed network between all hosts using their bridge network
+    interfaces. We will just initialize a Docker Swarm cluster and no additional operations
+    will be required. An ingress overlay network and a `docker_gwbridge` bridge network
+    will be created. The former will manage control and data traffic related to Swarm
+    services, while `docker_gwbridge` will be used to interconnect Docker hosts within
+    Docker Swarm overlay networks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We improved cluster's security by encrypting overlay networks, but we will expect
+    some overhead and a minor negative impact on performance. As demonstrated in standalone
+    networking and containers sharing networks, all services connected to the same
+    overlay network will be able to talk to one another, even if we have not published
+    any ports. Ports that should be accessible outside of a service's network must
+    be explicitly published using `-p [ HOSTS_PORT:]<CONTAINER_PORT>[/PROTOCOL]`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There is a long format for publishing a service's ports. Although you have to
+    write more, it is clearer. We will write `-p published=<HOSTS_PORT>,target=<CONTAINER_PORT>,protocol=<PROTOCOL>`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Publishing services within Docker Swarm will expose a defined service's port
+    on all hosts in the cluster. This feature is **Router Mesh**. All hosts will publish
+    this service even if they do not really run any service's processes. Docker will
+    guide traffic to a service's tasks within the cluster using an internal ingress
+    overlay network.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Remember that all services received a virtual IP address. This IP address will
+    be fixed during a service's lifetime. Each service is composed of tasks associated
+    with the containers. Docker will run as many tasks, and thus containers, as are
+    required for this service to work. Each task will run just one container, with
+    its IP address. As containers can run everywhere in the cluster and they are ephemeral
+    (between different hosts), they will receive different IP addresses. A service's
+    IP addresses are fixed and will create a DNS entry in Docker Swarm's embedded
+    DNS. Therefore, all services within an overlay network will be reachable and known
+    by their names (and aliases).
+  prefs: []
+  type: TYPE_NORMAL
+- en: A similar approach is present in Kubernetes. In this case, services are just
+    a grouping of pods. Pods will get different dynamic IP addresses because resilience
+    will manage their life cycle, creating new ones if they die. But services will
+    always have a fixed IP address during their life. This is also true for Docker
+    Swarm. Therefore, we will publish services and internal routing and load balancing
+    will guide traffic to pods or tasks' containers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Both orchestrators will allow us to bypass these default behaviors, but we are
+    not going to dive deep into these ideas because we have covered them in [Chapter
+    8](78af3b70-773d-4f5d-9835-71d1c15a104a.xhtml), *Orchestration Using Docker Swarm*,
+    and [Chapter 9](abcbf266-c469-4d84-ad4f-abd321a64b53.xhtml), *Orchestration Using
+    Kubernetes*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we have a basic understanding, we can introduce ingress controllers.
+    These are pieces of software that will allow us to publish fewer ports within
+    our cluster. They will help us to ensure security by default access, publishing
+    fewer ports and only specific application routes. Ingress controllers will provide
+    reverse proxy with load balancing capacities to help us publish an application's
+    backends running as services inside a container's infrastructure. We will use
+    internal networking instead of publishing an application's services. We will just
+    publish the ingress controller and all the application's traffic will become internal
+    from this endpoint.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The ingress controller concept can be applied to both Kubernetes and Docker
+    Swarm. Kubernetes has special resources for this to work, but Docker Swarm has
+    nothing already prepared. In this case, we will have to use external applications.
+    Docker Enterprise does provide an out-of-the-box solution for Docker Swarm services.
+    Interlock integrates the ingress controller features described but applied to
+    Docker Swarm's behavior.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next section, we will talk a little about application logic and expected
+    behavior on container platforms.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understanding an application's logic
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We have reviewed how publishing will work for our application's components,
+    but should they all be published? The short answer is probably no. Imagine a three-layer
+    application. We will have a middle layer for some kind of backend that will consume
+    a database and should be accessed through a frontend. In a legacy data center,
+    this layered application will probably run each service on a separate node. These
+    nodes will run on different subnets to isolate accesses between them with firewalls.
+    This architecture is quite common. Backend components will be in the middle, between
+    the database and the frontend. The frontend should not access the database. In
+    fact, the database should only be accessible from the backend component. Therefore,
+    should we publish the database component service? The frontend component will
+    access the backend, but do we have to publish the backend component? No, but the
+    frontend should be able to access the backend service. Users and other applications
+    will use frontend components to consume our application. Therefore, only frontend
+    components should be published. This guarantees security by using a container's
+    features instead of firewalls and subnets, but the final outcome is the same.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Docker Swarm allows us to implement multi-networking applications using overlay
+    custom networks. These will allow us to interconnect components of applications
+    from different applications sharing some networks. This can become complex if
+    many services from different applications have to consume one service. This many-to-one
+    networking behavior may not work correctly in your environment. To avoid this
+    complexity, you have two options:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Use flat networks, either moving to Kubernetes or defining large overlay subnets.
+    The first option is better in this case as Kubernetes provides network policies
+    to improve flat network security. Large networks in Docker Swarm do not provide
+    any security for their components. It is up to you to improve it with external
+    tools.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Publish this common service and allow other applications to consume it as if
+    they were cluster-external. We will use DNS entries for our service and other
+    applications will know how to access it. We will use load balancers and/or API
+    managers to improve availability and security. These external components are beyond
+    the scope of this book, but they will provide non-container-based application
+    behavior.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Now that we understand how applications can be deployed and published, we will
+    introduce the concept of ingress controllers and their components before getting
+    into Docker Enterprise's Interlock.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Publishing applications in Kubernetes using ingress controllers
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: As mentioned previously, ingress controllers are special Kubernetes components
+    that are deployed to publish applications and services.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Ingress resources will define rules and routes required to expose HTTP and HTTPS
+    deployed services.
+  prefs: []
+  type: TYPE_NORMAL
+- en: An ingress controller will complete this equation as a reverse proxy, adding
+    load-balancing capabilities. These features can be arranged by an external edge
+    router or a cluster-deployed software proxy. Any of these will manage traffic
+    using dynamic configurations built using ingress resource rules.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We can also use ingress for TCP and UDP raw services. This will depend on which
+    ingress reverse proxy has been deployed. It is customary to publish an application's
+    services using protocols other than HTTP and HTTPS. In this case, we can use either
+    Router Mesh on Docker Swarm or NodePort/LoadBalancer on Kubernetes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'An ingress resource may look like the following YAML file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: Ingress rules contain an optional host key used to associate this resource with
+    a proxied host header for inbound traffic. All subsequent rules will be applied
+    to this host.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It will also contain a list of paths, associated with different services, defined
+    as proxied backends. All requests matching the host and path keys will be redirected
+    to listed backends. Deployed services and ports will define each backend for an
+    application.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We will define a default backend to route any request not matching any ingress
+    resource's rules.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As mentioned, ingress controllers will deploy ingress rules on different proxy
+    services. We will either use existing external hardware or software load balancers
+    or we will deploy these components within the cluster. As these pieces are interchangeable,
+    different deployments will provide different behaviors, although ingress resource
+    configurations will be similar. These deployments should be published, but backend
+    services do not require direct external access. Ingress controller pieces will
+    manage routes and rules required to access services.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Ingress controllers will be published using any of this chapter's described
+    methods, although we will usually use NodePort- and LoadBalancer-type services.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We can deploy multiple ingress controllers on any Kubernetes cluster. This is
+    important because we can improve isolation on multi-tenant environments using
+    specific ingress controllers for each customer.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We have described a layer 7 routing architecture for Kubernetes. The following
+    diagram shows an example of ingress controller deployment. An external load balancer
+    will route a user''s requests to the ingress controller. This component will review
+    ingress resource tables and route traffic to the appropriate internal service''s
+    ClusterIP. Then, Kubernetes will manage internal service-to-pod communications
+    to ensure that a user''s requests reach the service''s associated pods:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/0bbf197b-2648-4bc0-94e9-cc86c2add1dc.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: In the next section, we will learn how Docker Enterprise deploys this publishing
+    logic for Docker Swarm services.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using Interlock to publish applications deployed in Docker Swarm
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Interlock is based on the ingress controller's logic described previously. Docker
+    Swarm architecture is different. Its differences are even more pronounced when
+    we talk about Kubernetes and Docker Swarm networking implementations. Kubernetes
+    provides a flat network architecture, as we have seen. Multiple networks within
+    the cluster will add additional security features, but also more complexity.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Interlock substitutes the previous Docker Enterprise's router mesh L7 routing
+    implementation. Router mesh was available in previous UCP releases. Interlock
+    appeared in the 2.0 release of Docker Enterprise.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Interlock will integrate Docker Swarm and Docker Remote API features to isolate
+    and configure dynamically an application proxy such as NGINX or HA-Proxy using
+    extensions. Interlock will use Docker Swarm's well-known objects, such as configs
+    and secrets, to manage proxy required configurations. We will be able to manage
+    TLS tunnels and integrate rolling updates (and rollbacks) and zero-downtime reconfigurations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Interlock''s logic is distributed in three main services:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The **Interlock service** is the main process. It will interact with the Docker
+    Remote API to monitor Docker Swarm events. This service will create all the configurations
+    required by a proxy to route requests to an application's endpoints, including
+    headers, routes, and backends. It will also manage extensions and proxy services.
+    The Interlock service will be consumed via its gRPC API. Other Interlock services
+    and extensions will access Interlock's API to get their prepared configurations.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The **Interlock-extension** service will query Interlock's API for the configurations
+    created upstream. Extensions will use this pre-configuration to prepare real configurations
+    for the extension-associated proxy. For proxy services such as NGINX or HA-Proxy,
+    deployed within the cluster, the Interlock-extension service will create its configurations
+    and then these will be sent to the Interlock service via its API. The Interlock
+    service will then create a config object within the Docker Swarm cluster for the
+    deployed proxy services.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The **Interlock-proxy** is the proxy service. It will use configurations stored
+    in config objects to route and manage HTTP and HTTPS requests.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Docker Enterprise deploys NGINX as the Interlock-proxy. Docker Swarm cluster
+    changes affecting published services will be updated dynamically.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Interlock allows DevOps groups to implement **Blue-Green** and **Canary** service
+    deployment. These will help DevOps to deploy application upgrades without impacting
+    access on the part of users.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The following diagram shows a basic Interlock schema. As mentioned, Interlock
+    looks like an ingress controller. The following schema represents common applications''
+    traffic. User requests will be forwarded by the external load balancer to the
+    Interlock proxy instances. This component will review its rules and forward requests
+    to the configured service''s IP address. Then, Docker Swarm will use internal
+    routing and load balancing to forward requests to the service''s tasks:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/2212ed99-bd4e-4df3-abbb-268953b64c86.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Interlock''s layer 7 routing supports the following features:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Since Interlock services run as Docker Swarm services, high availability based
+    on resilience is granted.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Interlock interacts with the Docker API, hence, dynamic and automatic configuration
+    is provided.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Automatic configuration: Interlock uses the Docker API for configuration. You
+    do not have to manually update or restart anything to make services available.
+    UCP monitors your services and automatically reconfigures proxy services.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: We can scale a proxy service up and down because it is deployed as a separate
+    component.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Interlock provides TLS tunneling, either for TLS termination or TCP passthrough.
+    Certificates will be stored using Docker Swarm's secret objects.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Interlock supports request routing by context or paths.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: We can deploy multiple extensions and proxy configurations simultaneously to
+    isolate accesses on multi-tenant or multi-region environments.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Interlock-proxy and Interlock-extension services' instances run on worker nodes.
+    This will improve security, isolating the control plane from publishing services.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We can use host mode networking to bypass default routing mesh services' behavior
+    for the Interlock-proxy service. This will improve network performance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Publishing services using Interlock are based on label customization. We will
+    require at least the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`com.docker.lb.hosts`: This label will manage the host header, hence the service''s
+    published name.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`com.docker.lb.port`: The internal service''s port is also required and associated
+    using this label. Remember that this port should not be published.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`com.docker.lb.network`: This defines which network the Interlock-proxy service
+    should attach to in order to be able to communicate with the defined service.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Other labels will allow us to modify configured-proxy behavior and features.
+    This is a list of some other important labels:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| **Labels** | **Description** |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `com.docker.lb.ssl_cert` and `com.docker.lb.ssl_key` | These keys allow us
+    to integrate the backend''s certificate and key. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `com.docker.lb.sticky_session_cookie` | We will set a cookie to allow sticky
+    sessions to define a service instance''s backends. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `com.docker.lb.backend_mode` | This stipulates how requests reach different
+    backends (it defaults to `vip`, which is also the default mode for Docker Swarm
+    services). |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `com.docker.lb.ssl_passthrough` | We can close tunnels on application backends,
+    thereby enabling SSL passthrough. |'
+  prefs: []
+  type: TYPE_TB
+- en: '| `com.docker.lb.redirects` | This key allows us to redirect requests to different
+    FQDNs using host header definitions. |'
+  prefs: []
+  type: TYPE_TB
+- en: You can review all the available labels in Docker Enterprise's documentation
+    ([https://docs.docker.com/ee/ucp/interlock/usage/labels-reference](https://docs.docker.com/ee/ucp/interlock/usage/labels-reference)).
+  prefs: []
+  type: TYPE_NORMAL
+- en: If a service is isolated on just one network, we don't need to add `com.docker.lb.network`,
+    but it will be required if it is combined with `com.docker.lb.ssl_passthrough`.
+    If we publish services using stacks, we will use the stack's name.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There are many options and configurations available for Interlock's described
+    components. We will be allowed to change the proxy's default port, the Docker
+    API socket, and the polling interval, among other things. Extensions will have
+    many features and configurations depending on external load balancing integrations.
+    We recommend that you review all the available keys and configurations in Docker
+    Enterprise's documentation ([https://docs.docker.com/ee/ucp/interlock/config](https://docs.docker.com/ee/ucp/interlock/config)).
+  prefs: []
+  type: TYPE_NORMAL
+- en: We recommend reviewing this link, [https://success.docker.com/article/how-to-troubleshoot-layer-7-loadbalancing](https://success.docker.com/article/how-to-troubleshoot-layer-7-loadbalancing),
+    to get some interesting tips regarding the troubleshooting of Interlock-related
+    issues.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next chapter, we will introduce Docker Trusted Registry. This tool provides
+    a secure image store, integrating image signing features and vulnerability scanning.
+    These features, among others, provide a production-ready image store solution.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Reviewing Interlock usage
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We will now review some examples of Interlock usage.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We will need to enable Interlock in Docker Enterprise. It is disabled by default
+    and is part of the Admin Settings section. We can change the default ports (`8080`
+    for HTTP and `8443` for secure access using HTTPS), as shown in the following
+    screenshot:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/f588779d-7176-4fe4-b4ab-a1150ce60a0e.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Once enabled, Interlock''s services are created, which we can verify by using
+    the admin''s UCP bundle and executing `docker service ls`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: It is important to observe that, by default, Interlock-proxy will not be isolated
+    on worker nodes if there are not enough nodes to run the required number of instances.
+    We can change this behavior by using simple location constraints ([https://docs.docker.com/ee/ucp/interlock/deploy/production](https://docs.docker.com/ee/ucp/interlock/deploy/production)).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For this example, we will use the `colors` application again. We used this
+    simple application in [Chapter 5](1c86479c-e4f5-4508-9eca-d29bb3dbaf4b.xhtml),
+    *Deploying Multi-Container Applications*. This is a simple `docker-compose` file
+    prepared to deploy a `colors` service. We will use a random color, leaving the
+    `COLORS` variable empty. We will create a `colors-stack.yml` file with the following
+    content:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We will connect to Docker Enterprise with a valid user using their bundle.
+    For this lab, we will use the `admin` user that we created during installation.
+    We will download the user''s `ucp` bundle using any of the procedures described
+    in [Chapter 11](1879ea92-ae47-4230-ac84-784d4bc73185.xhtml), *Universal Control
+    Plane*. Once downloaded and unzipped, we will just load UCP''s environment using
+    `source env.sh`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Once the UCP environment is loaded, we will use the book''s Git repository
+    ([https://github.com/frjaraur/dca-book-code.git](https://github.com/frjaraur/dca-book-code.git)).
+    Interlock''s labs can be found under the `interlock-lab` directory. We will deploy
+    the `colors` stack using `docker stack deploy -c colors-stack.yml lab`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We will review how `colors` instances are distributed within the cluster by
+    using `docker stack ps`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We enabled Interlock on UCP''s Admin Settings section. We used the default
+    port, so we should access our deployed service on the `8080` port (because we
+    are using HTTP in this lab). Notice that we have not used any `port` key in the
+    `docker-compose` file. We have not published any service''s port. Let''s check
+    whether Interlock is working by specifying the required host header, `colors.lab.local`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The output may change and we will launch some requests to ensure that we get
+    different backends (we deployed three instances). If we do not specify any host
+    header, a default one will be used. If none was configured (default behavior),
+    we will get a proxy error. As we are using NGINX (default), we will get a `503`
+    error:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can change the default Interlock''s backend using the special label `com.docker.lb.default_backend:
+    "true"`, associated with one of our services. This will act as a default site
+    when headers don''t match any configured service.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s remove this lab before continuing. We will use `docker stack rm`. We
+    will probably get an error because stacks will now have to be removed carefully:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This error is normal. The Interlock-proxy component is attached to our application''s
+    network, hence it cannot be removed. Interlock will refresh configurations every
+    few seconds (Docker API polls will be launched every 3 seconds and, after these
+    intervals, Interlock will manage the required changes). If we just wait a few
+    seconds and launch the removal command again, it will delete the stack''s remaining
+    components (network):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: We will now test a simple redirection using the `com.docker.lb.redirects` key.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Simple application redirection
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'In this example, we will review how we can redirect requests from one service
+    to another. This can be interesting when we want to migrate users from an old
+    application to a newer release, at application level. We are not talking about
+    an image upgrade in this case. We will simply create a new overlay network using
+    `docker network create`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We will now create a simple web server application service (the smallest NGINX
+    image, `nginx:alpine`). Notice that we will add to host headers inside the `com.docker.lb.hosts`
+    label. We have also added `com.docker.lb.redirects` to ensure that all requests
+    sent to `http://old.lab.local` will be redirected to `http://new.lab.local`. This
+    is how this service definition will appear:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If we test access to one of our UCP nodes on port `8080`, using `old.lab.local`
+    as the host header, we will be redirected to `http://new.lab.local`. We added
+    `-L` to the `curl` command to allow the required redirection:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: Notice that `new.lab.local` was a dummy FQDN, hence we cannot resolve it, but
+    the test request was forwarded to this new application site.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We will now deploy an example service that is protected using TLS certificates.
+    Interlock will manage its certificates and access will be secure.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Publishing a service securely using Interlock with TLS
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In this example, we will deploy a service that should be published securely
+    using TLS. We can create tunnels from users directly to our service, configuring
+    Interlock as a transparent proxy, or we can allow Interlock to manage tunnels.
+    In this case, a service can be deployed using HTTP, but HTTPS will be required
+    from the user's perspective. Users will interact with the Interlock-proxy component
+    before reaching the defined service's backends.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For this example, we will use the `colors` application again with random configuration.
+    We will use the `colors-stack-https.yml` file with the following content:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: We will create a sample key and an associated certificate and these will be
+    integrated inside Interlock's configuration automatically.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It is always relevant to review Interlock's component logs using Docker service
+    logs; for example, we will detect configuration errors using `docker service logs
+    ucp-interlock`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We will use `openssl` to create a certificate that is valid for 365 days:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Once these keys and certificates are created, we will connect to Docker Enterprise
+    using the `admin` user again. Although the admin''s environment will probably
+    already be loaded (if you are following these labs one by one), we will load the
+    `ucp` environment using `source env.sh`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Once the UCP environment is loaded, we will use this book''s example `colors-stack-ssl.yaml`
+    file. We will deploy the `colors` stack with HTTPS using `docker stack deploy
+    -c colors-stack-https.yml lab`. This directory also contains a prepared certificate
+    and key:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We will review how `colors` instances are distributed within the cluster using
+    `docker stack ps`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: We enabled Interlock on UCP's Admin Settings section. We used the default port,
+    hence we should access our deployed service on the `8443` port (because we are
+    using HTTPS). Notice that we have not used any `port` key on the `docker-compose`
+    file. We have not published any service's port.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We can review Interlock''s proxy configuration by reading the associated `com.docker.interlock.proxy.<ID>`
+    configuration object. We can use `docker config inspect` and filter its output.
+    First, we will obtain the current `ucp-interlock-proxy` configuration object:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Then, we will just inspect this object:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: Inspecting the Interlock-proxy configuration can be very useful when it comes
+    to troubleshooting Interlock issues. Try to include one service or stack at a
+    time. This will avoid the mixing of configurations and help us to follow incorrect
+    configuration issues.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: This chapter covered Docker Enterprise's publishing features. We learned different
+    publishing strategies for Docker Swarm and Kubernetes and how these tools can
+    be integrated inside Docker Enterprise.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We have seen how these methods also improve an application's security by isolating
+    different layers and allowing us to publish only frontend and requisite services.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The next chapter will teach us how Docker Enterprise implements a fully secure
+    and production-ready image store solution.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Questions
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Which labels are required to publish a service using Interlock?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: a) `com.docker.lb.backend_mode`
+  prefs: []
+  type: TYPE_NORMAL
+- en: b) `com.docker.lb.port`
+  prefs: []
+  type: TYPE_NORMAL
+- en: c) `com.docker.lb.hosts`
+  prefs: []
+  type: TYPE_NORMAL
+- en: d) `com.docker.lb.network`
+  prefs: []
+  type: TYPE_NORMAL
+- en: Which one of these processes is not part of Interlock?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: a) `ucp-interlock`
+  prefs: []
+  type: TYPE_NORMAL
+- en: b) `ucp-interlock-controller`
+  prefs: []
+  type: TYPE_NORMAL
+- en: c) `ucp-interlock-extension`
+  prefs: []
+  type: TYPE_NORMAL
+- en: d) `ucp-interlock-proxy`
+  prefs: []
+  type: TYPE_NORMAL
+- en: Where do Interlock processes run within Docker Enterprise nodes?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: a) `ucp-interlock` runs on Docker Swarm's leader.
+  prefs: []
+  type: TYPE_NORMAL
+- en: b) `ucp-interlock-extension` runs on any manager.
+  prefs: []
+  type: TYPE_NORMAL
+- en: c) `ucp-interlock-proxy` runs only on workers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: d) None of the above answers are correct.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Which features does Interlock support?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: a) SSL/TLS endpoint management
+  prefs: []
+  type: TYPE_NORMAL
+- en: b) Transparent proxy or SSL/TLS passthrough
+  prefs: []
+  type: TYPE_NORMAL
+- en: c) Dynamic configuration using the Docker API
+  prefs: []
+  type: TYPE_NORMAL
+- en: d) TCP/UDP publishing
+  prefs: []
+  type: TYPE_NORMAL
+- en: Which of the following statements regarding the publishing of applications on
+    container-orchestrated environments are true?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: a) Ingress controllers and Interlock have a common logic using reverse proxy
+    services for publishing applications.
+  prefs: []
+  type: TYPE_NORMAL
+- en: b) Ingress controllers help us to publish applications securely by exposing
+    only required services.
+  prefs: []
+  type: TYPE_NORMAL
+- en: c) Interlock requires access to an application's front service networks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: d) None of these premises are true.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Further reading
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Refer to the following links for more information regarding the topics covered
+    in this chapter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Docker Interlock documentation: [https://docs.docker.com/ee/ucp/interlock/](https://docs.docker.com/ee/ucp/interlock/)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Universal Control Plane Service Discovery and Load Balancing for Swarm: [https://success.docker.com/article/ucp-service-discovery-swarm](https://success.docker.com/article/ucp-service-discovery-swarm)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Universal Control Plane Service Discovery and Load Balancing for Kubernetes:
+    [https://success.docker.com/article/ucp-service-discovery-k8s](https://success.docker.com/article/ucp-service-discovery-k8s)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL

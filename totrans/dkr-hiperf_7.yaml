@@ -1,0 +1,558 @@
+- en: Chapter 7. Troubleshooting Containers
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Sometimes, instrumentation, such as the monitoring and logging system we set
+    up in [Chapter 4](part0028_split_000.html#QMFO1-afc4585f6623427885a0b0c8e5b2e22e
+    "Chapter 4. Monitoring Docker Hosts and Containers"), *Monitoring Docker Hosts
+    and Containers*, is not enough. Ideally, we should put in place a way to troubleshoot
+    our Docker deployments in a scalable fashion. However, sometimes, we have no choice
+    but to log in to the Docker host and look at the Docker containers themselves.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this chapter, we will cover the following topics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Inspecting containers with `docker exec`
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Debugging from outside Docker
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Other debugging suites
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Inspecting containers
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'When troubleshooting servers, the traditional way to debug is to log in and
+    poke around the machine. With Docker, this typical workflow is split into two
+    steps: the first is logging in to the Docker host using standard remote access
+    tools such as `ssh`, and the second is entering the desired running container''s
+    process namespace with `docker exec`. This is useful as a last resort to debug
+    what is happening inside our application.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For most of this chapter, we will troubleshoot and debug a Docker container
+    running HAProxy. To prepare this container, create a configuration file for HAProxy
+    named `haproxy.cfg` with the following content:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Next, using the official Docker image for HAProxy (`haproxy:1.5.14`), we will
+    run the container together with the configuration we created earlier. Run the
+    following command in our Docker host to start HAProxy with our prepared configuration:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now, we can begin inspecting our container and debugging it. A good first example
+    is to confirm that the HAProxy container is listening to port `80`. The `ss` program
+    dumps a summary of sockets statistics available in most Linux distributions, such
+    as our Debian Docker host. We can run the following command to display the statistics
+    of the listening sockets inside our Docker container:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This approach with `docker exec` only worked because `ss` is included by default
+    in the `debian:jessie` parent container of `haproxy:1.5.14`. We cannot use a similar
+    tool that is not installed by default, such as `netstat`. Typing an equivalent
+    `netstat` command will give the following error:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let''s investigate what happened by looking at the logs of Docker Engine Service.
+    Typing the following command shows that the `netstat` program doesn''t exist inside
+    our container:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'An alternative way to find out whether `netstat` is installed in our system
+    is to enter our container interactively. The `docker exec` command has the `-it`
+    flags that we can use to spawn an interactive shell session to perform the debugging.
+    Type the following command to use the `bash` shell to get inside our container:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now that we are in a standard shell environment, we can debug with all the
+    standard Linux utilities available inside our container. We will cover some of
+    these commands in the next section. For now, let''s take a look at why `netstat`
+    doesn''t work inside our container, as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: As we can see here, `bash` is telling us that at this point, we have figured
+    out that we don't have `netstat` installed through a more interactive debugging
+    session.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We can provide a quick workaround by installing it inside our container, similar
+    to what we do in a normal Debian environment. While we are still inside the container,
+    we will type the following command to install `netstat`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now, we can run `netstat` successfully, as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This approach of ad hoc container debugging is not recommended! We should have
+    proper instrumentation and monitoring in place the next time we iterate on the
+    design of our Docker infrastructure. Let''s improve on what we initially built
+    in [Chapter 4](part0028_split_000.html#QMFO1-afc4585f6623427885a0b0c8e5b2e22e
+    "Chapter 4. Monitoring Docker Hosts and Containers"), *Monitoring Docker Hosts
+    and Containers*, next time! The following are some limitations of this last-resort
+    approach:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: When we stop and recreate the container, the `netstat` package we installed
+    will not be available anymore. This is because the original HAProxy Docker image
+    doesn't contain it in the first place. Installing ad hoc packages to run containers
+    defeats the main feature of Docker, enabling an immutable infrastructure.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: In case we want to package all the debugging tools inside our Docker image,
+    its size will increase correspondingly. This means that our deployments will get
+    larger and become slower. Remember that in the [Chapter 2](part0018_split_000.html#H5A42-afc4585f6623427885a0b0c8e5b2e22e
+    "Chapter 2. Optimizing Docker Images"), *Optimizing Docker Images*, we optimized
+    to reduce our container's size.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'In the case of minimal containers with just the required binaries, we are now
+    mostly blind. The `bash` shell is not even available! There is no way to enter
+    our container; take a look at the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: In summary, `docker exec` is a powerful tool to get inside our containers and
+    debug by running various commands. Coupled with the `-it` flags, we can get an
+    interactive shell to perform deeper debugging. This approach has limitations because
+    it assumes that all the tools available inside our Docker container are ready
+    to use.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: More information about the `docker exec` command can be found in the official
+    documentation at [https://docs.docker.com/reference/commandline/exec](https://docs.docker.com/reference/commandline/exec).
+  prefs: []
+  type: TYPE_NORMAL
+- en: The next section deals with how to go around this limitation by having tools
+    from outside Docker inspect the state of our running container. We will provide
+    a brief overview on how to use some of these tools.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Debugging from the outside
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Even though Docker isolates the network, memory, CPU, and storage resources
+    inside containers, each individual container will still have to go to the Docker
+    host's operating system to perform the actual command. We can take advantage of
+    this trickling down of calls to the host operating system to intercept and debug
+    our Docker containers from the outside. In this section, we will cover some selected
+    tools and how to use them to interact with our Docker containers. We can perform
+    the interaction from the Docker host itself or from inside a sibling container
+    with elevated privileges to see some components of the Docker host.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Tracing system calls
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: A **system call tracer** is one of the essential tools for server operations.
+    It is a utility that intercepts and traces calls made by the application to the
+    operating system. Each operating system has its own variation. Even if we run
+    various applications and processes inside our Docker containers, it will eventually
+    enter our Docker host's Linux operating system as a series of system calls.
+  prefs: []
+  type: TYPE_NORMAL
+- en: On Linux systems, the `strace` program is used to trace these system calls.
+    This interception and logging functionality of `strace` can be used to inspect
+    our Docker containers from the outside. The list of system calls made throughout
+    our container's lifetime can give a profile-level view on how it behaves.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To get started using `strace`, simply type the following command to install
+    it inside our Debian Docker host:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: Tip
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: With the `--pid=host` option added to `docker run`, we can set a container's
+    PID namespace to be of the Docker host's. This way, we'll be able to install and
+    use `strace` inside a Docker container to inspect all the processes in the Docker
+    host itself. We can also install `strace` from a different Linux distribution,
+    such as CentOS or Ubuntu if we use the corresponding base image for our container.
+  prefs: []
+  type: TYPE_NORMAL
+- en: More information describing this option is at [http://docs.docker.com/engine/reference/run/#pid-settings-pid](http://docs.docker.com/engine/reference/run/#pid-settings-pid).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now that we have `strace` installed in our Docker host, we can use it to inspect
+    the system calls inside the HAProxy container we created in the previous section.
+    Type the following commands to begin tracing the system calls from the `haproxy`
+    container:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'As you can see, our HAProxy container makes `epoll_wait()` calls to wait for
+    incoming network connections. Now, in a separate terminal, type the following
+    command to make an HTTP request to our running container:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now, let''s go back to our running `strace` program earlier. We can see the
+    following lines printed out:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: We can see here that HAProxy made standard BSD-style socket system calls, such
+    as `accept4()`, `socket()`, and `close()`, to accept, process, and terminate network
+    connections from our HTTP client. Finally, it goes back to `epoll_wait()` again
+    to wait for the next connections. Also, take note that `epoll_wait()` calls are
+    spread throughout the trace even while HAProxy processes a connection. This shows
+    how HAProxy can handle concurrent connections.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Tracing system calls is a very useful technique to debug live production systems.
+    People in operations sometimes get paged and don't have access to the source code
+    right away. Alternatively, there are instances where we are only given compiled
+    binaries (or plain Docker images) running in production where there is no source
+    code (nor `Dockerfile`). The only clue we can get from a running application is
+    to trap the system calls it makes to the Linux kernel.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'The `strace` webpage can be found at [http://sourceforge.net/projects/strace/](http://sourceforge.net/projects/strace/).
+    More information can be accessed through its man page as well by typing the following
+    command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: For a more comprehensive list of system calls in Linux systems, refer to [http://man7.org/linux/man-pages/man2/syscalls.2.html](http://man7.org/linux/man-pages/man2/syscalls.2.html).
+    This will be useful in understanding the various outputs given by `strace`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Analyzing network packets
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Most Docker containers that we deploy revolve around providing some form of
+    network service. In the example of HAProxy in this chapter, our container basically
+    serves HTTP network traffic. No matter what kind of container we have running,
+    the network packets will eventually have to get out of the Docker host for it
+    to complete a request that we send it. By dumping and analyzing the content of
+    these packets, we can gain some insight into the nature of our Docker container.
+    In this section, we will use a packet analyzer called `tcpdump` to view the traffic
+    of network packets being received and sent by our Docker containers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To begin using `tcpdump`, we can issue the following command in our Debian
+    Docker host to install it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: Tip
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: We can also expose the Docker host's network interfaces to a container. With
+    this approach, we can install t`cpdump` in a container and not pollute our main
+    Docker host with ad hoc debugging packages. This can be done by specifying the
+    `--net=host` flag on `docker run`. With this, we can access the `docker0` interface
+    from inside our Docker container with `tcpdump`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The example of using `tcpdump` will be very specific to the Vagrant VMware
+    Fusion provider for VMware Fusion 7.0\. Assuming we have a Docker Debian host
+    as a Vagrant VMware Fusion box, run the following command to suspend and unsuspend
+    our Docker host''s virtual machine:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now that we are back inside our Docker host, run the following command and
+    note that we cannot resolve `www.google.com` anymore inside our interactive `debian:jessie`
+    container, as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now, let''s run `tcpdump` in a separate terminal. While running the preceding
+    ping command, we will notice the following output from our `tcpdump` terminal:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'As we can see, the interactive `/bin/bash` container is looking for `172.17.42.1`,
+    which is normally the IP address attached to the Docker Engine network device,
+    `docker0`. With this figured out, take a look at `docker0` by typing the following
+    command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now, we can view the problem. The `docker0` device doesn''t have an IPv4 address
+    attached to it. Somehow, VMware unsuspending our Docker host removes the mapped
+    IP address in `docker0`. Fortunately, the solution is to simply restart the Docker
+    Engine, and Docker will reinitialize the `docker0` network interface by itself.
+    Restart Docker Engine by typing the following command in our Docker host:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now, when we run the same command as earlier, will see that the IP address
+    is attached, as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let''s go back to our initial command showing the problem; we will see that
+    it is now solved, as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: Note
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'More information about the `tcpdump` packet dumper and analyzer can be found
+    at [http://www.tcpdump.org](http://www.tcpdump.org). We can also access the documentation
+    from where we installed it by typing the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: Observing block devices
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Data being accessed from our Docker containers will mostly reside in physical
+    storage devices, such as hard disks or solid state drives. Underneath Docker's
+    copy-on-write filesystems is a physical device that is randomly accessed. These
+    drives are grouped together as block devices. Data here is randomly accessed fixed-size
+    data called *blocks*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, in case our Docker containers have peculiar I/O behavior and performance
+    issues, we can trace and troubleshoot what is happening inside our block devices
+    using a tool called `blktrace`. All events the kernel generates to interact with
+    the block devices from processes are intercepted by this program. In this section,
+    we will set up our Docker host to observe the block device supporting our containers
+    underneath.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To use `blktrace`, let''s prepare our Docker host by installing the `blktrace`
+    program. Type the following command to install it inside our Docker host:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In addition, we need to enable the debugging of the filesystem. We can do this
+    by typing the following command in our Docker host:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'After the preparations, we need to figure out how to tell `blktrace` where
+    to listen for I/O events. To trace I/O events for our containers, we need to know
+    where the root of the Docker runtime is. In the default configuration of our Docker
+    host, the runtime points to `/var/lib/docker`. To figure out which partition it
+    belongs to, type the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'As described in the preceding output, our Docker host''s `/var/lib/docker`
+    directory is under the `/` partition. This is where we will point `blktrace` to
+    listen for events from. Type the following command to start listening for I/O
+    events on this device:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: Tip
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Using the `--privileged` flag in `docker run`, we can use `blktrace` within
+    a container. Doing so will allow us to mount the debugged filesystem with the
+    increased privileges.
+  prefs: []
+  type: TYPE_NORMAL
+- en: More information on extended container privileges can be found at [https://docs.docker.com/engine/reference/run/#runtime-privilege-linux-capabilities-and-lxc-configuration](https://docs.docker.com/engine/reference/run/#runtime-privilege-linux-capabilities-and-lxc-configuration).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To create a simple workload that will generate I/O events in our disk, we will
+    create an empty file from a container until the / partition runs out of free space.
+    Type the following command to generate this workload:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Depending on the free space available in our root partition, this command may
+    finish quickly. Right away, let''s get the PID of the container we just ran using
+    the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now that we know the PID of our Docker container that generated I/O events,
+    we can look this up with the `blktrace` program''s complementary tool, `blkparse`.
+    The `blktrace` program only listens for the events in the Linux kernel''s block
+    I/O layer and dumps the results on a file. The `blkparse` program is the accompanying
+    tool to view and analyze the events. In the workload we generated earlier, we
+    can look for the I/O events that correspond to our Docker container''s PID using
+    the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In the preceding highlighted output, we can see that the `/dev/dm-0` block
+    offset the position of `11001856`, and there was a writing (`W`) of `1024` bytes
+    of data that just completed (`C`). To probe further, we can look at this offset
+    position on the events that it generated. Type the following command to filter
+    out this offset position:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: We can see the write (`W`) being queued (`Q`) to our device by the `kworker`
+    process, which means the write was queued by the kernel. After 40 milliseconds,
+    the write request registered was completed for our Docker container process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The debugging walkthrough we just performed is just a small sample of what we
+    can do by tracing block I/O events with `blktrace`. For example, we can also probe
+    our Docker container's I/O behavior in greater detail and figure out the bottlenecks
+    that are happening to our application. Are there a lot of writes being made? Are
+    the reads so much that they need caching? Having the actual events rather than
+    only the performance metrics provided by the built-in `docker stats` command is
+    helpful in very deep troubleshooting scenarios.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: More information on the different output values of `blkparse` and flags to capture
+    I/O events in `blktrace` can be found in the user guide located at [http://www.cse.unsw.edu.au/~aaronc/iosched/doc/blktrace.html](http://www.cse.unsw.edu.au/~aaronc/iosched/doc/blktrace.html).
+  prefs: []
+  type: TYPE_NORMAL
+- en: A stack of troubleshooting tools
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Debugging applications inside Docker containers required a different approach
+    from normal applications in Linux. However, the actual programs being used are
+    the same because all the calls from inside the container will eventually go to
+    the Docker host's kernel operating system. By knowing how calls go outside of
+    our containers, we can use any other debugging tools we have to troubleshoot.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In addition to standard Linux tools, there are several container-specific utilities
+    that package the preceding standard utilities to be more friendly for container
+    usage. The following are some of these tools:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Red Hat's `rhel-tools` Docker image is a huge container containing a combination
+    of the tools we discussed earlier. Its documentation page at [https://access.redhat.com/documentation/en/red-hat-enterprise-linux-atomic-host/version-7/getting-started-with-containers/#using_the_atomic_tools_container_image](https://access.redhat.com/documentation/en/red-hat-enterprise-linux-atomic-host/version-7/getting-started-with-containers/#using_the_atomic_tools_container_image)
+    shows how to run it with the proper Docker privileges for it to function correctly.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The CoreOS t`oolbox` program is a small script utility that creates a small
+    Linux container using Systemd's `systemd-nspawn` program. By copying the root
+    filesystem from popular Docker images, we can install any tool we want without
+    polluting the Docker host's filesystem with ad hoc debugging tools. Its use is
+    documented on its webpage at [https://coreos.com/os/docs/latest/install-debugging-tools.html](https://coreos.com/os/docs/latest/install-debugging-tools.html).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The `nsenter` program is a utility to enter a Linux control group's process
+    namespace. It is the predecessor to the `docker exec` program and is considered
+    unmaintained. To get a history of how docker exec came to be, visit the `nsenter`
+    program's project page at [https://github.com/jpetazzo/nsenter](https://github.com/jpetazzo/nsenter).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Remember that logging in to Docker hosts isn't scalable. Adding instrumentation
+    at the application level, in addition to the ones given by our operating system,
+    helps in faster and more efficient diagnosing of the problems that we may encounter
+    in the future. Remember, nobody likes waking up at two in the morning to run `tcpdump`
+    to debug a Docker container on fire!
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next chapter, we will wrap up and look again at what it takes to get
+    our Docker-based workloads to production.
+  prefs: []
+  type: TYPE_NORMAL

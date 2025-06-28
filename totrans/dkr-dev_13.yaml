@@ -1,0 +1,1441 @@
+- en: '*Chapter 11*: Scaling and Load Testing Docker Applications'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Technology giants such as Google, Facebook, Lyft, and Amazon use container orchestration
+    systems in part so that they can run their massive computing resources at very
+    high levels of utilization. To do that, you must have a way to scale your applications
+    across a fleet of servers, which might be dynamically allocated from a cloud provider.
+    Even if you have a cluster that can scale out with high traffic and scale back
+    in when demand subsides, you may still need additional tools to make sure it operates
+    correctly. You also need to ensure that the service degrades gracefully if capacity
+    limits are exceeded.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can use a service mesh such as Envoy, Istio, or Linkerd to handle those
+    concerns. Envoy is one of the simpler options in the service mesh arena; it provides
+    both load balancing and advanced traffic routing and filtering capabilities. All
+    these capabilities provide the glue needed to serve traffic to demanding users.
+    Some of the more complex service meshes use Envoy as a building block since it
+    is so flexible.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To prove that the scaling strategy works, you need to perform load testing.
+    To do this, we will use k6.io, a cloud-native load testing and API testing tool.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this chapter, you are going to learn how to use the Horizontal Pod Autoscaler,
+    the Vertical Pod Autoscaler, and the Cluster Autoscaler to configure your Kubernetes
+    cluster so that it scales out. You will learn about Envoy and why you might use
+    it to provide a proxy layer and service mesh on top of Kubernetes. This includes
+    how to create an Envoy service mesh on top of a Kubernetes cluster, as well as
+    how to configure it with a circuit breaker. Then, you will learn how to verify
+    that the service mesh and autoscaler mechanisms are working as expected. Finally,
+    you will learn how to run a load test with k6.io and observe how the service fails
+    when subjected to a stress test.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We will cover the following topics in this chapter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Scaling your Kubernetes cluster
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: What is Envoy, and why might I need it?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Testing scalability and performance with k6
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: You will need to have both a local Kubernetes learning environment and a working
+    Kubernetes cluster in the cloud, as set up in [*Chapter 8*](B11641_08_Final_AM_ePub.xhtml#_idTextAnchor157),
+    *Deploying Docker Apps to Kubernetes*. You will also need to have a current version
+    of the AWS CLI, as well as `kubectl` and `helm` 3.x installed on your local workstation,
+    as described in the previous chapter. The Helm commands in this chapter use `helm`
+    3.x syntax.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For your local Kubernetes learning environment, you should have a working NGINX
+    Ingress Controller configured, which you can install by running the `chapter11/bin/`[deploy-nginx-ingress.sh](http://deploy-nginx-ingress.sh)
+    script. You should also have a local Jaeger operator, which you can install by
+    running the `chapter11/bin/deploy-jaeger.sh` script.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For the cloud-hosted cluster, you can reuse the AWS `eksctl`. The EKS cluster
+    must have a working ALB Ingress Controller set up. You should also have an `deploy-jaeger.sh`
+    script against your cloud cluster as well.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Check out the following video to see the Code in Action:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[https://bit.ly/2CwdZeo](https://bit.ly/2CwdZeo)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using the updated ShipIt Clicker v8
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'We will use the version of ShipIt Clicker provided in the `chapter11` directory
+    of the following GitHub repository: [https://github.com/PacktPublishing/Docker-for-Developers/](https://github.com/PacktPublishing/Docker-for-Developers/).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: This version of the application you use, similar to what we did in the previous
+    chapter, depends on an externally installed version of Redis from the `bitnami/redis`
+    Helm Charts when used in Kubernetes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understanding the differences from the previous version of ShipIt Clicker
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: In each chapter, we have made enhancements to ShipIt Clicker to illustrate changes
+    related to the chapter content, as well as to polish the application the same
+    way we would do as part of a production release process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This version of ShipIt Clicker is similar to the one provided in the previous
+    chapter, but it has one more API endpoint called `/faults/spin` that's used as
+    a part of a *fault injection* testing strategy to induce CPU load on the nodes
+    running the application, in order to test cluster autoscaling strategies. The
+    `spin` endpoint will get slower the more frequently it is called but will recover
+    and get faster if calls subside. This simulates the way that an application with
+    poor performance behaves, without having to devise a complicated real set of poorly
+    performing code and database servers. It provides an artificial CPU load that
+    is convenient for testing CPU-based autoscaling. See the code in `chapter11/src/server/common/spin.js`
+    and `chapter11/src/server/controllers/faults/controller.js` to see how this works.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This version of ShipIt Clicker also has an enhancement related to Prometheus
+    metrics: it exposes these metrics on a separate port by configuring Express to
+    listen on a separate port so that it serves up the `/metrics` endpoint. This helps
+    us avoid exposing metrics that contain information about the application that
+    an ordinary user does not need and makes it possible for multiple containers in
+    the same pod as ShipIt Clicker to also expose Prometheus metrics. See the code
+    in the `chapter11/src/server/index.js` file, which adds another HTTP listener
+    and a router for metrics. The Helm templates in `chapter11/shipitclicker/templates/deployment.yaml`
+    also have changes to support this new endpoint.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next, we'll build and install ShipIt Clicker into our local Kubernetes learning
+    environment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Installing the latest version of ShipIt Clicker locally
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'In this section, we will build the ShipIt Clicker Docker container, tag it,
+    and push it to Docker Hub, as we did in previous chapters. Issue the following
+    commands, replacing `dockerfordevelopers` with your Docker Hub username:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: Inspect the running pods and services using `kubectl get all` to verify the
+    pod is running, note its name, and then inspect the logs with `kubectl logs` to
+    see the startup logs. There should be no errors in the log.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next, we'll install this version in EKS.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Installing the latest version of ShipIt Clicker in EKS through ECR
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Now that you have built the Docker containers and installed this locally, we''ll
+    install it in AWS EKS via ECR. Edit `chapter11/values.yaml` to give this a hostname
+    in the Route 53 DNS zone such as [shipit-v8.eks.example.com](http://shipit-v8.eks.example.com)
+    (replace the ECR reference with the one corresponding to your AWS account and
+    region and replace `example.com` with your domain name):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Inspect the Kubernetes logs to make sure that the application has deployed
+    cleanly to the cluster:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: If all is well with the deployment, get the AWS ALB Ingress Controller's address,
+    as described in [*Chapter 9*](B11641_09_Final_NM_ePub.xhtml#_idTextAnchor191),
+    *Cloud-Native Continuous Deployment Using Spinnaker*, and create DNS entries in
+    the Route 53 console for the deployed application with the ALB address. You should
+    then be able to reach your application at a URL similar to [https://shipit-v8.eks.example.com/](https://shipit-v8.eks.example.com/)
+    (replace `example.com` with your domain name).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Scaling your Kubernetes cluster
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'To support more traffic and more applications, your Kubernetes cluster may
+    need to grow beyond its initial size. You can use both manual methods and dynamic
+    programmed methods to do this, especially if you are working with a cloud-based
+    Kubernetes cluster. To scale out an application, you need to control two dimensions:
+    the number of pods running a particular application and the number of nodes in
+    a cluster. You can''t scale the number of pods infinitely on a cluster with the
+    same number of nodes; practical limits related to CPU, memory, and network concerns
+    will ultimately demand that the cluster scales out the number of nodes as well.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The method that''s used to scale out a cluster will vary considerably, depending
+    on the cloud vendor and Kubernetes distribution. The Kubernetes documentation
+    explains both the general process and some specific instructions for clusters
+    running in the Google and Microsoft Azure clouds:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[https://kubernetes.io/docs/tasks/administer-cluster/cluster-management/](https://kubernetes.io/docs/tasks/administer-cluster/cluster-management/)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Generally speaking, you must start and configure a new server that is set up
+    similarly to the existing cluster nodes, and then join it to the cluster by using
+    the `kubeadm join` command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[https://kubernetes.io/docs/reference/setup-tools/kubeadm/kubeadm-join/](https://kubernetes.io/docs/reference/setup-tools/kubeadm/kubeadm-join/)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Kubernetes distributions and cloud vendors make this easier by relying on mechanisms
+    such as machine images and autoscaling groups. We will show you how to scale your
+    cluster by using Amazon EKS. In [*Chapter 8*](B11641_08_Final_AM_ePub.xhtml#_idTextAnchor157),
+    *Deploying Docker Apps to Kubernetes*, we set up EKS with AWS Quick Start CloudFormation
+    templates in the *Spinning up AWS EKS with CloudFormation* section. The following
+    sections assume that you have used that method to set up a cluster that uses autoscaling
+    groups.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Scaling the cluster manually
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Given that we want to increase the number of nodes in our cluster, we will
+    want to identify and follow the procedures that are specific to our Kubernetes
+    installation. For Amazon EKS clusters, see the following documentation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[https://docs.aws.amazon.com/eks/latest/userguide/launch-workers.html](https://docs.aws.amazon.com/eks/latest/userguide/launch-workers.html)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: You could just launch an entirely new group of nodes, but you can often adjust
+    a parameter or two in order to increase the size of your cluster. This is done
+    when you increase the size of a cluster, which is called *scaling out*, and when
+    you decrease the size of a cluster, which is called *scaling in*. Next, we will
+    learn how to adjust a simple parameter so that we can scale out the number of
+    nodes in the cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Scaling nodes out manually
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'For the sake of simplicity, let''s assume you used the AWS Quick Start for
+    EKS CloudFormation templates to create your cluster initially. Since that uses
+    CloudFormation to manage the cluster, you should prefer using CloudFormation to
+    update the cluster''s configuration. To manually scale your cluster out, go to
+    the AWS console and update the CloudFormation deployment, changing the default
+    values for **Number of nodes** and **Maximum number of nodes** from their current
+    values to higher values, such as **4** and **8**:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/B11641_11_001.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 11.1 – Updating the AWS EKS Quick Start CloudFormation template
+  prefs: []
+  type: TYPE_NORMAL
+- en: Continue through the CloudFormation update forms and apply the changes. Look
+    at the CloudFormation events for updates and wait a few minutes. You can then
+    check that the update to the CloudFormation template worked fine. Then, you can
+    check the size of the autoscaling group to make sure it has grown.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You could also update the autoscaling group sizes through the EC2 console,
+    thereby setting the minimum, desired, and maximum number of nodes to **4**, **4**,
+    and **8**, respectively. This will cause your deployed configuration to drift
+    from its CloudFormation templates, however, which is undesirable as the actual
+    state will no longer match the model that CloudFormation expects. See the following
+    post for more on why that is problematic: [https://aws.amazon.com/blogs/aws/new-cloudformation-drift-detection/](https://aws.amazon.com/blogs/aws/new-cloudformation-drift-detection/).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you used `eksctl` to create your cluster instead, you can follow the instructions
+    at [https://eksctl.io/usage/managing-nodegroups/](https://eksctl.io/usage/managing-nodegroups/)
+    to scale the node groups it creates.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Scaling nodes in manually
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'You can reverse the process to scale in the cluster (reducing its size), but
+    beware that scaling a cluster in manually is trickier. Doing this safely involves
+    a process called draining, which is described in the following Kubernetes documentation:
+    [https://kubernetes.io/docs/tasks/administer-cluster/safely-drain-node/](https://kubernetes.io/docs/tasks/administer-cluster/safely-drain-node/).
+    Just changing the autoscaling group''s size on its own will terminate an instance
+    without letting you choose which instance to terminate or giving you a chance
+    to drain the instance. If you *really* wanted to do this, you would have to do
+    all the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Decrement the autoscaling group minimum size by one.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Drain the node with `kubectl drain`.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Terminate the node using an AWS CLI command that decrements the desired capacity.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'After you''ve adjusted the autoscaling group''s minimum size, you could issue
+    the following commands (replace the node name and instance ID in each of these
+    commands with the ones that match the node you want to terminate):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: This process is involved and could easily lead to manual error. It will also
+    lead to configuration drift from the CloudFormation template, so you should either
+    seek to script it or rely on automatic scaling mechanisms instead.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Scaling pods manually through deployments
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Manually scaling the number of pods in a deployment or ReplicaSet is quite
+    easy, assuming that you have enough resources in your cluster. You can use the
+    `kubectl scale` command to set the number of replicas. You might have to issue
+    several `kubectl get` commands before you see all the replicas become ready, as
+    shown in this transcript:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: Next, we will examine how we can apply programmatic scaling to the cluster,
+    for both nodes and pods.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Scaling the cluster dynamically (autoscaling)
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Now that you''ve completed many of the exercises in the preceding three chapters,
+    which explored the complex concepts that go along with the Kubernetes container
+    orchestration system, you might be wondering: is all this effort worth it? In
+    this section, we will explore the key feature that can make the pain of managing
+    these systems worth it – autoscaling. By dynamically scaling the applications
+    in a cluster, and the cluster itself, you can drive high utilization of cluster
+    resources, meaning that you will need fewer computers (virtual or physical) to
+    run your systems. When you combine dynamic scaling with the self-healing capabilities
+    of the Kubernetes system, this becomes compelling, even though it has high complexity
+    and a high learning curve in some areas.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Kubernetes supports several dynamic scaling mechanisms, including the Cluster
+    Autoscaler, the Horizontal Pod Autoscaler, and the Vertical Pod Autoscaler. Let's
+    explore each of these.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Configuring the Cluster Autoscaler
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The `kube-system` namespace and uses cloud APIs to launch and terminate nodes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If you used the AWS EKS Quick Start Cloudformation templates to create your
+    cluster and told it to enable the Cluster Autoscaler, no further configuration
+    is needed. If you used `eksctl` or another method to create the cluster, you may
+    need to configure it further using the directions provided here: [https://docs.aws.amazon.com/eks/latest/userguide/cluster-autoscaler.html](https://docs.aws.amazon.com/eks/latest/userguide/cluster-autoscaler.html).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You can verify that the Cluster Autoscaler is running by querying it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now that we have learned a bit about the Cluster Autoscaler, let's discover
+    how we might configure an application to take advantage of its features.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Configuring a stateless application to work with the Cluster Autoscaler
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: 'A stateless application, such as ShipIt Clicker, can tolerate starting and
+    stopping any one of its pods and can run on any node in the cluster. It doesn''t
+    require special configuration to work with the Cluster Autoscaler. Stateful applications
+    that mount local storage and some other classes of applications must avoid some
+    scaling operations if possible and may require special handling. See the Autoscaling
+    FAQ for more details: [https://github.com/kubernetes/autoscaler/blob/master/cluster-autoscaler/FAQ.md](https://github.com/kubernetes/autoscaler/blob/master/cluster-autoscaler/FAQ.md).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You can give the Cluster Autoscaler a hint that it should not scale in pods
+    beyond a certain point, and that it should strive to keep a certain number or
+    percentage of healthy pods available by using a **PodDisruptionBudget** (**PDB**):
+    [https://kubernetes.io/docs/tasks/run-application/configure-pdb/](https://kubernetes.io/docs/tasks/run-application/configure-pdb/).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: We have configured ShipIt Clicker with a PDB in its Helm Chart. See `chapter11/src/shipitclicker/templates/pdb.yaml`
+    for more information. You can find the default values for it in `chapter11/src/shipitclicker/values.yaml`.
+    The defaults now have ShipIt Clicker configured to deploy two pods and have a
+    PDB with a minimum of one pod available. This provides hints to the Cluster Autoscaler
+    and other Kubernetes applications that it should always keep at least one pod
+    alive, even as node maintenance is underway.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next, we will demonstrate the Cluster Autoscaler in action.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Demonstrating the Cluster Autoscaler in action
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: 'In order to get the Cluster Autoscaler to make changes to the size of the cluster,
+    we can start more pods than it has capacity to handle currently. To watch this
+    process in action, it is helpful to tail the logs of the `cluster-autoscaler`
+    service. Open a Terminal window and run the following commands to tail the logs
+    of the service:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: Every 10 seconds, you will see log entries indicating that the service is looking
+    for *unschedulable* pods (which would cause the cluster to scale out the number
+    of nodes) and for nodes that are eligible for scaling in.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Then, in a different Terminal window, manually scale the deployment of ShipIt
+    Clicker to `50` pods:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: Each of the `t3.medium` nodes in the default EKS cluster can handle approximately
+    4 to 16 ShipIt Clicker pods, depending on how many other pods are also running
+    on each node. This will trip the Cluster Autoscaler and make it scale out by at
+    least one additional node. You will see entries in the Cluster Autoscaler log
+    noting that it has found unschedulable pods, and shortly afterward, that it has
+    completed scaling.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To see the progress from the perspective of the nodes and pods in the deployment,
+    issue the following commands every few seconds:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'You will see nodes launching and more and more replicas becoming ready until
+    the set of replicas stabilizes. Once that happens, scale it back down to a lower
+    default state:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: Once you've done that, you may notice that the nodes do not scale in immediately
+    as they enter a cooldown condition for 10 minutes after a scale out operation
+    completes. However, a minute after the cooldown period expires, the Cluster Autoscaler
+    will notice that the CPU utilization of these nodes is close to zero and it will
+    scale in the cluster, terminating the nodes that no longer have pods available.
+    The Cluster Autoscaler will respect the PDB when it performs this scale in operation
+    as well – allowing you to be as conservative as required when shrinking the number
+    of pods and nodes in the cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that you have learned how to scale the cluster nodes in and out using the
+    Cluster Autoscaler, let's learn how to use the Horizontal Pod Autoscaler to set
+    scaling policies.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Configuring the Horizontal Pod Autoscaler
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'The **Horizontal Pod Autoscaler** allows you to set up rules for scaling out
+    sets of Kubernetes pods using rules that can take into account CPU utilization
+    or other custom metrics. This service can also scale pods controlled by deployments,
+    ReplicaSets, and replication controllers. You can read more about the theory of
+    how it works here: [https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/](https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is the last big piece of the puzzle you need before you can achieve a cluster
+    that automatically scales in and out in response to demand.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You need Metrics Server for the Horizontal Pod Autoscaler to work. We will install
+    this next.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Installing Metrics Server
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: 'To have more detailed statistics available in your Kubernetes cluster for use
+    by the software components that enable dynamic scaling (including the Horizontal
+    Pod Autoscaler), you need to run the standard **Metrics Server**. It aggregates
+    statistics across the cluster regarding the memory, CPU, and other resource utilization
+    of the nodes and among the pods in a format that the various Kubernetes autoscaler
+    mechanisms can understand and act upon. The AWS EKS guide talks about installing
+    that here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[https://docs.aws.amazon.com/eks/latest/userguide/metrics-server.html](https://docs.aws.amazon.com/eks/latest/userguide/metrics-server.html)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To install it, ensure your `kubectl config` context is set to your cloud cluster.
+    Then, issue the following command from your local workstation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Once you have installed Metrics Server, verify that it is running:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: Next, we will activate the Horizontal Pod Autoscaler for the ShipIt Clicker
+    application to demonstrate how it works.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Activating the Horizontal Pod Autoscaler
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: 'The AWS EKS guide shows the steps needed to install the Horizontal Pod Autoscaler:
+    [https://docs.aws.amazon.com/eks/latest/userguide/horizontal-pod-autoscaler.html](https://docs.aws.amazon.com/eks/latest/userguide/horizontal-pod-autoscaler.html).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The main thing we need to install is the metrics service. It turns out that
+    the Horizontal Pod Autoscaler is baked into Kubernetes itself. We can issue a
+    command such as the following one to activate a Horizontal Pod Autoscaler for
+    a deployment:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If you need to edit these parameters, you can do so with the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'You can get a detailed view of what the Horizontal Pod Autoscaler has done
+    recently by issuing this command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'To test whether the Horizontal Pod Autoscaler and Cluster Autoscaler are working
+    as expected, we need to drive CPU load. That''s where the `/faults/spin` endpoint
+    comes in handy. Later in this chapter, in the *Testing scalability and performance
+    with k6* section, we will see how to construct a realistic load test for the ShipIt
+    Clicker application. However, to exercise autoscaling, we are going to use a brute-force
+    method by using the Apache Bench utility that''s run via Docker (replace `example.com`
+    with your domain name):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: Use the `kubectl get deployments`, `kubectl get pods`, `kubectl get nodes`,
+    and `kubectl describe hpa` commands repeatedly to watch the deployment replicas
+    grow. Alternatively, use a Kubernetes monitoring tool such as k9s ([https://k9scli.io/](https://k9scli.io/))
+    to watch the pod and node counts grow over the first 10 minutes or so, and then
+    subside in the 15 minutes afterward. You could also look at some Grafana dashboards
+    and Jaeger traces, as described in the previous chapter, to see how the cluster
+    is handling the load, or even look at the CloudWatch metrics that surfaced in
+    the EC2 console for the active nodes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next, we will consider when we might use the Vertical Pod Autoscaler.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Configuring the Vertical Pod Autoscaler
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The Vertical Pod Autoscaler is a newer scaling mechanism that observes the amount
+    of memory and CPU usage that pods request, versus what they actually use, in order
+    to optimize memory and CPU requests – it performs right-sizing to drive better
+    cluster utilization. This is the most useful scaling mechanism for stateful pods.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'However, the Vertical Pod Autoscaler documentation currently states that it
+    is not compatible with the Horizontal Pod Autoscaler, so you should avoid configuring
+    it so that it manages the same pods. You can explore using it for your application,
+    but keep in mind the advice it specifies about not mixing it with the Horizontal
+    Pod Autoscaler using CPU metrics. The installation procedure for the Vertical
+    Pod Autoscaler is also more involved than configuring either of the other autoscalers,
+    so we won''t show all the steps in detail here – please refer to the Vertical
+    Pod Autoscaler documentation for detailed configuration instructions: [https://github.com/kubernetes/autoscaler/tree/master/vertical-pod-autoscaler](https://github.com/kubernetes/autoscaler/tree/master/vertical-pod-autoscaler).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this section, we learned all about how we can scale our application using
+    both manual and dynamic methods. In the next section, we will learn all about
+    Envoy, a service mesh that provides some advanced controls and sanity regarding
+    communications between pods in a Kubernetes cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What is Envoy, and why might I need it?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Envoy ([https://www.envoyproxy.io/](https://www.envoyproxy.io/)) is a C++ open
+    source **service mesh** and edge proxy geared toward microservice deployments.
+    Developed by a team at Lyft, it is especially useful for teams developing Kubernetes-hosted
+    applications, such as the ones you have seen throughout this book.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, why exactly would we need to deploy Envoy? When developing cloud-based production
+    systems that use multiple containers to host a distributed service, many of the
+    problems you will encounter are related to observability and networking.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Envoy aims to solve these two problems by introducing a proxy service that offers
+    runtime-configurable networking and metrics collection that can be used as a building
+    block for creating higher-level systems that manage these concerns. Whether you're
+    building out a small distributed application or a large microservice architecture
+    designed around the service mesh model, Envoy's features allow us to abstract
+    the thorny problem of networking in a cloud and platform-agnostic fashion.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The team at Lyft developed Envoy using the following concepts:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Out of process architecture**: Envoy is a self-contained process that can
+    be deployed alongside existing applications.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`localhost` and are ignorant of the network topology. An L3/L4 filter architecture
+    is used for networking proxying. You can add custom filters to the proxy to support
+    tasks such as TLS client certificate authentication.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Language agnosticism**: Envoy works with multiple languages and allows you
+    to mix and match application frameworks. For example, through the use of Envoy
+    PHP and Python, containerized applications can communicate with each other.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**HTTP L7 filters and routing**: As with L3/L4 filters, filtering is also supported
+    at the L7 layer. This allows plugins to be developed for different tasks, ranging
+    from buffering to interacting with AWS services such as DynamoDB. Envoy''s routing
+    feature allows you to deploy a routing subsystem that can redirect requests based
+    on a variety of criteria, such as path and content type.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Load balancing and front/edge proxy support**: Envoy supports advanced load
+    balancing techniques, including automatic retries, circuit breakers, health checking,
+    and rate limiting. Additionally, you can deploy Envoy at the network edge to handle
+    TLS termination and HTTP/2 requests.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Observability and transparency**: Envoy collects statistics to support observability
+    at both the application and networking layer. You can combine Envoy with Prometheus,
+    Jaeger, Datadog, and other monitoring platforms that support metrics and tracing.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Let's explore some of Envoy's features in more detail so that we can understand
+    these concepts better.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Network traffic management with an Envoy service mesh
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: You should already be familiar with the concept of a load balancer, which is
+    one type of network traffic manager. But what exactly is a service mesh? Why would
+    you need to use one? How does Envoy help us in this regard?
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'A service mesh is an infrastructure layer dedicated to handling service-to-service
+    communications, typically through a proxy service. The benefits of using a service
+    mesh are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Transparency and observability into network communications.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: You can support secure connections across the network.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Metrics collection, including length of time for a retry to succeed when a service
+    fails.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: You can deploy proxies as **sidecars**. This means they run alongside each service
+    rather than within it. In turn, this allows us to decouple the proxying service
+    from the application itself.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'An example of a four-application service mesh can be visualized as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/B11641_11_002.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 11.2 – Example of a service mesh with four microservices and sidecar
+    proxies
+  prefs: []
+  type: TYPE_NORMAL
+- en: Here, each of our containerized applications has a corresponding sidecar proxy.
+    The application communicates with the proxy, which, in turn, communicates across
+    the service mesh with the other containerized services we are hosting. The application
+    does not know that the proxy exists and does not need any modifications to work
+    with the proxy. All the configuration can be done by wiring ports together using
+    the container orchestration system, in a way that is invisible to the application.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now, let's gets our hands dirty and get Envoy up and running.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Setting up Envoy
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Because of Envoy''s architecture, you have flexibility in terms of how you
+    can deploy the software:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Configured explicitly as a sidecar container, with a static configuration file,
+    alongside an application container
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Configured dynamically as part of a service mesh control plane, where the container
+    might be injected into a Kubernetes pod as a component, using software such as
+    Istio ([https://istio.io/](https://istio.io/)) or AWS App Mesh ([https://aws.amazon.com/app-mesh/](https://aws.amazon.com/app-mesh/))
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The second option offers additional power at the cost of adding major complexity.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Envoy sample configurations (see [https://www.envoyproxy.io/docs/envoy/latest/start/start#sandboxes](https://www.envoyproxy.io/docs/envoy/latest/start/start#sandboxes))
+    are all of the first variety, with explicit Envoy proxy configurations. To learn
+    about Envoy, it is simpler to consider the explicit configuration examples. The
+    version of ShipIt Clicker provided in this chapter has been modified so that you
+    can add an Envoy sidecar container using a static configuration file when it is
+    deployed in Kubernetes, with a minimalist approach that allows us to demonstrate
+    Envoy's features.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Configuring ShipIt Clicker for Envoy
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Now, let''s examine the specific changes that need to be made for Envoy to
+    be supported in ShipIt Clicker. The application JavaScript code does not require
+    any changes; all the changes are in the Helm Charts. See the Helm Charts in `chapter11/shipitclicker`
+    and compare them with the ones in `chapter10/shipitclicker`; you will see a new
+    Envoy sidecar container defined in `chapter11/shipitclicker/templates/deployment.yaml`,
+    configured with an image defined in `chapter11/shipitclicker/values.yml`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The preceding lines in the template launch the Envoy container using a configuration
+    file, `/etc/envoy-config/config.yaml`, defined in a ConfigMap. Envoy needs both
+    a port definition for its administrative interface and a port definition for each
+    service it manages or proxies:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We can query the administrative API to ensure that Envoy is both live and ready
+    to accept traffic, in accordance with Kubernetes best practices:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'To expose the configuration file to the container, we use a volume mount that
+    exposes the `config.yaml` file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `config.yaml` file is defined in `chapter11/shipitclicker/templates/configmap-envoy.yaml`
+    and has definitions for listeners and clusters for the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: An ingress proxy for the ShipIt Clicker container inside the pod
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: An egress proxy for the Redis Kubernetes service that can be reached at `redis-master`
+    in the cluster
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: An ingress proxy that allows Prometheus to scrape metrics from the Envoy sidecar
+    in the pod
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The ConfigMap for ShipIt Clicker in `chapter11/shipitclicker/templates/configmap.yaml`
+    has been modified so that it connects to `localhost:6379` for Redis, which Envoy
+    listens for and proxies out via a TCP L4 proxy to the Redis service. This listens
+    elsewhere in the cluster at `redis-master:6379`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Kubernetes service in `chapter11/shipitclicker/templates/service.yaml` now
+    calls the `envoy-http` port instead of directly calling the application container's
+    port.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Why not use the Envoy Redis protocol proxy?
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: The example files used here use a plain TCP proxy, instead of Envoy's Redis
+    protocol proxy (see [https://www.envoyproxy.io/docs/envoy/latest/api-v3/extensions/filters/network/redis_proxy/v3/redis_proxy.proto](https://www.envoyproxy.io/docs/envoy/latest/api-v3/extensions/filters/network/redis_proxy/v3/redis_proxy.proto)
+    and [https://github.com/envoyproxy/envoy/tree/master/examples/redis](https://github.com/envoyproxy/envoy/tree/master/examples/redis)).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This is because the ShipIt Clicker application has a Redis password authentication
+    set up that is not compatible with Envoy''s Redis proxy. ShipIt Clicker is set
+    up to use a password it retrieves from a Kubernetes Secret that the Bitnami Redis
+    Helm Chart stores. However, Envoy does not pass through this password; when configured
+    with the Redis protocol proxy, it emitted an error message stating `Warning: Redis
+    server does not require a password, but a password was supplied` when ShipIt Clicker
+    tried to authenticate. It turns out that if you use the Envoy Redis protocol support,
+    you must configure the proxy itself with password authentication for the client,
+    and optionally the server, through the configuration file stored in a ConfigMap.
+    However, the password that the Bitnami Redis server uses is only available as
+    a Kubernetes secret, so reworking the system to support this would add complexity.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: As an exercise, you could install Redis without a password and remove the password
+    from the configuration for ShipIt Clicker if you wanted to do this. If you did
+    this, you could also switch Redis implementations to the Bitnami Redis Cluster
+    Helm Chart (see [https://github.com/bitnami/charts/tree/master/bitnami/redis-cluster](https://github.com/bitnami/charts/tree/master/bitnami/redis-cluster)),
+    and then use the Envoy support for Redis clusters in order to implement the reader/writer
+    split pattern.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So far, we've seen how to deploy Envoy to create a service mesh. Next, we are
+    going to explore the circuit breaker pattern.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Configuring Envoy's support for the circuit breaker pattern
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The circuit breaker pattern is a mechanism that's used to configure thresholds
+    for failures. The goal here is to prevent cascading failures spreading across
+    your microservice platform and to stop continuous requests to a non-responsive
+    service.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Configuring the pattern on Envoy is relatively simple. We can configure circuit
+    breaking values as part of an Envoy cluster definition via the `circuit_breakers`
+    field.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To see how this works, examine the following ConfigMap file, which contains
+    a definition of a circuit breaker (`chapter11/shipitclicker/templates/configmap-envoy.yaml`):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This threshold definition specifies the maximum number of connections Envoy
+    will make and the maximum number of parallel requests. In our example, we have
+    a configuration for a default priority threshold and a second one for high priority
+    (used for HTTP 1.1) and the maximum number of requests (used for HTTP/2). If the
+    rate of traffic that Envoy detects exceeds these thresholds, it will throw an
+    error and deny the requests, without passing the request to the target service.
+    Notice that since we are using Helm Charts, we specify the actual values using
+    the Helm template variable substitution with the values coming from `chapter11/shipitclicker/values.yaml`
+    or one of the override mechanisms for Helm Chart values. The default values are
+    from a section of the `values.yaml` file that specifies Envoy-specific values:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: These default values are suitable for production for this application, but how
+    can we test that the circuit breaker works, without inducing a massive load? We
+    will show you how do that next.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Testing the Envoy circuit beaker
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'In order to test that the Envoy circuit breaker is working properly, we''ll
+    deploy ShipIt Clicker to the cloud Kubernetes cluster with an artificially lowered
+    request limit and perform a quick load test to verify that it works. Issue a Helm
+    `upgrade` command, followed by a `kubectl rollout restart` command, similar to
+    the following, to set the maximum simultaneous requests to `10` (replace `image.repository`
+    with your ECR repository reference):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Next, we''ll use Apache Bench to test the deployed application, starting with
+    a single concurrent request:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here, you can see that when run with only one concurrent request, all the requests
+    succeeded. Next, we''ll increase the concurrency to `50` simultaneous connections:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: If we set the concurrency to `50` simultaneous requests, many of them will fail
+    as the circuit breaker kicks in. We've already seen how to set up a basic circuit
+    breaker with two thresholds for our cluster. More advanced circuit breaker patterns
+    exist, including breaking on latency and retries. We'll leave you to explore this
+    further if you think your applications will need it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that you have tested the circuit breaker with low connection thresholds,
+    reset the thresholds to their original values and redeploy the application to
+    help set up the application for more load testing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If we had a good measurement of how much real user traffic each pod could handle
+    without failing, we could use this to set a better value for the circuit breaker.
+    However, Apache Bench is a blunt instrument that does not let us simulate a realistic
+    user load. For that, we need to use a more sophisticated load test framework.
+    Now, we'll take a look at how we can test scalability with k6, a Docker-based
+    load testing framework.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Testing scalability and performance with k6
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The k6 framework ([https://k6.io](https://k6.io)) is a programmable open source
+    load testing tool. We are going to show you how to use it to generate a more realistic
+    load pattern than you could generate using a simple load generator such as **Apache
+    Bench** (**ab**).
+  prefs: []
+  type: TYPE_NORMAL
+- en: This framework is quite simple to set up and use thanks to its Docker image,
+    which is available on Docker Hub. You can find the Quick Start instructions at
+    [https://k6.io/docs/getting-started/running-k6](https://k6.io/docs/getting-started/running-k6).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To create a load test using k6, you need to use JavaScript using k6''s library
+    routines. To perform a smoke test, your script would need to look something like
+    this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: This script is roughly equivalent to using the `ab` utility to stress test a
+    web server. Create a file called `hello.js` using the preceding source code, replacing
+    `shipit-v8.eks.example.com` with the fully qualified domain name of one of your
+    websites.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Following Docker best practices, you should ensure that you add the `--rm`
+    flag to the Docker command line so that you do not accumulate stale containers
+    in your local installation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: This will run k6 and retrieve the URL specified in `hello.js`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'There are just a few key concepts you must know about:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: You must provide a default function.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: K6 is *not* Node.js. It has no event loop.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Your default function is known as a **Virtual User (VU)**.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Code defined outside of the default function is evaluated once, on program startup.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The default function is run repeatedly until the test is over.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: You can run your test with as many VUs as you want, and for as long as you want.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Note
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: There are many command-line options you can use with k6 to ramp up and down
+    VUs over time, as well as to specify how long to run the test and how many VUs
+    to simulate. The defaults have only one VU, and only one test iteration.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'Let''s use some of those options to run the test with more users and for a
+    longer duration:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: Running k6 like this will perform a load test almost identical to an Apache
+    Bench load test, with a concurrency of `50` and a duration of `30` seconds.
+  prefs: []
+  type: TYPE_NORMAL
+- en: However, since you have the full power of JavaScript available, you can write
+    more nuanced load tests using a variety of strategies.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Recording and replaying network sessions
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: An alternative to writing a script such as `hello.js` by hand is to use a record-and-replay
+    strategy. Many load testing frameworks support this paradigm, including k6\. To
+    do this, use the Chrome browser and its **Inspect** feature. You can use the debugger's
+    **Network** tab to capture and save network traffic to and from the application's
+    backend.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You start with an empty (cleared) network history in the debugger. Then, you
+    load and play the game. Each click will cause API requests to occur between the
+    application running in the browser and the backend.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'When you are satisfied with your recording, right-click on the **Network**
+    pane and choose **copy all as HAR**. This puts the HAR-formatted text in the system
+    clipboard:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/B11641_11_003.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 11.3 – Google Chrome inspector debugging console – Copy all as HAR
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Paste from the clipboard into a file named `chapter11/src/test/k6/session.har`.
+    Then, run a conversion script to transform the HAR file into a JavaScript file
+    at `chapter11/src/test/k6/har-session.js`, and run another shell script that will
+    run k6 via Docker with the right arguments to initiate a one-user, 60-second test:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `k6-run-har.sh` script is set up to use environment variables that override
+    the VUs with the `USERS` variable, and to override the test duration with the
+    `DURATION` variable. So, you can prefix the script with those variables like this
+    and run a 10-user test for `300` seconds:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'There are some wrinkles to note about using this playback and record strategy,
+    though: the process is quite literal, and results in a file that has no delays
+    between requests. Running the test will induce a large, machine-speed load on
+    the target service. There is no randomization of the delays that should happen
+    between requests, which is something you want to do in order to closely model
+    the load that a real user''s session would put on a service.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: To create a more realistic test, we are going to have to do some JavaScript
+    programming.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Hand-crafting a more realistic load test
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In the `chapter11/src/tests/k6/` directory, there is a `test.js` script designed
+    to realistically test ShipIt Clicker, whether it's deployed locally or in the
+    cloud.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This script mimics a human playing the game by using these strategies:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Fetches the HTML, stylesheets, images, and JavaScript files that make up the
+    application
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Performs HTTP post to start a new game
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Gets the initial score, deployments, and `nextPurchase` values
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Attempts to simulate the click stream a human player would make
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The HTTP requests were identified by playing the game in a web browser such
+    as Google Chrome, using its **Inspect** feature, and viewing the **Network** tab
+    as the game loads and is played. Then, we wrote a test that simulated the series
+    of requests in a way that is closely modeled after real user behavior, including
+    having realistic random delays.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s examine the code in `chapter11/src/test/k6/test.js`. Here, we import
+    the `http` class and the `sleep()` method from the k6 supplied libraries:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We pass parameters to the `test.js` script as environment variables:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `DEBUG` environment variable lets us trigger more verbose logging.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The `MOVES` environment variable contains the number of moves per game.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The `TARGET` environment variable would be something like `http://192.2.0.10:3011`
+    for `localhost` development, where `192.2.0.10` is the IPv4 LAN address of your
+    workstation.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'These parameters get retrieved from the `__ENV` object, as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `ENDPOINTS` array gets used to iterate through the three main elements
+    that the game tracks:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `deploy()` method simulates a human clicking on the `http.patch()` twice
+    – once to update the deployment count and once to update the score:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This function also updates the score:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `validate()` method that the `deploy()` method calls simply verifies that
+    the server returns a valid response:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `getStaticAssets()` method simulates the user''s browser fetching the HTML,
+    CSS, images, and JavaScript that make up the game:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `getGameId()` method simulates the start of a new game:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `getScores()` method retrieves the existing scores using the `map` functional
+    programming technique to both iterate over the endpoints and to run a validation
+    function on the HTTP response:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE38]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The `putScores()` method is used to reset all the game scores, such as when
+    a new game begins:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE39]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The default function is the one that k6 loops through for each virtual user:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE40]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'After this function loads the static assets, it sleeps for a random delay to
+    simulate a user waiting at the splash screen:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE41]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'After another delay, when simulating the user seeing the game screen, the test
+    program enters a loop where it starts rapidly simulating clicks:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE42]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Notice that we use a randomly generated delay between moves with a Gaussian
+    distribution that has a mean of `125` milliseconds and a standard deviation of
+    `25` milliseconds. This simulates clicking at about 8 clicks/second, which is
+    the rate we measured when playing ShipIt Clicker on an iPhone – in 1 minute, we
+    recorded 480 clicks:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE43]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `default` function that's used for each virtual user fetches the same URLs
+    that a user's browser would fetch on first page load. Note all the random delays
+    that realistically simulate the delays that a real user would make. In a tight
+    loop, the test simulates the user clicking as fast as a human would. The delay
+    between clicks is subtly randomized using a random number with a normal distribution
+    to simulate the fact that a human cannot click with robotic precision.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `chapter11/bin/k6-run.sh` script runs the test using the same environment
+    variable pattern override that the `k6-har-run.sh` script did, but with more variables.
+    It allows you to set these parameters:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`USERS`: Number of users'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`DURATION`: Duration in seconds'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`MOVES`: Number of moves in a game'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`STAGES`: Specify a set of k6 stages, which can vary VUs over time'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The script requires a command-line argument, which is the URL target for the
+    test. As mentioned earlier, this might be something like `http://192.2.0.10:80/`
+    to test against the application infrastructure deployed on your workstation. Or,
+    it could be the application as it was deployed to your cluster in the cloud, such
+    as [https://shipit-v8.eks.shipitclicker.com/](https://shipit-v8.eks.shipitclicker.com/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Running a stress test
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'In order to run a stress test, you want to ramp up the amount of load on an
+    application until it starts showing signs of failing. We can try doing that using
+    the `script.js` k6 program and the `k6-run.sh` test harness. The key element that
+    we must specify is the `STAGES` parameter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE44]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'You will likely find that with the default settings of two pods, this initial
+    test will not show any signs of failure. You can use the `kubectl` command, plus
+    Prometheus, Grafana, and Jaeger to monitor the test progress, plus the CPU and
+    memory utilization in the cluster, as described in the previous chapter. For example,
+    here is a screenshot of Grafana after the preceding load test:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/B11641_11_004.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 11.4 – The Grafana dashboard showing the rate of ShipIt Clicker deployments
+    during the load test
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In order to get this deployment to fail during the stress test, we don''t want
+    it to automatically scale out. So, we will delete the Horizontal Pod Autoscaler:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE45]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We also want to stress test a single pod in order to see how much it can take,
+    so we will shrink the number of replicas in the deployment to only `1`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE46]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'At this point, we can rerun the stress test using the preceding `k9-run.sh`
+    command. Watch the output. You will probably see some failed requests, which should
+    be logged in the k9 output with a warning that looks something like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE47]'
+  prefs: []
+  type: TYPE_PRE
+- en: Once we are done stress testing, we can recreate the Horizontal Pod Autoscaler
+    and reset the number of replicas for the deployment to a higher number.
+  prefs: []
+  type: TYPE_NORMAL
+- en: At this point, we've learned how to use k6 to create a realistic load test and
+    used it to perform a stress test of ShipIt Clicker.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we explored the topic of scaling out clusters in Kubernetes
+    by using the Cluster Autoscaler and the Horizontal Pod Autoscaler. We then explored
+    the topic of service meshes and set up a minimalistic Envoy service mesh in order
+    to provide proxying and transparent network communications for complex microservice
+    architectures.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Following this, we looked at how we could use the circuit breaker pattern to
+    prevent a service from becoming overwhelmed by traffic. Then, we used connection
+    thresholds to test that the circuit breaker worked, in conjunction with a simple
+    load test technique, using Docker and Apache Bench. After this, we learned about
+    progressively more sophisticated load testing techniques when using k6, including
+    both record-and-playback and detailed hand-crafted load tests designed to mimic
+    real user behavior.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This brings us to the end of our *Running Containers in Production* section
+    of this book. We're going to move on and look at security next. Here, we will
+    learn how to apply some techniques to the projects and skills we have developed
+    so far in this book to improve our container security posture. So, let's move
+    on to [*Chapter 12*](B11641_12_Final_NM_ePub.xhtml#_idTextAnchor278), *Introduction
+    to Container Security*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Further reading
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Use the following resources to expand your knowledge of autoscaling, the Envoy
+    service mesh, and load testing:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Envoy presentation from Lyft: [https://www.slideshare.net/datawire/lyfts-envoy-from-monolith-to-service-mesh-matt-klein-lyft](https://www.slideshare.net/datawire/lyfts-envoy-from-monolith-to-service-mesh-matt-klein-lyft).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*Performance Remediation Using New Relic and JMeter*, a three-part article
+    series by the *Docker for Developers* co-author Richard Bullington-McGuire. This
+    covers load testing and performance improvement basics. You can adapt these techniques
+    to Kubernetes using Prometheus, Grafana, Jaeger, and k6.io: [https://moduscreate.com/blog/performance-remediation-using-new-relic-jmeter-part-1-3/](https://moduscreate.com/blog/performance-remediation-using-new-relic-jmeter-part-1-3/).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Using a Network Load Balancer with the NGINX Ingress Controller on Amazon EKS
+    – an economical and flexible alternative to using the ALB Ingress Controller for
+    many scenarios: [https://aws.amazon.com/blogs/opensource/network-load-balancer-nginx-ingress-controller-eks/](https://aws.amazon.com/blogs/opensource/network-load-balancer-nginx-ingress-controller-eks/).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*Kubernetes Autoscaling 101: Cluster Autoscaler, Horizontal Pod Autoscaler,
+    and Vertical Pod Autoscaler*: [https://levelup.gitconnected.com/kubernetes-autoscaling-101-cluster-autoscaler-horizontal-pod-autoscaler-and-vertical-pod-2a441d9ad231](https://levelup.gitconnected.com/kubernetes-autoscaling-101-cluster-autoscaler-horizontal-pod-autoscaler-and-vertical-pod-2a441d9ad231).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Velero to backup and restore your Kubernetes cluster. Backup and restore your
+    entire cluster, a namespace, or objects, filtered by tags: [https://velero.io/](https://velero.io/).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Expose Envoy Prometheus metrics as `/metrics`. See this issue for the workaround
+    that''s integrated into ShipIt Clicker''s Envoy configuration that lets you expose
+    Envoy''s metrics to the Prometheus metrics scraper by adding an additional Envoy
+    mapping: [https://github.com/prometheus/prometheus/issues/3756](https://github.com/prometheus/prometheus/issues/3756).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Microservicing with Envoy, Istio, and Kubernetes: [https://thenewstack.io/microservicing-with-envoy-istio-and-kubernetes/](https://thenewstack.io/microservicing-with-envoy-istio-and-kubernetes/).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Jaeger Native Tracing with Envoy – an advanced tracing strategy: [https://www.envoyproxy.io/docs/envoy/latest/start/sandboxes/jaeger_native_tracing](https://www.envoyproxy.io/docs/envoy/latest/start/sandboxes/jaeger_native_tracing).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Redis with Envoy Cheatsheet – setting up Redis and Envoy using TLS and Redis
+    Auth: [https://blog.salrashid.me/posts/redis_envoy/](https://blog.salrashid.me/posts/redis_envoy/).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*Introduction to Modern Network Load Balancing and Proxying*, from Lyft''s
+    Matt Klein: [https://blog.envoyproxy.io/introduction-to-modern-network-load-balancing-and-proxying-a57f6ff80236](https://blog.envoyproxy.io/introduction-to-modern-network-load-balancing-and-proxying-a57f6ff80236).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*Matt Klein on the Success of Envoy and the Future of the Service Mesh*: [https://thenewstack.io/matt-klein-on-the-success-of-envoy-and-the-future-of-the-service-mesh/](https://thenewstack.io/matt-klein-on-the-success-of-envoy-and-the-future-of-the-service-mesh/).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*Cost Optimization for Kubernetes on AWS*. Once you get a handle on scaling,
+    the next step is to reduce costs. The EKS cluster might cost between $10-20 per
+    day to run with the defaults given in the AWS EKS Quick Start CloudFormation templates:
+    [https://aws.amazon.com/blogs/containers/cost-optimization-for-kubernetes-on-aws/](https://aws.amazon.com/blogs/containers/cost-optimization-for-kubernetes-on-aws/).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL

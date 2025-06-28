@@ -1,0 +1,1785 @@
+- en: '12'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Shipping Logs and Monitoring Containers
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In the previous chapter, we introduced the Docker Compose tool. We learned that
+    this tool is mostly used to run and scale multi-service applications on a single
+    Docker host. Typically, developers and CI servers work with single hosts and they
+    are the main users of Docker Compose. We saw that the tool uses YAML files as
+    input, which contain the description of the application in a declarative way.
+    We investigated many useful tasks the tool can be used for, such as building and
+    pushing images, to just name the most important ones.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This chapter discusses why logging and monitoring are so important and shows
+    how container logs can be collected and shipped to a central location where the
+    aggregated log can then be parsed for useful information.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You will also learn how to instrument an application so that it exposes metrics
+    and how those metrics can be scraped and shipped again to a central location.
+    Finally, you will learn how to convert those collected metrics into graphical
+    dashboards that can be used to monitor a containerized application.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We will be using Filebeat as an example to collect logs from a default location
+    where Docker directs the logs at `/var/lib/docker/containers`. This is straightforward
+    on Linux. Luckily, on a production or production-like system, we mostly find Linux
+    as the OS of choice.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Collecting metrics on a Windows or Mac machine, on the other hand, is a bit
+    more involved than on a Linux machine. Thus, we will generate a special Docker
+    Compose stack, including Filebeat, that can run on a Mac or Windows computer by
+    using the workaround of redirecting the standard log output to a file whose parent
+    folder is mapped to a Docker volume. This volume is then mounted to Filebeat,
+    which, in turn, forwards the logs to Elasticsearch.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This chapter covers the following topics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Why is logging and monitoring important?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Shipping container and Docker daemon logs
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Querying a centralized log
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Collecting and scraping metrics
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Monitoring a containerized application
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'After reading this chapter, you should be able to do the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Define a log driver for your containers
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Install an agent to collect and ship your container and Docker daemon logs
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Execute simple queries in the aggregate log to pinpoint interesting information
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Instrument your application services so that they expose infrastructure and
+    business metrics
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Convert the collected metrics into dashboards to monitor your containers
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The code accompanying this chapter can be found at [https://github.com/PacktPublishing/The-Ultimate-Docker-Container-Book/tree/main/sample-solutions/ch12](https://github.com/PacktPublishing/The-Ultimate-Docker-Container-Book/tree/main/sample-solutions/ch12).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Before we start, let’s make sure you have a folder ready for the code you are
+    going to implement in this chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Navigate to the folder where you cloned the code repository that accompanies
+    this book. Normally, this is the `The-Ultimate-Docker-Container-Book` folder in
+    your `home` folder:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Create a subfolder called `ch12` and navigate to it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: Without further ado, let’s dive into the first topic of shipping containers
+    and daemon logs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Why is logging and monitoring important?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: When working with a distributed mission-critical application in production or
+    any production-like environment, it is of utmost importance to gain as much insight
+    as possible into the inner workings of those applications. Have you ever had a
+    chance to investigate the cockpit of an airplane or the command center of a nuclear
+    power plant? Both, an airplane and a power plant are examples of highly complex
+    systems that deliver mission-critical services. If a plane crashes or a power
+    plant shuts down unexpectedly, a lot of people are negatively affected, to say
+    the least. Thus, the cockpit and the command center are full of instruments showing
+    the current or past state of some parts of the system. What you see there is the
+    visual representation of some sensors that are placed in strategic parts of the
+    system and constantly collect data such as the temperature or the flow rate.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Similar to an airplane or a power plant, our application needs to be instrumented
+    with “sensors” that can feel the “temperature” of our application services or
+    the infrastructure they run on. I put the word temperature in double quotes since
+    it is only a placeholder for things that matter in an application, such as the
+    number of requests per second on a given RESTful endpoint, or the average latency
+    of requests to the same endpoint.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The resulting values or readings that we collect, such as the average latency
+    of requests, are often called **metrics**. It should be our goal to expose as
+    many meaningful metrics as possible of the application services we build. Metrics
+    can be both functional and non-functional. Functional metrics are values that
+    say something business-relevant about the application service, such as how many
+    checkouts are performed per minute if the service is part of an e-commerce application,
+    or what are the 5 most popular songs over the last 24 hours if we are talking
+    about a streaming application.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Non-functional metrics are important values that are not specific to the kind
+    of business the application is used for, such as the average latency of a particular
+    web request, how many 4xx status codes are returned per minute by another endpoint,
+    or how much RAM or how many CPU cycles a given service is consuming.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In a distributed system where each part is exposing metrics, some overarching
+    service should be collecting and aggregating the values periodically from each
+    component. Alternatively, each component should forward its metrics to a central
+    metrics server. Only if the metrics for all components of our highly distributed
+    system are available for inspection in a central location are they of any value.
+    Otherwise, monitoring the system becomes impossible. That’s why pilots of an airplane
+    never have to go and inspect individual and critical parts of the airplane in
+    person during a flight; all necessary readings are collected and displayed in
+    the cockpit.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Today, one of the most popular services that is used to expose, collect, and
+    store metrics is **Prometheus**. It is an open source project and has been donated
+    to the **Cloud Native Computing Foundation** (**CNCF**). Prometheus has first-class
+    integration with Docker containers, Kubernetes, and many other systems and programming
+    platforms. In this chapter, we will use Prometheus to demonstrate how to instrument
+    a simple service that exposes important metrics.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next section, we are going to show you how to ship containers and Docker
+    daemon logs to a central location.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Shipping containers and Docker daemon logs
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'In the world of containerization, understanding the logs generated by your
+    Docker environment is crucial for maintaining a healthy and well-functioning system.
+    This section will provide an overview of two key types of logs you will encounter:
+    shipping **container logs** and **Docker** **daemon logs**.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Shipping container logs
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: As applications run within containers, they generate log messages that provide
+    valuable insights into their performance and any potential problems.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Container logs can be accessed using the `docker logs` command, followed by
+    the container’s ID or name. These logs can help developers and system administrators
+    diagnose issues, monitor container activities, and ensure the smooth operation
+    of deployed applications. Centralizing and analyzing container logs is essential
+    for optimizing resource usage, identifying performance bottlenecks, and troubleshooting
+    application issues.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Some best practices for managing shipping container logs include the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Configuring log rotation and retention policies to prevent excessive disk space
+    usage
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Using a log management system to centralize logs from multiple containers
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Setting up log filtering and alerting mechanisms to identify critical events
+    and anomalies
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Let’s look at these recommendations in detail, starting with log rotation and
+    retention policies.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Configuring log rotation and retention policies
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Configuring log rotation and retention policies for container logs is essential
+    for preventing excessive disk space usage and maintaining optimal performance.
+    Here’s a step-by-step guide on how to set up these policies for Docker container
+    logs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Configuring the logging driver
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: Docker supports various logging drivers, such as `json-file`, `syslog`, `journald`,
+    and more. To configure the logging driver, you can either set it up globally for
+    the entire Docker daemon or individually for each container. For this example,
+    we’ll use the `json-file` logging driver, which is the default driver for Docker.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Globally setting the log driver
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: 'To set the logging driver globally, edit the `/etc/docker/daemon.json` configuration
+    file (create it if it doesn’t exist) and do the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Open the dashboard of Docker Desktop and navigate to **Settings**, then **Docker
+    Engine**. You should see something similar to this:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 12.1 – Configuration of the Docker daemon](img/B19199_12_01.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 12.1 – Configuration of the Docker daemon
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Analyze the existing configuration and add the following key-value pair to
+    it, if not present already:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Here, the (shortened) result will look like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: Restart the Docker daemon to apply the changes.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Locally setting the log driver
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: 'If you prefer to set the logging driver for an individual container instead
+    of globally, then use the `--log-driver` option when starting the container:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now, let’s learn how to specify log rotation and retention policies.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Setting log rotation and retention policies
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: 'We can configure log rotation and retention policies by specifying the `max-size`
+    and `max-file` options for the logging driver:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`max-size`: This option limits the size of each log file. When a log file reaches
+    the specified size, Docker creates a new file and starts logging into it. For
+    example, to limit each log file to 10 MB, set `max-size=10m`.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`max-file`: This option limits the number of log files to keep. When the limit
+    is reached, Docker removes the oldest log file. For example, to keep only the
+    last five log files, set `max-file=5`.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'To set these options globally, add them to the `/etc/docker/daemon.json` configuration
+    file. We can add the `log-opts` section to the daemon configuration right after
+    the `log-driver` node that we added earlier:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: We suggest that you modify the daemon configuration once again via the dashboard
+    of Docker Desktop. Once you have modified the configuration, restart the Docker
+    daemon to apply the changes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To set these options for an individual container, use the `--log-opt` option
+    when starting the container:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: By configuring log rotation and retention policies, you can prevent excessive
+    disk space usage and maintain a well-functioning Docker environment. Remember
+    to choose appropriate values for `max-size` and `max-file` based on your specific
+    use case and storage capacity.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using a log management system
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Using a log management system to centralize logs from multiple containers is
+    essential for efficient monitoring and troubleshooting in a Docker environment.
+    This allows you to aggregate logs from all containers, analyze them in one place,
+    and identify patterns or issues. In this chapter, we’ll use the **Elasticsearch,
+    Logstash, and Kibana** (**ELK**) Stack as an example log management system.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The ELK Stack
+  prefs: []
+  type: TYPE_NORMAL
+- en: The ELK Stack, also known as the Elastic Stack, is a collection of open source
+    software products that facilitate the ingestion, storage, processing, searching,
+    and visualization of large volumes of data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: ELK is an acronym that stands for Elasticsearch, Logstash, and Kibana, which
+    are the main components of the stack.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Elasticsearch**: Elasticsearch is a distributed, RESTful search and analytics
+    engine built on top of Apache Lucene. It provides a scalable and near real-time
+    search platform with powerful full-text search capabilities, as well as support
+    for aggregations and analytics. Elasticsearch is commonly used for log and event
+    data analysis, application search, and various other use cases that require high-performance
+    searching and indexing capabilities.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Logstash**: Logstash is a flexible, server-side data processing pipeline
+    that ingests, processes, and forwards data to various outputs, including Elasticsearch.
+    Logstash supports multiple input sources, such as log files, databases, and message
+    queues, and can transform and enrich data using filters before forwarding it.
+    Logstash is often used to collect and normalize logs and events from various sources,
+    making it easier to analyze and visualize the data in Elasticsearch.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Kibana**: Kibana is a web-based data visualization and exploration tool that
+    provides a user interface for interacting with Elasticsearch data. Kibana offers
+    various visualization types, such as bar charts, line charts, pie charts, and
+    maps, as well as support for creating custom dashboards to display and analyze
+    data. Kibana also includes features such as Dev Tools for Elasticsearch query
+    testing, monitoring, and alerting capabilities, and machine learning integration.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note that the following description applies to a Linux system. If you happen
+    to be one of the lucky people running Linux natively on your developer machine,
+    then go for it and start right away with *Step 1 – setting up the ELK Stack* *on
+    Linux*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If, on the other hand, you are using a Mac or Windows machine for work, then
+    we have created some step-by-step instructions on how to test the setup. Of special
+    notice is *Step 2 – installing and configuring Filebeat*. See the part that matches
+    your setup and give it a try.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Step 1 – setting up the ELK Stack on Linux
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: 'Deploy ELK using Docker containers or install them directly on your system.
+    For detailed instructions, refer to the official ELK Stack documentation: [https://www.elastic.co/guide/index.xhtml](https://www.elastic.co/guide/index.xhtml).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Ensure that Elasticsearch and Kibana are properly configured and running. Verify
+    this by accessing the Kibana dashboard through a web browser.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Step 2 – installing and configuring Filebeat
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: 'Filebeat is a lightweight log shipper that forwards logs from your Docker containers
+    to the ELK Stack. Install Filebeat on the Docker host machine and configure it
+    to collect container logs:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Install Filebeat using the official installation guide for your specific operating
+    system. You can find the docs here: [https://www.elastic.co/guide/en/beats/filebeat/current/filebeat-installation-configuration.xhtml](https://www.elastic.co/guide/en/beats/filebeat/current/filebeat-installation-configuration.xhtml).'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Configure Filebeat by editing the `filebeat.yml` configuration file (usually
+    located in `/etc/filebeat` on Linux systems). Add the following configuration
+    to collect Docker container logs:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Set up the output to forward logs to Elasticsearch. Replace `<elasticsearch_host>`
+    and `<elasticsearch_port>` with the appropriate values:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Save the configuration file and start Filebeat:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Note that this setup is strictly for Linux systems. On Mac or Windows, the situation
+    is slightly more complicated given the fact that Docker runs in a VM on both systems
+    and, as such, accessing the Docker logs that live inside this VM is slightly more
+    involved. Please consult the documentation if you want to install Filebeat natively
+    on your Mac or Windows machine as this is outside the scope of this book.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Alternatively, we can run Filebeat in a container, side by side with the ELK
+    Stack.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here is a complete Docker Compose file that will run the ELK Stack and Filebeat
+    on a Linux computer:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 12.2 – Docker Compose file for the ELK Stack and Filebeat](img/B19199_12_02.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 12.2 – Docker Compose file for the ELK Stack and Filebeat
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we have learned how to run Filebeat on a Linux computer or server,
+    we want to show how Filebeat can be used on a Mac or Windows computer, which is
+    important during development.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Running the sample on a Mac or Windows computer
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: The preceding example will not run on a Mac or Windows computer since Docker
+    is transparently running inside a VM and thus the Docker log files will not be
+    found at `/var/lib/docker/containers`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We can navigate around this problem by using a workaround: we can configure
+    all our containers to write their respective logs into a file that is part of
+    a Docker volume. Then, we can mount that volume into the Filebeat container instead
+    of what we did on line 44 of the preceding Docker Compose file.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here is a sample that uses a simple Node.js/Express.js application to demonstrate
+    this. Please follow these steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Create a folder called `mac-or-windows` in your `ch12` chapter folder.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Inside this folder, create a subfolder called `app` and navigate to it.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Inside the `app` folder, initialize the Node.js application with the following
+    command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Accept all the defaults.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Install Express.js with the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Modify the `package.json` file and add a script called `start` with its value
+    set to `node index.js`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Add a file called `index.js` to the folder with the following content:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 12.3 – The index.js application file](img/B19199_12_03.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 12.3 – The index.js application file
+  prefs: []
+  type: TYPE_NORMAL
+- en: This simple Express.js application has two routes, `/` and `/test`. It also
+    has middleware to log incoming requests and logs when handling specific routes
+    or a `404 Not` `Found` error.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Add a script file called `entrypoint.sh` to the folder with this content:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 12.4 – The entrypoint.sh file for the sample application](img/B19199_12_04.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 12.4 – The entrypoint.sh file for the sample application
+  prefs: []
+  type: TYPE_NORMAL
+- en: This script will be used to run our sample application and redirect its logs
+    to the specified `LOGGING_FILE`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Make the preceding file executable with the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Add a Dockerfile to the folder with this content:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 12.5 – The Dockerfile for the sample application](img/B19199_12_05.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 12.5 – The Dockerfile for the sample application
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Add a file called `docker-compose.yml` to the `mac-or-windows` folder with
+    this content:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 12.6 – Docker Compose file for the Mac or Windows use case](img/B19199_12_06.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 12.6 – Docker Compose file for the Mac or Windows use case
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note the environment variable on line 9, which defines the name and location
+    of the log file generated by the Node.js/Express.js application. Also, note the
+    volume mapping on line 11, which will make sure the log file is funneled to the
+    Docker `app_logs` volume. This volume is then mounted to the `filebeat` container
+    on line 25\. This way, we make sure Filebeat can collect the logs and forward
+    them to Kibana.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Also, add a file called `filebeat.yml` to the `mac-or-windows` folder that
+    contains the following configuration for Filebeat:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 12.7 – Configuration for Filebeat on Mac or Windows](img/B19199_12_07.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 12.7 – Configuration for Filebeat on Mac or Windows
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'From within the folder where the `docker-compose.yml` file is located, build
+    the Node.js application image with the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Now, you are ready to run the stack, like so:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Use a REST client to access the `http://localhost:3000` and `http://localhost:3000/test`
+    endpoints a few times to have the application generate a few log outputs.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Now, we are ready to explore the collected logs centrally in Kibana.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Step 3 – visualizing logs in Kibana
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: Access the Kibana dashboard through a web browser at `http://localhost:5601`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For more details, refer to the *Querying a centralized log* section later in
+    this chapter. Here is a quick rundown.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Go to the `filebeat-*`) to start analyzing the collected logs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Navigate to the **Discover** section to search, filter, and visualize the logs
+    from your Docker containers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Once you have configured your Kibana dashboard, you should see something like
+    this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 12.8 – Application logs in Kibana provided by Filebeat](img/B19199_12_08.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 12.8 – Application logs in Kibana provided by Filebeat
+  prefs: []
+  type: TYPE_NORMAL
+- en: By following these steps, you’ll have a centralized log management system that
+    aggregates logs from multiple Docker containers, allowing you to analyze and monitor
+    your containerized applications efficiently. Note that there are other log management
+    systems and log shippers available, such as Splunk, Graylog, and Fluentd. The
+    process of setting up these systems will be similar but may require different
+    configuration steps.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Setting up log filtering and alerting mechanisms
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Setting up log filtering and alerting mechanisms helps you focus on important
+    log messages, minimize noise, and respond to potential issues proactively. Here,
+    we will use the ELK Stack along with the ElastAlert plugin to demonstrate log
+    filtering and alerting.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Step 1 – setting up the Elastic Stack
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: First, follow the instructions provided in the *Setting up the ELK Stack* section
+    to set up the Elastic Stack for centralized logging. This includes running Elasticsearch,
+    Logstash, and Kibana in Docker containers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Step 2 – setting up log filtering with Logstash
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: 'Configure Logstash to filter logs based on specific conditions, such as log
+    levels, keywords, or patterns. Update your `logstash.conf` file with appropriate
+    filters in the `filter` section. For example, to filter logs based on log level,
+    you can use the following configuration:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This configuration checks whether the log level is `ERROR` and adds a tag of
+    `error` to the log event. Restart the Logstash container to apply the new configuration:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: Step 3 – setting up ElastAlert for alerting
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: 'ElastAlert is a simple framework for alerting anomalies, spikes, or other patterns
+    of interest found in data stored in Elasticsearch. Let’s set it up:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Clone the ElastAlert repository and navigate to the ElastAlert directory:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Install ElastAlert:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Create a configuration file for ElastAlert, `config.yaml`, and update it with
+    the following contents:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Create a `rules` directory and define your alerting rules. For example, to
+    create an alert for logs with the `error` tag, create a file called `error_logs.yaml`
+    in the `rules` directory with the following contents:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: This rule triggers an email alert if there is at least one log event with the
+    `error` tag within a 1-minute timeframe.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Start ElastAlert:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Now, ElastAlert will monitor the Elasticsearch data based on your defined rules
+    and send alerts when the conditions are met.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Step 4 – monitoring and responding to alerts
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: With log filtering and alerting mechanisms in place, you can focus on critical
+    log messages and respond to potential issues proactively. Monitor your email or
+    other configured notification channels for alerts and investigate the root causes
+    to improve your application’s reliability and performance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Keep refining your Logstash filters and ElastAlert rules to minimize noise,
+    detect important log patterns, and respond to potential issues more effectively.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next section, we will discuss how to ship Docker daemon logs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Shipping Docker daemon logs
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Docker daemon logs pertain to the overall functioning of the Docker platform.
+    The Docker daemon is responsible for managing all Docker containers, and its logs
+    record system-wide events and messages. These logs help in identifying issues
+    related to the Docker daemon itself, such as networking problems, resource allocation
+    errors, and container orchestration challenges.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Depending on the operating system, the location and configuration of Docker
+    daemon logs may differ. For instance, on a Linux system, daemon logs are usually
+    found in `/var/log/docker.log`, while on Windows, they are located in `%programdata%\docker\logs\daemon.log`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: Daemon logs on Mac will be covered in the next section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To effectively manage Docker daemon logs, consider the following best practices:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Regularly review daemon logs to identify potential issues and anomalies
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Set up log rotation and retention policies to manage disk space usage
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Use a log management system to centralize and analyze logs for better visibility
+    into the overall Docker environment
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: In conclusion, both shipping containers and Docker daemon logs play vital roles
+    in monitoring and maintaining a healthy Docker environment. By effectively managing
+    these logs, system administrators and developers can ensure optimal performance,
+    minimize downtime, and resolve issues promptly.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Docker daemon logs on Mac
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'On a Mac with Docker Desktop installed, you can view the Docker daemon logs
+    using the `log stream` command provided by the macOS log utility. Follow these
+    steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Open the Terminal application.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Run the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: This command will display a real-time stream of logs related to Docker Desktop,
+    including the Docker daemon logs. You can stop the stream by pressing *Ctrl* +
+    *C*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Alternatively, you can use the following command to view the Docker daemon
+    logs in a file format:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: This command will create a file named `docker_daemon_logs.log` in the current
+    directory, containing the Docker daemon logs from the last 1 day. You can change
+    the `--last 1d` option to specify a different time range (for example, `--last
+    2h` for the last 2 hours). Open the `docker_daemon_logs.log` file with any text
+    editor to view the logs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Please note that you may need administrator privileges to execute these commands.
+    If you encounter permission issues, prepend the commands with `sudo`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Docker daemon logs on a Windows computer
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'On a Windows 11 machine with Docker Desktop installed, the Docker daemon logs
+    are stored as text files. You can access these logs by following these steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Open File Explorer.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Navigate to the following directory:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: In this directory, you’ll find the `DockerDesktopVM.log` file, which contains
+    the Docker daemon logs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Open the `DockerDesktopVM.log` file with any text editor to view the logs.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Please note that the `C:\ProgramData` folder might be hidden by default. To
+    display hidden folders in File Explorer, click on the **View** tab and check the
+    **Hidden** **items** checkbox.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Alternatively, you can use PowerShell to read the logs:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Open PowerShell.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Execute the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: This command will display the last 50 lines of the Docker daemon log file. You
+    can change the number after `-Tail` to display a different number of lines.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next, we are going to learn how to query a centralized log.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Querying a centralized log
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Once your containerized application logs have been collected and stored in the
+    ELK Stack, you can query the centralized logs using Elasticsearch's Query **Domain
+    Specific Language** (**DSL**) and visualize the results in Kibana.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Step 1 – accessing Kibana
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Kibana provides a user-friendly interface for querying and visualizing Elasticsearch
+    data. In the provided `docker-compose.yml` file, Kibana can be accessed on port
+    `5601`. Open your browser and navigate to `http://localhost:5601`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Step 2 – setting up an index pattern
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Before you can query the logs, you need to create an index pattern in Kibana
+    to identify the Elasticsearch indices containing the log data. Follow these steps
+    to create an index pattern:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The first time you access Kibana, you will be asked to add integrations. You
+    can safely ignore this as we are using Filebeat to ship the logs.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Instead, locate the “hamburger menu” in the top left of the view and click it.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Locate the **Management** tab in the left-hand navigation menu and select **Stack
+    Management**:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 12.9 – The Management tab in Kibana](img/B19199_12_09.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 12.9 – The Management tab in Kibana
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Under the **Kibana** section, click **Index Patterns**:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 12.10 – The Index Patterns entry of Kibana](img/B19199_12_10.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 12.10 – The Index Patterns entry of Kibana
+  prefs: []
+  type: TYPE_NORMAL
+- en: Click the **Create index** **pattern** button.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Enter the index pattern that matches your Logstash indices. For example, if
+    your Logstash configuration uses the `logstash-%{+YYYY.MM.dd}` index pattern,
+    enter `logstash-*` in the **Name** field.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: In the `@``timestamp` field.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Click **Create** **index pattern**.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Now, we are ready to query our container logs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Step 3 – querying the logs in Kibana
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Now, you’re ready to query the logs using Kibana’s **Discover** feature. Follow
+    these steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Once again, locate the “hamburger menu” in the top left of the view and click
+    it.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Locate the **Analytics** tab and select **Discover**.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Select the index pattern you created earlier from the drop-down menu in the
+    top-left corner.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Use the time filter in the top-right corner to choose a specific time range
+    for your query.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: To search for specific log entries, enter your query in the search bar and press
+    *Enter*. Kibana uses the Elasticsearch Query DSL to perform searches.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Here are some example queries:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To find logs containing the word “error”: `error`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'To find logs with a specific field value: `container.name: "my-container"`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'To use a wildcard search (for example, logs with a `container.name` starting
+    with “`app`”): `container.name: "app*"`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'To use Boolean operators for more complex queries: `error` AND `container.name:
+    "my-container"`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Step 4 – visualizing the logs
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'You can create visualizations and dashboards in Kibana to analyze the logs
+    more effectively. To create a visualization, follow these steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Click on the **Visualize** tab in the left-hand navigation menu.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Click the **Create** **visualization** button.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Choose a visualization type (for example, pie chart, bar chart, line chart,
+    and so on).
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Select the index pattern you created earlier.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Configure the visualization by selecting the fields and aggregation types.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Click **Save** to save your visualization.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'You can create multiple visualizations and add them to a dashboard for a comprehensive
+    view of your log data. To create a dashboard, do the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Click on the **Dashboard** tab in the left-hand navigation menu.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Click the **Create** **dashboard** button.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Click **Add** to add visualizations to the dashboard.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Resize and rearrange the visualizations as needed.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Click **Save** to save your dashboard.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Now, you have a centralized view of your containerized application logs and
+    you can query, analyze, and visualize the logs using Kibana.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the following section, we will learn how to collect and scrape metrics exposed
+    by Docker and your application.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Collecting and scraping metrics
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: To collect and scrape metrics from containers running on a system with Docker
+    Desktop installed, you can use Prometheus and **Container Advisor** (**cAdvisor**).
+    Prometheus is a powerful open source monitoring and alerting toolkit, while cAdvisor
+    provides container users with an understanding of the resource usage and performance
+    characteristics of their running containers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this section, we’ll provide a step-by-step guide to setting up Prometheus
+    and cAdvisor to collect and scrape metrics from containers running on Docker Desktop.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Step 1 – running cAdvisor in a Docker container
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'cAdvisor is a Google-developed tool that collects, processes, and exports container
+    metrics. Let’s take a look:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the chapter folder, `ch12`, create a new subfolder called `metrics`:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'In this folder, create a file called `docker-compose.yml` and add the following
+    snippet to it:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Run cAdvisor in a Docker container using the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Replace `v0.45.0` with the latest cAdvisor version available on the cAdvisor
+    repository.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This command mounts the necessary directories from the host system and exposes
+    cAdvisor’s web interface on port `8080`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Attention
+  prefs: []
+  type: TYPE_NORMAL
+- en: A version lower than the one shown here will not run, for example, on a Mac
+    with an M1 or M2 processor.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can access the cAdvisor web interface by navigating to `http://localhost:8080`
+    in your browser.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Step 2 – setting up and running Prometheus
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Next, let’s set up Prometheus using the following step-by-step instructions:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Create a subfolder called `prometheus` in the `metrics` folder.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'In this new folder, create a `prometheus.yml` configuration file with the following
+    contents:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'This configuration specifies the global scrape interval and two scrape jobs:
+    one for Prometheus itself and another for cAdvisor running on port `8080`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Add the following snippet to the end of the `docker-compose.yml` file:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: This instruction mounts the `prometheus.yml` configuration file and exposes
+    Prometheus on port `9090`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The preceding `prometheus` service uses a volume called `prometheus_data`.
+    To define this, please add the following two lines to the end of the `docker-compose.yml`
+    file:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: You can access the Prometheus web interface by navigating to `http://localhost:9090`
+    in your browser.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Once Prometheus is up and running, you can verify that it’s successfully scraping
+    metrics from cAdvisor:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Open the Prometheus web interface at `http://localhost:9090`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Click on **Status** in the top navigation bar, then select **Targets**.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Ensure that both the `prometheus` and `cadvisor` targets are listed with `UP`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Now, Prometheus can collect and store metrics from the containers running on
+    your Docker Desktop system. You can use Prometheus’ built-in expression browser
+    to query metrics or set up Grafana for advanced visualization and dashboarding:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the `query text` field, enter something like `container_start_time_seconds`
+    to get the value for the startup time of all containers.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: To refine the query and only get the value for the cAdvisor container, enter
+    `container_start_time_seconds{job="cadvisor"}`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Note that in the `query text` field, you get IntelliSense, which is convenient
+    when you do not remember all the details of a command and its parameters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Before you continue, stop cAdvisor and Prometheus with the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the last section of this chapter, you will learn how to monitor a containerized
+    application using a tool such as Grafana.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Monitoring a containerized application
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Monitoring a containerized application is crucial for understanding the application’s
+    performance, resource usage, and potential bottlenecks. This section will detail
+    a step-by-step process for monitoring a containerized application using Prometheus,
+    Grafana, and cAdvisor.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Step 1 – setting up Prometheus
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Follow the instructions from the previous section to set up Prometheus and cAdvisor
+    to collect and scrape metrics from containers running on Docker Desktop.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Step 2 – instrumenting your application with Prometheus metrics
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: To monitor a containerized application, you need to instrument the application
+    with Prometheus metrics. This involves adding Prometheus client libraries to your
+    application code and exposing metrics on an HTTP endpoint, usually `/metrics`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Choose the appropriate Prometheus client library for your application’s programming
+    language from the official list: [https://prometheus.io/docs/instrumenting/clientlibs/](https://prometheus.io/docs/instrumenting/clientlibs/).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Add the library to your application while following the library’s documentation
+    and examples.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Expose the `/metrics` endpoint, which will be scraped by Prometheus.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Example using Kotlin and Spring Boot
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'To expose Prometheus metrics from a Kotlin and Spring Boot API, you need to
+    follow these steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Create a new Kotlin Spring Boot project.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Add the necessary dependencies.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Implement the API and expose Prometheus metrics.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Expose the actuator endpoints.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Create a Dockerfile.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Integrate with the Docker Compose file.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Step 1 – creating a new Kotlin Spring Boot project
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: You can use Spring Initializr ([https://start.spring.io/](https://start.spring.io/))
+    to create a new Kotlin Spring Boot project. Name the artifact `kotlin-api`. Then,
+    select Kotlin as the language, choose the packaging type (JAR or WAR), and add
+    the necessary dependencies. For this example, select **Web**, **Actuator**, and
+    **Prometheus** under the **Dependencies** section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Download the generated project and extract it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Step 2 – verifying the necessary dependencies
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: 'In your `build.gradle.kts` file, assert that the following dependencies are
+    included:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: Step 3 – implementing the API and exposing Prometheus metrics
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: 'Locate the Kotlin `KotlinApiApplication.kt` file in the `src/main/kotlin/com/example/kotlinapi/`
+    subfolder and replace its existing content with the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 12.11 – Code in the KotlinApiApplication.kt file](img/B19199_12_11.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 12.11 – Code in the KotlinApiApplication.kt file
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can also find this code in the `sample-solutions/ch12/kotlin-api` subfolder
+    if you prefer not to type the example yourself.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this example, a simple REST API with a single endpoint, `/`, was implemented.
+    The endpoint increments a counter and exposes the count as a Prometheus metric
+    named `api_requests_total`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Add the following line to the `application.properties` file to use a different
+    port than the default port, `8080`, which is already taken by cAdvisor in our
+    stack. In our example, the port is `7000`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: Step 4 – exposing metrics
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: 'Add the following line to the `application.properties` file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: The above configuration should be all on a single line. It is shown on two lines
+    here due to space limitations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This will expose the respective metrics on the `/actuator/health`, `/actuator/info`,
+    `/actuator/metrics`, and `/``actuator/prometheus` endpoints.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Step 5 – creating a Dockerfile
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: 'Create a `multistage` Dockerfile in the project’s root directory with the following
+    content:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 12.12 – Dockerfile for the Kotlin API](img/B19199_12_12.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 12.12 – Dockerfile for the Kotlin API
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this `multistage` Dockerfile, we have two stages:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`gradle:jdk17` base image to build the Kotlin Spring Boot application. It sets
+    the working directory, copies the source code, and runs the Gradle `build` command.
+    This stage is named `build` using the `AS` keyword.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`openjdk:17-oracle` base image for the runtime environment, which is a smaller
+    image without the JDK. It copies the built JAR file from the build stage and sets
+    the entry point to run the Spring Boot application.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: This multi-stage Dockerfile allows you to build the Kotlin Spring Boot application
+    and create the final runtime image in one go. It also helps reduce the final image
+    size by excluding unnecessary build tools and artifacts.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Step 6 – integrating with the Docker Compose file
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: 'Update your existing `docker-compose.yml` file so that it includes the Kotlin
+    Spring Boot API service, which resides in the `kotlin-api` subfolder:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now, you can run `docker compose up -d` to build and start the Kotlin Spring
+    Boot API service, along with the other services. The API will be accessible on
+    port `8080`, and the Prometheus metrics can be collected.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next, we will configure Prometheus to scrape all the metrics from our setup,
+    including the Kotlin API we just created.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Step 3 – configuring Prometheus to scrape your application metrics
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Update your `prometheus.yml` configuration file from the previous section so
+    that it includes a new scrape job for your application. For example, since our
+    Kotlin API sample application is running in a Docker container and exposing metrics
+    on port `7000`, we will add the following to the `scrape_configs` section:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: Step 4 – setting up Grafana for visualization
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Grafana is a popular open source visualization and analytics tool that can
+    integrate with Prometheus to create interactive dashboards for your containerized
+    application:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To the `docker-compose.yml` from the previous section, add this snippet to
+    define a service for Grafana:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE38]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: In the `volumes:` section, add a volume called `grafana_data`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Run cAdvisor, Prometheus, and Grafana with this command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE39]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Access Grafana by navigating to `http://localhost:3000` in your browser. The
+    default username is `admin` and the default password is also `admin`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Add **Prometheus** as a data source.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Click on the gear icon (**Configuration**) in the left sidebar.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Select **Data Sources** and then click **Add** **data source**.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Choose `http://host.docker.internal:9090` as the URL.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Click **Save & Test** to verify the connection.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Create a dashboard and panels to visualize your application metrics.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Click on the **+** icon (**Create**) in the left sidebar and choose **Dashboard**.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Click **Add new panel** to start creating panels for your metrics.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Use the query editor to build queries based on your application metrics, and
+    customize the visualization type, appearance, and other settings.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Save the dashboard by clicking the disk icon in the top-right corner.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: With Grafana, you can create interactive dashboards that provide real-time insights
+    into your containerized application’s performance, resource usage, and other critical
+    metrics.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Step 5 – setting up alerting (optional)
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Grafana and Prometheus can be used to set up alerts based on your application
+    metrics. This can help you proactively address issues before they impact your
+    users:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In Grafana, create a new panel or edit an existing one.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Switch to the **Alert** tab in the panel editor.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Click **Create Alert** and configure the alerting rules, conditions, and notification
+    settings.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Save the panel and dashboard.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'You may also need to configure Grafana’s notification channels to send alerts
+    via email, Slack, PagerDuty, or other supported services. To do this, follow these
+    steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In Grafana, click on the bell icon (**Alerting**) in the left sidebar.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Choose **Notification channels** and click **Add channel**.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Fill in the required information for your preferred notification service and
+    click **Save**.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Now, when the alerting conditions specified in your panel are met, Grafana will
+    send notifications through the configured channel.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Step 6 – monitoring your containerized application
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: With Prometheus, Grafana, and cAdvisor set up, you can now effectively monitor
+    your containerized application. Keep an eye on your Grafana dashboards, set up
+    appropriate alerting rules, and use the collected data to identify performance
+    bottlenecks, optimize resource usage, and improve the overall health of your application.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Remember to continuously iterate and improve your monitoring setup by refining
+    your application’s instrumentation, adjusting alerting rules, and adding new visualizations
+    to your dashboards as your application evolves and grows.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we learned why logging and shipping the log to a central location
+    is important. We then showed you how to set up an ELK Stack locally on our computer
+    that can serve as a hub for logs. We generated a special version of this stack,
+    including Filebeat, which can run on a Mac or Windows computer using the workaround
+    of redirecting the standard log output to a file whose parent folder is mapped
+    to a Docker volume. This volume is then mounted to Filebeat, which, in turn, forwards
+    the logs to ElasticSearch. On a production or production-like system, the applications
+    run on Linux servers or VMs and thus Filebeat can directly collect the logs from
+    the default location, where Docker directs the logs at `/var/lib/docker/containers`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We also learned how to use Prometheus and Grafana to scrape, collect, and display
+    the metrics of your applications centrally on a dashboard. We used a simple Kotlin
+    application that exposed a counter to demonstrate this.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Lastly, we briefly mentioned how to define alerts based on the values of collected
+    metrics.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next chapter, we will introduce the concept of container orchestrators.
+    It will teach us why orchestrators are needed, and how they work conceptually.
+    The chapter will also provide an overview of the most popular orchestrators and
+    list a few of their pros and cons.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Questions
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Here are a few questions that you should try to answer to self-assess your
+    learning progress:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: What are Docker container logs, and why are they important?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: What is a daemon log in Docker, and how is it different from a container log?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: How can you monitor Docker containers?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: How can you view the logs of a running Docker container?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: What are some best practices for logging and monitoring Docker containers?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: How can you collect logs from multiple Docker containers?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Answers
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Here are some sample answers to the questions for this chapter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Docker container logs are records of the events and messages generated by the
+    applications running within a container. They are essential for monitoring performance,
+    troubleshooting issues, and ensuring the smooth operation of the applications
+    deployed in Docker containers.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: A daemon log in Docker refers to the log files generated by the Docker daemon,
+    which manages Docker containers. These logs record system-wide events and messages
+    related to the overall functioning of the Docker platform. In contrast, container
+    logs are specific to individual containers and their applications.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Monitoring Docker containers can be done using various methods, including command-line
+    tools such as docker stats, third-party monitoring solutions such as Prometheus,
+    and Docker’s built-in APIs. These tools help track resource usage, performance
+    metrics, and the health status of containers.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: You can view the logs of a running Docker container using the `docker logs`
+    command, followed by the container’s ID or name. This command retrieves the log
+    messages generated by the container, which can help diagnose issues or monitor
+    the container’s activities.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Some best practices for logging and monitoring Docker containers include the
+    following:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Centralize logs using a log management system
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Configure log rotation and retention policies
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Set up log filtering and alerting mechanisms
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Monitor containers using a combination of built-in and third-party tools
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Regularly review logs and metrics for anomalies
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: To collect logs from multiple Docker containers, you can use a log management
+    system such as the ELK Stack or Splunk. You can also use tools such as Fluentd
+    or Logspout to aggregate and forward logs from all containers to a centralized
+    log management system for analysis and visualization.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL

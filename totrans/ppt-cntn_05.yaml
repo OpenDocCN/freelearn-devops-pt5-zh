@@ -1,0 +1,529 @@
+- en: Chapter 5. Configuring Service Discovery and Docker Networking
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we will be looking at two very important topics when working
+    with containers. First, we will be looking at what is service discovery, why do
+    we need it, and the different types of service discovery. The second topic we
+    will cover is Docker networking. There are many ways to run container networks.
+    There are some great technologies out there such as the CoreOS project flannel
+    ([https://coreos.com/flannel/docs/latest/](https://coreos.com/flannel/docs/latest/)).
+    There is also Weave from Weave Works ([http://weave.works/](http://weave.works/)),
+    but we are going to use the native Docker networking stack released in engine
+    version 1.9.1.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Service discovery
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: This is a fairly important topic in the world of containers, when we start to
+    move into multinode applications and Docker schedulers. The question is what is
+    service discovery? Is it limited to containers? What are the types of service
+    discovery for us to make smart design choices in our Puppet modules.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The theory
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Service discovery is essential when we start to work with multinode applications,
+    as it allows our applications to talk to each other as they move from node to
+    node. So, as you can see in the world of containers, this is fairly important.
+    We have a few choices when we choose a service discovery backend. The two big
+    names in this space are **etcd** ([https://coreos.com/etcd/](https://coreos.com/etcd/)),
+    which again is from CoreOS, and **Consul** from HashiCorp ([https://www.consul.io/](https://www.consul.io/)).
+  prefs: []
+  type: TYPE_NORMAL
+- en: You might remember that we have already written a `consul` module. So for this
+    chapter, we are going to choose the same, as we already have the written code.
+    First, let's look at the architecture of Consul so we can understand how the backend
+    works, how it handles failure, and what option do we get with our configuration
+    of Consul.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'So, let''s talk about how Consul works. In Consul, we have two types of configuration
+    that we can give to a server. First is a server role and the second is an agent
+    role. Although the two interact, they serve different purposes. Lets dive into
+    the server role first. The server''s role is to participate in the RAFT quorum;
+    this is to maintain the state of the cluster. In Consul, we have the idea of data
+    centers. What is a data centre, you may ask? It is a group of logical servers
+    and agents. For example, if you are an AWS, a data center could be an AZ or even
+    a VPC. Consul allows connectivity between data centers; it is the role of the
+    sever to look after the communications between data centers. Consul uses the gossip
+    protocol to achieve this. The server also holds the key/value store and replicates
+    it between the servers using the serf protocol. Let''s look at a diagram of what
+    we discussed:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The theory](img/B05201_05_01.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: The agent's role is to report to the server about the state of the machine and
+    any health checks that may be assigned to it. Again, Consul will use the serf
+    protocol to pass the communication.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we have an understanding of what Consul is doing behind the scenes,
+    let's look at the features that it has that we can take advantage of in our Puppet
+    modules. The first feature we will take advantage of is DNS service discovery.
+    In the container world, this is pretty important. As our containers move from
+    node to node, we need to know how to connect to them. DNS service discovery solves
+    this very neatly. So, let's look at an example to understand this.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this example, we have a **mario** service and we have **Docker swarm cluster**
+    of three nodes. When we hit the Docker API and swarm schedules the container,
+    we don''t know which of the three machines **mario** will end up on. But we have
+    other services that will need to find **mario** as soon as he is up. If we tell
+    the other services that **mario** is actually at **mario.service.consul**, no
+    matter what node the container comes up on, it will resolve **mario.service.consul**
+    to the right address. Refer to the following diagram to understand this in detail:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The theory](img/B05201_05_02.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: In this case, if we were to ping **mario.service.consul**, we would get **192.168.100.11**.
+    Pending our scheduling configuration in swarm, if **Server b** fails, **mario.service.consul**
+    could end up on **Server d**. So, the response to **mario.service.consul** would
+    now come from **192.168.100.13**. This would take no human intervention and would
+    be seamless to the applications. That is all the theory we will see for service
+    discovery in this chapter; there is more that we will cover in the later chapters.
+    Now, let's get to writing some code.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The service discovery module
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In this module, we are going to write a module that uses consul as our DNS service
+    discovery backend. As we already have a consul module, we won't start from scratch
+    but add new features to the existing module. We will again write the module with
+    manifests and Docker Compose. So, let's start with the manifests.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Our folder structure should look like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The service discovery module](img/B05201_05_03.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Let''s jump straight to `install.pp`. Without making any changes, it should
+    look as shown in the following screenshot:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The service discovery module](img/B05201_05_04.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Now, we are going to add one extra container that is going to be part of the
+    plumbing for our DNS service discovery solution. We will need something to register
+    our containers with Consul as they spawn. For this, we will use a golang application
+    called **registrator** ([https://github.com/gliderlabs/registrator](https://github.com/gliderlabs/registrator)).
+    This is a fantastic app. I have been using it for over a year, and it has been
+    faultless. So, let''s make changes to our `params.pp` file to allow the new container.
+    At the moment, `params.pp` looks like the one shown in the following screenshot:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The service discovery module](img/B05201_05_05.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'The first thing that we will do is make changes to the `docker_image` and `container_hostname`
+    parameters. As we already have the convention of `consul_xxx`, we can carry on
+    with that:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The service discovery module](img/B05201_05_06.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Now, let''s add the parameters for registrator:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The service discovery module](img/B05201_05_07.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: As you can see, we have added the parameter for the image as `$reg_docker_image
+    = 'gliderlabs/registrator'` and the parameter for the hostname as `$reg_container_hostname
+    = 'registrator'`. We have told the container to listen to the host's `$reg_net
+    = 'host'` network. The next parameter will need some explaining. The registrator
+    maps the Unix socket that the Docker daemon is bound to into its Unix socket.
+    It does this to listen to any new services that get spawned and need to be registered
+    in consul for discovery. As you can see, we do this with `$reg_volume = ['/var/run/docker.sock:/tmp/docker.sock']`.
+    The last parameter tells registrator where to find `consul`. We are going to set
+    that with `$reg_command = "consul://$::ipaddress_enp0s8:8500"`. Now, let's move
+    over to our `init.pp` file.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Our `init.pp` file should look as shown in the following screenshot:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The service discovery module](img/B05201_05_08.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Let''s add our new parameters, as shown in the following screenshot:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The service discovery module](img/B05201_05_09.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Now that we have all our parameters set up, we can go to our `install.pp` file
+    to add our code in order to install registrator:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The service discovery module](img/B05201_05_10.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'As you can see in the preceding screenshot, we have added a new block of code
+    at the bottom of our file. It''s similar to our code that configures Consul; however,
+    there are a few different parameters. We covered those earlier, so let''s not
+    repeat ourselves. Now that we''ve made a fair chunk of changes to our module,
+    we should run it in Vagrant to check whether we have any issues. Before we can
+    run Vagrant, we need to change our `servers.yaml` file in the root of our Vagrant
+    repo so that it allows us to hit the Consul URL on port `8500`. We do this with
+    the following change to the code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The service discovery module](img/B05201_05_11.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Now, let''s open our terminal and change the directory to the root of our Vagrant
+    repo. From there, we will just issue the `vagrant up` command. The output from
+    our terminal should look as shown in the following screenshot:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The service discovery module](img/B05201_05_12.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'After this, let''s open our browser and go to `127.0.0.1:8500`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The service discovery module](img/B05201_05_13.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: You will notice now that there are a lot more services listed in the Consul
+    web UI than when we ran the module in the last chapter. This is because now, registrator
+    is listening on the Unix socket, and any container with a port mapped to the host
+    will be registered. So the good news is that our module is working. Now, let's
+    add an application to the module.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The easiest way to do this is to add another container module to our node.
+    So, let''s add our `bitbucket` module. We do this by adding the class to our `default.pp`
+    file that lives in our `manifests` directory:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The service discovery module](img/B05201_05_14.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'We will also need to make some quick modifications to the `bitbucket` module
+    so that we don''t get duplicate declaration errors. Note that this is not something
+    you would do in production. But it is good enough for our test lab. We need to
+    comment out the top block of code as shown in the following screenshot:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The service discovery module](img/B05201_05_15.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'We can even comment out the code as shown in the following screenshot:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The service discovery module](img/B05201_05_16.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: This depends on whether you used the `manifest` module or the `compose` module.
+    I used the `compose` module.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'So, let''s go back to our terminal in the root of our Vagrant repo and issue
+    the `vagrant provision` command. The output of the terminal should look as shown
+    in the following screenshot:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The service discovery module](img/B05201_05_17.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Now, let''s look at our browser again. We can see that our `bitbucket` services
+    have been registered, as shown in this screenshot:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The service discovery module](img/B05201_05_18.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'We have the service discovery working; however, we still need to add another
+    class to our module for DNS service discovery. So, let''s go back to our `consul`
+    module. We will add a new file called `package.pp`. In this file, we will install
+    the bind package and add two templates, one to configure `named.conf` and the
+    other to configure `consul.conf` in the directory named `/etc/`. Let''s start
+    coding. The first thing we will need to do is create our `package.pp` file in
+    the `manifests` directory of our module:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The service discovery module](img/B05201_05_19.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'We will add the following code to the file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The service discovery module](img/B05201_05_20.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Now, let''s create a `templates` folder. In this example, we are not parameterizing
+    the files, and in a production instance, you would. That''s why we are using the
+    `templates` folder and not files:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The service discovery module](img/B05201_05_21.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Now, let''s create a file called `named.conf.erb` and add the following code
+    to it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The service discovery module](img/B05201_05_22.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'The code is just setting our DNS resolver to listen to `127.0.0.1`. Remember
+    that we have set port forwarding on our Consul container to forward port `53`.
+    That is how the host will connect to the container. Lastly, it will call our next
+    template file `/etc/named/consul.conf`. Let''s create that now:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The service discovery module](img/B05201_05_23.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'The code that we will add is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The service discovery module](img/B05201_05_24.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'You will note that we are forwarding port `8600`, which is the port that Consul
+    uses for its DNS traffic, and removing port `53`. As TCP bind will use port `53`,
+    we will forward the request to `8600`, as shown in the following piece of code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The service discovery module](img/B05201_05_25.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'We need to make one more change before we can run Puppet. We need to add the
+    new code of `package.pp` to our `init.pp` file. We can do so like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The service discovery module](img/B05201_05_26.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Now, we can run our module. Let''s go to the terminal and change to root of
+    our Vagrant repo. We will issue the `vagrant up` command and if you already have
+    a box running, just issue the `vagrant destroy -f && vagrant up` command. Now,
+    let''s check the web UI (`127.0.0.1:8500`):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The service discovery module](img/B05201_05_28.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'As you can see in the preceding screenshot, we have a new service registered
+    on port `8600` (`consul-8600`). Now, we need to make sure that our machines are
+    listening to the right DNS servers on their interfaces. We are going to do this
+    in `servers.yaml`, as I would usually add this configuration to my user data in
+    AWS. You could very well control this with Puppet. So, in future, you can decide
+    the right place for the configuration of your environment. The line we are going
+    to add is `- { shell: ''echo -e "PEERDNS=no\nDNS1=127.0.0.1\nDNS2=8.8.8.8">>/etc/sysconfig/network-scripts/ifcfg-enp0s3
+    && systemctl restart network''}`. We will add it as shown in the following screenshot:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The service discovery module](img/B05201_05_29.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Now, let''s go to our terminal and issue the `vagrant up` command. If you have
+    a box already running then issue the `vagrant destroy -f && vagrant up` command.
+    The terminal output should look like the one shown in the following screenshot:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The service discovery module](img/B05201_05_30.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'We can then log in to our vagrant box using `vagrant ssh` and test whether
+    our DNS setup works. We can do this by selecting a service and trying to ping
+    it. We are going to choose our `ping bitbucket-server-7990` service by entering
+    the `ping bitbucket-server-7990.service.consul` command, and we should get the
+    following results:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The service discovery module](img/B05201_05_31.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: As you can see in the preceding screenshot, it returns the echo response as
+    the loopback, as the service is running locally on this host. If we were external
+    of the host, it would return the IP of the host that is running the service. Now,
+    we run our container schedulers, such as Docker swarm, that have multiple host.
+    We now know how service discovery works.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now, let's have a look at what this would look like using Docker Compose.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In order to not repeat ourselves, let''s make our `init.pp` file the same as
+    the module that uses the `manifests` method. We have to make one small change
+    to the `params.pp` file; `docker-compose` expects that you pass it strings. So,
+    we need to remove the brackets around `$reg_volume` as shown in the following
+    screenshot:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The service discovery module](img/B05201_05_32.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Then, we will add our `package.pp` file as we did earlier and also create the
+    two templates for our `bind` config. Then, we need to update our `docker-compose.yml.erb`
+    file in our `templates` directory. We need to add our second container, `regisrator`.
+    We are going to use the same parameters as we did in the manifest module earlier
+    in this chapter. The code for this should look as shown in the following screenshot:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The service discovery module](img/B05201_05_33.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'You will also note that we changed the ports on our Consul container as we
+    did earlier in the chapter (we removed port `53` and added `8600 tcp/udp`). Now,
+    we can go to our terminal, change to root of our Vagrant repo, and issue the `vagrant
+    up` command. Our terminal should look like the one shown in the following screenshot:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The service discovery module](img/B05201_05_34.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Again, we can also check our browser at `127.0.0.1:8500`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The service discovery module](img/B05201_05_35.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: As you can see in the preceding screenshot, it looks the same as it did earlier
+    in the chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let''s log in to our box and test our DNS service discovery. For this, enter
+    the `vagrant ssh` command and then ping a service. This time, we will choose something
+    different. We will use the `ping consul-8500.service.consul` command. We should
+    get the following response after this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The service discovery module](img/B05201_05_36.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: So that's all for service discovery in this chapter. We will be picking it up
+    again in the container scheduler chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Docker networking
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this topic, we are going to look at the native networking stack that comes
+    with Docker Engine. There is a wealth of knowledge that you can achieve by reading
+    on this subject. I strongly suggest that you do, as there is a lot you can do
+    with Docker networking. If you have not used it before, I would suggest that you
+    start reading the guide at [https://docs.docker.com/engine/userguide/networking/dockernetworks/](https://docs.docker.com/engine/userguide/networking/dockernetworks/).
+    From here, you can read about the different types of drivers, how to use VXLAN
+    to separate your networks, and the best practices when designing your Docker network.
+    We are going to cover the basics now and the more advanced features in later chapters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The prerequisites
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Before we can even start to code for our network, there are a few things we
+    need. First, we need a key/value store. Docker will use this to map all the containers,
+    IP addresses, and vxlans that are created. Seeing as there usually would be more
+    than one host attached to a network, the key/value store is usually distributed
+    to give it resiliency against failure. Luckily enough, we have already built a
+    key/value store that we can take advantage of, it's Consul of course. The other
+    configuration that you will need are extra args when we start our Docker Engine.
+    This is to let Docker Engine know how to access the key/value store. These are
+    the basic prerequisites that we need to get coding.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The code
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Let''s create our first Docker network. To do this, we are going to add to
+    our `consul` module. I am not going to do this twice for both manifests and `docker-compose`,
+    as the configuration can be ported between the two. I am going to use the `docker-compose`
+    module for my example. If this is the first time that you are creating a Docker
+    network, it would be a worth while exercise to port the configuration to both.
+    So, lets'' start. We are only going to make changes to our `install.pp` file.
+    The first change that we are going to make is to our extra arguments for our `docker-engine`
+    daemon. We do this by adding the code shown in the following screenshot:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The code](img/B05201_05_37.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: The code sets our key/value store's address and port. Then, it also tells other
+    machines what interface and port we are advertising our networks on.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The next code we are going to add will create the network. We will create a
+    new file called `network.pp`. Then, we will add the code shown in the following
+    screenshot to it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The code](img/B05201_05_38.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'The next thing we will have to do is make sure that our classes get installed
+    in the correct order, as the Docker network is dependent on Consul being there.
+    If Consul is not there, our catalogue will fail. So, we need to use the `contain`
+    functionality built into Puppet. We do this by adding the code shown in the following
+    screenshot:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The code](img/B05201_05_39.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'As you can see, we are just setting up a basic network. We could set things
+    such as IP address range, gateway, and so on. If we do that, it would look like
+    this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The code](img/B05201_05_40.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Now that we have our code, let''s go to our terminal and issue the `vagrant
+    up` command from root of our Vagrant repo. Our terminal output should look like
+    the one shown in the following screenshot:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The code](img/B05201_05_41.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Now, we can check to make sure that our network is there by logging in to our
+    vagrant box (`vagrant ssh` from the root of our Vagrant repo). Once we log in
+    to our box, we need to change to root (`sudo -i`) and then issue the `docker network
+    ls` command. This will list the available networks on the box. The one we are
+    looking for is `docker-internal` with the `overlay` driver:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![The code](img/B05201_05_42.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: As you can see from the output of our terminal, we were successful and our network
+    has been configured. That is all we are going to do with networking in this chapter.
+    In the next chapter, we will be attaching containers and spanning our Docker network
+    across multiple hosts.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, you learned a lot about how the container ecosystem handles
+    service discovery. I can't emphasize on how important it will be to understand
+    this topic when you start using containers at scale. I would really suggest that
+    you get a solid understanding of service discovery before moving on to further
+    chapters. We also covered the basics of Docker networking. Don't worry, as in
+    the next chapter, we will go into Docker networking in more depth as we will be
+    building multihost applications.
+  prefs: []
+  type: TYPE_NORMAL

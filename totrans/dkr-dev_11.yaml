@@ -1,0 +1,1430 @@
+- en: '*Chapter 9*: Cloud-Native Continuous Deployment Using Spinnaker'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Deploying Docker containers as cloud-native applications to Kubernetes poses
+    challenges that a specialized container-centric continuous deployment system can
+    solve. Instead of writing custom deployment logic in those scripts that Jenkins
+    runs, as we did when we deployed to a single host, we can use Spinnaker to deploy
+    to Kubernetes. Because Spinnaker works with Jenkins, we can continue to use the
+    Jenkins server that we already set up to build the Docker containers and prepare
+    the Helm Charts for deployment. Using Spinnaker, we will deploy an application
+    using its built-in support for Helm Charts and Kubernetes deployments. We will
+    also explore some of Spinnaker's specialized deployment strategies and see how
+    they apply to Kubernetes-centric environments.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this chapter, we are going to learn when and why you would use Spinnaker
+    in addition to Jenkins. We will learn how to improve your setup for supporting
+    the deployment and maintenance of Kubernetes applications by learning to configure
+    Spinnaker and integrating it with GitHub, Docker Hub, and Jenkins. We will learn
+    how to deploy an app to Kubernetes using a Spinnaker pipeline and AWS **Elastic
+    Container Registry** (**ECR**), as well as learn a bit about how Spinnaker's support
+    for different deployment and testing strategies may or may not apply when you
+    use it in conjunction with Kubernetes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We will cover the following topics in this chapter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Improving your setup for Kubernetes application maintenance
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Spinnaker – when and why you might need more sophisticated deployments
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Setting up Spinnaker in your AWS EKS cluster with Helm
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Deploying ShipIt Clicker with a simple deployment strategy in Spinnaker
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Learning about Spinnaker's support for different deployment and testing strategies
+    with respect to Kubernetes applications
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Let's get started by reviewing the technical requirements for this chapter,
+    and then we will move on to learning about the Spinnaker platform.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: You will need to have a working Kubernetes cluster in the cloud, as set up in
+    the previous chapter. You could reuse that cluster or set up a new one for this
+    chapter using the same method or by using `eksctl`. Please note that the Spinnaker
+    version described in this chapter is not compatible with Kubernetes 1.16 and later;
+    be sure to install this on a Kubernetes 1.15 cluster. You will also need to have
+    a current version of the AWS `kubectl`, and `helm` 3.x installed on your local
+    workstation, as described in the previous chapter. The Helm commands in this chapter
+    use the `helm` 3.x syntax. The AWS **Elastic Kubernetes Service** (**EKS**) cluster
+    must have a working **Application Load Balancer** (**ALB**) Ingress Controller
+    setup. We will also use the AWS ECR Docker repository set up in the previous chapter.
+    You will also need to have the Jenkins server that was set up in [*Chapter 7*](B11641_07_Final_AM_ePub.xhtml#_idTextAnchor126),
+    *Continuous Deployment with Jenkins*, available as Spinnaker relies on Jenkins
+    for building software artifacts.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Spinnaker requires more resources than might be available on your local workstation,
+    and we will want to connect it to outside services, such as Jenkins and GitHub,
+    in a way that might not work with a local Kubernetes learning environment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Check out the following video to see the Code in Action:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[https://bit.ly/2DUGumq](https://bit.ly/2DUGumq)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using the updated ShipIt Clicker v5
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We will use the version of ShipIt Clicker in the `chapter9` directory in the
+    following GitHub repository:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[https://github.com/PacktPublishing/Docker-for-Developers/](https://github.com/PacktPublishing/Docker-for-Developers/)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This version has some changes from the previous version. It only has one copy
+    of the Helm Charts in `chapter9/shipitclicker`, with several override YAML files
+    for cluster deployment: `values-eks.yaml` and `values-spin.yaml`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the previous chapter, we kept multiple directories of redundant template
+    and configuration files, but the only differences in the Helm Charts were the
+    overrides in the `values` file. The copy in this chapter uses a more concise strategy.
+    It turns out that you can use multiple YAML config files that override just the
+    settings that have to change for each deployment or environment. In this chapter,
+    we will transition the container repository for the sample application from Docker
+    Hub to ECR, deploy it once manually, and then switch to deploying ShipIt Clicker
+    using Spinnaker.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Improving your setup for Kubernetes application maintenance
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In order to deploy and maintain Spinnaker, we need to be able to talk to the
+    Kubernetes cluster from our local workstation. We also want to be able to use
+    **Secure Sockets Layer** (**SSL**)-protected communications to Kubernetes-hosted
+    resources. Let's take this step by step in order to prepare your local workstation
+    and AWS account for more advanced deployments.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Managing the EKS cluster from your local workstation
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In order to make it easier to administer the EKS cluster and work with it, you
+    will want to set up your local workstation to talk to the cluster. In the previous
+    chapter, we set up the AWS CLI with an AWS IAM administrator account and then
+    used it to set up an EKS cluster. We will build on that in this chapter to make
+    sure that we can efficiently manage the cluster and the applications in it from
+    our local workstation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Follow the instructions here on your local workstation to get `kubectl` and
+    the rest of the Kubernetes utilities talking with your EKS cluster:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[https://aws.amazon.com/premiumsupport/knowledge-center/eks-cluster-connection](https://aws.amazon.com/premiumsupport/knowledge-center/eks-cluster-connection)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The essential parts of the instructions in the preceding link involve executing
+    an `aws cli` command from your local workstation. Issue this command to update
+    `.kube/config` with an entry that will let you connect to the EKS cluster, but
+    replace `EKS-VIVLKQ5X` with the name of your EKS cluster:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Then, test whether you can communicate with the cluster:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: If this works, you will see a list of EC2 hosts that comprise your EKS cluster
+    nodes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Troubleshooting kubectl connection failures
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'If the preceding `aws eks` command yielded an error message or an access denied
+    message, or it failed to complete, you will need to troubleshoot before proceeding.
+    Follow the steps in the following sections, and also look at the AWS guide for
+    troubleshooting this communication failure:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[https://aws.amazon.com/premiumsupport/knowledge-center/eks-cluster-connection/](https://aws.amazon.com/premiumsupport/knowledge-center/eks-cluster-connection/)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Making sure you have the right AWS CLI profile active
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'If you have multiple AWS CLI profiles, your default user might not match the
+    one expected. You can either explicitly tell the AWS CLI to use a profile with
+    the `--profile` parameter or you can set the `AWS_DEFAULT_PROFILE` variable to
+    force it to use a particular profile, as follows, before issuing the `aws eks`
+    command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now that we have set up the AWS CLI with the profile, we must double-check that
+    we can still reach our EKS cluster by checking the CloudFormation template access
+    control list.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Ensuring that your CloudFormation template is configured to allow access
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: In the previous chapter, when we set up the EKS cluster, we entered our IPv4
+    address in `192.2.0.15/32`. Double-check your address with [https://whatismyip.com/](https://whatismyip.com/)
+    to be sure. If these are not set correctly, update the CloudFormation stack with
+    these values.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The CLI profile must match the IAM user that you used to create the EKS cluster
+    with the AWS Quick Start.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This will configure IAM and EKS appropriately.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Switching between local and cluster contexts
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'When you have multiple Kubernetes contexts configured, you can switch between
+    them via the `kubectl config get-contexts` and `kubectl config use-context` commands,
+    as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the preceding listing, we can see all the contexts we have defined. We can
+    also see that when we use the `docker-desktop` context, we only see one node,
+    but when we use the EKS context, we see multiple EC2 server nodes. For the rest
+    of the chapter, we are going to target the EKS context for the Kubernetes-related
+    commands.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Verifying that you have a working ALB Ingress Controller
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In the previous chapter, we set up an EKS cluster with an ALB Ingress Controller
+    in order to grant the world access to the ShipIt Clicker application. If you are
+    reusing that EKS cluster and the ALB Ingress Controller is working OK, you can
+    skip to the next section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you have set up a new cluster, you can either follow the instructions in
+    the last chapter in order to get the ALB Ingress Controller working, or you can
+    run one of the shell scripts included in this chapter as a shortcut if the new
+    cluster lacks an ALB Ingress Controller.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To use the ALB Ingress Controller setup script, make a note of your EKS cluster
+    name, and make sure you have installed both Helm and `eksctl`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Then, run the `deploy-alb-ingress-controller.sh` script from your local workstation
+    to set up the ALB Ingress Controller (replace `EKS-8PWG76O8` with the name of
+    your EKS cluster):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now that you have the ALB Ingress Controller installed, you can proceed to get
+    a domain managed in AWS and generate an SSL certificate.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Preparing a Route 53 domain and certificate
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'In order to secure the communications between your EKS cluster and the outside
+    world, we are going to use the following services to manage **Domain Name Server**
+    (**DNS**) entries and server certificates:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**AWS Route 53**: [https://aws.amazon.com/route53/](https://aws.amazon.com/route53/)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**AWS Certificate Manager** (**ACM**): [https://aws.amazon.com/certificate-manager/](https://aws.amazon.com/certificate-manager/)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: In [*Chapter 7*](B11641_07_Final_AM_ePub.xhtml#_idTextAnchor126), *Continuous
+    Deployment with Jenkins*, we configured Jenkins to use domain names to map entries
+    for staging and production for ShipIt Clicker. In this chapter, we are going to
+    use Route 53 to manage DNS entries and ACM to manage certificates to help secure
+    communication.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You can either transfer the top-level domain you are using to Route 53, or
+    you can delegate a subdomain of an existing domain you control, such as `eks.example.com`,
+    to Route 53\. See this AWS guide on delegating a subdomain to Route 53:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/CreatingNewSubdomain.html](https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/CreatingNewSubdomain.html)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Once you have delegated the domain to Route 53, verify that you can view the
+    SOA record for that domain (substituting your domain for eks.example.com):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: If this returns an SOA record similar to the preceding log, you are set. If
+    it yields a not found error, you need to troubleshoot more.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Once your domain is resolving OK, go to the ACM console at https://us-east-2.console.aws.amazon.com/acm/home?region=us-east-2#/
+    and generate a new public certificate containing both of the domain names – `*.eks.example.com`  and
+    `eks.example.com` (replacing `example.com` with your domain). The domain name
+    starting with `*` is known as a wildcard certificate because it matches any domain
+    name that has the same domain suffixes. Using that will allow us to have one certificate
+    covering many domain names.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Use the DNS method of validation. Since you have that domain managed in Route
+    53, you can expand the domain and hit the shortcut **Create record in Route 53**
+    button, which should look similar to the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/B11641_09_001.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 9.1 – Requesting a certificate in ACM
+  prefs: []
+  type: TYPE_NORMAL
+- en: This will add validation records to your Route 53 zone, which will speed up
+    the issuance of the certificates. The certificate might take from 5 minutes to
+    1 hour to get issued, unless there is a problem with the DNS validation records,
+    such as the domain not being properly delegated from the name servers that are
+    one level above it. Wait for the certificate to be issued and note the ARN of
+    the certificate – you will need it later.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Building and deploying ShipIt Clicker v5
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In order to verify that we have support for SSL-protected sites, we are going
+    to deploy ShipIt Clicker to EKS and enable ALB load balancer support for HTTPS.
+    In order to demonstrate that we can use the AWS ECR container registry, we will
+    also push the container to ECR and use that registry to deploy the application.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Copy `chapter9/values-eks.yaml` to `chapter9/values.yaml`, and then edit the
+    `values.yaml` file, as follows. Start by changing the name of the image at the
+    start of the file and prefix it with the name of your ECR container registry (replace
+    `143970405955` with your AWS account ID and make sure the region – here, `us-east-2`
+    – matches the region you are using):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Note that the `values.yaml` file has annotations indicating that the ALB should
+    listen on both port `80` and `443`, and that it has a fully qualified domain name
+    in the `host` setting. Edit the values in the following host entry so that the
+    `shipit-v5.eks.example.com` domain name matches a domain name that would match
+    the wildcard SSL certificate you have in ACM:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now that we have prepared the `values.yml` file, we will build the container
+    and push it to EKS.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Change the directory to `Docker-for-Developers/chapter9` and issue these commands
+    to build and deploy the ShipIt Clicker to the cluster to test the ALB integration
+    (replace `143970405955.dkr.ecr.us-east-2.amazonaws.com` with your ECR registry):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'After a few minutes, you should be able to verify that the Ingress Controller
+    is working:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If this does not appear, check the Ingress Controller logs, as follows, for
+    troubleshooting clues:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Next, we need to create a DNS address-mapping record, also known as an `HOSTS`
+    column in the preceding output of `kubectl get ingress`. Go to the Route 53 AWS
+    console for your domain and create a new record of type A for `shipit-v5.eks`.
+    Make this record an alias record and enter the DNS name from the `HOSTS` column
+    of the ALB listed in the `kubectl get ingress` output. The form to do that should
+    look something like the one in the following screenshot:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/B11641_09_002.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 9.2 – Creating an A record as an alias in AWS Route 53
+  prefs: []
+  type: TYPE_NORMAL
+- en: Press the `example.com` with your domain name) to verify that you can view it
+    over HTTPS.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that you've made sure that you can administer the EKS cluster from your
+    local environment, pushed the demo application's container to ECR, deployed the
+    demo application to Kubernetes using Helm, and configured the HTTPS support to
+    secure an ALB Ingress Controller to reach a service hosted in EKS, you are ready
+    to proceed with a Spinnaker installation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Spinnaker – when and why you might need more sophisticated deployments
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In order to reliably deploy your application, you could write many scripts by
+    hand and use a continuous integration system. However, many people have thought
+    about the problems inherent in deploying applications in Kubernetes. Kubernetes
+    does have significant deployment capabilities, especially when you use the deployment
+    controller. But this approach does not meet everyone's needs. Some people have
+    developed specialized systems that reduce the complexity of handling these tasks.
+    Systems such as Jenkins-X, Weaveworks, CodeFresh, and Spinnaker fit this niche.
+    We are going to examine Spinnaker, a continuous deployment toolset, in more detail
+    ([https://www.spinnaker.io/](https://www.spinnaker.io/)).
+  prefs: []
+  type: TYPE_NORMAL
+- en: We will begin by walking through Spinnaker's core concepts and highlighting
+    where it shares terminology with other platforms, such as Kubernetes, including
+    where the meanings are different.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Introduction to Spinnaker
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Spinnaker is a **continuous delivery** (**CD**) platform that works across
+    cloud vendors and is open source. Netflix originally wrote Spinnaker to help manage
+    their multi-cloud deployments, using the immutable server pattern (see [https://martinfowler.com/bliki/ImmutableServer.html](https://martinfowler.com/bliki/ImmutableServer.html)).
+    Spinnaker features an image bakery that involves combining application code with
+    an operating system image and supporting libraries, and then saving (baking) an
+    immutable machine image, such as an AWS **Amazon Machine Image** (**AMI**) or
+    VMware **Virtual Machine Disk** (**VMDK**) image, to speed up deployments and
+    minimize runtime configuration. Read more about the image bakery and its use in
+    Spinnaker in the following articles:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[https://netflixtechblog.com/how-we-build-code-at-netflix-c5d9bd727f15](https://netflixtechblog.com/how-we-build-code-at-netflix-c5d9bd727f15)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[https://docs.armory.io/spinnaker-install-admin-guides/packer/](https://docs.armory.io/spinnaker-install-admin-guides/packer/)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: This pattern works well at a scale, but the advent of Docker and container-centric
+    runtimes, such as Kubernetes, provides a different approach to reach the same
+    goals.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Spinnaker has been adapted to work with Kubernetes and Docker, as well as supporting
+    its original deployment strategy of using an image bakery and the immutable server
+    pattern. You can find the source code for the platform among other projects at
+    the official GitHub repository:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[https://github.com/spinnaker](https://github.com/spinnaker)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Before we install the application, we should familiarize ourselves with some
+    of the core concepts of this technology. The first one we will look at is application
+    management.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Application management
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'We can use the management feature to administer and view our cloud resources.
+    Using Spinnaker, we model our applications around concepts such as server groups
+    and clusters. Refer to the Spinnaker documentation for a complete overview of
+    these concepts:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[https://spinnaker.io/concepts/](https://spinnaker.io/concepts/)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: An application is the top-level container, which can be deployed on the infrastructure
+    that Spinnaker maintains, including clusters and server groups. Each cluster then
+    acts as a mechanism to organize server groups. Spinnaker considers Docker containers
+    running in Kubernetes in pods as members of a server group. These Docker images
+    may contain services such as ShipIt Clicker and any associated tools, such as
+    the Datadog monitoring agents featured in [*Chapter 15*](B11641_15_Final_NM_ePub.xhtml#_idTextAnchor329),
+    *Scanning, Monitoring, and Using Third-Party Tools*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we understand how a containerized project is represented in Spinnaker,
+    we should consider how we can deploy it to our EKS cluster in AWS via this framework.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Application deployment
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The application deployment piece of the puzzle is represented graphically in
+    the Spinnaker user interface with a pipeline. A pipeline can either be started
+    manually or kicked off automatically as part of a process triggered by other events,
+    such as a source code control-system push. A pipeline tells us all the steps (called
+    **stages**) along the way that need to be completed – for example, to take a Docker
+    container, install it, and make subsequent updates to it in our cloud environment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The following screenshot demonstrates what a deployment pipeline and its various
+    stages look like:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/B11641_09_003.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 9.3 – Spinnaker pipeline
+  prefs: []
+  type: TYPE_NORMAL
+- en: Each of the stages in this pipeline can be thought of as a discrete task. Each
+    task is executed in sequence or in parallel, depending on whether the pipeline
+    forks. As we will see shortly, Spinnaker comes with a number of predefined stages
+    that we can incorporate into our custom pipeline.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It is advantageous to tie the pipeline to your build server and your source
+    code control repository so that when you push changes to your application and
+    its Helm Charts, Spinnaker can package, test, and deploy them appropriately.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we have briefly walked through the two major concepts of Spinnaker,
+    let's get stuck into building out some infrastructure and a pipeline so that we
+    can get a better handle of how the stages work and the types of deployment strategies
+    that are possible.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Setting up Spinnaker in an AWS EKS cluster using Helm
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Setting up a production-grade Spinnaker cluster requires some careful planning,
+    but for learning purposes, we are going to use one of the simplified approaches.
+    The complete Spinnaker setup guide can be found at [https://www.spinnaker.io/setup/](https://www.spinnaker.io/setup/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In order to demonstrate the proof of concept of using Spinnaker, we are going
+    to use the Helm Chart found at the following link to deploy Spinnaker:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[https://github.com/helm/charts/tree/master/stable/spinnaker](https://github.com/helm/charts/tree/master/stable/spinnaker)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Spinnaker Helm Chart warns against production use
+  prefs: []
+  type: TYPE_NORMAL
+- en: Although this Helm Chart states that it is not suitable for production use,
+    we can use it to demonstrate the proof of concept for building, testing, and deploying
+    applications. The Spinnaker setup guide gives guidance for setting up production-grade
+    Spinnaker systems. Most importantly, that includes making the Spinnaker installation
+    separate from the cluster that also hosts the applications that end users consume.
+    We are going to ignore that advice to save time and money in this chapter and
+    make it easier to demonstrate. If you are going to adopt Spinnaker at scale, please
+    take this advice to heart and set up Spinnaker according to their best practices
+    documentation in a separate cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Ensure you are connected to the correct Kubernetes context targeting your EKS
+    cluster, and enter the following command to deploy Spinnaker to its own namespace:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'It may take several minutes for the Spinnaker deployment to complete. When
+    it is done, you should see an output similar to the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/B11641_09_004.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 9.4 – Spinnaker Helm Chart installation
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next, we will connect to the freshly installed Spinnaker system.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Connecting to Spinnaker through the kubectl proxy
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: To carry out preliminary testing, pay attention to the advice in the output
+    you receive from the `helm install` command you ran to create port forwarding
+    tunnels in the previous section. It should be similar to the output shown in the
+    preceding section. You should set up two separate console windows or tabs on your
+    local workstation, and then run the pairs of commands listed in the output of
+    the `helm install spinnaker` command in the `NOTES` section to set up the port
+    forwarding tunnels, one per console window or tab. You can then go to [http://127.0.0.1:9000](http://127.0.0.1:9000)
+    in your browser to verify that Spinnaker is up and running.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Exposing Spinnaker via ALB Ingress Controllers
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The directions for integrating Spinnaker with EKS ([https://www.spinnaker.io/setup/install/providers/kubernetes-v2/aws-eks/](https://www.spinnaker.io/setup/install/providers/kubernetes-v2/aws-eks/))
+    describe a solution using services with a LoadBalancer annotation to expose the
+    services. However, since we have our ALB Ingress Controller, Route 53, and ACM
+    already configured, it would be better to expose them using the ALB Ingress Controller.
+    Edit the `chapter9/spinnaker-alb-ingress.yaml` file, and make the following changes
+    in the ingress configuration for both `spin-deck` and `spin-gate` (there are two
+    sets of configurations in the file):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Replace eks.example.com with the domain name you have configured with the ACM
+    wildcard certificate.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Replace `192.2.0.10/32` with your public IP address in CIDR format (the same
+    format you used to lock down the EKS API).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Replace `192.2.0.200/32` with the public IP address of your Jenkins server.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Security notice
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: It is important to add the preceding IP address restriction because, out of
+    the box, Spinnaker's user interface runs as the cluster administrator user. If
+    you allowed `0.0.0.0/0` (the entire internet) access, someone could run processes
+    as the cluster administrator and modify or take over your cluster. If you have
+    a dynamic IP address, you might have to change this several times, starting with
+    the CloudFormation template.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'Then, apply the config template to create the ALB Ingress Controllers:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'After a few seconds, issue the following command to verify that this worked
+    (look for your domain name instead of eks.example.com):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: The DNS names that this lists under the `HOSTS` column are the names we intend
+    to use to call the services. The DNS addresses under the `ADDRESS` column are
+    the actual DNS names that the ALB Ingress Controller has created using the AWS
+    ALBs. To connect these two names, we need to create two DNS records in our domain
+    in order to reach the Spinnaker services with the friendlier names. Note the DNS
+    names of the ingress controllers from the `ADDRESS` column in this listing. Then,
+    go to the AWS Route 53 console for your domain and create two new DNS entries
+    of type A. Make them alias records.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Name the first one `spinnaker` and give it the value shown in the `ADDRESS`
+    column for the entry named `spin-deck`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Name the second entry `spinnaker-gate` and give it the value shown in the `ADDRESS`
+    column for the entry named `spin-gate`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The result of this will be two new DNS entries similar to the following (with
+    your domain name instead of example.com):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: spinnaker.eks.example.com
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: spinnaker-gate.eks.example.com
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: While you are waiting for 5 minutes or so for the DNS records to become available
+    and the ALB to be fully activated, use Halyard to configure Spinnaker with the
+    HTTPS version of these URLs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Configuring Spinnaker using Halyard
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Now that we have assigned friendly DNS names to our Spinnaker installation,
+    we need to configure Spinnaker to make it understand that it must respect these
+    names. From your local workstation, connect to the Halyard maintenance pod:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Once you have connected to the pod, you will see a `spinnaker@spinnaker-spinnaker-halyard-0:/workdir$`
+    prompt. Then, enter these commands, replacing `example.com` with your domain name:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: The last `hal` command will redeploy the Spinnaker application.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Wait 5 minutes for the DNS records to activate and the ALBs to be fully created.
+    Once this is done, visit the Spinnaker site via its fully qualified domain name,
+    replacing example.com with your domain name:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[http://spinnaker.eks.example.com/](http://spinnaker.eks.example.com/)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: You should be redirected to the HTTPS version of the site.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Connecting Spinnaker to Jenkins
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In order to get Spinnaker to receive artifacts from Jenkins, we must connect
+    it using a Jenkins administrator API token. Spinnaker has instructions on this
+    that can be found at [https://www.spinnaker.io/setup/ci/jenkins/](https://www.spinnaker.io/setup/ci/jenkins/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Go to the Jenkins server you used in a previous chapter. Sign in and go to
+    the user configuration page at a URL similar to [https://jenkins.example.com/user/admin/configure](https://jenkins.example.com/user/admin/configure)
+    (substitute your Jenkins URL for jenkins.example.com). Then, generate an API token
+    for Spinnaker:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/B11641_09_005.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 9.5 – Jenkins API token generation
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'As shown in the *Configuring Spinnaker using Halyard* section, connect to the
+    `hal` maintenance pod from your local workstation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Then, issue these commands in the shell of that pod to configure Jenkins, replacing
+    the values to the right of the equals sign for the `BASEURL`, `APIKEY`, and `USERNAME`
+    values with those for your installation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now that Spinnaker is set up to talk to Jenkins, we will move on to configuring
+    Jenkins with an additional set of build jobs that Spinnaker will use.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Setting up Jenkins to integrate with both Spinnaker and ECR
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In order to run the Spinnaker-specific jobs and integrate Jenkins with ECR,
+    we are going to need to configure Jenkins with additional plugins and credentials
+    so that it can push containers to AWS ECR, and also set up a new multi-branch
+    pipeline item in order to use the Jenkinsfile for this chapter, stored in the
+    GitHub repository as `chapter9/Jenkinsfile`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the following sections, we will make all the changes needed to make Jenkins
+    work with both ECR and Spinnaker.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Installing the AWS ECR Jenkins plugin
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Sign in to your Jenkins server as the admin user, and then navigate in the
+    left menu to `ECR` into the **Filter** box. You will see something like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/B11641_09_006.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 9.6 – Installing the Amazon ECR plugin through Jenkins Plugin Manager
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Click on the **Install** checkbox next to the **Amazon ECR** plugin and select
+    the **Download now and install after restart** button. You will see something
+    as in the following screenshot:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/B11641_09_007.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 9.7 – Installation in progress for the Amazon ECR Jenkins plugin
+  prefs: []
+  type: TYPE_NORMAL
+- en: It might take Jenkins 5–15 minutes to restart before it is available again.
+    Once it is available, sign in again as the Jenkins admin user. Next, we will create
+    an AWS IAM user with limited privileges and configure Jenkins with those credentials.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Creating a limited AWS IAM user for Jenkins
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'In a previous chapter, we used the AWS console to create an administrator IAM
+    user for the account. This time, we will use the AWS CLI in order to create a
+    Jenkins user, with more limited permissions than the administrator user so that
+    it can only manage ECR repositories and push Docker images to those repositories.
+    This is in line with the security principle of granting the *least privilege*
+    access required for a system only. To create the user, attach the appropriate
+    policy, create the access keys, and issue the three `aws iam` commands in the
+    following listing to set up the Jenkins user (the output that you should expect
+    to see is in line with these commands):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: Note the values associated with `AccessKeyId` and `SecretAccessKey` in the output
+    of your commands. You will need those to configure a Jenkins credential for AWS
+    access in the next section. Next, let's configure Jenkins with AWS credentials.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Configuring Jenkins with credentials for AWS and ECR
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: We need to tell Jenkins what our AWS credentials are so that it can push the
+    Docker containers it builds to ECR. Furthermore, we also need to configure Jenkins
+    to know what ECR registry to use. In [*Chapter 6*](B11641_06_Final_NM_ePub.xhtml#_idTextAnchor102),
+    *Deploying Applications with Docker Compose*, we configured Jenkins with credentials
+    for GitHub and Docker Hub. Now, we will configure additional credentials for the
+    AWS IAM user and the ECR container registry.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'While you are signed into the Jenkins server with the admin user, go to its
+    home page and then navigate in the left menu to the `shipit.aws.key` ID, the `ShipIt
+    Clicker AWS API Keys` description, and the access key ID and secret access key
+    from the previous section. You should see a credential form that looks like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/B11641_09_008.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 9.8 – Configuring AWS credentials in Jenkins
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Once you have done this, add an additional credential of the `dockerfordevelopers/shipitclicker:0.5.0`
+    reference at the end:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Scope**: **Global**'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`143970405955.dkr.ecr.us-east-2.amazonaws.com`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`shipit.ecr.container.id`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`ShipIt Clicker ECR container ID`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Save this credential by pressing the **OK** button.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we have configured Jenkins with the credentials needed to connect to
+    AWS and ECR, let's configure a new multi-branch pipeline for the code in this
+    chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Configuring Jenkins with a multi-branch pipeline for the Jenkinsfile
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Next, we will configure Jenkins to use an additional multi-branch pipeline
+    item that pulls from the same GitHub repository but is configured to use `chapter9/Jenkinsfile`
+    instead of the Jenkinsfile at the root of the repository. Sign in to Jenkins,
+    and from the home page, navigate to `Spinnaker`, and then configure it with your
+    GitHub repo credentials, similar to what is included in the following screenshot
+    (replace `PacktPublishing/Docker-for-Developers`with the GitHub organization and
+    name of the forked copy of the repository that you set up in [*Chapter 7*](B11641_07_Final_AM_ePub.xhtml#_idTextAnchor126),
+    *Continuous Deployment with Jenkins*):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/B11641_09_009.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 9.9 – Jenkins multi-branch pipeline setup
+  prefs: []
+  type: TYPE_NORMAL
+- en: After you configure this, the new item should connect to the GitHub repository
+    and build and push a container to AWS ECR. Inspect the console output from the
+    master branch in this new item to make sure the build succeeds and that the Docker
+    image gets pushed to the AWS ECR repository.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that you have configured Jenkins with the ECR plugin, created a Jenkins
+    IAM user, configured Jenkins with the credentials for that user, configured Jenkins
+    with new credentials to reflect the AWS integration, and added the new Jenkins
+    multi-branch setup, you can proceed to connect other services to Spinnaker. Next,
+    we will connect GitHub.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Connecting Spinnaker to GitHub
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: We will follow the guidance from [https://www.spinnaker.io/setup/artifacts/github/](https://www.spinnaker.io/setup/artifacts/github/)
+    to connect Spinnaker to Jenkins so that it can read artifacts from GitHub. Go
+    to your GitHub user account and, in **Developer Settings**, generate an access
+    token for Spinnaker with repo scope.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'From your local workstation, connect to the Halyard maintenance pod, as shown
+    in the *Configuring Spinnaker using Halyard* section, put the GitHub token in
+    a file in the home directory, and then issue the following commands (replacing
+    `xxxx` with your GitHub token and `my-github-user` with your GitHub username):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: Once you have done this, Spinnaker should be able to talk to GitHub. Next, we
+    will connect Spinnaker to Docker Hub.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Connecting Spinnaker to Docker Hub
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: You will also need to connect Spinnaker to Docker Hub so that it can read your
+    repository and the `library/redis` repository. Integrating Spinnaker with Docker
+    Hub requires you to whitelist all the repositories that your templates will use.
+    The default Docker Hub integration has a short whitelist of the most common libraries.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We will follow the guidance from [https://www.spinnaker.io/setup/install/providers/docker-registry/](https://www.spinnaker.io/setup/install/providers/docker-registry/)
+    in order to add Docker Hub to Spinnaker.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Log in to your Docker Hub account and generate a new API token for the Spinnaker
+    installation from [https://hub.docker.com/settings/security](https://hub.docker.com/settings/security).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'From your local workstation, connect to the Halyard maintenance pod:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Then, issue the following commands (replacing `xxxx` with your Docker Hub token
+    and `my-dockerhub-user` with your Docker Hub username):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: Once Docker Hub is connected, you are ready to start setting up an application
+    and pipeline in Spinnaker. But before we do that, let's talk about how to troubleshoot
+    Spinnaker issues.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Troubleshooting Spinnaker issues
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: If you have any difficulties getting a Spinnaker pipeline execution to work,
+    or have other issues setting up and configuring Spinnaker, the user interface
+    has minimal error-reporting capabilities. It can seem opaque and daunting.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For example, let's imagine you have a typo in one of your artifact definitions
+    – for example, [gitgub.com](http://gitgub.com) instead of [github.com](http://github.com).
+    The pipeline might fail when it tries to retrieve that artifact due to a hostname
+    failure lookup.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Rather than trying to figure out which of the Spinnaker pods might have recorded
+    an error, you can just tail all the logs of all the Spinnaker pods at once:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If you search your console output for the word `exception`, you may find a
+    clue, such as this one found when troubleshooting Spinnaker:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: Analyzing log files like this can really get you out of a jam. Next up, we will
+    deploy ShipIt Clicker with Spinnaker.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deploying ShipIt Clicker with a simple deployment strategy in Spinnaker
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Let's get our hands dirty with Spinnaker by deploying our ShipIt Clicker application.
+    For this, we will be using Helm Charts, and we will use the version of the application
+    in the `chapter9` directory.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Spinnaker requires Helm archive files to operate
+  prefs: []
+  type: TYPE_NORMAL
+- en: In order to simplify the deployment of the Helm Charts, we have created an archive
+    of the `chapter9/shipitclicker` Helm Chart directory in `chapter9/helm.tar.gz`,
+    as Spinnaker expects an archive in this format as one of its inputs. We could
+    instead output this archive to an AWS S3 object, or even as a GitHub release artifact,
+    but that is beyond the scope of this chapter. If you change the Helm Charts in
+    the `chapter9/shipitclicker` directory, be sure to update the `helm.tar.gz` archive
+    and commit and push it before building with Spinnaker.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Adding a Spinnaker application
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Go to your Spinnaker installation in the web browser at [https://spinnaker.eks.example.com](https://spinnaker.eks.example.com)
+    (replacing example.com with your domain). Add an application called `shipandspin`,
+    then, in `Docker-for-Developers` code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/B11641_09_010.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 9.10 – The New Application dialog in Spinnaker
+  prefs: []
+  type: TYPE_NORMAL
+- en: When you submit this form, it will take you to an infrastructure definition
+    form. Stop here, and do not fill in or submit the infrastructure definition form.
+    This form is intended for other types of Spinnaker deployments, not for Kubernetes-centric
+    deployments. When you deploy your application, it will define infrastructure in
+    Kubernetes that Spinnaker understands.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Adding a Spinnaker pipeline
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Navigate to the **PIPELINES** screen:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/B11641_09_011.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 9.11 – A PIPELINES screen example in Spinnaker
+  prefs: []
+  type: TYPE_NORMAL
+- en: Create a pipeline called `shipit-eks-staging`, and then add two artifacts –
+    one for the Helm Chart and one for a `values-spin.yaml` override.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For the first one, pick the GitHub account, give it the `chapter9/helm.tar.gz`
+    Helm artifact, and click **Use Default Artifact**. Then, give it the full URL
+    of the artifact from the API, changing this to match your account and repository
+    name (double-check that this is correct before submitting):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[https://api.github.com/repos/PacktPublishing/Docker-for-Developers/contents/chapter9/helm.tar.gz](https://api.github.com/repos/PacktPublishing/Docker-for-Developers/contents/chapter9/helm.tar.gz)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Tell it to use the `staging` branch. It will look something like this when
+    you have defined it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/B11641_09_012.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 9.12 – Overriding the artifact: Helm Chart archive in Spinnaker'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Give it another artifact for the `chapter9/values-spin.yaml` override file.
+    Set the `chapter9/values-spin.yaml` file path and the `values-spin.yaml` display
+    name, select `staging` for the branch (replace`PacktPublishing/Docker-for-Developers`with
+    the GitHub organization and name of the forked copy of the repository that you
+    set up in [*Chapter 7*](B11641_07_Final_AM_ePub.xhtml#_idTextAnchor126), *Continuous
+    Deployment with Jenkins*):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/B11641_09_013.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 9.13 – Overriding the artifact: Helm Chart archive in Spinnaker'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Then, configure `build.properties` for **Property File**, which is a Jenkins
+    archived file that this will use to get the version of the container that Jenkins
+    built:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/B11641_09_014_New.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 9.14 – The Jenkins Automated Triggers screen in Spinnaker
+  prefs: []
+  type: TYPE_NORMAL
+- en: Go to the bottom of the form and save the **Configuration** stage.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now, let's add the next stage, which creates the Kubernetes manifest from the
+    Helm Charts.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Adding the Bake (Manifest) stage
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: After you have saved the configuration stage, you will still be at the bottom
+    of the very long stage-definition web form. Go back to the top of the form and
+    add an additional stage of the `shipit-staging` name and tell it to deploy to
+    the default namespace. Give it a **Template Artifact** setting of **helm.tar.gz**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For `image.repository` name and the `${trigger["properties"]["imageName"]}`
+    value. Add an override key-value pair with the `ingress.hosts[0].host` name and
+    the shipit-stage.eks.example.com value, replacing example.com with your domain
+    name.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We will set up a Route 53 DNS entry for the Ingress Controller that this creates
+    as soon as it is deployed. The form should look something like the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/B11641_09_015.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 9.15 – The Bake (Manifest) template renderer configuration screen in
+    Spinnaker
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Then, at the bottom of the form, in the `kube-templates.yaml` and save the
+    form. It should look something like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/B11641_09_016.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 9.16 – The Bake (Manifest) Produces Artifacts section in Spinnaker
+  prefs: []
+  type: TYPE_NORMAL
+- en: Configuring this stage will set up the Helm template-rendering process. Then,
+    save the form. Next, we will set up the **Deploy (Manifest)** stage.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Adding the Deploy (Manifest) stage
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'After you have saved the previous configuration change, go to the top of the
+    configuration form again and add another stage, `kube-templates.yaml` for **Manifest
+    Artifact** to deploy. Do not select the **Rollout Strategy Options** setting,
+    as this only works if you have one ReplicaSet and forego using **Deployments**
+    as a Kubernetes controller. It will look something like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/B11641_09_017.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 9.17 – Deploy (Manifest) Configuration in Spinnaker
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now, we are ready to trigger a deployment. Click on **PIPELINES** at the top
+    of the screen and click on the **Start Manual Execution** link. It should reach
+    out to GitHub for the latest build, and then bake the manifest using Helm Charts
+    and deploy.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Because we used Jenkins to emit a `build.properties` file and used a `image.repository`
+    field in the template, we will be using the specific container that the Jenkins
+    job connected to the trigger built. Refer to the following link for more information
+    on SPEL expressions and Spinnaker pipelines:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[https://www.spinnaker.io/guides/user/pipeline/expressions/](https://www.spinnaker.io/guides/user/pipeline/expressions/)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'There might be some issues that you need to troubleshoot, particularly if you
+    have made a typo in some of the required configurations. If all goes well, it
+    should look something like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/B11641_09_018.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 9.18 – Pipelines showing a completed job in Spinnaker
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can then explore the **Execution Details** and **INFRASTRUCTURE** panes,
+    as Spinnaker will show you some information about the running application. It
+    can even show you the logs from your running pods.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Setting up a DNS entry for the Ingress Controller
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: To see the running application from the outside, you will need to set up a DNS
+    entry. Issue the `kubectl get ingress` command to determine the DNS alias of the
+    Ingress Controller for `shipit-eks-staging`, and then set up the DNS alias in
+    Route 53 for your domain to match the override you set up for shipit-stage.eks.example.com
+    (replacing example.com with your domain).
+  prefs: []
+  type: TYPE_NORMAL
+- en: You should be able to visit [https://shipit-stage.eks.example.com/](https://shipit-staging.eks.example.com/)
+    (replacing example.com with your domain) once this is complete and see the running
+    ShipIt Clicker game.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next up, we will learn about Spinnaker's support for different types of deployments
+    and how they apply (or don't apply) to Kubernetes deployments.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Surveying Spinnaker's deployment and testing features
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In the introduction to Spinnaker earlier in this chapter, we noted that you
+    would have the opportunity to learn more about the various deployment methodologies
+    available to you. Let's now dig into these concepts, including canary and red/black
+    deployments, and describe their relevance to Spinnaker when used to manage Kubernetes
+    deployments.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Canary deployments
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Canary deployment is a method of exposing an application to its users where
+    you run a subset of the traffic for the application through a new deployment while
+    keeping most of the traffic for the application going to the currently deployed
+    version. This can help you test whether the new version is suitable for production
+    use without immediately funneling all the traffic through.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Kubernetes v2 Spinnaker provider does not support canary deployments
+  prefs: []
+  type: TYPE_NORMAL
+- en: Although this is one of Spinnaker's most desired features, the Kubernetes v2
+    cloud provider does not support canary deployments, so we won't use it for ShipIt
+    Clicker. If we were using a non-Kubernetes cloud provider, such as the AWS, Google
+    Compute Engine, or an Azure provider, this would be a more natural pattern to
+    use. See [https://spinnaker.io/setup/install/providers/](https://spinnaker.io/setup/install/providers/)
+    for the full list of Spinnaker cloud providers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Red/black deployments
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Let's now look at how the red/black deployment methodologies work. This is another
+    name for the better-known blue/green deployment strategy. With a red/black strategy,
+    you keep two sets of servers or containers available during a deployment, with
+    traffic flowing to only one at a time. Let's say red is taking traffic when the
+    deployment begins. During the deployment, you would deploy to black. Once the
+    health checks pass, you switch traffic to black, but keep red around so that if
+    anything goes wrong, you can switch traffic back to red without having to redeploy.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Spinnaker announced support for red/black deployments through the Kubernetes
+    v2 provider in 2019:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[https://blog.spinnaker.io/introducing-rollout-strategies-in-the-kubernetes-v2-provider-8bbffea109a](https://blog.spinnaker.io/introducing-rollout-strategies-in-the-kubernetes-v2-provider-8bbffea109a)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'However, this has some significant limitations. It means you can''t use the
+    Kubernetes deployment objects and must instead use the lower-level ReplicaSet
+    annotations. The Helm Chart generator produces a skeleton with a deployment in
+    it that sits atop ReplicaSets, so if you want to use the Spinnaker red/black support
+    with Kubernetes, you will have to alter your Helm Charts significantly. Refer
+    to this advice on the Kubernetes v2 provider:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: https://www.spinnaker.io/guides/user/kubernetes-v2/traffic-management/#you-must-use-replica-sets
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'What Spinnaker *does* support for Kubernetes deployments that only use ReplicaSets
+    are the following deployment strategies:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Dark**: Deploy to a new ReplicaSet that is not connected to the live load
+    balancer.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Red/black**: Deploy a new ReplicaSet and switch back and forth between the
+    new and old sets using Spinnaker.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Highlander**: Deploy a new ReplicaSet and destroy the old one as soon as
+    the new one starts taking traffic (there can be only one ReplicaSet).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: If you are using the Kubernetes deployment controller, the behavior you will
+    get is very similar to the Spinnaker Highlander strategy. So, you may not need
+    to use the Spinnaker support for advanced deployment strategies if you are using
+    Kubernetes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Rolling back
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: So, what happens if a deployment fails? Well, we will need to roll back to our
+    previous release in a safe fashion. For the style of deployment where Spinnaker
+    manages deploying machine images, it orchestrates this rollback. However, with
+    the Kubernetes operator, it relies on the Kubernetes deployment mechanisms that
+    use liveness and readiness probes in order to check that a deployment is valid.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Spinnaker does have some support for undoing a rollout of a set of templates
+    directly through its interface. However, this may not work if all the resources
+    in the templates do not have independent revisions, such as separately versioned
+    and tagged Docker containers. See here for more information about rollbacks with
+    Spinnaker and Kubernetes:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[https://www.spinnaker.io/guides/user/kubernetes-v2/automated-rollbacks/](https://www.spinnaker.io/guides/user/kubernetes-v2/automated-rollbacks/)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Testing with Spinnaker
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: With Spinnaker, you can either use a manual judgement stage to provide time
+    for people to do a manual test on an application or you can use a scripted pipeline
+    stage to run an automated test suite in Jenkins versus your application. If you
+    are deploying to multiple environments or using the red/black strategies, this
+    can give you a better opportunity to execute tests versus your application before
+    deploying it to production or exposing it to the world.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can find more information on testing using either one of these strategies
+    in their respective Spinnaker documentation at [https://www.spinnaker.io/guides/tutorials/codelabs/safe-deployments/](https://www.spinnaker.io/guides/tutorials/codelabs/safe-deployments/)
+    and [https://www.spinnaker.io/setup/features/script-stage/](https://www.spinnaker.io/setup/features/script-stage/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we explored the topic of continuous deployment in AWS using
+    the Spinnaker framework. We started by configuring Spinnaker to work with Jenkins,
+    GitHub, AWS ECR, and Docker Hub. Then, we used it to deploy the ShipIt Clicker
+    application to Kubernetes on EKS, securing both Spinnaker and the ShipIt Clicker
+    application with SSL.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Following this, we learned about some advanced deployment strategies that Spinnaker
+    offers, and what some of the trade-offs are that you would have to make when configuring
+    your Kubernetes-driven Docker application to take advantage of them. We also learned
+    how you can trigger the execution of tests (manual or automated) via Spinnaker.
+    By using the lessons learned in this chapter in practice, you can construct continuous
+    deployment systems that use a combination of simple Jenkins build jobs and Spinnaker
+    pipelines to deploy Docker applications to Kubernetes. The skills you have acquired
+    related to integrating Spinnaker with Kubernetes are also applicable to integrating
+    other software packages with Kubernetes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next chapter, we will explore monitoring our Docker containers with Prometheus,
+    Grafana, and Jaeger.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Further reading
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Use the following resources to expand your knowledge of Spinnaker and EKS:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Spinnaker is not a build server, and other misconceptions: [https://www.armory.io/blog/spinnaker-is-not-a-build-server-and-other-misconceptions/](https://www.armory.io/blog/spinnaker-is-not-a-build-server-and-other-misconceptions/)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'An AWS blog post describing a full installation of Kubernetes and Spinnaker
+    with Jenkins and ECR: [https://aws.amazon.com/blogs/opensource/deployment-pipeline-spinnaker-kubernetes/](https://aws.amazon.com/blogs/opensource/deployment-pipeline-spinnaker-kubernetes/)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'A good article on how Kubernetes services are exposed to the world: [https://medium.com/google-cloud/kubernetes-nodeport-vs-loadbalancer-vs-ingress-when-should-i-use-what-922f010849e0](https://medium.com/google-cloud/kubernetes-nodeport-vs-loadbalancer-vs-ingress-when-should-i-use-what-922f010849e0)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The AWS official documentation on the ALB Ingress Controller: [https://docs.aws.amazon.com/eks/latest/userguide/alb-ingress.html](https://docs.aws.amazon.com/eks/latest/userguide/alb-ingress.html)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The Spinnaker CLI: [https://www.spinnaker.io/guides/spin/](https://www.spinnaker.io/guides/spin/)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'A Kubernetes external DNS provider that you can use to annotate your templates
+    to avoid having to manually set up DNS aliases: [https://github.com/kubernetes-sigs/external-dns](https://github.com/kubernetes-sigs/external-dns)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Spinnaker is not the only advanced Kubernetes-aware CD system you should be
+    aware of; you might consider these other alternatives as well, and carry out fresh
+    research on this topic as this landscape is changing rapidly:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Jenkins-X – an opinionated Kubernetes-focused CI/CD system: [https://jenkins-x.io/](https://jenkins-x.io/)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Argo Project – workflows, CD, and more. A CNCF project at the incubating stage
+    as of July 2020: [https://argoproj.github.io/](https://argoproj.github.io/)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'WeaveWorks – a GitOps system for CD using Kubernetes: [https://www.weave.works/technologies/ci-cd-for-kubernetes/](https://www.weave.works/technologies/ci-cd-for-kubernetes/)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL

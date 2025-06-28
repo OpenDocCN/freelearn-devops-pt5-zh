@@ -1,0 +1,1690 @@
+- en: '19'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Monitoring and Troubleshooting an Application Running in Production
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In the previous chapter, we got an overview of the three most popular ways of
+    running containerized applications in the cloud – AWS EKS, Azure AKS, and Google
+    GKE. We then explored each of the hosted solutions and discussed their pros and
+    cons.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This chapter looks at different techniques used to instrument and monitor an
+    individual service or a whole distributed application running on a Kubernetes
+    cluster. You will be introduced to the concept of alerting based on key metrics.
+    The chapter also shows how one can troubleshoot an application service that is
+    running in production without altering the cluster or the cluster nodes on which
+    the service is running.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here is a list of topics we are going to discuss in this chapter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Monitoring an individual service
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Using OpenTracing for distributed tracing
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Leveraging Prometheus and Grafana to monitor a distributed application
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Defining alerts based on key metrics
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Troubleshooting a service running in production
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'After reading this chapter and following the exercises carefully, you will
+    have acquired the following skills:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Instrumenting your services with OpenTracing
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Configuring application-level monitoring for a service
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Using Prometheus to collect and centrally aggregate relevant application metrics
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Using Grafana to monitor the application
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Defining and wiring alerts triggered based on rules defined for key metrics
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Troubleshooting a service running in production using a special tools container
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Without further ado, let’s dive into the chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Technical requirements
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We are going to use Docker Desktop and its single-node Kubernetes cluster in
+    this chapter. Make sure you have Docker Desktop installed and properly configured
+    as described in [*Chapter 2*](B19199_02.xhtml#_idTextAnchor027), *Setting Up a*
+    *Working Environment*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We’ll also use the files in the `~/The-Ultimate-Docker-Container-Book/sample-solutions/ch19`
+    folder of our labs repository from GitHub, at [https://github.com/PacktPublishing/The-Ultimate-Docker-Container-Book/tree/main/sample-solutions/ch19](https://github.com/PacktPublishing/The-Ultimate-Docker-Container-Book/tree/main/sample-solutions/ch19).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Monitoring an individual service
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Effective monitoring of distributed, mission-critical applications is crucial,
+    akin to the instrumentation in a nuclear power plant or airplane cockpit. Our
+    application services and infrastructure need “sensors” that collect important
+    data, functioning similarly to the sensors monitoring the temperature or flow
+    rate in complex systems.
+  prefs: []
+  type: TYPE_NORMAL
+- en: These “sensors” collect values – or metrics – to provide insight into our application’s
+    performance. Metrics can be both functional, which provide business-relevant data,
+    and non-functional, which give insight into system performance irrespective of
+    the application’s business type.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Functional metrics might include the rate of checkouts per minute on an e-commerce
+    platform or the five most streamed songs in the last 24 hours for a music streaming
+    service. Non-functional metrics could show the average latency of a web request,
+    the number of 4xx status codes returned, or resource usage such as RAM or CPU
+    cycles.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In a distributed system, a centralized service is needed to aggregate these
+    metrics. This is similar to how an airplane cockpit consolidates all necessary
+    readings, eliminating the need for pilots to inspect each part of the plane during
+    a flight.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Prometheus, an open source project donated to the **Cloud Native Computing Foundation**
+    (**CNCF**), is a popular service for metrics exposure, collection, and storage.
+    It integrates well with Docker containers, Kubernetes, and many other systems.
+    We will use Prometheus to demonstrate metric instrumentation for a service in
+    this chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using OpenTracing for distributed tracing
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: OpenTracing is an open standard for distributed tracing that provides a vendor-neutral
+    API and instrumentation for distributed systems. In OpenTracing, a trace tells
+    the story of a transaction or workflow as it propagates through a distributed
+    system. The concept of the trace borrows a tool from the scientific community
+    called a **directed acyclic graph** (**DAG**), which stages the parts of a process
+    from a clear start to a clear end.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Distributed tracing** is a way to track a single request and log a single
+    request as it crosses through all of the services in our infrastructure. It can
+    help us understand how long each service takes to process the request and identify
+    bottlenecks in our system. It can also help us identify which service is causing
+    an issue when something goes wrong.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using OpenTracing for distributed tracing can help us gain visibility into our
+    distributed system and understand how requests are flowing through it. It can
+    also help us identify performance issues and troubleshoot problems more quickly.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A Java example
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Let’s create the simplest possible Java example with a Spring Boot example
+    that uses OpenTracing:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Start by navigating to your source code folder:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Then create a subfolder, `ch19`, and navigate to it:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Go to [https://start.spring.io/](https://start.spring.io/) to create a `SpringBoot`
+    application.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Use `Gradle – Groovy` as the project and `Java` as the language.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Leave all the other defaults.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Create the application and download the ZIP file.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Extract it into the `ch19/java` subfolder.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Modify your `build.gradle` file such that it looks like this one:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 19.1 – build.gradle file when using OpenTracing](img/Figure_19.01_B19199.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 19.1 – build.gradle file when using OpenTracing
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Modify your `DemoApplication.java` file such that it looks like this:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 19.2 – DemoApplication.java file demoing OpenTracing](img/Figure_19.02_B19199.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 19.2 – DemoApplication.java file demoing OpenTracing
+  prefs: []
+  type: TYPE_NORMAL
+- en: Run the application by clicking on the `main` method of the `DemoApplication`
+    class.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: In a terminal window, use `curl` to hit the http://localhost:8080 endpoint.
+    The response should be `Hello, World!`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Observe the output in the Terminal window of VS Code. You should see something
+    like this:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 19.3 – OpenTracing used in a simple Java and Spring Boot application](img/Figure_19.03_B19199.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 19.3 – OpenTracing used in a simple Java and Spring Boot application
+  prefs: []
+  type: TYPE_NORMAL
+- en: This shows that a span has been created and reported.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next, let’s see how we can instrument a Node.js service.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Instrumenting a Node.js-based service
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'In this section, we will learn how to instrument a microservice authored in
+    Node.js by following these steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Navigate to your source code folder:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Create a new folder called `node` and navigate to it:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Run `npm init` in this folder, and accept all defaults except the entry point,
+    which you change from the `index.js` default to `server.js`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'We need to add `express` to our project with the following:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Note
+  prefs: []
+  type: TYPE_NORMAL
+- en: As of npm 5.0.0, you no longer need to use this option. Now, npm saves all installed
+    packages as dependencies by default.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now we need to install the Prometheus adapter for Node Express with the following:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Add a file called `server.js` to the folder with this content:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: This is a very simple Node Express app with a single endpoint – `/``hello`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To the preceding code, after line 1, add the following snippet to initialize
+    the Prometheus client:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Next, add an endpoint to expose the metrics. You can add it right after the
+    definition of the `/``hello` endpoint:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Now let’s run this sample microservice:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'You should see an output similar to this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: We can see in the preceding output that the service is listening on port `3000`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let’s now try to access the metrics at the `/metrics` endpoint, as we defined
+    in the code. For this, open a new terminal window and use this command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'You should see output similar to this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: Note that the preceding output has been shortened for readability. What we get
+    as output is a pretty long list of metrics, ready for consumption by a Prometheus
+    server.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This was pretty easy, wasn’t it? By adding a Node package and adding a few trivial
+    lines of code to our application startup, we have gained access to a plethora
+    of system metrics.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now let’s define our own custom metric. We will make it a `counter` object:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Add the following code snippet to `server.js` to define a custom counter called
+    `my_hello_counter`:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'To our existing `/hello` endpoint, add code to increase the counter. The modified
+    endpoint should look like this:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Rerun the application with `npm start`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'To test the new counter, let’s access our `/hello` endpoint twice:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'We will get this output when accessing the `/``metrics` endpoint:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Analyze the output generated by the preceding command and look for something
+    like this toward the end of the output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: The counter we defined in the code clearly works and is output with the `HELP`
+    text we added.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we know how to instrument a Node Express application, let’s do the
+    same for a .NET-based microservice.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Instrumenting a .NET service
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Let’s start by creating a simple .NET microservice based on the Web API template:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Navigate to your source code folder:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Create a new `dotnet` folder, and navigate to it:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Use the `dotnet` tool to scaffold a new microservice called `sample-api`:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'We will use the Prometheus adapter for .NET, which is available to us as a
+    NuGet package called `prometheus-net.AspNetCore`. Add this package to the `sample-api`
+    project with the following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Open the project in your favorite code editor; for example, when using VS Code,
+    execute the following:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Locate the `Program.cs` file, and open it. At the beginning of the file, add
+    a `using` statement:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Then, in the code of the file, right after the `app.MapControllers()` command,
+    add the `app.MapMetrics()` command. Your code should look as follows:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Note that the preceding is valid for version 7.x of .NET or newer. If you’re
+    on an earlier version, the configuration might look slightly different. Consult
+    the repo for more details, at [https://github.com/prometheus-net/prometheus-net](https://github.com/prometheus-net/prometheus-net).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'With this, the Prometheus component will start publishing the request metrics
+    of ASP.NET. Let’s try it. First, start the application with the following:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'The output of the preceding command should look like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: The preceding output tells us that the microservice is listening at http://localhost:5204.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We can now use `curl` to call the metrics endpoint of the service:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'The (shortened) output of the preceding command looks similar to this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'What we get is a list of system metrics for our microservice. That was easy:
+    we only needed to add a NuGet package and a single line of code to get our service
+    instrumented!'
+  prefs: []
+  type: TYPE_NORMAL
+- en: What if we want to add our own (functional) metrics? This is equally straightforward.
+    Assume we want to measure the number of concurrent accesses to the `/weatherforecast`
+    endpoint that .NET scaffolding created for us. To do this, we define a gauge and
+    use it to wrap the logic in the appropriate endpoint with this gauge.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Metric types
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Prometheus supports four types of metrics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Counter**: A cumulative metric that represents a single monotonically increasing
+    counter whose value can only increase or be reset to zero on restart.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Gauge**: A metric that represents a single numerical value that can arbitrarily
+    go up and down. Gauges are typically used for measured values such as temperatures
+    or current memory usage.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Histogram**: A metric that samples observations (usually things such as request
+    durations or response sizes) and counts them in configurable buckets. It also
+    provides a sum of all observed values.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Summary**: Similar to a histogram, a summary samples observations. While
+    it also provides a total count of observations and a sum of all observed values,
+    it calculates configurable quantiles over a sliding time window.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'We can define our own gauge by following these steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Locate the `WeatherForecastController.cs` class in the `Controllers` folder.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Add `using Prometheus;` to the top of the file.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Define a private instance `callsInProgress` variable of the `Gauge` type in
+    the `WeatherForecastController` class:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Wrap the logic of the `Get` method with a `using` statement:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Restart the microservice.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Call the `/weatherforecast` endpoint a couple of times using `curl`:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Use `curl` to get the metrics, as done earlier in this section:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'You should see an output similar to the following one (shortened):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: You will notice that there is now a new metric called `myapp_weather_forecasts_in_progress`
+    available in the list. Its value will be zero since, currently, you are not running
+    any requests against the tracked endpoint, and a gauge-type metric only measures
+    the number of ongoing requests.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Congratulations, you have just defined your first functional metric! This is
+    only a start; many more sophisticated possibilities are readily available to you.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Node.js- or .NET-based application services are by no means special. It is just
+    as straightforward and easy to instrument services written in other languages,
+    such as Kotlin, Python, or Go.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Having learned how to instrument an application service so that it exposes important
+    metrics, let’s now have a look at how we can use Prometheus to collect and aggregate
+    those values to allow us to monitor a distributed application.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Leveraging Prometheus and Grafana to monitor a distributed application
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Now that we have learned how to instrument an application service to expose
+    Prometheus metrics, it’s time to show how we can collect the metrics and forward
+    them to a Prometheus server where all metrics will be aggregated and stored. We
+    can then either use the (simple) web UI of Prometheus or a more sophisticated
+    solution such as Grafana to display important metrics on a dashboard.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Unlike most other tools that are used to collect metrics from application services
+    and infrastructure components, the Prometheus server takes the load of work and
+    periodically scrapes all the defined targets. This way, applications and services
+    don’t need to worry about forwarding data. You can also describe this as pulling
+    metrics, versus pushing them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This makes Prometheus servers an excellent fit for our case. We will now discuss
+    how to deploy Prometheus to Kubernetes, followed by our two sample application
+    services. Finally, we will deploy Grafana to the cluster, and use it to display
+    our custom metrics on a dashboard.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Architecture
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Let’s have a quick overview of the architecture of the planned system. As mentioned
+    before, we have our microservices, the Prometheus server, and Grafana. Furthermore,
+    everything will be deployed to Kubernetes. The following diagram shows the relationships:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 19.4 – High-level overview of an application using Prometheus and
+    Grafana for monitoring](img/Figure_19.04_B19199.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 19.4 – High-level overview of an application using Prometheus and Grafana
+    for monitoring
+  prefs: []
+  type: TYPE_NORMAL
+- en: At the top center of the diagram, we have Prometheus, which periodically scrapes
+    metrics from Kubernetes, shown on the left. It also periodically scrapes metrics
+    from the services, in our case from the Node.js and .NET sample services we created
+    and instrumented in the previous section. Finally, on the right-hand side of the
+    diagram, we have Grafana, which pulls data periodically from Prometheus to then
+    display it on graphical dashboards.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deploying Prometheus to Kubernetes
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'As indicated, we start by deploying Prometheus to Kubernetes. Let’s first define
+    the Kubernetes YAML file that we can use to do so. First, we need to define a
+    Kubernetes Deployment that will create a ReplicaSet of Prometheus server instances,
+    and then we will define a Kubernetes service to expose Prometheus to us, so that
+    we can access it from within a browser tab, or so that Grafana can access it.
+    Let’s do it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Navigate to the source folder:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Create a `kube` folder, and navigate to it:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Add a file called `prometheus.yaml` to this folder.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Add the following code snippet to this file; it defines a Deployment for Prometheus:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 19.5 – Deployment for Prometheus](img/Figure_19.05_B19199.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 19.5 – Deployment for Prometheus
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We are defining a ReplicaSet with two instances of Prometheus. Each instance
+    is assigned two labels, `app: prometheus` and `purpose: monitoring-demo`, for
+    identification purposes. The interesting part is in the `volumeMounts` section
+    of the container spec. There, we mount a Kubernetes `ConfigMap` object called
+    `prometheus-cm`, containing the Prometheus configuration, in the container at
+    the location where Prometheus expects its configuration file(s) to be. The volume
+    of the `ConfigMap` type is defined in the last four lines of the preceding code
+    snippet.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note that we will define the ConfigMap later on.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now let’s define the Kubernetes service for Prometheus. Append this snippet
+    to the previous file:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 19.6 – Service for Prometheus](img/Figure_19.06_B19199.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 19.6 – Service for Prometheus
+  prefs: []
+  type: TYPE_NORMAL
+- en: Please note the three dashes (`---`) at the beginning of the snippet are needed
+    to separate individual object definitions in our YAML file.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We call our service `prometheus-svc` and make it `NodePort` (and not just a
+    service of the `ClusterIP` type) to be able to access the Prometheus web UI from
+    the host.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now we can define a simple configuration file for Prometheus. This file basically
+    instructs the Prometheus server which services to scrape metrics from and how
+    often to do so. First, create a `ch19/kube/config` subfolder:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Add a file called `prometheus.yml` to the `config` folder, and add the following
+    content to it:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 19.7 – Prometheus configuration](img/Figure_19.07_B19199.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 19.7 – Prometheus configuration
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the preceding file, we define three jobs for Prometheus:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The first one, called `prometheus`, scrapes metrics every five seconds from
+    the Prometheus server itself. It finds those metrics at the `localhost:9090` target.
+    Note that, by default, the metrics should be exposed on the `/``metrics` endpoint.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The second job, called `dotnet`, scrapes metrics from a service found at `dotnet-api-svc:80`,
+    which will be our .NET Core service that we defined and instrumented previously.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Finally, the third job does the same for our Node service. Note that we have
+    also added a group `'production'` label to this job. This allows further grouping
+    of jobs or tasks.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Now we can define the `ConfigMap` object in our Kubernetes cluster with the
+    next command. From within the `ch19/kube` folder, execute the following:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: What is a Kubernetes ConfigMap?
+  prefs: []
+  type: TYPE_NORMAL
+- en: A Kubernetes ConfigMap is an API object used to store non-confidential configuration
+    data in key-value pairs. This can include settings such as environment-specific
+    URLs, command-line arguments, or any other parameters your applications need to
+    run.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The main advantage of ConfigMaps is that they allow you to decouple configuration
+    details from your application code. This can help make your applications more
+    portable and easier to scale.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'ConfigMaps can be consumed by Pods in a variety of ways: as environment variables,
+    as command-line arguments for a container, or as configuration files in a volume.
+    This flexibility allows developers to choose the most suitable method for their
+    use case.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We can now deploy Prometheus to our Kubernetes server with the following:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE38]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'This gives this response:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE39]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let’s double-check that the deployment succeeded:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE40]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Here is the output of the preceding command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 19.8 – The Prometheus resources created on the Kubernetes cluster](img/Figure_19.08_B19199.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 19.8 – The Prometheus resources created on the Kubernetes cluster
+  prefs: []
+  type: TYPE_NORMAL
+- en: Keep a close eye on the list of Pods, and make sure they are all up and running.
+    Please also note the port mapping of the `prometheus-svc` object. In the author’s
+    case, the `9090` port is mapped to the `31421` host port. In your case, the latter
+    may be different, but it will also be in the 3xxxx range.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We can now access the web UI of Prometheus. Open a new browser tab, and navigate
+    to `http://localhost:<port>/targets` where `<port>` in the author’s case is `31421`.
+    You should see something like this:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 19.9 – Prometheus web UI showing the configured targets](img/Figure_19.09_B19199.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 19.9 – Prometheus web UI showing the configured targets
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the previous screenshot, we can see that we defined three targets for Prometheus.
+    Only the third one in the list is up and accessible by Prometheus. It is the endpoint
+    we defined in the configuration file for the job that scrapes metrics from Prometheus
+    itself. The other two services are not running at this time, and thus their state
+    is down.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now navigate to **Graph** by clicking on the respective link in the top menu
+    of the UI.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Start typing in the search box and a list of known metrics will appear in a
+    list. Inspect all the listed metrics that Prometheus found. In this case, it is
+    only the list of metrics defined by the Prometheus server itself:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 19.10 – Prometheus web UI showing available metrics](img/Figure_19.10_B19199.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 19.10 – Prometheus web UI showing available metrics
+  prefs: []
+  type: TYPE_NORMAL
+- en: With that, we are ready to deploy the .NET and Node sample services we created
+    earlier to Kubernetes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deploying our application services to Kubernetes
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Before we can use the sample services we created earlier and deploy them to
+    Kubernetes, we must create Docker images for them and push them to a container
+    registry. In our case, we will just push them to Docker Hub.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let’s start with the .NET Core sample:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Add a Dockerfile with the following content to the `ch19/dotnet/sample-api`
+    project folder:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE41]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Create a Docker image by using this command from within the `dotnet/sample-api`
+    project folder:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE42]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Note that you may want to replace `fundamentalsofdocker` with your own Docker
+    Hub username in the preceding and subsequent commands.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Make sure you are logged in to Docker. If not, use this command to do so:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE43]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Push the image to Docker Hub:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE44]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Now we do the same with the Node sample API:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Add a Dockerfile with the following content to the `ch19/node` project folder:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE45]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'Create a Docker image by using this command from within the `ch19/node` project
+    folder:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE46]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: Note once again that you may want to replace `fundamentalsofdocker` with your
+    own Docker Hub username in the preceding and subsequent commands.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Push the image to Docker Hub:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE47]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: With this, we are ready to define the necessary Kubernetes objects for the deployment
+    of the two services. The definition is somewhat lengthy and can be found in the
+    `sample-solutions/ch19/kube/app-services.yaml` file in the repository.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Please open that file and analyze its content.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let’s use this file to deploy the services:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Make sure you are in the `kube` subfolder.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Use the following command to deploy the two services:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE48]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'This is the output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE49]'
+  prefs: []
+  type: TYPE_PRE
+- en: Double-check that the services are up and running using the `kubectl get all`
+    command. Make sure all the Pods of the Node and .NET sample API services are up
+    and running.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'List all Kubernetes services to find out the host ports for each application
+    service:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE50]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'The output looks like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 19.11 – Output of kubectl get services](img/Figure_19.11_B19199.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 19.11 – Output of kubectl get services
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the author’s case, the .NET API is mapped to port `30211`, and the Node API
+    to port `30663`. Your ports may differ.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Use `curl` to access the `/metrics` endpoint for the .NET service:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE51]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'The output should look like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE52]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now do the same for the Node service:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE53]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'This time, the output looks like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE54]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Double-check the `/targets` endpoint in Prometheus to make sure the two microservices
+    are now reachable:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 19.12 – Prometheus showing all targets are up and running](img/Figure_19.12_B19199.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 19.12 – Prometheus showing all targets are up and running
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To make sure the custom metrics we defined for our Node.js and .NET services
+    are defined and exposed, we need to access each service at least once. Thus use
+    `curl` to access the respective endpoints a few times:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE55]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'We can also see the two metrics in the Prometheus Graph view:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 19.13 – Custom metrics in Prometheus](img/Figure_19.13_B19199.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 19.13 – Custom metrics in Prometheus
+  prefs: []
+  type: TYPE_NORMAL
+- en: The last step is to deploy Grafana to Kubernetes so that we have the ability
+    to create sophisticated and graphically appealing dashboards displaying key metrics
+    of our application services and/or infrastructure components.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deploying Grafana to Kubernetes
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Now let’s also deploy Grafana to our Kubernetes cluster, so that we can manage
+    this tool the same way as all the other components of our distributed application.
+    As the tool that allows us to create dashboards for monitoring the application,
+    Grafana can be considered mission-critical and thus warrants this treatment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Deploying Grafana to the cluster is pretty straightforward. Let’s do it as
+    follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Add a new file called `grafana.yaml` to the `ch19/kube` folder.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'To this file, add the definition for a Kubernetes Deployment for Grafana:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 19.14 – The content of the grafana.yaml file](img/Figure_19.14_B19199.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 19.14 – The content of the grafana.yaml file
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you prefer not to type the code yourself, then the file can be found in the
+    `sample-solutions/ch19/kube` subfolder of your repo.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There are no surprises in that definition. In this example, we are running a
+    single instance of Grafana, and it uses the `app` and `purpose` labels for identification,
+    similar to what we used for Prometheus. No special volume mapping is needed this
+    time since we are only working with defaults.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We also need to expose Grafana, and thus append the following snippet to the
+    preceding file to define a service for Grafana:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 19.15 – The Kubernetes service for Grafana](img/Figure_19.15_B19199.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 19.15 – The Kubernetes service for Grafana
+  prefs: []
+  type: TYPE_NORMAL
+- en: Once again, we are using a service of the `NodePort` type to be able to access
+    the Grafana UI from our host.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We can now deploy Grafana with this command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE56]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'This results in this output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE57]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let’s find out what the port number will be, over which we can access Grafana:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE58]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'This gives us this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 19.16 – Get details of the Grafana service](img/Figure_19.16_B19199.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 19.16 – Get details of the Grafana service
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Open a new browser tab and navigate to `http://localhost:<port>`, where `<port>`
+    is the port you identified in the previous step, and in my case is `32736`. You
+    should see something like this:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 19.17 – Login screen of Grafana](img/Figure_19.17_B19199.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 19.17 – Login screen of Grafana
+  prefs: []
+  type: TYPE_NORMAL
+- en: Log in with the default username `admin`, and the password is also `admin`.
+    When asked to change the password, click the **Skip** link for now. You will be
+    redirected to the **Home** dashboard.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: On the **Home** dashboard, click on **Create your first data source**, and select
+    **Prometheus** from the list of data sources.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Add `http://prometheus-svc:9090` for the URL to Prometheus, and click the green
+    **Save &** **Test** button.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: In Grafana, navigate back to the **Home** dashboard, and then select the **New**
+    **dashboard** link.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Click **Add query**, and then from the **Metrics** drop-down menu, select the
+    custom metric we defined in the .NET sample service:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 19.18 – Selecting the .NET custom metric in Grafana](img/Figure_19.18_B19199.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 19.18 – Selecting the .NET custom metric in Grafana
+  prefs: []
+  type: TYPE_NORMAL
+- en: Change the value of **Relative time** from **1h** to **5m** (5 minutes).
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Change the dashboard refresh rate, found in the upper-right corner of the view,
+    to **5s** (5 seconds).
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Repeat the same for the custom metric defined in the Node sample service, so
+    that you will have two panels on your new dashboard.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Modify the dashboard and its panels to your liking by consulting the documentation
+    at [https://grafana.com/docs/grafana/latest/guides/getting_started/](https://grafana.com/docs/grafana/latest/guides/getting_started/).
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Use `curl` to access the two endpoints of the sample services, and observe
+    the dashboard. It may look like this:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Figure 19.19 – Grafana dashboard with our two custom metrics](img/Figure_19.19_B19199.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 19.19 – Grafana dashboard with our two custom metrics
+  prefs: []
+  type: TYPE_NORMAL
+- en: To summarize, we can say that Prometheus is a good fit to monitor our microservices
+    because we just need to expose a metrics port, and thus don’t need to add too
+    much complexity or run additional services. Prometheus then is in charge of periodically
+    scraping the configured targets, so that our services don’t need to worry about
+    emitting them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Defining alerts based on key metrics
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: You will be let down if you believe that gathering logs and metrics and showing
+    them in attractive dashboards is sufficient. If we just use dashboards, some support
+    staff will need to be stationed in front of a large number of monitors constantly,
+    round the clock, every day of the year, just in case. To put it mildly, this job
+    is tedious. What happens if the person nods off? We must adjust our approach.
+    Let’s start by defining what metrics are.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Metrics
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Metrics are used as input values in the rules on which alerts are based. Critical
+    metrics must be identified, and if they surpass a predetermined value repeatedly
+    or for an extended period of time, an alert is required. For illustration, consider
+    CPU usage.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Defining alerts based on key metrics is an important part of monitoring and
+    maintaining the health of our Docker and Kubernetes systems. Alerts allow us to
+    define conditions based on metrics and to send notifications when those conditions
+    are met, allowing us to quickly respond to potential issues.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In Kubernetes, we can use tools such as Prometheus to define alerting rules
+    based on PromQL expressions. These rules allow us to specify conditions based
+    on metrics collected from our cluster and send notifications to an external service
+    when those conditions are met. For example, we could define an alert that triggers
+    when CPU or memory utilization on cluster nodes exceeds a certain threshold.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In Docker, we can use tools such as cAdvisor or Docker stats to collect metrics
+    from our containers, and then use a monitoring and alerting tool to define alerts
+    based on those metrics. For example, we could define an alert that triggers when
+    the number of running containers exceeds a certain threshold.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'When defining alerts, it’s important for us to follow best practices to ensure
+    that our alerts are effective and actionable. Some best practices for alerting
+    on Kubernetes include the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Alerting on symptoms**: Alerts should be based on symptoms that have a noticeable
+    impact, rather than unexpected values in metrics'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Alerting on the host or Kubernetes node layer**: Monitor the health of your
+    hosts and nodes to ensure that your cluster is running smoothly'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Alerting on the Kubernetes infrastructure**: Monitor the health of the Kubernetes
+    control plane and other internal services'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Alerting on services running on Kubernetes**: Monitor the health of your
+    applications running on Kubernetes'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Alerting on application layer metrics**: Monitor application-specific metrics
+    to ensure that your applications are running smoothly'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Now let’s talk about alerting when an exceptional situation occurs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Alerts
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Let’s define alerts, which are sent out when something unusual occurs. We may
+    alert in different ways. If you are on duty, it may be a pager message, a text
+    message, an email, or even the activation of an alarm sound and some blinking
+    alert lights. Everything hinges on the use case. Let’s just state that the author
+    has contributed to several programs that have employed all of the aforementioned
+    methods of alerting users.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For illustration, consider CPU use. When a Kubernetes cluster node’s CPU use
+    exceeds 95% for a period of more than a minute, the **System Reliability Engineer**
+    (**SRE**) needs to be notified.
+  prefs: []
+  type: TYPE_NORMAL
+- en: But who must establish the guidelines, you might wonder? Operations – or, more
+    precisely, the SREs – are responsible for determining what non-functional metrics
+    are significant and when they wish to be notified, even in the middle of the night.
+    The company must specify the functional metrics as well as the tolerance levels
+    or other criteria that will cause an alert for each measure.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Defining alerts
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: It is not sufficient to merely gather and display metrics, whether they pertain
+    to infrastructure or the business. In order to develop **Service-Level Objectives**
+    (**SLOs**) and **Service-Level Agreements** (**SLAs**) for those metrics, we must
+    first determine the crucial indicators that truly define the state of the system.
+    Following that, we establish guidelines for how frequently and for how long a
+    measured metric may exceed the appropriate SLO or SLA. We send out an alert if
+    one of these rules is broken.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s define a few potential alert candidates to get a sense of this. The first
+    sample is a system-level statistic, whereas the second is a functional, or business-relevant,
+    metric. Can you distinguish between them?
+  prefs: []
+  type: TYPE_NORMAL
+- en: We define the percentage of the total CPU utilized in a banking application
+    as a statistic. *The proportion should not exceed 99%* could be the SLO. The rule
+    might be that an alert should be sent out if the CPU percentage rises above 99%
+    for more than 50% of a minute.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: We may designate the amount of time it takes to generate a quote for a customer
+    interested in a quote as a critical statistic in an application providing life
+    insurance. The SLA for this metric may then be that 99% of all quote requests
+    must be processed within 50 milliseconds. No request can take more than 1,000
+    milliseconds. If the SLA is breached more than three times in a single hour, an
+    alert should be sent, according to a rule for alerts.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The former is a infrastructure metric, whereas the latter is an commercial metric.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The chosen target individuals, such as SREs or developers, can then get alerts
+    via a variety of channels, including email, text messages, automated phone calls,
+    Slack messages, audio alarms, optical alarms, and others.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Service employees can now conduct other activities instead of actively monitoring
+    the system once we have created and wired such alarms. They are guaranteed to
+    be informed if anything significant or unusual occurs to which they must respond.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Runbooks
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Say that an alert has been raised. What follows? Runbooks can help in this situation.
+    A runbook outlines for each alert who must be notified, what this person must
+    do to remedy the underlying problem, and to whom the problem must be escalated
+    if it cannot be resolved. Runbook creation is a difficult process that shouldn’t
+    be taken lightly. However, they are a crucial tool for businesses. An SRE is only
+    capable of so much. Some production problems are so serious that the C-level management
+    must be notified. Imagine, for instance, that you run an online store and that
+    there are no payments coming in because your **Payment Service Provider** (**PSP**)
+    is down, making it impossible to process payments on your platform. This indicates
+    that your application is now devoid of a crucial requirement. In essence, you
+    are unable to conduct business until the problem is fixed; don’t you think your
+    CTO should be aware of this?
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let’s talk about a current hot topic: problems occurring with a production
+    system. We need to swiftly identify the underlying cause of the problem.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Troubleshooting a service running in production
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: It is a recommended best practice to create minimal images for production that
+    don’t contain anything that is not absolutely needed. This includes common tools
+    that are usually used to debug and troubleshoot an application, such as `netcat`,
+    `iostat`, `ip`, and others. Ideally, a production system only has container orchestration
+    software such as Kubernetes installed on a cluster node with a minimal OS, such
+    as CoreOS. The application container in turn ideally only contains the binaries
+    absolutely necessary to run. This minimizes the attack surface and the risk of
+    having to deal with vulnerabilities. Furthermore, a small image has the advantage
+    of being downloaded quickly, using less space on disk and in memory, and showing
+    faster startup times.
+  prefs: []
+  type: TYPE_NORMAL
+- en: But this can be a problem if one of the application services running on our
+    Kubernetes cluster shows unexpected behavior and maybe even crashes. Sometimes
+    we are not able to find the root cause of the problem just from the logs generated
+    and collected, so we might need to troubleshoot the component on the cluster node
+    itself.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We may be tempted to SSH into the given cluster node and run some diagnostic
+    tools. But this is not possible since the cluster node only runs a minimal Linux
+    distro with no such tools installed. As a developer, we could now just ask the
+    cluster administrator to install all the Linux diagnostic tools we intend to use.
+    But that is not a good idea. First of all, this would open the door for potentially
+    vulnerable software now residing on the cluster node, endangering all the other
+    pods that run on that node, and would also open a door to the cluster itself,
+    which could be exploited by hackers. Furthermore, it is always a bad idea to give
+    developers direct access to nodes of a production cluster, no matter how much
+    you trust them. Only a limited number of cluster administrators should ever be
+    able to do so.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A better solution is to have the cluster admin run a so-called bastion container
+    on behalf of the developers. This bastion or troubleshooting container has all
+    the tools installed that we need to pinpoint the root cause of the bug in the
+    application service. It is also possible to run the bastion container in the host’s
+    network namespace; thus, it will have full access to all the network traffic of
+    the container host.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The netshoot container
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Nicola Kabar, a former Docker employee, created a handy Docker image called
+    `nicolaka/netshoot` that field engineers at Docker use all the time to troubleshoot
+    applications running in production on Kubernetes or Docker Swarm. The purpose
+    of this container, in the words of the creator, is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '“Purpose: Docker and Kubernetes network troubleshooting can become complex.
+    With proper understanding of how Docker and Kubernetes networking works and the
+    right set of tools, you can troubleshoot and resolve these networking issues.
+    The netshoot container has a set of powerful networking troubleshooting tools
+    that can be used to troubleshoot Docker networking issues.”'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '- Nicola Kabar'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To use this container for debugging purposes, we can proceed as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Spin up a throwaway bastion container for debugging on Kubernetes, using the
+    following command:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE59]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'You will be greeted by this prompt:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE60]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'You can now use tools such as `ip` from within this container:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE61]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: 'On my machine, this results in an output similar to the following if the pod
+    is run on Docker Desktop:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 19.20 – Output of the ip a command using the netshoot container](img/Figure_19.20_B19199.jpg)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 19.20 – Output of the ip a command using the netshoot container
+  prefs: []
+  type: TYPE_NORMAL
+- en: To leave this troubleshooting container, just press *Ctrl* + *D* or type `exit`
+    and then hit *Enter*.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'If we need to dig a bit deeper and run the container in the same network namespace
+    as the Kubernetes host, then we can use this command instead:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE62]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: If we run `ip` again in this container, we will see everything that the container
+    host sees too, for example, all the `veth` endpoints.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The `netshoot` container has all the usual tools installed that an engineer
+    ever needs to troubleshoot network-related problems. Some of the more familiar
+    ones are `ctop`, `curl`, `dhcping`, `drill`, `ethtool`, `iftop`, `iperf`, and
+    `iproute2`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this last chapter of the book, we have looked at different techniques used
+    to instrument and monitor an individual service or a whole distributed application
+    running on a Kubernetes cluster. You have been introduced to the concept of alerting
+    based on key metrics. Furthermore, you have been shown how one can troubleshoot
+    an application service that is running in production without altering the cluster
+    or the cluster nodes on which the service is running.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As we come to the end of this book, we would like to thank you for your interest
+    and for persisting till the end. We hope that the information and examples provided
+    have been helpful in deepening your understanding of Docker and Kubernetes. These
+    technologies are powerful tools for building and deploying modern applications,
+    and we hope that this book has given you the knowledge and confidence to use them
+    effectively. Thank you again for reading, and we wish you all the best in your
+    future endeavors!
+  prefs: []
+  type: TYPE_NORMAL
+- en: Questions
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'To assess your learning progress, please answer the following questions:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Why is it important to instrument your application services?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Can you describe to an interested layperson what Prometheus is?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Exporting Prometheus metrics is easy. Can you describe in simple words how you
+    can do this for a Node.js application?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: You need to debug a service running on Kubernetes in production. Unfortunately,
+    the logs produced by this service alone don’t give enough information to pinpoint
+    the root cause. You decide to troubleshoot the service directly on the respective
+    Kubernetes cluster node. How do you proceed?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Answers
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Here are sample answers to the preceding questions:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: We cannot do any live debugging on a production system for performance and security
+    reasons. This includes interactive or remote debugging. Yet application services
+    can show unexpected behavior in response to code defects or other infrastructure-related
+    issues such as network glitches or external services that are not available. To
+    quickly pinpoint the reason for the misbehavior or failure of a service, we need
+    as much logging information as possible. This information should give us a clue
+    about, and guide us to, the root cause of the error. When we instrument a service,
+    we do exactly this – we produce as much information as is reasonable in the form
+    of log entries and published metrics.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Prometheus is a service that is used to collect functional or non-functional
+    metrics that are provided by other infrastructure services and, most importantly,
+    by application services. Since Prometheus itself pulls those metrics periodically
+    from all configured services, the services themselves do not have to worry about
+    sending data. Prometheus also defines the format in which the metrics are to be
+    presented by the producers.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'To instrument a Node.js-based application service, we need to take the following
+    four steps:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Add a Prometheus adapter to the project. The maintainers of Prometheus recommend
+    a library called `siimon/prom-client`.
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Configure the Prometheus client during the startup of the application. This
+    includes the definition of a metrics registry.
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Expose an HTTP GET endpoint/metrics where we return the collection of metrics
+    defined in the metrics registry.
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Finally, define custom metrics of the counter, gauge, or histogram type, and
+    use them in our code; for example, we increase a metric of the counter type each
+    time a certain endpoint is called.
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Normally, in production, a Kubernetes cluster node only contains a minimal OS
+    to keep its attack surface as limited as possible and to not waste precious resources.
+    Thus, we cannot assume that the tools typically used to troubleshoot applications
+    or processes are available on the respective host. A powerful and recommended
+    way to troubleshoot is to run a special tool or troubleshoot container as part
+    of an ad hoc pod. This container can then be used as a bastion from which we can
+    investigate network and other issues with the troubled service. A container that
+    has been successfully used by many Docker field engineers at their customers’
+    sites is `nicolaka/netshoot`.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL

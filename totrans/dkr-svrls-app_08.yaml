@@ -1,0 +1,954 @@
+- en: Putting Them All Together
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this chapter, we will walk through an example to demonstrate serverless platforms
+    working together on a Docker cluster, and we will demonstrate several serverless/FaaS
+    use cases.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We will discuss a mobile payment scenario and implement it using functions but,
+    unusually at this level of infrastructure, we will connect all three FaaS platforms
+    together. The main ideas demonstrated by the content of this chapter are the concept
+    of using functions as a **Glue**, using functions to wrap the legacy web-based
+    application, and using functions as a data stream processing program.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next section, we will start with the settings and scenario used by this
+    chapter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The topics covered in this chapter are:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: A mobile payment scenario
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A Parse platform as a backend
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Preparing a WebHook in Fn
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: An event state machine with a blockchain
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Wrapping a legacy with a function
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Using a function as a Glue
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A stream processor
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Inter-FaaS platform networking
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A mobile payment scenario
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We are using a mobile payment with a money transfer allowed between two banks
+    as the scenario for this chapter. With the money transfer, the business logic
+    is easy to understand. So, we do not need to worry about this part. Let's focus
+    on the complexity of the architecture.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Money transfer between two different banks with different underlying implementations
+    is hard. This is because we cannot directly apply the *concept of traditional
+    transactions* to cope with external systems. The system is presented in the following
+    diagram:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/57635715-e3eb-4413-88e3-e60b8ef6b792.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 8.1: The overall block diagram of the mobile payment system'
+  prefs: []
+  type: TYPE_NORMAL
+- en: What are we not covering in this chapter?
+  prefs: []
+  type: TYPE_NORMAL
+- en: The UI parts are out beyond scope of this book, so they are not available. The
+    **Receipt Generator** and the **Receipt Storage** are optional. They are left
+    for you to implement, if interested.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'What do we implement and demonstrate? Let''s discuss:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Parse platform, as a backend for the UI.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The **Bank Routing** function. It is written in Java and deployed on Fn. This
+    component is called `routing_fn`.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Bank #1** and its function calling to a legacy web-based system. The function
+    here is written in Node.js using the `chromeless` library ([https://github.com/graphcool/chromeless](https://github.com/graphcool/chromeless)).
+    The function connects to a headless Chrome instance, our familiar web browser.
+    The function drives Chrome to navigate and create a transaction for us on a real
+    ERP system. We use Moqui as our ERP backend. Actually, Moqui comes with a complete
+    set of REST APIs, but we intentionally use its web base to simulate the scenario
+    where we need to modernize some legacy systems. The function of this part is called `hivectl`.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Bank #2** and its function, `account_ctl`, connecting to a REST-based bank
+    system. The function is written using `Go` and will be running on OpenWhisk. The
+    mock bank server behind this component is a simple one written using the Grails/Spring
+    Boot framework. We use this component to demonstrate how to write a FaaS function
+    to wrap and simplify a REST-based API. The **Bank Routing** function, `routing_fn`,
+    will be selectively called by each bank. This **Bank #2** component will be used
+    together with **Bank #1** there.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A set of smart contracts written in **Solidity** to maintain the mapping of
+    mobile numbers to bank accounts. Also, another set of smart contracts will be
+    used to maintain the state of the money transfer of each transaction.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: An agent written in Java and the RxJava library to demonstrate a data stream
+    processing component that calls a function and diverts the event to other parts
+    of the system.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A Parse platform as a backend
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: What is Parse? Similar to Firebase, Parse is a **Backend as a Service** (**BaaS**)
+    platform. With Parse, developers do not need to code the backend system themselves
+    for their UIs or mobile applications. Parse is used by mobile application developers
+    to help accelerate the development process. Together with the Parse dashboard,
+    they provide an easy UI to craft all data entities, called *classes*, needed to
+    process basic business logic.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Preparation
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'Here''s how to create a Docker network and deploy a set of Docker compose files.
+    We use the concept of metastack to deploy multiple stacks and have some labels
+    and naming conventions to group them together:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: While deploying things on production, we do not set up the network and volumes
+    with any Docker compose files. All stacks should refer to external volumes and
+    networks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Starting with MongoDB, we have already set up a volume for it. The following
+    is the setup of the MongoDB server:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: We move to the next component, the Parse platform. To make the container work
+    with Træfik, we put some labels to the service, saying that it will be on the
+    `parse_net` network and will expose port `1337` to Træfik's ingress.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We add a rule to allow every HTTP method, also to define the custom entrypoint,
+    and allow `Origin=*` to enable the Parse dashboard, the next section, to be able
+    to connect to the Parse server:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here''s the Parse dashboard and its configuration. The current version of the
+    dashboard is `1.1.2`. It will be exposed to port `4040` via Træfik''s ingress:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The configuration defines the default username and password, and also says
+    that the server allows a connection via HTTP. Setting `INSECURE` to be `true`
+    is fine, as we could do SSL simply at the ingress layer, using Træfik:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The following YAML code is to define the L7 Træfik ingress for Parse and Parse
+    dashboard. We have to expose Parse to the outside too, as the dashboard is a fat
+    client, rather than server-side rendering. This is the main reason we need to
+    set `Allow-Origin=*`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If everything goes well, we can open our favorite browser and navigate to `localhost:4040`
+    for the Parse dashboard, as shown in the following screenshot. The default Username
+    and Password are: `admin`/`password`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/53abdb83-15a5-4ccb-916c-1e125c67c894.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 8.2: The login page of the Parse dashboard'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here, in the following screenshot, the dashboard of our Parse platform APP1
+    connects to the Parse instance at `http://localhost:1337`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/a2972412-fb81-44e9-8b3d-6458a1cacb17.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 8.3: The Parse application screen showing the core part'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Defining a transfer entity
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: On the left-hand side navigation pane, we see the Core | Browser menu. This
+    is where we can see all the data on our Parse platform. There are already some
+    built-in classes, but we are going to define a new class to help do the money
+    transfer.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Click on Create a class in the Core | Browser menu. A dialog box, as shown
+    in the following screenshot, will appear. We will use it to name our new class,
+    `Transfer`. This will be our main entity responsible for mobile payment and, of
+    course, money transfer:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/503a0e46-cad1-42ff-a1ea-957de650b2db.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 8.4: A dialog for defining a new class in Parse'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Then we need to set up some new columns for this entity. We define the following
+    columns:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: from: The mobile number to pay money.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: to: The mobile number to receive money.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'amount: The amount of money to pay.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'sent: A flag needs to be set to `true` when we want to start to process the
+    transaction. If this field is `null` or `false`, the WebHook (see next) will just
+    receive data and do nothing.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: processed: A flag will be automatically set to `true` if the transaction is
+    finished processing.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: How can we use this class? Using the dashboard, as shown in the following screenshot,
+    we set mobile numbers for the  from, to, and amount columns. Then, when we are
+    ready, just set the sent column to `true`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If the processing goes wrong, the sent flag will be reset to `null` automatically
+    by the WebHook:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/ed892941-46b9-4d16-8b48-648816a47400.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 8.5: Browsing the Transfer class using the dashboard'
+  prefs: []
+  type: TYPE_NORMAL
+- en: WebHook
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: The Parse platform provides an extensible mechanism to allow us to process business
+    logic externally. This is where functions come in. This mechanism is called **WebHook**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We may have functions running as external processes, outside the Parse platform,
+    and use them in conjunction with Parse's WebHook to perform complex business logic.
+    As in the previous example, we already have the `Transfer `class. We then define
+    a WebHook for this class to call an external function every time, before each
+    of the `Transfer` entities is saved. We specify a URL to a FaaS gateway for this
+    WebHook. The `HTTP POST` method will be made to the specified URL with the JSON
+    as its request body. The request body contains the data of the current `Transfer`
+    entity.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'A WebHook in Parse can be created by going to Core | Webhooks and clicking
+    on the small Create a webhook option:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/80730e70-8319-4198-ac6f-4bb09ef55b48.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 8.6: A screen for listing the existing WebHooks'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'There are two kinds of WebHook in Parse: Cloud Code functions and triggers.
+    The kind we are using in this chapter is the **trigger**. A WebHook trigger can
+    hook into many places, such as beforeSave, afterSave, beforeDelete, and afterDelete.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the example we are discussing in this chapter, the beforeSave trigger will
+    be used as shown in the following screenshot. We choose Transfer as the target
+    class of this hook. Then we need to specify the Webhook URL, a bank routing function
+    deployed to Fn:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/df3b761c-1a87-4a66-bee0-77c6c56c0e38.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 8.7: A dialog for defining a new WebHook; beforeSave for class Transfer'
+  prefs: []
+  type: TYPE_NORMAL
+- en: We will talk about the bank routing WebHook in the next section, but let's see
+    it in action briefly before we explore its details.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We test the WebHook by sending data by creating a new instance of the `Transfer`
+    class. In the following screenshot, mobile number `+661234567` is not registered
+    yet. So it cannot be looked up, and the WebHook returns an error message:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/620a7f5d-f115-4692-9702-645daf12fedd.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 8.8: An error message sent back from the WebHook will pop up on the
+    bottom right'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To see error logs, click on Core | Logs, as shown in the following screenshot.
+    Here is an example of the Webhook returning the following JSON:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: '![](img/e1f81644-29a1-4eff-8a32-57cd24e3c0c8.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 8.9: Info-level log screen displaying all kind of logs, including errors'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The specifications of the returning messages are `{"success": object}` to update
+    data back to the Parse platform, and `{"error":"msg"}` to display the error message.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Preparing a WebHook in Fn
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'The Fn Project works best with functions written in Java. When calling a function,
+    the framework would be able to automatically transform the body of the request
+    as a parameter of the entrypoint method. In the following example, the JSON from
+    the request will be converted into a string for the `handleRequest` method, the
+    entrypoint method of this Fn function:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here's the list of **data transfer object** (**DTO**) classes to properly encode
+    and decode Parse's WebHook messages inside an Fn function. With help from Project
+    Lombok and Jackson, we can dramatically reduce numbers of lines of code. An `Input` object
+    is the wrapper for a Java's `Transfer` object, that contains all columns similar
+    to the `Transfer` class, which we have defined on the Parse platform.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Please note that we have a **Transfer** class on both sides of the system, on
+    the Parse platform, and also on the Fn platform.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `Success` and `Error` class are for returning processing results back to
+    Parse:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'As it is a Java project, we do not need to build it inside the container. Here''s
+    the Gradle build file, which could be built using the `gradle installDist` command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The following is the Dockerfile to build an image for the Fn Project. It needs
+    to inherit from `fn-java-fdk`. We use `jdk9-1.0.56` for the demo in this book.
+    What you do is copy all JAR files from the `build` directory to the `/function/app`
+    inside the container image:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: The following steps are to prepare the Fn server, and then we build our function
+    with the `gradle` command. Then we build and push its Docker image onto the hub
+    before redefining it as an Fn route.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'First, we deploy an Fn Server manually with the following `docker run` command. Also,
+    we attach Fn to the `parse_net`. There is a special hack to Fn so that we can
+    make every container started by Fn be in the same network, as specified by `FN_NETWORK` there:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here''s the build and push script. Save the following scripts as `./buildAndPush`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Then we can start the build and push process by calling the script with a certain
+    version number, as in the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the next section, we will discuss how the WebHook function looks up account
+    data from a blockchain and how we can track the states of each money transfer
+    transaction.
+  prefs: []
+  type: TYPE_NORMAL
+- en: An event state machine with a blockchain
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'We use an *Ethereum blockchain* as the event state machine for the money transfer
+    system. A blockchain in this role is used for storing the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The mapping between telephone numbers and bank accounts
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The overall state of each transfer transaction
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Inside the blockchain, there are two kinds of smart contracts. The first one
+    implements the **repository pattern**, and the second one implements the **entity
+    model**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We use Truffle ([http://truffleframework.com/](http://truffleframework.com/))
+    to create this event state machine. Look at the subproject named *eventmachine*
+    in the GitHub repository ([https://github.com/chanwit/eventmachine](https://github.com/chanwit/eventmachine)).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here''s a smart contract under the `entities/` directory, `TransferState.sol`.
+    This smart contract maintains the states of each transfer transaction. Each transaction
+    is initialized with **NONE**, then **STARTED**, **PENDING**, and finally **COMPLETED**.
+    The following diagram illustrates the smart contract `TransferState` working together
+    with its repository implementation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/458cdcbd-30fe-49e6-8f7b-c1524b9a2b75.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 8.10: Flow of state transition and event emission by smart contracts'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We then explore its code for a bit. When moving to the next state, we use the
+    `require` statement to check and let the smart contract throw an exception, if
+    the pre-condition is not met:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'As previously mentioned, the `TransferState` is managed by the smart contract
+    `TransferStateRepository`. Basically, this is an implementation of the repository
+    pattern ([https://hub.packtpub.com/domain-driven-design/](https://hub.packtpub.com/domain-driven-design/)).
+    Additionally, this smart contract naturally runs on the blockchain. To allow it
+    to communicate with the outside world, every smart contract has to emit a kind
+    of event. In the case of this `TransferStateRepository`, it has been designed
+    to emit events when each transaction changes its status to `STARTED`, `PENDING`,
+    and also `COMPLETED`. See the event signatures there in *Figure 8.10*:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: The mapping between telephone numbers and bank accounts is maintained by `RegistrationRepository`.
+    This smart contract uses the same technique to communicate with the outside world,
+    emitting events.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There are four events designed for `RegistrationRepository`. The `Registered` event
+    is fired when we register a new telephone number into the mapping. If we try to
+    register the same number again, the `AlreadyExisted` event is fired from the blockchain.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`RegistrationFound` is the event fired when we find a mobile number by name
+    via the `findTelByNo` function and when this function cannot find any registration
+    matched by the input mobile number, the `RegistrationNotFound` event is emitted:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Using the Truffle framework, we are allowed to initialize some data with JavaScript
+    during the development. Here''s one of the migration scripts, found under the `migrations/` directory,
+    that is used for deploying smart contracts to the blockchain and registering two
+    mobile numbers. The first number links to an account managed by an account managed
+    by **Bank #1**, the OpenFaaS bank. The second mobile number is registered and
+    linked to **Bank #2**, the OpenWhisk bank. In all banks, we already have accounts
+    containing deposits:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We set up an Ethereum blockchain network with Parity, one of the most stable
+    Ethereum clients. Here''s the setup. We attach the running Parity container to
+    the same network of both Fn and the Parse platform:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'For the production private blockchain network, we need to set things up differently.
+    For example, we need to set up our own genesis block and the mining behavior of
+    the network. Anyway, it is beyond the scope of this book. We then deploy the smart
+    contract via Truffle:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: How the WebHook uses the blockchain
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: We will regularly go back to the WebHook after discussing each component around
+    it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We already know how our blockchain and smart contracts work. They record mobile
+    number registration, and maintain states of transfer transactions. In this section,
+    we discuss how the WebHook function interacts with the blockchain. The following
+    is the snippet from the WebHook function. The lookup method inside the function
+    obtains the smart contract `RegistrationRepository` and then invokes `findByTelNo()`
+    on the blockchain. The result is then available inside a transaction receipt.
+    We check what kind of event is stored inside that receipt. If it is an `RegistrationFound`
+    event, then this method returns a result object containing information regarding
+    the bank name and account number.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There is room for improving this check.
+  prefs: []
+  type: TYPE_NORMAL
+- en: How should the reader optimize the smart contract to fire only one event and
+    meaningfully check whether the telephone number is already registered or not?
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'That is basically about the lookup part:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: The transfer state management part is implemented inside a set of methods whose
+    names start with `transfer`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here''s the method to tell that we start new transactions with ID `txId`. It
+    uses the `ContractRegistry` to obtain the smart contract, `TransferStateRepository`.
+    Then we create a new transaction state and set its state to be `STARTED`. If everything
+    is OK, we should get a transaction receipt from the call with an event, `TransferStartedEvent`,
+    embedded in the receipt:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: Wrapping a legacy with a function
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In this section, we will demonstrate how to write a wrapper function for a legacy
+    web-based system. To achieve this, we use the `chromeless` library ([https://github.com/graphcool/chromeless](https://github.com/graphcool/chromeless))
+    to connect to a headless Chrome instance. Then the `chromeless` script drives
+    the Chrome browser to do the rest for us.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The following diagram shows the working mechanism of this part of the system:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/6952b6d1-50d6-4266-a91f-94e898a097eb.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 8.11: Diagram of implementing an OpenFaaS function to wrap around a
+    UI-based ERP'
+  prefs: []
+  type: TYPE_NORMAL
+- en: What does `chromeless` do? `chromeless` is a Node.js library that can be used
+    to perform browser automation, similar to PhantomJS or Selenium. But it is really
+    fast. Together with headless Chrome instances, `chromeless` yields a very fast
+    performance. So it could be used as a serverless function.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We start by using FaaS CLI to create a project. We call this function `hivectl`,
+    a program to control an ERP program built with the Moqui framework, HiveMind.
+    We will talk about HiveMind shortly after setting up this function:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here''s the content of `hivectl.yml`, the OpenFaaS function descriptor for
+    the `hivectl` function:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here''s a sample configuration to make `chromeless` connect to headless Chrome
+    running inside another container on the same network. The trick is to set `launchChrome` to
+    `false`, and set `cdp`, **Chrome DevTool Protocol**, pointing to `host:''chrome'',
+    port: 9222`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here is the main `chromeless` script to remotely control a headless Chrome
+    instance. We will put the program into `hivectl/handler.js`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'With OpenFaaS, we can simply build the function container with the following
+    command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Next, we will define the function in OpenFaaS. On the OpenFaaS UI, define a
+    new function and the dialog will allow us to attach the new function to a specific
+    network, `parse_net` in this case:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Image**: `chanwit/hivectl:0.4`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Name**: `hivectl`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Network**: `parse_net`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'We start a headless Chrome instance, exposing it as `chrome` on the same network
+    as the caller function. This Chrome headless will be listening on TCP port `9222`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We now start an ERP system. It is the HiveMind ERP built using the Moqui framework.
+    We can download it from the Moqui repository on GitHub ([https://github.com/moqui/moqui-framework](https://github.com/moqui/moqui-framework)).
+    Fortunately, the Moqui team also prepares a Docker image for use. So just run
+    it and attach it to the main `parse_net`. Port `10000` is published only for debugging
+    purposes:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The following screenshot shows the financial account page that will be processed
+    by the `chromeless` function:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/b1b53acf-c7a6-4e20-af65-c1b31c66afb1.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 8.12: The HiveMind financial account page'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Going back to the **back routing**, here''s the code inside the WebHook (running
+    on Fn) calling to the `hivectl` function (running on OpenFaaS). The WebHook code
+    creates an HTTP client, then sends two parameters, `accountId` and `amount`, to
+    the `hivectl` function:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: A function as a Glue
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Besides writing a simple processor, the technique in this section is one of
+    the simplest forms of using functions. We have a bank backend with REST APIs exposed.
+    So we write a function as a Glue to hide the complex interface of the backend.
+    In this example, we use `Go` as the language to implement the function.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The scenario is that we have a REST API server and we want to unify it with
+    another similar service. In the example in this chapter, we have two banking backends
+    with different ways of interaction. The first one is a web-based UI without a
+    REST interface, another one is the REST API in this section:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We use the multi-stage build. The `go build` command used here in the first
+    stage is to produce static binary. Then we copy it to the second stage, `/action/exec`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: Do not forget to push the image onto Docker Hub before proceeding to the next
+    step.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Then we define the function using `wsk` CLI commands:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'To make a container able to talk to other FaaS platform gateways, we need to
+    change the OpenWhisk invoker''s configuration to start every container inside
+    the `parse_net` network. The invoker image is fixed to `3a7dce` and the OpenWhisk
+    network configuration in the environment variable section of the invoker service, `CONFIG_whisk_containerFactory_containerArgs_network`,
+    is set to `parse_net`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: To unify them, we create a function to wrap around the REST API and make both
+    of the interfaces as similar as possible.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To start the REST API server, we use the `docker run` command and attach it
+    to the `parse_net` with the accounting alias. Port `18080` is published for debugging
+    purposes only:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: A stream processor
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Another use case of a function is to use it as a processor for data streams.
+    A stream may be sent out from any kind of sources, such as data buses or event
+    buses. Kafka, Twitter, or blockchain (in our case, Ethereum) could be a source
+    of data streams. An Ethereum blockchain could emit events specific to some smart
+    contracts when a certain action is taken.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To observe these events in the form of data streams efficiently, we need to
+    use a kind of reactive client. RxJava is one of them. Fortunately, `web3j`, the
+    Ethereum client we are using, already has RxJava observables to receive streaming
+    data from an Ethereum blockchain.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We call this component `listener`. The following diagram shows what we will
+    implement around the Event Listener:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](img/798286f5-8ade-4476-8764-b5183e1bfc15.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 8.13: Diagram illustrating relations around the Event Listener'
+  prefs: []
+  type: TYPE_NORMAL
+- en: A requirement is that we run the agent (**Event Listener**) as a container on
+    the same network as the blockchain. We use the agent to divert each transaction
+    information to other endpoints. In this example, we have two endpoints. The first
+    one is the record inside Parse. Another one is the S3-compatible storage, Minio.
+    We upload a file to Minio when the transaction is completed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The following shows how to use a contract observable to listen to blockchain
+    events:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We use a simple Gradle build script for this component. The project can be
+    built using the `gradle installDist` command as usual:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here''s the Dockerfile for this component:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This is the Gradle build step, `docker build` and `docker push` command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE38]'
+  prefs: []
+  type: TYPE_PRE
+- en: Inter-FaaS platform networking
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: To make all functions of different platforms able to talk together, we need
+    to set up a proper container network. The demo project discussed in this chapter
+    is not a simple FaaS example. It is a complex scenario where functions are allowed
+    to call other functions on the different FaaS platforms.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Normally, on some serverless platforms such as Lambda, we may sometimes assume
+    that all functions run on the flat network of the provider. In contrast, when
+    we run functions on our own platforms, we could segment the networks ourselves
+    and function networking will become a challenge. However, networking will be relatively
+    simple because the networking model in Docker and Swarm is the flat network.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'How can we achieve this? By the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: We create an attachable Swarm-scoped network
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: We start a FaaS framework and make its gateway attach to that network
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: We also need to tell the framework that it must attach that network to every
+    container it created
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'In OpenFaas, it allows you to create a function to run on a specific network.
+    In OpenWhisk, we can specify this with a configuration of an invoker. For the
+    Fn Project, we need an additional hack. Here''s the change required to patch to
+    Fn in order to make it able to attach function containers to a specified network
+    (`FN_NETWORK`):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE39]'
+  prefs: []
+  type: TYPE_PRE
+- en: The version with the function networking patch is available at [https://github.com/chanwit/fn](https://github.com/chanwit/fn).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Exercises
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 'This chapter covers a lot of practices and hacks to make the whole stack of
+    the demo project, a mobile payment system, work. Please go through the content
+    of all the sections in this chapter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Why do we need to hack the Fn to build a custom version of an Fn server?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: What is the concept of inter-FaaS platform networking? Why is it important?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: What are the two roles of an Ethereum block in the demo project?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: What is the data type of the parameters of an OpenWhisk function?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: How can we encode JSON in Java with Fn?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: How can we encode JSON in Golang?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: What is the Parse platform?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: What is the role of Parse WebHook?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: What is the concept of a Glue function?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: How can we write a function to wrap a legacy web-based application?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: This chapter demonstrated a use case by showing how we can develop a mobile
+    payment system on FaaS platforms.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We used Parse as a UI backend. Then we connected Parse to a bank routing function
+    running on Fn via the Parse WebHook mechanism. We then demonstrated that with
+    functions, it was relatively easy to make a call to a modern infrastructure such
+    as blockchain. We simulated two banks to show use cases of a function, a function
+    as a Glue, and a function that wrapped legacy systems. Then we demonstrated how
+    a function was used in conjunction with a streaming agent to process data streams.
+  prefs: []
+  type: TYPE_NORMAL
+- en: All of the three FaaS platforms were linked together and run on the same Docker
+    Swarm cluster. It was quite simple to link OpenWhisk and OpenFaaS functions together,
+    but in the case of Fn, it was a bit of a hack because the current version of Fn
+    doesn't allow you to define a container network.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The next chapter will be the final chapter of this book. We will conclude the
+    concept of a function and look forward to see what's next beyond the world of
+    FaaS.
+  prefs: []
+  type: TYPE_NORMAL
