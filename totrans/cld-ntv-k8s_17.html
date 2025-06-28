@@ -1,0 +1,447 @@
+<html><head></head><body>
+		<div><h1 id="_idParaDest-274"><em class="italic"><a id="_idTextAnchor289"/>Chapter 13</em>: Extending Kubernetes with CRDs</h1>
+			<p>This chapter explains the many possibilities for extending the functionality of Kubernetes. It begins <a id="_idIndexMarker692"/>with a discussion of the <code>kubectl</code> commands such as <code>get</code>, <code>create</code>, <code>describe</code>, and <code>apply</code>. It is followed by a discussion of the Operator pattern, an extension of the CRD. It then details some of the hooks that cloud providers attach to their Kubernetes implementations, and ends with a brief introduction to the greater cloud-native ecosystem. Using the concepts learned in this chapter, you will be able to architect and develop extensions to your Kubernetes cluster, unlocking advanced usage patterns.</p>
+			<p>The case study in this chapter will include creating two simple CRDs to support an example application. We'll begin with CRDs, which will give you a good base understanding of how extensions can build on the Kubernetes API.</p>
+			<p>In this chapter, we will cover the following topics:</p>
+			<ul>
+				<li>How to extend Kubernetes with <strong class="bold">Custom Resource Definitions</strong> (<strong class="bold">CRDs</strong>)</li>
+				<li>Self-managing functionality with Kubernetes operators</li>
+				<li>Using cloud-specific Kubernetes extensions</li>
+				<li>Integrating with the ecosystem</li>
+			</ul>
+			<h1 id="_idParaDest-275"><a id="_idTextAnchor290"/>Technical requirements</h1>
+			<p>In order to run the commands detailed in this chapter, you will need a computer that supports the <code>kubectl</code> command-line tool along with a working Kubernetes cluster. See <a href="B14790_01_Final_PG_ePub.xhtml#_idTextAnchor016"><em class="italic">Chapter 1</em></a>, <em class="italic">Communicating with Kubernetes</em>, for several methods for getting up and running with Kubernetes quickly, and for instructions on how to install the <code>kubectl</code> tool.</p>
+			<p>The code used in this chapter can be found in the book's GitHub repository at <a href="https://github.com/PacktPublishing/Cloud-Native-with-Kubernetes/tree/master/Chapter13">https://github.com/PacktPublishing/Cloud-Native-with-Kubernetes/tree/master/Chapter13</a>.</p>
+			<h1 id="_idParaDest-276"><a id="_idTextAnchor291"/>How to extend Kubernetes with custom resource definitions</h1>
+			<p>Let's start <a id="_idIndexMarker693"/>with the <a id="_idIndexMarker694"/>basics. What is a CRD? We know that Kubernetes has an API model where we can perform operations against resources. Some examples of Kubernetes resources (which you should be well acquainted with by now) are Pods, PersistentVolumes, Secrets, and others.</p>
+			<p>Now, what if we want to implement some custom functionality in our cluster, write our own controllers, and store the state of our controllers somewhere? We could, of course, store the state of our custom functionality in a SQL or NoSQL database running on Kubernetes or elsewhere (which is actually one of the strategies for extending Kubernetes) – but what if our custom functionality acts more as an extension of Kubernetes functionality, instead of a completely separate application?</p>
+			<p>In cases like this, we have two options: </p>
+			<ul>
+				<li>Custom resource definitions</li>
+				<li>API aggregation</li>
+			</ul>
+			<p>API aggregation allows advanced users to build their own resource APIs outside of the Kubernetes API server and use their own storage – and then aggregate those resources at the API layer so they can be queried using the Kubernetes API. This is obviously highly extensible and is essentially just using the Kubernetes API as a proxy to your own custom functionality, which may or may not actually integrate with Kubernetes.</p>
+			<p>The other option is CRDs, where we can use the Kubernetes API and underlying data store (<code>etcd</code>) instead of building our own. We can use the <code>kubectl</code> and <code>kube api</code> methods that we know to interact with our own custom functionality. </p>
+			<p>In this book, we will not discuss API aggregation. While definitely more flexible than CRDs, this is an advanced topic that deserves a thorough understanding of the Kubernetes API and a thorough perusal of the Kubernetes documentation to do it right. You can learn more about API aggregation in the Kubernetes documentation at <a href="https://kubernetes.io/docs/concepts/extend-kubernetes/api-extension/apiserver-aggregation/">https://kubernetes.io/docs/concepts/extend-kubernetes/api-extension/apiserver-aggregation/</a>.</p>
+			<p>So, now that we know that we are using the Kubernetes control plane as our own stateful store for our new custom functionality, we need a schema. Similar to how the Pod resource <a id="_idIndexMarker695"/>spec in <a id="_idIndexMarker696"/>Kubernetes expects certain fields and configurations, we can tell Kubernetes what we expect for our new custom resources. Let's go through the spec for a CRD now.</p>
+			<h2 id="_idParaDest-277"><a id="_idTextAnchor292"/>Writing a custom resource definition</h2>
+			<p>For CRDs, Kubernetes<a id="_idIndexMarker697"/> uses the OpenAPI V3 specification. For more information on OpenAPI V3, you can check the official documentation at <a href="https://github.com/OAI/OpenAPI-Specification/blob/master/versions/3.0.0.md">https://github.com/OAI/OpenAPI-Specification/blob/master/versions/3.0.0.md</a>, but we'll soon see how exactly this translates into Kubernetes CRD definitions.</p>
+			<p>Let's take a look at an example CRD spec. Now let's be clear, this is not how YAMLs of any specific record of this CRD would look. Instead, this is simply where we define the requirements for the CRD inside of Kubernetes. Once created, Kubernetes will accept resources matching the spec and we can start making our own records of this type.</p>
+			<p>Here's an example YAML for a CRD spec, which we are calling <code>delayedjob</code>. This highly simplistic CRD is intended to start a container image job on a delay, which prevents users from having to script in a delayed start for their container. This CRD is quite brittle, and we don't recommend anyone actually use it, but it does well to highlight the process of building a CRD. Let's start with a full CRD spec YAML, then break it down:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">Custom-resource-definition-1.yaml</p>
+			<pre>apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: delayedjobs.delayedresources.mydomain.com
+spec:
+  group: delayedresources.mydomain.com
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                delaySeconds:
+                  type: integer
+                image:
+                  type: string
+  scope: Namespaced
+  conversion:
+    strategy: None
+  names:
+    plural: delayedjobs
+    singular: delayedjob
+    kind: DelayedJob
+    shortNames:
+    - dj</pre>
+			<p>Let's review the parts of this file. At first glance, it looks like your typical Kubernetes YAML spec – and that's because it is! In the <code>apiVersion</code> field, we have <code>apiextensions.k8s.io/v1</code>, which is the standard since Kubernetes <code>1.16</code> (before then it was <code>apiextensions.k8s.io/v1beta1</code>). Our <code>kind</code> will always be <code>CustomResourceDefinition</code>.  </p>
+			<p>The <code>metadata</code> field is when things start to get specific to our resource. We need to structure the <code>name</code> metadata field as the <code>plural</code> form of our resource, then a period, then its<a id="_idIndexMarker698"/> group. Let's take a quick diversion from our YAML file to discuss how groups work in the Kubernetes API.</p>
+			<h3>Understanding Kubernetes API groups</h3>
+			<p>Groups are a way <a id="_idIndexMarker699"/>that Kubernetes segments resources in its API. Each group corresponds to a different subpath of the Kubernetes API server.</p>
+			<p>By default, there is a legacy group called the core group – which corresponds to resources accessed on the <code>/api/v1</code> endpoint in the Kubernetes REST API. By extension, these legacy group resources have <code>apiVersion: v1</code> in their YAML specs. An example of one of the resources in the core group is the Pod.</p>
+			<p>Next, there is the set of named groups – which correspond to resources that can be accessed on <code>REST</code> URLs formed as <code>/apis/&lt;GROUP NAME&gt;/&lt;VERSION&gt;</code>. These named groups form the bulk of Kubernetes resources. However, the oldest and most basic resources, such as the Pod, Service, Secret, and Volume, are in the core group. An example of a resource that is in a named group is the <code>StorageClass</code> resource, which is in the <code>storage.k8s.io</code> group. </p>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">To see which resource is in which group, you can check the official Kubernetes API docs for whatever version of Kubernetes you are using. For example, the version <code>1.18</code> docs would be at <a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.18">https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.18</a>.</p>
+			<p>CRDs can specify their own named group, which means that the specific CRD will be available on a <code>REST</code> endpoint that the Kubernetes API server can listen on. With that in mind, let's get back to our YAML file, so we can talk about the main portion of the CRD<a id="_idIndexMarker700"/> – the versions spec.</p>
+			<h3>Understanding custom resource definition versions</h3>
+			<p>As you can see, we <a id="_idIndexMarker701"/>have chosen the group <code>delayedresources.mydomain.com</code>. This group would theoretically hold any other CRDs of the delayed kind – for instance, <code>DelayedDaemonSet</code> or <code>DelayedDeployment</code>.</p>
+			<p>Next, we have the main portion of our CRD. Under <code>versions</code>, we can define one or more CRD versions (in the <code>name</code> field), along with the API specification for that version of the CRD. Then, when you create an instance of your CRD, you can define which version you will be using for the version parameter in the <code>apiVersion</code> key of your YAML – for instance, <code>apps/v1</code>, or in this case, <code>delayedresources.mydomain.com/v1</code>.</p>
+			<p>Each version item also has a <code>served</code> attribute, which is essentially a way to define whether the given version is enabled or disabled. If <code>served</code> is <code>false</code>, the version will not be created by the Kubernetes API, and the API requests (or <code>kubectl</code> commands) for that version will fail. </p>
+			<p>In addition, it is possible to define a <code>deprecated</code> key on a specific version, which will cause Kubernetes to return a warning message when requests are made to the API using the deprecated version. This is how a CRD. <code>yaml</code> file with a deprecated version looks – we have removed some of the spec to keep the YAML short:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">Custom-resource-definition-2.yaml</p>
+			<pre>apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: delayedjob.delayedresources.mydomain.com
+spec:
+  group: delayedresources.mydomain.com
+  versions:
+    - name: v1
+      served: true
+      storage: false
+      deprecated: true
+      deprecationWarning: "DelayedJob v1 is deprecated!"
+      schema:
+        openAPIV3Schema:
+		…
+    - name: v2
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+		...
+  scope: Namespaced
+  conversion:
+    strategy: None
+  names:
+    plural: delayedjobs
+    singular: delayedjob
+    kind: DelayedJob
+    shortNames:
+    - dj</pre>
+			<p>As you can see, we have marked <code>v1</code> as deprecated, and also include a deprecation warning for Kubernetes to send as a response. If we do not include a deprecation warning, a default message will be used.</p>
+			<p>Moving further down, we have the <code>storage</code> key, which interacts with the <code>served</code> key. The reason this is necessary is that while Kubernetes supports multiple active (aka <code>served</code>) versions of a resource at the same time, only one of those versions can be stored in the control plane. However, the <code>served</code> attribute means that multiple versions of a resource can be served by the API. So how does that even work?</p>
+			<p>The answer is that Kubernetes will convert the CRD object from whatever the stored version is to the version you ask for (or vice versa, when creating a resource). </p>
+			<p>How is this conversion handled? Let's skip past the rest of the version attributes to the <code>conversion</code> key to see how.</p>
+			<p>The <code>conversion</code> key lets you specify a strategy for how Kubernetes will convert CRD objects between <a id="_idIndexMarker702"/>whatever your served version is and whatever the stored version is. If the two versions are the same – for instance, if you ask for a <code>v1</code> resource and the stored version is <code>v1</code>, then no conversion will happen.</p>
+			<p>The default value here as of Kubernetes 1.13 is <code>none</code>. With the <code>none</code> setting, Kubernetes will not do any conversion between fields. It will simply include the fields that are supposed to be present on the <code>served</code> (or stored, if creating a resource) version.</p>
+			<p>The other possible conversion strategy is <code>Webhook</code>, which allows you to define a custom webhook that will take in one version and do the proper conversion to your intended version. Here is an example of our CRD with a <code>Webhook</code> conversion strategy – we've cut out some of the version schema for conciseness:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">Custom-resource-definition-3.yaml</p>
+			<pre>apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: delayedjob.delayedresources.mydomain.com
+spec:
+  group: delayedresources.mydomain.com
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+		...
+  scope: Namespaced
+  conversion:
+    strategy: Webhook
+    webhook:
+      clientConfig:
+        url: "https://webhook-conversion.com/delayedjob"
+  names:
+    plural: delayedjobs
+    singular: delayedjob
+    kind: DelayedJob
+    shortNames:
+    - dj</pre>
+			<p>As you can <a id="_idIndexMarker703"/>see, the <code>Webhook</code> strategy lets us define a URL that requests will be made to with information about the incoming resource object, its current version, and the version it needs to be converted to. </p>
+			<p>The idea is that our <code>Webhook</code> server will then handle the conversion and pass back the corrected Kubernetes resource object. The <code>Webhook</code> strategy is complex and can have many possible configurations, which we will not get into in depth in this book. </p>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">To see how conversion Webhooks can be configured, check the official Kubernetes documentation at <a href="https://kubernetes.io/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definition-versioning/">https://kubernetes.io/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definition-versioning/</a>.</p>
+			<p>Now, back to our <code>version</code> entry in the YAML! Under the <code>served</code> and <code>storage</code> keys, we see the <code>schema</code> object, which contains the actual specification of our resource. As previously mentioned, this follows the OpenAPI Spec v3 schema.</p>
+			<p>The <code>schema</code> object, which was removed from the preceding code block for space reasons, is as <a id="_idIndexMarker704"/>follows:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">Custom-resource-definition-3.yaml (continued)</p>
+			<pre>     schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                delaySeconds:
+                  type: integer
+                image:
+                  type: string</pre>
+			<p>As you can see, we support a field for <code>delaySeconds</code>, which will be an integer, and <code>image</code>, which is a string that corresponds to our container image. If we really wanted to make the <code>DelayedJob</code> production-ready, we would want to include all sorts of other options to make it closer to the original Kubernetes Job resource – but that isn't our intent here.</p>
+			<p>Moving further back in the original code block, outside the versions list, we see some other attributes. First is the <code>scope</code> attribute, which can be either <code>Cluster</code> or <code>Namespaced</code>. This tells Kubernetes whether to treat instances of the CRD object as namespace-specific resources (such as Pods, Deployments, and so on) or instead as cluster-wide resources – like namespaces themselves, since getting namespace objects within a namespace doesn't make any sense!</p>
+			<p>Finally, we have the <code>names</code> block, which lets you define both a plural and singular form of your resource name, to be used in various situations (for instance, <code>kubectl get pods</code> and <code>kubectl get pod</code> both work).</p>
+			<p>The <code>names</code> block also lets you define the camel-cased <code>kind</code> value, which will be used in the resource YAML, as well as one or more <code>shortNames</code>, which can be used to refer to the resource<a id="_idIndexMarker705"/> in the API or <code>kubectl</code> – for instance, <code>kubectl get po</code>.</p>
+			<p>With our CRD specification YAML explained, let's take a look at an instance of our CRD – as defined by the spec we just reviewed, the YAML will look like this:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">Delayed-job.yaml</p>
+			<pre>apiVersion: delayedresources.mydomain.com/v1
+kind: DelayedJob
+metadata:
+  name: my-instance-of-delayed-job
+spec:
+  delaySeconds: 6000
+  image: "busybox"</pre>
+			<p>As you can see, this is just like our CRD defined this object. Now, with all our pieces in place, let's test out our CRD!</p>
+			<h3>Testing a custom resource definition</h3>
+			<p>Let's go ahead and <a id="_idIndexMarker706"/>test out our CRD concept on Kubernetes:</p>
+			<ol>
+				<li>First, let's create the CRD spec in Kubernetes – the same way we would create any other object:<pre><strong class="bold">kubectl apply -f delayedjob-crd-spec.yaml</strong></pre><p>This will result in the following output:</p><pre><strong class="bold">customresourcedefinition "delayedjob.delayedresources.mydomain.com" has been created</strong></pre></li>
+				<li>Now, Kubernetes will accept requests for our <code>DelayedJob</code> resource. We can test this out by finally creating one using the preceding resource YAML:<pre><strong class="bold">kubectl apply -f my-delayed-job.yaml</strong></pre></li>
+			</ol>
+			<p>If we've defined our CRD properly, we will see the following output:</p>
+			<pre>delayedjob "my-instance-of-delayed-job" has been created</pre>
+			<p>As you can see, the Kubernetes API server has successfully created our instance of <code>DelayedJob</code>!</p>
+			<p>Now, you may be asking a very relevant question – now what? This is an excellent question, because the truth is that we have accomplished nothing more so far than essentially adding a new <code>table</code> to the Kubernetes API database.</p>
+			<p>Just because we gave our <code>DelayedJob</code> resource an application image and a <code>delaySeconds</code> field does not mean that any functionality like what we intend will actually occur. By creating our instance of <code>DelayedJob</code>, we have just added an entry to that <code>table</code>. We can fetch it, edit it, or delete it using the Kubernetes API or <code>kubectl</code> commands, but no application functionality has been implemented.</p>
+			<p>In order to actually get our <code>DelayedJob</code> resource to do something, we need a custom controller that will take our instance of <code>DelayedJob</code> and do something with it. In the end, we still need to implement actual container functionality using the official Kubernetes resources – Pods et al.</p>
+			<p>This is what we're going to discuss now. There are many ways to build custom controllers for Kubernetes, but a popular way is the <code>DelayedJob</code> resource a life of its own.</p>
+			<h1 id="_idParaDest-278"><a id="_idTextAnchor293"/>Self-managing functionality with Kubernetes operators</h1>
+			<p>No discussion of <a id="_idIndexMarker708"/>Kubernetes<a id="_idIndexMarker709"/> operators would be possible without first discussing the <strong class="bold">Operator Framework</strong>. A common misconception is that operators are specifically built via the Operator Framework. The Operator Framework is an open source framework originally created by Red Hat to make it easy to write Kubernetes operators.</p>
+			<p>In reality, an operator is simply a custom controller that interfaces with Kubernetes and acts on resources. The Operator Framework is one opinionated way to make Kubernetes operators, but there are many other open source frameworks you can use – or, you can make one from scratch!</p>
+			<p>When building an operator using <a id="_idIndexMarker710"/>frameworks, two of the most popular options are the aforementioned <strong class="bold">Operator Framework</strong> and <strong class="bold">Kubebuilder</strong>.</p>
+			<p>Both of these projects have a lot in common. They both make use of <code>controller-tools</code> and <code>controller-runtime</code>, which are two libraries for building Kubernetes controllers that are officially supported by the Kubernetes project. If you are building an operator from scratch, using these officially supported controller libraries will make things much easier.  </p>
+			<p>Unlike the Operator Framework, Kubebuilder is an official part of the Kubernetes project, much like the <code>controller-tools</code> and <code>controller-runtime</code> libraries – but both projects have their pros and cons. Importantly, both these options, and the Operator pattern in general, have the controller running on the cluster. It may seem obvious that this is the best option, but you could run your controller outside of the cluster and have it work the same. To get started with the Operator Framework, check the official GitHub at <a href="https://github.com/operator-framework">https://github.com/operator-framework</a>. For Kubebuilder, you can check <a href="https://github.com/kubernetes-sigs/kubebuilder">https://github.com/kubernetes-sigs/kubebuilder</a>.</p>
+			<p>Most operators, regardless of the framework, follow a control-loop paradigm – let's see how this idea works.</p>
+			<h2 id="_idParaDest-279"><a id="_idTextAnchor294"/>Mapping the operator control loop</h2>
+			<p>A control loop is a <a id="_idIndexMarker711"/>control scheme in system design and programming that consists of a never-ending loop of logical processes. Typically, a control loop implements a measure-analyze-adjust approach, where it measures the current state of the system, analyzes what changes are required to bring it in line with the intended state, and then adjusts the system components to bring it in line with (or at least closer to) the intended state.</p>
+			<p>In Kubernetes operators or controllers specifically, this operation usually works like this: </p>
+			<ol>
+				<li value="1">First, a <code>watch</code> step – that is, watching the Kubernetes API for changes in the intended state, which is stored in <code>etcd</code>. </li>
+				<li>Then, an <code>analyze</code> step – which is the controller deciding what to do to bring the cluster state in line with the intended state. </li>
+				<li>And lastly, an <code>update</code> step – which is updating the cluster state to fulfill the intent of the cluster changes.</li>
+			</ol>
+			<p>To help understand the control loop, here is a diagram showing how the pieces fit together:</p>
+			<div><div><img src="img/B14790_13_01.jpg" alt="Figure 13.1 – Measure Analyze Update Loop"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 13.1 – Measure Analyze Update Loop </p>
+			<p>Let's use the Kubernetes scheduler – which is itself a control loop process – to illustrate this:</p>
+			<ol>
+				<li value="1">Let's start with a hypothetical cluster in a steady state: all Pods are scheduled, Nodes are healthy, and everything is operating normally.</li>
+				<li>Then, a user creates a new Pod.</li>
+			</ol>
+			<p>We've discussed before that the kubelet works on a <code>pull</code> basis. This means that when a kubelet creates a Pod on its Node, that Pod was already assigned to that Node via the scheduler. However, when Pods are first created via a <code>kubectl create</code> or <code>kubectl apply</code> command, the Pod isn't scheduled or assigned anywhere. This is where our scheduler control loop starts:</p>
+			<ol>
+				<li value="1">The first step is <strong class="bold">Measure</strong>, where the scheduler reads the state of the Kubernetes API. When listing Pods from the API, it discovers that one of the Pods is not <a id="_idIndexMarker712"/>assigned to a Node. It now moves to the next step.</li>
+				<li>Next, the scheduler performs an analysis of the cluster state and Pod requirements in order to decide which Node the Pod should be assigned to. As we discussed in previous chapters, this takes into account Pod resource limits and requests, Node statuses, placement controls, and so on, which makes it a fairly complex process. Once this processing is complete, the update step can start.</li>
+				<li>Finally, <strong class="bold">Update</strong> – the scheduler updates the cluster state by assigning the Pod to the Node obtained from the <em class="italic">step 2</em> analysis. At this point, the kubelet takes over on its own control loop and creates the relevant container(s) for the Pod on its Node.</li>
+			</ol>
+			<p>Next, let's take what we learned from the scheduler control loop and apply it to our very own <code>DelayedJob</code> resource. </p>
+			<h2 id="_idParaDest-280"><a id="_idTextAnchor295"/>Designing an operator for a custom resource definition</h2>
+			<p>Actually, coding <a id="_idIndexMarker713"/>an operator for our <code>DelayedJob</code> CRD is outside the scope of our book since it requires knowledge of a programming language. If you're choosing a programming language to build an operator with, Go offers the most interoperability with the Kubernetes SDK, <strong class="bold">controller-tools</strong>, and <strong class="bold">controller-runtime</strong>, but any programming language where you can write HTTP requests will work, since that is the basis for all of the SDKs.</p>
+			<p>However, we will still walk through the steps of implementing an operator for our <code>DelayedJob</code> CRD with some <a id="_idIndexMarker714"/>pseudocode. Let's take it step by step.</p>
+			<h3>Step 1: Measure</h3>
+			<p>First comes<a id="_idIndexMarker715"/> the <code>while</code> loop that runs forever. In a production implementation, there would be debouncing, error handling, and a bunch of other concerns, but we'll keep it simple for this illustrative example.</p>
+			<p>Take a look at the pseudo code for this loop, which is essentially the main function of our application:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">Main-function.pseudo</p>
+			<pre>// The main function of our controller
+function main() {
+  // While loop which runs forever
+  while() {
+     // fetch the full list of delayed job objects from the cluster
+	var currentDelayedJobs = kubeAPIConnector.list("delayedjobs");
+     // Call the Analysis step function on the list
+     var jobsToSchedule = analyzeDelayedJobs(currentDelayedJobs);
+     // Schedule our Jobs with added delay
+     scheduleDelayedJobs(jobsToSchedule);
+     wait(5000);
+  }
+}</pre>
+			<p>As you can see, the loop in our <code>main</code> function calls the Kubernetes API to find a list of the <code>delayedjobs</code> CRDs stored in <code>etcd</code>. This is the <code>measure</code> step. It then calls the analysis step, and with the results of that, calls the update step to schedule any <code>DelayedJobs</code> that<a id="_idIndexMarker716"/> need to be scheduled.</p>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">Keep in mind that the Kubernetes scheduler is still going to do the actual container scheduling in this example – but we need to boil down our <code>DelayedJob</code> into an official Kubernetes resource first.</p>
+			<p>After the update step, our loop waits for a full 5 seconds before performing the loop again. This sets the cadence of the control loop. Next, let's move on to the analysis step.</p>
+			<h3>Step 2: Analyze</h3>
+			<p>Next, let's<a id="_idIndexMarker717"/> review the <code>analyzeDelayedJobs</code> function in our controller pseudocode:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">Analysis-function.pseudo</p>
+			<pre>// The analysis function
+function analyzeDelayedJobs(listOfDelayedJobs) {
+  var listOfJobsToSchedule = [];
+  foreach(dj in listOfDelayedJobs) {
+    // Check if dj has been scheduled, if not, add a Job object with
+    // added delay command to the to schedule array
+    if(dj.annotations["is-scheduled"] != "true") {
+      listOfJobsToSchedule.push({
+        Image: dj.image,
+        Command: "sleep " + dj.delaySeconds + "s",
+        originalDjName: dj.name
+      });
+    }
+  }
+  return listOfJobsToSchedule;  
+}</pre>
+			<p>As you can see, the<a id="_idIndexMarker718"/> preceding function loops through the list of <code>DelayedJob</code> objects from the cluster as passed from the <code>DelayedJob</code> has been scheduled yet by checking the value of one of the object's annotations. If it hasn't been scheduled yet, it adds an object to an array called <code>listOfJobsToSchedule</code>, which contains the image specified in the <code>DelayedJob</code> object, a command to sleep for the number of seconds  that was specified in the <code>DelayedJob</code> object, and the original name of the <code>DelayedJob</code>, which we will use to mark as scheduled in the <strong class="bold">Update</strong> step.</p>
+			<p>Finally, in the <code>analyzeDelayedJobs</code> function returns our newly created <code>listOfJobsToSchedule</code> array back to the main function. Let's wrap up our Operator design with the final update step, which is the <code>scheduleDelayedJobs</code> function in our main loop.</p>
+			<h3>Step 3: Update</h3>
+			<p>Finally, the <strong class="bold">Update</strong> part <a id="_idIndexMarker719"/>of our control loop will take the outputs from our analysis and update the cluster as necessary to create the intended state. Here's the pseudocode:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">Update-function.pseudo</p>
+			<pre>// The update function
+function scheduleDelayedJobs(listOfJobs) {
+  foreach(job in listOfDelayedJobs) {
+    // First, go ahead and schedule a regular Kubernetes Job
+    // which the Kube scheduler can pick up on.
+    // The delay seconds have already been added to the job spec
+    // in the analysis step
+    kubeAPIConnector.create("job", job.image, job.command);
+    // Finally, mark our original DelayedJob with a "scheduled"
+    // attribute so our controller doesn't try to schedule it again
+    kubeAPIConnector.update("delayedjob", job.originalDjName,
+    annotations: {
+      "is-scheduled": "true"
+    });
+  } 
+}</pre>
+			<p>In this case, we are taking our regular Kubernetes object, which was derived from our <code>DelayedJob</code> object, and creating it in Kubernetes so the <code>Kube</code> scheduler can pick up on it, create the relevant Pod, and manage it. Once we create the regular Job object with the delay, we also update our <code>DelayedJob</code> CRD instance with an annotation that sets the <code>is-scheduled</code> annotation to <code>true</code>, preventing it from getting rescheduled.</p>
+			<p>This completes our control loop – from this point, the <code>Kube</code> scheduler takes over and our CRD is given life as a Kubernetes Job object, which controls a Pod, which is finally assigned to a Node and a container is scheduled to run our code!</p>
+			<p>This example is of course highly simplified, but you would be surprised how many Kubernetes operators perform a simple control loop to coordinate CRDs and boil them down to basic Kubernetes resources. Operators can get very complicated and perform application-specific functions such as backing up databases, emptying Persistent Volumes, and others – but this functionality is usually tightly coupled to whatever is being controlled.  </p>
+			<p>Now that we've <a id="_idIndexMarker720"/>discussed the Operator pattern in a Kubernetes controller, we can talk about some of the open source options for cloud-specific Kubernetes controllers.</p>
+			<h1 id="_idParaDest-281"><a id="_idTextAnchor296"/>Using cloud-specific Kubernetes extensions</h1>
+			<p>Usually available <a id="_idIndexMarker721"/>by default in managed Kubernetes services such as Amazon EKS, Azure AKS, and Google Cloud's GKE, cloud-specific Kubernetes extensions and controllers can integrate tightly with the cloud platform in question and make it easy to control other cloud resources from Kubernetes.</p>
+			<p>Even without adding any additional third-party components, a lot of this cloud-specific functionality <a id="_idIndexMarker722"/>is available in upstream Kubernetes via the <strong class="bold">cloud-controller-manager</strong> (<strong class="bold">CCM</strong>) component, which contains many options for integrating with the major cloud providers. This is the functionality that is usually enabled by default in the managed Kubernetes services on each public cloud – but they can be integrated with any cluster running on that specific cloud platform, managed or not. </p>
+			<p>In this section, we will review a few of the more common cloud extensions to Kubernetes, both<a id="_idIndexMarker723"/> in <strong class="bold">cloud-controller-manager (CCM)</strong> and functionality that requires the installation of other <a id="_idIndexMarker724"/>controllers such as <strong class="bold">external-dns</strong> and <strong class="bold">cluster-autoscaler</strong>. Let's start with some of the heavily used CCM functionality.</p>
+			<h2 id="_idParaDest-282"><a id="_idTextAnchor297"/>Understanding the cloud-controller-manager component</h2>
+			<p>As reviewed <a id="_idIndexMarker725"/>in <a href="B14790_01_Final_PG_ePub.xhtml#_idTextAnchor016"><em class="italic">Chapter 1</em></a>, <em class="italic">Communicating with Kubernetes</em>, CCM is an officially supported Kubernetes controller that provides hooks into the functionality of several public cloud services. To function, the CCM component needs to be started with access permissions to the cloud service in question – for instance, an IAM role in AWS.</p>
+			<p>For officially supported clouds such as AWS, Azure, and Google Cloud, CCM can simply be run as a DaemonSet within the cluster. We use a DaemonSet since CCM can perform tasks such as creating persistent storage in the cloud provider, and it needs to be able to attach storage to specific Nodes. If you're using a cloud that isn't officially supported, you can run CCM for that specific cloud, and you should follow the specific instructions in that project. These alternate types of CCM are usually open source and can be found on GitHub. For the specifics of installing CCM, let's move on to the next section.</p>
+			<h2 id="_idParaDest-283"><a id="_idTextAnchor298"/>Installing cloud-controller-manager</h2>
+			<p>Typically, CCM is<a id="_idIndexMarker726"/> configured when the cluster is created. As mentioned in the previous section, managed services such as EKS, AKS, and GKE will already have this component enabled, but even Kops and Kubeadm expose the CCM component as a flag in the installation process.</p>
+			<p>Assuming you have not installed CCM any other way and plan to use one of the officially supported public clouds from the upstream version, you can install CCM as a DaemonSet.</p>
+			<p>First, you will need a <code>ServiceAccount</code>:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">Service-account.yaml</p>
+			<pre>apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cloud-controller-manager
+  namespace: kube-system</pre>
+			<p>This <code>ServiceAccount</code> will be used to give the necessary access to the CCM. </p>
+			<p>Next, we'll need a <code>ClusterRoleBinding</code>:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">Clusterrolebinding.yaml</p>
+			<pre>apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: system:cloud-controller-manager
+subjects:
+- kind: ServiceAccount
+  name: cloud-controller-manager
+  namespace: kube-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin</pre>
+			<p>As you can see, we <a id="_idIndexMarker727"/>need to give the <code>cluster-admin</code> role access to our CCM service account. The CCM will need to be able to edit Nodes, among other things.</p>
+			<p>Finally, we can deploy the CCM <code>DaemonSet</code> itself. You will need to fill in this YAML file with the proper settings for your specific cloud provider – check your cloud provider's documentation on Kubernetes for this information.</p>
+			<p>The <code>DaemonSet</code> spec is quite long, so we'll review it in two parts. First, we have the template for the <code>DaemonSet</code> with the required labels and names:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">Daemonset.yaml</p>
+			<pre>apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  labels:
+    k8s-app: cloud-controller-manager
+  name: cloud-controller-manager
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      k8s-app: cloud-controller-manager
+  template:
+    metadata:
+      labels:
+        k8s-app: cloud-controller-manager</pre>
+			<p>As you can see, to <a id="_idIndexMarker728"/>match our <code>ServiceAccount</code>, we are running the CCM in the <code>kube-system</code> namespace. We are also labeling the <code>DaemonSet</code> with the <code>k8s-app</code> label to distinguish it as a Kubernetes control plane component. </p>
+			<p>Next, we have the spec of the <code>DaemonSet</code>:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">Daemonset.yaml (continued)</p>
+			<pre>    spec:
+      serviceAccountName: cloud-controller-manager
+      containers:
+      - name: cloud-controller-manager
+        image: k8s.gcr.io/cloud-controller-manager:&lt;current ccm version for your version of k8s&gt;
+        command:
+        - /usr/local/bin/cloud-controller-manager
+        - --cloud-provider=&lt;cloud provider name&gt;
+        - --leader-elect=true
+        - --use-service-account-credentials
+        - --allocate-node-cidrs=true
+        - --configure-cloud-routes=true
+        - --cluster-cidr=&lt;CIDR of the cluster based on Cloud Provider&gt;
+      tolerations:
+      - key: node.cloudprovider.kubernetes.io/uninitialized
+        value: "true"
+        effect: NoSchedule
+      - key: node-role.kubernetes.io/master
+        effect: NoSchedule
+      nodeSelector:
+        node-role.kubernetes.io/master: ""</pre>
+			<p>As you can see, there<a id="_idIndexMarker729"/> are a couple of places in this spec that you will need to review your chosen cloud provider's documentation or cluster networking setup to find the proper values. Particularly in the networking flags such as <code>--cluster-cidr</code> and <code>--configure-cloud-routes</code>, where values could change based on how you have set up your cluster, even on a single cloud provider.</p>
+			<p>Now that we have CCM running on our cluster one way or another, let's dive into some of the capabilities it provides.</p>
+			<h2 id="_idParaDest-284"><a id="_idTextAnchor299"/>Understanding the cloud-controller-manager capabilities</h2>
+			<p>The default CCM <a id="_idIndexMarker730"/>provides capabilities in a few key areas. For starters, the CCM contains subsidiary controllers for Nodes, routes, and Services. Let's review each in turn to see what it affords us, starting with the Node/Node lifecycle controller.</p>
+			<h3>The CCM Node/Node lifecycle controller</h3>
+			<p>The CCM Node<a id="_idIndexMarker731"/> controller makes sure that the cluster state, as far as which Nodes are<a id="_idIndexMarker732"/> in the cluster, is equivalent to what is in the cloud provider's systems. A simple example of this is autoscaling groups in AWS. When using AWS EKS (or just Kubernetes on AWS EC2, though that requires additional configuration), it is possible to configure worker node groups in an AWS autoscaling group that will scale up or down depending on the CPU or memory usage of the nodes. When these nodes are added and initialized by the cloud provider, the CCM nodes controller will ensure that the cluster has a node resource for each Node presented by the cloud provider.</p>
+			<p>Next, let's move on to the routes controller.</p>
+			<h3>The CCM routes controller</h3>
+			<p>The CCM routes<a id="_idIndexMarker733"/> controller takes care of configuring your cloud provider's networking settings in a way that supports a Kubernetes cluster. This can include the allocation of IPs and setting routes between Nodes. The services controller also handles networking – but the external aspect.</p>
+			<h3>The CCM services controller</h3>
+			<p>The CCM services<a id="_idIndexMarker734"/> controller provides a lot of the "magic" of running Kubernetes on a public cloud provider. One such aspect that we reviewed in <a href="B14790_05_Final_PG_ePub.xhtml#_idTextAnchor127"><em class="italic">Chapter 5</em></a>, <em class="italic">Services and Ingress – Communicating with the Outside World</em>, is the <code>LoadBalancer</code> service. For instance, on a cluster configured with AWS CCM, a Service of type <code>LoadBalancer</code> will automatically configure a matching AWS Load Balancer resource, providing an easy way to expose services in your cluster without dealing with <code>NodePort</code> settings or even Ingress.</p>
+			<p>Now that we understand what the CCM provides, we can venture further and talk about a couple of the other cloud provider extensions that are often used when running Kubernetes on the public cloud. First, let's look at <code>external-dns</code>.</p>
+			<h2 id="_idParaDest-285"><a id="_idTextAnchor300"/>Using external-dns with Kubernetes</h2>
+			<p>The <code>external-dns</code> library<a id="_idIndexMarker735"/> is an officially supported<a id="_idIndexMarker736"/> Kubernetes add-on that allows the cluster to configure external DNS providers to provide DNS resolution for services and ingress in an automated fashion. The <code>external-dns</code> add-on supports a broad range of cloud providers such as AWS and Azure, and also other DNS services such as Cloudflare. </p>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">In order to install <code>external-dns</code>, you can check the official GitHub repository at <a href="https://github.com/kubernetes-sigs/external-dns">https://github.com/kubernetes-sigs/external-dns</a>.</p>
+			<p>Once <code>external-dns</code> is implemented on your cluster, it's simple to create new DNS records in an automated fashion. To test <code>external-dns</code> with a service, we simply need to create<a id="_idIndexMarker737"/> a service in Kubernetes with the proper<a id="_idIndexMarker738"/> annotation. </p>
+			<p>Let's see what this looks like:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">service.yaml</p>
+			<pre>apiVersion: v1
+kind: Service
+metadata:
+  name: my-service-with-dns
+  annotations:
+    external-dns.alpha.kubernetes.io/hostname: myapp.mydomain.com
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 80
+    name: http
+    targetPort: 80
+  selector:
+    app: my-app</pre>
+			<p>As you can see, we only need to add an annotation for the <code>external-dns</code> controller to check, with the domain record to be created in DNS. The domain and hosted zone must of course be accessible by your <code>external-dns</code> controller – for instance, on AWS Route 53 or Azure DNS. Check the specific documentation on the <code>external-dns</code> GitHub repository for specifics.</p>
+			<p>Once the Service is up and running, <code>external-dns</code> will pick up the annotation and create a new DNS record. This pattern is excellent for multi-tenancy or per-version deploys since with something like a Helm chart, variables can be used to change the domain depending on which version or branch of the application is deployed – for instance, <code>v1.myapp.mydomain.com</code>.</p>
+			<p>For Ingress, this is <a id="_idIndexMarker739"/>even easier – you just need to specify a host<a id="_idIndexMarker740"/> on your Ingress record, like so:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">ingress.yaml</p>
+			<pre>apiVersion: networking.k8s.io/v1beta1
+kind: Ingress
+metadata:
+  name: my-domain-ingress
+  annotations:
+    kubernetes.io/ingress.class: "nginx".
+spec:
+  rules:
+  - host: myapp.mydomain.com
+    http:
+      paths:
+      - backend:
+          serviceName: my-app-service
+          servicePort: 80</pre>
+			<p>This host value will automatically create a DNS record pointing to whatever method your Ingress is<a id="_idIndexMarker741"/> using – for instance, a Load Balancer on <a id="_idIndexMarker742"/>AWS.</p>
+			<p>Next, let's talk about how the <strong class="bold">cluster-autoscaler</strong> library works.</p>
+			<h2 id="_idParaDest-286"><a id="_idTextAnchor301"/>Using the cluster-autoscaler add-on</h2>
+			<p>Similar to <code>external-dns</code>, <code>cluster-autoscaler</code> is an officially supported add-on for Kubernetes<a id="_idIndexMarker743"/> that supports some major cloud providers with specific functionality. The purpose of <code>cluster-autoscaler</code> is to trigger the scaling of the number of Nodes in a cluster. It performs this process by controlling the cloud provider's own scaling resources, such as AWS autoscaling groups.  </p>
+			<p>The cluster autoscaler will perform an upward scaling action the moment any single Pod fails to schedule due to resource constraints on a Node, but only if a Node of the existing Node size (for instance, a <code>t3.medium</code> sized Node in AWS) would allow the Pod to be scheduled.   </p>
+			<p>Similarly, the cluster autoscaler will perform a downward scaling action the moment any Node could be emptied of Pods without causing memory or CPU pressure on any of the other Nodes.</p>
+			<p>To install <code>cluster-autoscaler</code>, simply follow the correct instructions from your cloud provider, for the cluster type and intended version of the <code>cluster-autoscaler</code>. For instance, the AWS installation instructions for <code>cluster-autoscaler</code> on EKS are found at <a href="https://aws.amazon.com/premiumsupport/knowledge-center/eks-cluster-autoscaler-setup/">https://aws.amazon.com/premiumsupport/knowledge-center/eks-cluster-autoscaler-setup/</a>.</p>
+			<p>Next, let's look at how you can find open and closed source extensions for Kubernetes by examining the Kubernetes ecosystem.</p>
+			<h1 id="_idParaDest-287"><a id="_idTextAnchor302"/>Integrating with the ecosystem</h1>
+			<p>The Kubernetes (and <a id="_idIndexMarker744"/>more generally, cloud-native) ecosystem is massive, consisting of hundreds of popular open source software libraries, and thousands more fledgling ones. This can be tough to navigate since every month brings new technologies to vet, and acquisitions, rollups, and companies going out of business can turn your favorite open source library into an unmaintained mess.</p>
+			<p>Thankfully, there is some structure in this ecosystem, and it's worth knowing about it in order to help navigate the dearth of options in cloud-native open source. The first big structural component of this is the <strong class="bold">Cloud Native Computing Foundation</strong> or <strong class="bold">CNCF</strong>.</p>
+			<h2 id="_idParaDest-288"><a id="_idTextAnchor303"/>Introducing the Cloud Native Computing Foundation</h2>
+			<p>The CNCF is a<a id="_idIndexMarker745"/> sub-foundation of the Linux Foundation, which is a non-profit entity that hosts open source projects and coordinates an ever-changing list of companies that contribute to and use open source software.</p>
+			<p>The CNCF was founded almost entirely to shepherd the future of the Kubernetes project. It was announced alongside the 1.0 release of Kubernetes and has since grown to encompass hundreds of projects in the cloud-native space – from Prometheus to Envoy to Helm, and many more.</p>
+			<p>The best way to see an overview of the CNCF's constituent projects is to check out the CNCF Cloud Native Landscape, which can be found at <a href="https://landscape.cncf.io/">https://landscape.cncf.io/</a>.</p>
+			<p>The CNCF Landscape is a good place to start if you are interested in possible solutions to a problem you are experiencing with Kubernetes or cloud-native. For every category (monitoring, logging, serverless, service mesh, and others), there are several open source options<a id="_idIndexMarker746"/> to vet and choose from.</p>
+			<p>This is both a strength and weakness of the current ecosystem of cloud-native technologies. There are a significant number of options available, which makes the correct path often unclear, but also means that you will likely be able to find a solution that is close to your exact needs.</p>
+			<p>The CNCF also operates an official Kubernetes forum, which can be joined from the Kubernetes official website at <a href="http://kubernetes.io">kubernetes.io</a>. The URL of the Kubernetes forums is <a href="https://discuss.kubernetes.io/">https://discuss.kubernetes.io/</a>.</p>
+			<p>Finally, it is relevant to mention <em class="italic">KubeCon</em>/<em class="italic">CloudNativeCon</em>, a large conference that is run by the CNCF and encompasses topics including Kubernetes itself and many ecosystem projects. <em class="italic">KubeCon</em> gets larger every year, with almost 12,000 attendees for <em class="italic">KubeCon</em> <em class="italic">North America</em> in 2019.</p>
+			<h1 id="_idParaDest-289"><a id="_idTextAnchor304"/>Summary</h1>
+			<p>In this chapter, we learned about extending Kubernetes. First, we talked about CRDs – what they are, some relevant use cases, and how to implement them in your cluster.  Next, we reviewed the concept of an operator in Kubernetes and discussed how to use an operator, or custom controller, to give life to your CRD.</p>
+			<p>Then, we discussed cloud-provider-specific extensions to Kubernetes including <code>cloud-controller-manager</code>, <code>external-dns</code>, and <code>cluster-autoscaler</code>. Finally, we wrapped up with an introduction to the cloud-native open source ecosystem at large and some great ways to discover projects for your use case.</p>
+			<p>The skills you used in this chapter will help you extend your Kubernetes cluster to interface with your cloud provider as well as your own custom functionality.</p>
+			<p>In the next chapter, we'll talk about two nascent architectural patterns as applied to Kubernetes – serverless and service meshes.</p>
+			<h1 id="_idParaDest-290"><a id="_idTextAnchor305"/>Questions</h1>
+			<ol>
+				<li value="1">What is the difference between a served version and a stored version of a CRD?</li>
+				<li>What are three typical parts of a custom controller or operator control loop?</li>
+				<li>How does <code>cluster-autoscaler</code> interact with existing cloud provider scaling solutions such as AWS autoscaling groups?</li>
+			</ol>
+			<h1 id="_idParaDest-291"><a id="_idTextAnchor306"/>Further reading</h1>
+			<ul>
+				<li>CNCF Landscape:  <a href="https://landscape.cncf.io/">https://landscape.cncf.io/</a> </li>
+				<li>Official Kubernetes Forums: <a href="https://discuss.kubernetes.io/">https://discuss.kubernetes.io/</a></li>
+			</ul>
+		</div>
+	</body></html>

@@ -1,0 +1,761 @@
+<html><head></head><body>
+  
+    
+      <h1>Running Your Private Docker Infrastructure</h1>
+    
+
+    
+      <p>In <a href="../Text/Ch04.xhtml">Chapter 4</a>, <em>Publishing Images,</em> we discussed Docker images and clearly explained that Docker containers are the runtime implementations of Docker images. Docker images and containers are plenty these days as the containerization paradigm has taken the IT domain by storm. Therefore, there is a need for worldwide enterprises to keep their Docker images in their own private infrastructure for security considerations. So, the concept of deploying Docker Hub to our own infrastructure has emerged and evolved. Docker Hubs are paramount and pertinent to registering and then depositing the growing array of Docker images. Primarily, Docker Hub is specially made to centralize and centrally manage information on the following:</p>
+
+      <ul>
+        <li>User accounts</li>
+
+        <li>Checksums of the images</li>
+
+        <li>Public namespaces</li>
+      </ul>
+
+      <p>This chapter is developed with a focus on providing all the relevant information to enable you and the Docker container crafters to design, populate, and run your own private Docker Hubs in your own backyards. This chapter covers the following important topics:</p>
+
+      <ul>
+        <li>Docker Registry</li>
+
+        <li>Docker Registry use cases</li>
+
+        <li>Running your own Docker Registry and pushing the image to a newly created registry</li>
+
+        <li>Webhook notifications</li>
+
+        <li>Docker Registry HTTP API support</li>
+      </ul>
+    
+  
+
+  
+    
+      <h2 id="sigil_toc_id_80">Docker Registry</h2>
+    
+
+    
+      <p>The Docker Registry implementation has completely changed from the previous version mentioned in the earlier edition of this book. Docker Registry 2.0 is the new implementation for storing and distributing Docker images. It supersedes the previous Docker Registry implementation (<a href="https://github.com/docker/docker-registry" target="_blank">https://github.com/docker/docker-registry</a>). The new implementation is available at <a href="https://github.com/docker/distribution">https://github.com/docker/distribution</a>. This is open source under the Apache license. The registry is a stateless, highly scalable server-side application that stores and lets you distribute Docker images. The Docker Registry index is deprecated in the new release. Previously, the Docker Registry used index internally to authenticate the user.</p>
+
+      <p>Docker Registry 2.0 is completed, new, and implemented in Go and supports the Docker Registry HTTP API v2. The current Docker Hub (<a href="https://hub.docker.com" target="_blank">https://hub.docker.com</a>) is based on the new Docker Registry 2.0 with Docker Engine 1.6 or above. This makes it more reliable and transparent to its users. All cloud providers have adopted this new Docker Registry including AWS and IBM.</p>
+
+      <p>The new registry implementation provides the following benefits:</p>
+
+      <ul>
+        <li>Faster push and pull</li>
+
+        <li>Secure and efficient implementation</li>
+
+        <li>Simplified deployment</li>
+
+        <li>Pluggable storage backend</li>
+
+        <li>Webhook notifications</li>
+      </ul>
+
+      <p>The general architecture of Docker Registry shows, as in the following image, how it is integrated with Nginx at frontend and storage at backend:</p>
+
+      <div><img class=" image-border" height="275" src="img/image_05_001.png" width="551"/>
+      </div>
+
+      <p>The salient features of the registry are as follows:</p>
+
+      <ul>
+        <li>The registry is compatible with Docker Engine version 1.6.0 or higher.</li>
+
+        <li>The default storage driver is the local POSIX filesystem, which is suitable for development or small deployments. It also supports different storage backends (S3, Microsoft Azure, OpenStack Swift, and Aliyun OSS).</li>
+
+        <li>It natively supports TLS and basic authentication.</li>
+
+        <li>In the new version, the registry also supports a robust notification system. The registry supports sending Webhook notifications in response to events happening within the registry. Notifications are sent in response to manifest pushes and pulls and layer pushes and pulls. These actions are serialized into events. The events are queued into a registry-internal broadcast system, which queues and dispatches events to endpoints (<a href="https://docs.docker.com/registry/notifications/#endpoints" target="_blank">https://docs.docker.com/registry/notifications/#endpoints</a>).</li>
+      </ul>
+
+      <p>The latest Docker Registry releases two options:</p>
+
+      <ul>
+        <li>Docker Trusted Registry</li>
+
+        <li>Docker Registry</li>
+      </ul>
+
+      <p>Let's talk about the two options in detail:</p>
+
+      <ul>
+        <li><strong>Docker Trusted Registry</strong> (<strong>DTR</strong>): This is the enterprise grade solution from Docker. DTR supports high availability and is installed on the Docker <strong>Universal Control Plane</strong> (<strong>UCP</strong>) cluster. The details are available at the following website:<br/> <a href="https://docs.docker.com/docker-trusted-registry/">https://docs.docker.com/docker-trusted-registry/</a>.</li>
+      </ul>
+
+      <p style="padding-left: 60px">DTR supports image management and it has built-in security and access control. It can also be integrated with LDAP and <strong>Active Directory</strong> (<strong>AD</strong>) and supports <strong>Role Based Access Control</strong> (<strong>RBAC</strong>).</p>
+
+      <p style="padding-left: 60px">The general architecture of DTR is shown in the following diagram:</p>
+
+      <div><img class=" image-border" height="222" src="img/image_05_002.png" width="271"/>
+      </div>
+
+      <p style="padding-left: 60px">DTR has a built-in authentication mechanism. DTR running on a node consists of the following containers:</p>
+
+      <div><ul>
+          <li><code>dtr-api-&lt;replica_id&gt;</code>: Executes the DTR business logic. It serves the DTR web application, and API.</li>
+
+          <li><code>dtr-garant-&lt;replica_id&gt;</code>: Manages DTR authentication.</li>
+
+          <li><code>dtr-jobrunner-&lt;replica_id&gt;</code>: Runs cleanup jobs in the background.</li>
+
+          <li><code>dtr-nautilusstore-&lt;replica_id&gt;</code>: Stores security scanning data.</li>
+
+          <li><code>dtr-nginx-&lt;replica_id&gt;</code>: Receives HTTP and HTTPS requests and proxies them to other DTR components. By default it listens to ports <code>80</code> and <code>443</code> of the host.</li>
+
+          <li><code>dtr-notary-server-&lt;replica_id&gt;</code>: Receives, validates, and serves content trust metadata, and is consulted when pushing or pulling to DTR with content trust enabled.</li>
+
+          <li><code>dtr-notary-signer-&lt;replica_id&gt;</code>: Performs server-side timestamp and snapshot signing for content trust metadata.</li>
+
+          <li><code>dtr-registry-&lt;replica_id&gt;</code>: Implements the functionality for pulling and pushing Docker images. It also handles how images are stored.</li>
+
+          <li><code>dtr-rethinkdb-&lt;replica_id&gt;</code>: A database for persisting repository metadata.</li>
+        </ul>
+      </div>
+
+      <p style="padding-left: 60px">DTR uses the following internal named volumes for persistence of data:</p>
+
+      <div><ul>
+          <li><code>dtr-ca</code>: The private keys and certificates are stored here</li>
+
+          <li><code>dtr-etcd</code>: This is used by etcd for storing DTR internal configurations</li>
+
+          <li><code>dtr-registry</code>: This is the volume where images are stored</li>
+
+          <li><code>dtr-rethink</code>: This is used by RethinkDB to persist DTR data, such as users and repositories</li>
+        </ul>
+      </div>
+
+      <p style="padding-left: 60px">By default, DTR stores the images on the local filesystem of the host machine. For highly available installations of DTR, it supports cloud storage or network filesystems also. DTR can be configured to support Amazon S3, OpenStack Swift, and Microsoft Azure.</p>
+
+      <ul>
+        <li><strong>Docker Registry</strong>: The registry is a stateless, highly scalable server-side application that stores and distributes Docker images. The registry is open source, under the permissive Apache License (<a href="http://en.wikipedia.org/wiki/Apache_License" target="_blank">http://en.wikipedia.org/wiki/Apache_License</a>).</li>
+      </ul>
+
+      <p>In this book, we will focus on the second option of the open source Docker Registry.</p>
+    
+  
+
+  
+    
+      <h2 id="sigil_toc_id_81">Docker Registry use cases</h2>
+    
+
+    
+      <p>Docker Registry stores the Docker images and provides the basic functionalities of pulling, pushing, and deleting the images. In a typical workflow, a commit to your source revision control system would trigger a build on your CI system, which would then push a new image to your registry if the build is successful. A notification from the registry would then trigger a deployment on a staging environment or notify other systems that a new image is available.</p>
+
+      <p>Docker Registry is used when the user needs to do the following:</p>
+
+      <ul>
+        <li>Tighten control where images are kept</li>
+
+        <li>Own the images distribution pipeline</li>
+
+        <li>Integrate image storage and distribution with the backend development workflow</li>
+      </ul>
+
+      <p>The important use cases of registry are as follows:</p>
+
+      <ul>
+        <li><strong>Pull or download an image</strong>: The user requests an image using the Docker client from Docker Registry, the registry in turn responds back to the user with the registry details. Then, the Docker client will directly request the registry to get the required image. The registry authenticates the user with an index internally.</li>
+
+        <li><strong>Push or upload an image</strong>: A user requests to push the image, gets the registry information, and then pushes the image directly to the registry. The registry authenticates the user and finally, responds to the user.</li>
+
+        <li><strong>Delete an image</strong>: The user can also request to delete an image from the repository.</li>
+      </ul>
+
+      <p style="padding-left: 60px">The user has the option to use the registry with or without the index. Using the registry without the index is best suited for storing private images.</p>
+
+      <p>In addition to the preceding use cases, Docker Registry also supports version control for images. It can be integrated with <strong>Continuous Integration</strong> (<strong>CI</strong>) and <strong>Continuous Development</strong> (<strong>CD</strong>) systems. When a new image is successfully pushed to the registry, then a notification from the registry will trigger a deployment on a staging environment or notify other systems that a new image is available.</p>
+
+      <p>In Docker Registry V2, the following new use cases are also supported:</p>
+
+      <ul>
+        <li><strong>Image verification</strong>: Docker Engine would like to run the verified image so it wants to ensure that the image is downloaded from a trusted source and no tampering has occurred. Docker Registry V2 returns a manifest and Docker Engine verifies the manifest's signature before downloading the image. After each layer is downloaded, the Engine verifies the digest of the layer ensuring that the content is as specified by the manifest.</li>
+
+        <li><strong>Resumable push</strong>: It is possible to lose network connectivity while uploading the image to Docker Registry. Now, Docker Registry has the ability to inform Docker Engine that the file upload has already started. Therefore, Docker Engine will respond by only sending the remaining data to complete the image upload.</li>
+
+        <li><strong>Resumable pull</strong>: When downloading an image, the connection is interrupted before the completion. Docker Engine keeps the partial data and requests to avoid downloading the repeated data. This is implemented as the HTTP range requests.</li>
+
+        <li><strong>Layer upload deduplication</strong>: Company Y's build system creates two identical Docker layers from build processes A and B. Build process A completes uploading the layer before B. When process B attempts to upload the layer, the registry indicates that it's not necessary because the layer is already known. If processes A and B upload the same layer at the same time, both the operations will proceed and the first to complete will be stored in the registry (note that we may modify this to prevent dogpile with some locking mechanism).</li>
+      </ul>
+
+      <p>This is the reason why Docker Registry V2 needs Docker Engine version 1.6 or above to support these features.
+      </p>
+    
+  
+
+  
+    
+      <h2 id="sigil_toc_id_82">Running Docker Registry and pushing the image</h2>
+    
+
+    
+      <p>It is fairly easy to install and run Docker Registry, but operating in a production environment requires other non-functional requirements also such as security, availability, and scalability. Also, logging and log processing, systems monitoring, and Security 101 are the required features for production grade systems. Most of the providers use DTR, as explained earlier in the production system. However, Docker Registry is good enough to use in your non-production environment preferably in the intranet environment.</p>
+
+      <p>In this section, we will use the Ubuntu 14.04 machine to install, run, and test Docker Registry. Docker Engine will be installed as described in <a href="../Text/Ch01.xhtml">Chapter 1</a>, <em>Getting Started with Docker</em>. We will perform the following steps to run our own registry, and finally, push the image:</p>
+
+      <ol>
+        <li><strong>Running Docker Registry on localhost</strong>: Like most servers, Docker Registry does not need to be installed on client systems where Docker client is running. Docker Registry can be installed to any server which supports Docker and is network reachable. So multiple Docker clients can access the running Docker Registry.</li>
+      </ol>
+
+      <p style="padding-left: 60px">Docker Registry accepts the connection on TCP port <code>5000</code>, so this is not blocked by the firewall in your system.</p>
+
+      <p style="padding-left: 60px">If you push a lot of images to Docker Registry, they will fill up the space quickly, so it is recommended that you configure enough space where the images are kept. On the local file system, the storage path is normally <code>/var/lib/registry</code>.</p>
+
+      <ol start="2">
+        <li><strong>Start the registry</strong>: The following command downloads the registry image from Docker Hub and starts a container in the background:</li>
+      </ol>
+
+      <pre><strong> $ sudo docker run -d -p 5000:5000 \ <br/> --restart=always </strong><strong>--name registry registry:2 </strong><br/><strong> Unable to find image 'registry:2' locally </strong><br/><strong> 2: Pulling from library/registry </strong><br/><strong> df53ce740974: Pull complete </strong><br/><strong> 9ce080a7bfae: Pull complete </strong><br/><strong> Digest: </strong><br/><strong> sha256:1cfcd718fd8a49fec9ef16496940b962e30e39<br/> 27012e851</strong><strong>f99905db55f1f4199 </strong><br/><strong> Status: Downloaded newer image for registry:2 </strong><br/><strong> 8e5c4b02a43a033ec9f6a38072f58e6b06b87570ba951b3cce5<br/> d9a03160</strong><strong>1656e </strong> 
+</pre>
+
+      <ol start="3">
+        <li><strong>Check Docker Registry is running on localhost</strong>: The following command verifies that Docker Registry is up and running at port <code>5000</code> on localhost:</li>
+      </ol>
+
+      <pre class="CDPAlignLeft CDPAlign"><strong> $ sudo docker ps -a </strong><br/><strong> CONTAINER ID IMAGE COMMAND </strong><br/><strong> CREATED STATUS PORTS <br/> NAMES </strong><br/><strong> 8e5c4b02a43a registry:2 "/entrypoint.sh /etc/" <br/> 3 minutes ago Up 3 minutes 0.0.0.0:5000-&gt;5000/tcp <br/> registry </strong>
+</pre>
+
+      <ol start="4">
+        <li><strong>Get and tag the image</strong>: The most common image to test Docker is the <code>hello-world</code> image available from Docker Hub. Pull the image from the local registry:</li>
+      </ol>
+
+      <pre><strong> $ sudo docker pull hello-world </strong><br/><strong> Using default tag: latest </strong><br/><strong> latest: Pulling from library/hello-world </strong><br/><br/><strong> c04b14da8d14: Pull complete </strong><br/><strong> Digest: <br/> sha256:0256e8a36e2070f7bf2d0b0763dbabdd677985124<br/> 11de4cdcf9431a1feb60fd9 </strong><br/><strong> Status: Downloaded newer image for <br/> hello-world:latest</strong> 
+</pre>
+
+      <p style="padding-left: 60px">The following command tags the image with <code>localhost:5000</code>:</p>
+
+      <pre><strong> $ sudo docker tag hello-world <br/> localhost:5000/hello-world</strong> <br/>
+</pre>
+
+      <p style="padding-left: 60px">Finally, the list of images available on the localhost machine are as follows:</p>
+
+      <pre><strong> $ sudo docker images </strong><br/><strong> REPOSITORY TAG IMAGE ID <br/> CREATED SIZE </strong><br/><strong> registry 2 541a6732eadb <br/> 2 days ago 33.3 MB </strong><br/><strong> localhost:5000/hello-world latest c54a2cc56cbb <br/> 12 weeks ago 1.848 kB </strong><br/><strong> hello-world latest c54a2cc56cbb <br/> 12 weeks ago 1.848 kB</strong> 
+</pre>
+
+      <ol start="5">
+        <li><strong>Push the image</strong>: This <code>hello-world</code> image can now be pushed to the newly created Docker Registry:</li>
+      </ol>
+
+      <pre><strong> $ sudo docker push localhost:5000/hello-world </strong><br/><strong> The push refers to a repository [localhost:5000/<br/> hello-world] </strong><br/><strong> a02596fdd012: Pushed </strong><br/><strong> latest: digest: <br/> sha256:a18ed77532f6d6781500db650194e0f9396ba5f<br/> 05f8b50d4046b294ae5f83aa4 size: 524</strong> 
+</pre>
+
+      <ol start="6">
+        <li><strong>Pull the image</strong>: This <code>hello-world</code> image can now be pulled back from the newly created Docker Registry:</li>
+      </ol>
+
+      <pre><strong> $ sudo docker pull localhost:5000/hello-world </strong><br/><strong> Using default tag: latest </strong><br/><strong> latest: Pulling from hello-world </strong><br/><br/><strong> Digest: <br/> sha256:a18ed77532f6d6781500db650194e0f9396ba5f0<br/> 5f8b50d4046b294ae5f83aa4 </strong><br/><strong> Status: Downloaded newer image for localhost:5000/<br/> hello-world:latest</strong> 
+</pre>
+
+      <ol start="7">
+        <li><strong>Stop Docker Registry and delete</strong>: Now use the following command to stop and delete Docker Registry:</li>
+      </ol>
+
+      <pre><strong> $ sudo docker stop registry &amp;&amp; sudo docker \ <br/> rm -v registry </strong><br/><strong> registry </strong><br/><strong> registry</strong> 
+</pre>
+
+      <ol start="8">
+        <li><strong>Storage</strong>: Docker Registry retains all the registry data as Docker volume on the host filesystem. The Docker volume can be mounted on the <code>/var/lib/registry</code> path, and use the following command to direct Docker Registry to point to this path:</li>
+      </ol>
+
+      <pre><strong> $ sudo docker run -d -p 5000:5000 \ <br/> --restart=always --name registry -v \<br/> `pwd`/data:/var/lib/registry registry:2 </strong><br/><strong> Unable to find image 'registry:2' locally </strong><br/><strong> 2: Pulling from library/registry </strong><br/><strong> 517dc3530502: Pull complete </strong><br/><strong> Digest: sha256:1cfcd718fd8a49fec9ef16496940b962e30e<br/> 3927012e851f99905db55f1f4199 </strong><br/><strong> Status: Downloaded newer image for registry:2 </strong><br/><strong> 5c0ea3042397720eb487f1c3fdb9103ebb0d149421aa114a<br/> 8c5a9133f775332a</strong> <br/>
+</pre>
+
+      <p>The storage drivers can be configured for <code>inmemory</code>, <code>s3</code>, <code>azure</code>, <code>swift</code>, <code>oss</code>, and <code>gcs</code>: <a href="https://github.com/docker/docker.github.io/blob/master/registry/storage-drivers/index.md">https://github.com/docker/distribution/blob/master/docs/storage-drivers/index.md</a>.
+      </p>
+    
+  
+
+  
+    
+      <h2 id="sigil_toc_id_83">Running the Docker Registry on localhost with an SSL certificate</h2>
+    
+
+    
+      <p>In this section, we will emulate the concept of running Docker Registry securely using SSL. In the current scenario of running Docker Registry on localhost, Docker Engine needs to be secured using TLS.</p>
+
+      <p>Follow these steps to run Docker Registry securely:</p>
+
+      <ol>
+        <li><strong>Getting certificates</strong>: We will be using self-signed certificates for TLS certificates. First create the <code>certs</code> directory, then run the <code>openssl</code> command:</li>
+      </ol>
+
+      <pre><strong> $ mkdir certs</strong><br/><strong> $ openssl req -newkey rsa:4096 -nodes -sha256 \ </strong><br/><strong> -keyout certs/domain.key -x509 -days 365 -out \ </strong><br/><strong> certs/domain.crt </strong><br/><strong> Generating a 4096 bit RSA private key </strong><br/><strong> .....................++ </strong><br/><strong> ........................................</strong><br/><strong> .........++ </strong><br/><strong> writing new private key to 'certs/domain.key' </strong><br/><strong> ----- </strong><br/><strong> You are about to be asked to enter information </strong><br/><strong> that will be incorporated into your certificate </strong><br/><strong> request. </strong><br/><strong> What you are about to enter is what is called a </strong><br/><strong> Distinguished Name or a DN. </strong><br/><strong> There are quite a few fields but you can leave </strong><br/><strong> some blank </strong><br/><strong> For some fields there will be a default value, </strong><br/><strong> If you enter '.', the field will be left blank. </strong><br/><strong> ----- </strong><br/><strong> Country Name (2 letter code) [AU]:US </strong><br/><strong> State or Province Name (full name) [Some-State]: </strong><br/><strong> Locality Name (eg, city) []: </strong><br/><strong> Organization Name (eg, company) </strong><br/><strong> [Internet Widgits Pty Ltd]: </strong><br/><strong> Organizational Unit Name (eg, section) []: </strong><br/><strong> Common Name (e.g. server FQDN or YOUR name) </strong><br/><strong> []:myregistrydomain.com </strong><br/><strong> Email Address []: </strong><br/><strong> $</strong> 
+</pre>
+
+      <ol start="2">
+        <li>Copy the <code>certs</code> directory to the certificates directory of Ubuntu 16.o4 in the <code>/usr/local/share/ca-certificates</code> path. This path is specific to Ubuntu (Debian) systems and you may need to use a different path if using Red Hat systems:</li>
+      </ol>
+
+      <pre><strong> $ sudo cp certs/domain.crt \<br/> /usr/local/share</strong><strong>/ca-certificates/myregistrydomain.com.crt </strong><br/><strong> $ sudo update-ca-certificates</strong>
+</pre>
+
+      <p style="padding-left: 60px">Also copy the <code>domain.crt</code> file to <code>/etc/docker/certs.d/myregistrydomain.com:5000/ca.crt</code>.</p>
+
+      <p>Ensure to create the <code>certs.d</code> and <code>myregistrydomain.com:5000</code> directories before running the preceding command.
+      </p>
+
+      <ol start="3">
+        <li>Restart Docker Engine:</li>
+      </ol>
+
+      <pre><strong> $ sudo service docker restart </strong>
+</pre>
+
+      <ol start="4">
+        <li>Docker Registry can be started, as follows, in the secure mode:</li>
+      </ol>
+
+      <pre><strong> $ sudo docker run -d -p 5000:5000 \ <br/> --restart=always </strong><strong>--name registry \ </strong><br/><strong> &gt; -v `pwd`/certs:/certs </strong><br/><strong> &gt; -e REGISTRY_HTTP_TLS_CERTIFICATE=<br/> /certs/domain.crt </strong><br/><strong> &gt; -e REGISTRY_HTTP_TLS_KEY=/certs/domain.key </strong><br/><strong> &gt; registry:2 </strong><br/><strong> Unable to find image 'registry:2' locally </strong><br/><strong> 2: Pulling from library/registry </strong><br/><br/><strong> c0cb142e4345: Pull complete </strong><br/><strong> a5002dfce871: Pull complete </strong><br/><strong> df53ce740974: Pull complete </strong><br/><strong> Digest: sha256:1cfcd718fd8a49fec9ef16496940b962e30e<br/> 3927012e851f99905db55f1f4199 </strong><br/><strong> Status: Downloaded newer image for registry:2 </strong><br/><strong> d7c41de81343313f6760c2231c037008581adf07acceea<br/> 0b3372ec2c05a5a321 </strong><br/><strong> $ </strong> 
+</pre>
+
+      <ol start="5">
+        <li>Now you should be able to push the images from the remote Docker host:</li>
+      </ol>
+
+      <pre><strong> docker pull ubuntu </strong><br/><strong> docker tag ubuntu myregistrydomain.com:5000/ubuntu </strong>
+</pre>
+
+      <p style="padding-left: 60px">Point your <code>myregistrydomain.com</code> to localhost (<code>127.0.0.1</code>) by updating <code>/etc/hosts</code>  by adding <code>127.0.0.1 myregistrydomain.com</code>.</p>
+
+      <pre><strong> docker push myregistrydomain.com:5000/ubuntu </strong><br/><strong> docker pull myregistrydomain.com:5000/ubuntu</strong> 
+</pre>
+    
+  
+
+  
+    
+      <h2 id="sigil_toc_id_84">Running Docker Registry with restrictions</h2>
+    
+
+    
+      <p>The security of Docker Registry is very vital. It is recommended that you run it behind the secure firewall and <strong>Intrusion Protection System</strong> (<strong>IPS</strong>) / <strong>Intrusion Defense System</strong> (<strong>IDS</strong>) in a secure network. Also, it is assumed that registry will only accept a secure connection on HTTPS. In addition to these, Docker Registry can provide access restriction, and the simplest way to implement this is through basic authentication. The basic authentication is standard authentication with web servers using a login name and password:</p>
+
+      <pre><strong>$ mkdir auth</strong><br/><strong>$ sudo docker run --entrypoint htpasswd <br/>registry:2 -Bbn testvinod testpassword &gt; auth/htpasswd</strong><br/><strong>$</strong>
+</pre>
+
+      <p>Here we list out the steps to be done for securely accessing Docker Registry:</p>
+
+      <ol>
+        <li>Since we are running this registry in the secure mode, use a self-signed certificate and enable TLS.  </li>
+
+        <li>Also, restart the Docker process to get the updated configuration.</li>
+
+        <li>Now rerun the registry and make sure the current running registry is stopped:</li>
+      </ol>
+
+      <pre><strong> $ sudo docker run -d -p 5000:5000 --restart=always \<br/> --name registry \</strong><br/><strong> &gt; -v `pwd`/auth:/auth </strong><br/><strong> &gt; -e "REGISTRY_AUTH=htpasswd" </strong><br/><strong> &gt; -e "REGISTRY_AUTH_HTPASSWD_REALM=Registry Realm" </strong><br/><strong> &gt; -e REGISTRY_AUTH_HTPASSWD_PATH=/auth/htpasswd </strong><br/><strong> &gt; -v `pwd`/certs:/certs </strong><br/><strong> &gt; -e REGISTRY_HTTP_TLS_CERTIFICATE=/certs/domain.crt </strong><br/><strong> &gt; -e REGISTRY_HTTP_TLS_KEY=/certs/domain.key </strong><br/><strong> &gt; registry:2</strong>
+</pre>
+
+      <ol start="4">
+        <li>The user needs to log in from a remote machine to test registry user authentication:</li>
+      </ol>
+
+      <pre><strong> $ sudo docker login myregistrydomain.com:5000 </strong><br/><strong> Username: testuser </strong><br/><strong> Password:testpassword </strong><br/><br/><strong> Login Succeeded</strong> 
+</pre>
+
+      <ol start="5">
+        <li>Push and pull the images from the remote machine:</li>
+      </ol>
+
+      <pre><strong> $ sudo docker pull ubuntu </strong><br/><strong> Using default tag: latest </strong><br/><strong> latest: Pulling from library/ubuntu </strong><br/><strong> cad964aed91d: Pull complete </strong><br/><strong> 3a80a22fea63: Pull complete </strong><br/><strong> Digest: sha256:28d4c5234db8d5a634d5e621c363d900f8f241240ee0a6a978784c978fe9c737 </strong><br/><strong> Status: Downloaded newer image for ubuntu:latest </strong><br/><strong> ubuntu@ip-172-30-0-126:~$ sudo docker tag ubuntu <br/> myregistrydomain.com:5000/ubuntu </strong><br/><strong> $ sudo docker push myregistrydomain.com:5000/ubuntu </strong><br/><strong> The push refers to a repository <br/> [myregistrydomain.com:5000/ubuntu] </strong><br/><strong> f215f043863e: Pushed </strong><br/><strong> 0c291dc95357: Pushed </strong><br/><strong> latest: digest: sha256:68ae734b19b499ae57bc8d9dd4c4f90d5ff17cfe801ffbd7b840b120f d61d3b4 size: 1357 </strong><br/><strong> $ sudo docker rmi myregistrydomain.com:5000/ubuntu </strong><br/><strong> Untagged: myregistrydomain.com:5000/ubuntu:latest </strong><br/><strong> Untagged: myregistrydomain.com:5000/ubuntu@sha256:68ae734b19b499ae57bc8d9dd4c4f90d5ff17cfe801ffbd7b840b120fd61d3b4 </strong><br/><strong> $ sudo docker pull myregistrydomain.com:5000/ubuntu </strong><br/><strong> Using default tag: latest </strong><br/><strong> latest: Pulling from ubuntu </strong><br/><strong> Digest: sha256:68ae734b19b499ae57bc8d9dd4c4f90d5ff17cfe801ffbd7b840b120fd61d3b4 </strong><br/><strong> Status: Downloaded newer image for <br/> myregistrydomain.com:5000/</strong><strong>ubuntu:latest</strong> 
+</pre>
+    
+  
+
+  
+    
+      <h2 id="sigil_toc_id_85">Managing Docker Registry with Docker Compose</h2>
+    
+
+    
+      <p>As Docker Registry grows more complex, dealing with its configuration will be tedious. So it is highly recommended that you use Docker Compose. Docker Compose will be discussed later in <a href="../Text/Ch08.xhtml">Chapter 8</a>, <em>Orchestrating Containers</em>.</p>
+
+      <p>The <code>docker-compose.yml</code> file is created as follows:</p>
+
+      <pre>registry:<br/> image: registry:2<br/> ports:<br/>   - 5000:5000<br/> environment:<br/>   REGISTRY_HTTP_TLS_CERTIFICATE: /certs/domain.crt<br/>   REGISTRY_HTTP_TLS_KEY: /certs/domain.key<br/>   REGISTRY_AUTH: htpasswd<br/>   REGISTRY_AUTH_HTPASSWD_PATH: /auth/htpasswd<br/>   REGISTRY_AUTH_HTPASSWD_REALM: Registry Realm<br/> volumes:<br/>   - /path/data:/var/lib/registry<br/>   - /path/certs:/certs<br/>   - /path/auth:/auth
+</pre>
+
+      <p>Now, run the command to run the registry:</p>
+
+      <pre><strong>$ sudo docker-compose up -d </strong><br/><strong>Creating ubuntu_registry_1 </strong> 
+</pre>
+
+      <p>This ensures Docker Registry is up and running again.</p>
+    
+  
+
+  
+    
+      <h2 id="sigil_toc_id_86">Load balancing consideration</h2>
+    
+
+    
+      <p>In the enterprise deployments of Docker Registry, the load balancer is required to distribute loads across registry clusters. To make load balancer work correctly, we need to consider storage driver, HTTP secret, and Redis cache (if configured) to be same for the cluster of registries. If any of these parameters are different, the registry will have trouble serving the requests.  </p>
+
+      <p>For example, the storage driver used for Docker images should be the same across all instances of registry. If a particular mount point is used as a filesystem, it should be accessible and attached to all instances of registries. Similarly, if an S3 or IBM object storage is used, registries should be able to access the same storage resource. The HTTP secret coordinates uploads also must be the same across instances. Actually, configuring different Redis cache for different registry instances may work as of now. However, this is not a good practice and it will be expensive in terms of more requests being redirected to the backend.</p>
+    
+  
+
+  
+    
+      <h2 id="sigil_toc_id_87">Webhook notifications</h2>
+    
+
+    
+      <p>Docker Registry has the in-built capability of sending notifications based on registry activities:</p>
+
+      <div><img class=" image-border" height="465" src="img/image_05_003.png" width="385"/>
+      </div>
+
+      <p>Notifications are sent to the endpoints via HTTP. This complete notification is based on the listener and broadcaster architecture. Each endpoint has its own queue and all actions (push/pull/delete) trigger the events. These events are queued and once the event reaches the end of the queue, it triggers an HTTP request to the endpoint. The events are sent to each endpoint, but the order is not guaranteed.</p>
+
+      <p>Events have a well-defined JSON structure and are sent as the body of the notification. One or more events are sent in the structure and are called an <strong>envelope</strong>. An envelope may contain one or more events. The registry is also capable of receiving responses from endpoints. The responses with 2XX or 3XX response codes are considered as valid responses and consider the message delivered.</p>
+    
+  
+
+  
+    
+      <h2 id="sigil_toc_id_88">Docker Registry HTTP API support</h2>
+    
+
+    
+      <p>Docker Registry has an HTTP interface to interact with Docker Engine. This is used to manage information about Docker images and enable their distribution.</p>
+
+      <p>The key update from V1 is the set of changes in the Docker image format and concept of signed manifest. The new, self-contained image manifest simplifies image definition and improves security. This specification will build on that work, leveraging new properties of the manifest format to improve performance, reduce bandwidth usage, and decrease the likelihood of backend corruption.</p>
+
+      <p>The complete documentation of the Docker Registry V2 APIs can be found here:<br/> <a href="https://github.com/docker/distribution/blob/master/docs/spec/api.md" target="_blank">https://github.com/docker/distribution/blob/master/docs/spec/api.md.</a></p>
+
+      <p>The important APIs are discussed here:</p>
+
+      <ul>
+        <li>API version check:</li>
+      </ul>
+
+      <div><code>GET /v2/</code>: This API provides version support information based on its response statuses.<br/>
+      </div>
+
+      <p style="padding-left: 60px">Here is the <code>curl</code> command to check the Docker Registry API version:</p>
+
+      <pre><strong> $ curl -i http://localhost:5000/v2/</strong><br/><strong> HTTP/1.1 200 OK</strong><br/><strong> Content-Length: 2</strong><br/><strong> Content-Type: application/json; charset=utf-8</strong><br/><strong> Docker-Distribution-Api-Version: registry/2.0</strong><br/><strong> X-Content-Type-Options: nosniff</strong><br/><strong> Date: Mon, 21 Nov 2016 18:37:06 GMT</strong>
+</pre>
+
+      <p style="padding-left: 60px">The supported error codes are <code>401 Unauthorized</code> and <code>404 Not Found</code>.</p>
+
+      <ul>
+        <li>Listing repositories:</li>
+      </ul>
+
+      <div><code>GET /v2/_catalog</code>: This API provides the content of repositories.<br/>
+
+        <br/>
+      </div>
+
+      <p style="padding-left: 60px">Here is the <code>curl</code> command to get the contents of repository:</p>
+
+      <pre><strong> $ curl -i http://localhost:5000/v2/_catalog</strong><br/><strong> HTTP/1.1 200 OK</strong><br/><strong> Content-Type: application/json; charset=utf-8</strong><br/><strong> Docker-Distribution-Api-Version: registry/2.0</strong><br/><strong> X-Content-Type-Options: nosniff</strong><br/><strong> Date: Mon, 21 Nov 2016 18:36:42 GMT</strong><br/><strong> Content-Length: 33</strong><br/><strong> {"repositories":["hello-world"]}</strong>
+</pre>
+
+      <p style="padding-left: 60px">The reader may recall that while starting Docker Registry, we uploaded only one file.</p>
+
+      <ul>
+        <li>Pulling an image: The Docker image mainly consists of two parts—a JSON manifest and individual layer files.</li>
+      </ul>
+
+      <p style="padding-left: 60px">Pulling an image manifest can be fetched using the following URL:</p>
+
+      <pre><strong> GET /v2/&lt;name&gt;/manifests/&lt;reference&gt;</strong>
+</pre>
+
+      <p style="padding-left: 60px">Here is the <code>curl</code> command to get the image manifest details.</p>
+
+      <pre><br/><strong> curl -i http://localhost:5000/v2/</strong><br/><strong> hello-world/manifests/latestHTTP/1.1 200 OK</strong><br/><strong> Content-Length: 2742</strong><br/><strong> Content-Type: application/vnd.docker.distribution.</strong><br/><strong> manifest.v1+prettyjws</strong><br/><strong> Docker-Content-Digest: </strong><br/><strong> sha256:f18d040ea7bf47c7ea8f7ff1a8682811cf375</strong><br/><strong> 51c747158e37b9c75f5450e6fac</strong><br/><strong> Docker-Distribution-Api-Version: registry/2.0</strong><br/><strong> Date: Mon, 21 Nov 2016 18:54:05 GMT</strong><br/><strong> {</strong><br/><strong> "schemaVersion": 1,</strong><br/><strong> "name": "hello-world",</strong><br/><strong> "tag": "latest",</strong><br/><strong> "architecture": "amd64",</strong><br/><strong> "fsLayers": [</strong><br/><strong> {</strong><br/><strong> "blobSum": </strong><br/><strong> "sha256:a3ed95caeb02ffe68cdd9fd8440</strong><br/><strong> 6680ae93d633cb16422d00e8a7c22955b46d4"</strong><br/><strong> },</strong><br/><strong> {</strong><br/><strong> "blobSum": </strong><br/><strong> "sha256:c04b14da8d1441880ed3fe6106fb2cc</strong><br/><strong> 6fa1c9661846ac0266b8a5ec8edf37b7c"</strong><br/><strong> }</strong><br/><strong> ],</strong><br/><strong> "history": [ </strong><br/><strong> }{ </strong><br/><strong> "v1Compatibility": "----</strong><br/><strong> }</strong><br/><strong> ],</strong><br/><strong> "signatures":[</strong><br/><strong> {</strong><br/><strong> "----------------"</strong><br/><strong> }</strong><br/><strong> ]</strong><br/><strong> }</strong>
+</pre>
+
+      <ul>
+        <li>Pulling the layers of an image stored in blob:</li>
+      </ul>
+
+      <pre><strong> GET /v2/&lt;name&gt;/blobs/&lt;digest&gt;</strong> 
+</pre>
+
+      <p style="padding-left: 60px">This will be an exercise for the reader to download the image using <code>&lt;digest&gt;</code> received in the preceding pulling manifest API.</p>
+
+      <p>A list of methods and URIs are covered in the following table:</p>
+
+      <table class="MsoTableGrid">
+        <tbody>
+          <tr>
+            <td>
+              <p><strong>Method</strong></p>
+            </td>
+
+            <td>
+              <p><strong>Path</strong></p>
+            </td>
+
+            <td>
+              <p><strong>Entity</strong></p>
+            </td>
+
+            <td>
+              <p><strong>Description</strong></p>
+            </td>
+          </tr>
+
+          <tr>
+            <td>
+              <p><code>GET</code></p>
+            </td>
+
+            <td>
+              <p><code>/v2/</code></p>
+            </td>
+
+            <td>
+              <p>Base</p>
+            </td>
+
+            <td>
+              <p>Check that the endpoint implements the Docker Registry API V2</p>
+            </td>
+          </tr>
+
+          <tr>
+            <td>
+              <p><code>GET</code></p>
+            </td>
+
+            <td>
+              <p><code>/v2/&lt;name&gt;/tag/list</code></p>
+            </td>
+
+            <td>
+              <p>Tags</p>
+            </td>
+
+            <td>
+              <p>Fetch the tags under the repository identified by name</p>
+            </td>
+          </tr>
+
+          <tr>
+            <td>
+              <p><code>GET</code></p>
+            </td>
+
+            <td>
+              <p><code>/v2/&lt;name&gt;/manifests/&lt;reference&gt;</code></p>
+            </td>
+
+            <td>
+              <p>Manifest</p>
+            </td>
+
+            <td>
+              <p>Fetch the manifest identified by name and reference, where reference can be a tag or digest</p>
+            </td>
+          </tr>
+
+          <tr>
+            <td>
+              <p><code>PUT</code></p>
+            </td>
+
+            <td>
+              <p><code>/v2/&lt;name&gt;/manifests/&lt;reference&gt;</code></p>
+            </td>
+
+            <td>
+              <p>Manifest</p>
+            </td>
+
+            <td>
+              <p>Put the manifest identified by name and reference, where reference can be a tag or digest</p>
+            </td>
+          </tr>
+
+          <tr>
+            <td>
+              <p><code>Delete</code></p>
+            </td>
+
+            <td>
+              <p><code>/v2/&lt;name&gt;/manifests/&lt;reference&gt;</code></p>
+            </td>
+
+            <td>
+              <p>Manifest</p>
+            </td>
+
+            <td>
+              <p>Delete the manifest identified by name and reference, where reference can be a tag or digest</p>
+            </td>
+          </tr>
+
+          <tr>
+            <td>
+              <p><code>GET</code></p>
+            </td>
+
+            <td>
+              <p><code>/v2/&lt;name&gt;/blobs/&lt;digest&gt;</code></p>
+            </td>
+
+            <td>
+              <p>Blob</p>
+            </td>
+
+            <td>
+              <p>Retrieve the blob from the registry identified by a digest</p>
+            </td>
+          </tr>
+
+          <tr>
+            <td>
+              <p><code>DELETE</code></p>
+            </td>
+
+            <td>
+              <p><code>/v2/&lt;name&gt;/blobs/&lt;digest&gt;</code></p>
+            </td>
+
+            <td>
+              <p>Blob</p>
+            </td>
+
+            <td>
+              <p>Delete the blob from the registry identified by a digest</p>
+            </td>
+          </tr>
+
+          <tr>
+            <td>
+              <p><code>POST</code></p>
+            </td>
+
+            <td>
+              <p><code>/v2/&lt;name&gt;/blobs/uploads</code></p>
+            </td>
+
+            <td>
+              <p>Initiate blob upload</p>
+            </td>
+
+            <td>
+              <p>Initiate a resumable blob upload; if successful, an upload location will be provided to complete the upload</p>
+            </td>
+          </tr>
+
+          <tr>
+            <td>
+              <p><code>GET</code></p>
+            </td>
+
+            <td>
+              <p><code>/v2/&lt;name&gt;/blobs/uploads/&lt;uuid&gt;</code></p>
+            </td>
+
+            <td>
+              <p>Blob upload</p>
+            </td>
+
+            <td>
+              <p>Retrieve the status of upload identified by <code>uuid</code></p>
+            </td>
+          </tr>
+
+          <tr>
+            <td>
+              <p><code>PATCH</code></p>
+            </td>
+
+            <td>
+              <p><code>/v2/&lt;name&gt;/blobs/uploads/&lt;uuid&gt;</code></p>
+            </td>
+
+            <td>
+              <p>Blob upload</p>
+            </td>
+
+            <td>
+              <p>Update a chunk of data for the specified upload</p>
+            </td>
+          </tr>
+
+          <tr>
+            <td>
+              <p><code>PUT</code></p>
+            </td>
+
+            <td>
+              <p><code>/v2/&lt;name&gt;/blobs/uploads/&lt;uuid&gt;</code></p>
+            </td>
+
+            <td>
+              <p>Blob upload</p>
+            </td>
+
+            <td>
+              <p>Complete the upload specified by <code>uuid</code></p>
+            </td>
+          </tr>
+
+          <tr>
+            <td>
+              <p><code>DELETE</code></p>
+            </td>
+
+            <td>
+              <p><code>/v2/&lt;name&gt;/blobs/uploads/&lt;uuid&gt;</code></p>
+            </td>
+
+            <td>
+              <p>Blob upload</p>
+            </td>
+
+            <td>
+              <p>Cancel outstanding upload processes, releasing associated resources</p>
+            </td>
+          </tr>
+
+          <tr>
+            <td>
+              <p><code>GET</code></p>
+            </td>
+
+            <td>
+              <p><code>/v2/_catalog</code></p>
+            </td>
+
+            <td>
+              <p>Catalog</p>
+            </td>
+
+            <td>
+              <p>Retrieve a sorted JSON list of repositories from the registry</p>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    
+  
+
+  
+    
+      <h2 id="sigil_toc_id_89">Summary</h2>
+    
+
+    
+      <p>Docker Engine allows every value-adding software solution to be containerized, indexed, registered, and stocked. Docker is turning out to be a great tool for systematically developing, shipping, deploying, and running containers everywhere. While <code>docker.io</code> lets you upload your Docker creations to its registry for free, anything you upload there is publicly discoverable and accessible. Innovators and companies aren't keen on this and therefore insist on private Docker Hubs. In this chapter, we explained all the steps, syntaxes, and semantics for you in an easy-to-understand manner. We showed how to retrieve images to generate Docker containers, and described how to push our images to Docker Registry in a secure manner in order to be found and used by authenticated developers. The authentication and authorization mechanisms, a major part of the whole process, have been explained in detail. Precisely speaking, this chapter is conceived and concretized as a guide for setting up your own Docker Hubs. As world organizations are showing exemplary interest in having containerized clouds, private container hubs are becoming more essential.</p>
+
+      <p>At this point in time, we understand that distribution and management of Docker images is possible using Docker Hub, DTR, and the Docker open source registry. Both Docker Hub and DTR are commercial products that incorporate the open source registry capabilities into their respective solutions. Docker Hub is a multi-tenant service while DTR and the open source registry provide users with the option to host private registries behind their own firewall or a dedicated cloud environment.</p>
+
+      <p>In the next chapter, we will dive deep into containers, which is the natural progression from images. We will demonstrate the capability to run services, such as a web server in a Docker container and its interaction with the host machine and the outside world.</p>
+    
+  
+</body></html>

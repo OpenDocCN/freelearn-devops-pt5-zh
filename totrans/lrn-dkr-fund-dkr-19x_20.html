@@ -1,0 +1,653 @@
+<html><head></head><body>
+        
+
+                            
+                    <h1 class="header-title">Deploying, Updating, and Securing an Application with Kubernetes</h1>
+                
+            
+            
+                
+<p>In the previous chapter, we learned about the basics of the container orchestrator, Kubernetes. We got a high-level overview of the architecture of Kubernetes and learned a lot about the important objects used by Kubernetes to define and manage a containerized application. </p>
+<p>In this chapter, we will learn how to deploy, update, and scale applications into a Kubernetes cluster. We will also explain how zero downtime deployments are achieved to enable disruption-free updates and rollbacks of mission-critical applications. Finally, we will introduce Kubernetes secrets as a means to configure services and protect sensitive data.</p>
+<p>This chapter covers the following topics:</p>
+<ul>
+<li>Deploying a first application</li>
+<li>Defining liveness and readiness</li>
+<li>Zero downtime deployments</li>
+<li>Kubernetes secrets</li>
+</ul>
+<p>After working through this chapter, you will be able to do the following:</p>
+<ul>
+<li>Deploy a multi-service application into a Kubernetes cluster</li>
+<li>Define a liveness and readiness probe for your Kubernetes application service</li>
+<li>Update an application service running in Kubernetes without causing downtime</li>
+<li>Define secrets in a Kubernetes cluster</li>
+<li>Configure an application service to use Kubernetes secrets </li>
+</ul>
+<p class="mce-root"/>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Technical requirements</h1>
+                
+            
+            
+                
+<p>In this chapter, we're going to use Minikube on our local computer. Please refer to <a href="99a92fe1-4652-4934-9c33-f3e19483afcd.xhtml" target="_blank">Chapter 2</a>, <em>Setting Up a Working Environment</em>, for more information on how to install and use Minikube.</p>
+<p>The code for this chapter can be found here: <a href="https://github.com/PacktPublishing/Learn-Docker---Fundamentals-of-Docker-19.x-Second-Edition/tree/master/ch16/probes" target="_blank">https://github.com/PacktPublishing/Learn-Docker---Fundamentals-of-Docker-19.x-Second-Edition/tree/master/ch16/probes</a>.</p>
+<p>Please make sure you have cloned this book's GitHub repository, as described in <a href="99a92fe1-4652-4934-9c33-f3e19483afcd.xhtml" target="_blank">Chapter 2</a>, <em>Setting Up a Working Environment</em>.</p>
+<p>In your Terminal, navigate to the <kbd>~/fod/ch16</kbd> folder.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Deploying a first application</h1>
+                
+            
+            
+                
+<p>We will take our pets application, which we first introduced in <a href="412c6f55-a00b-447f-b22a-47b305453507.xhtml" target="_blank">Chapter 11</a>, <em>Docker Compose</em>, and deploy it into a Kubernetes cluster. Our cluster will be Minikube, which, as you know, is a single-node cluster. However, from the perspective of a deployment, it doesn't really matter how big the cluster is and where the cluster is located in the cloud, in your company's data center, or on your personal workstation.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Deploying the web component</h1>
+                
+            
+            
+                
+<p>Just as a reminder, our application consists of two application services: the Node-based web component and the backing PostgreSQL database. In the previous chapter, we learned that we need to define a Kubernetes Deployment object for each application service we want to deploy. Let's do this first for the web component. As always in this book, we will choose the declarative way of defining our objects. Here is the YAML defining a Deployment object for the web component:</p>
+<div><img src="img/f43630a9-a410-44cf-a9f1-bcd87d583f54.png" style="width:25.50em;height:27.17em;"/></div>
+<p>Kubernetes deployment definition for the web component </p>
+<p>The preceding deployment definition can be found in the <kbd>web-deployment.yaml</kbd> file in the <kbd>~/fod/ch16</kbd> folder. The lines of code are as follows:</p>
+<ul>
+<li>On line <kbd>4</kbd>: We define the name for our <kbd>Deployment</kbd> object as <kbd>web</kbd>.</li>
+<li>On line <kbd>6</kbd>: We declare that we want to have one instance of the <kbd>web</kbd> component running.</li>
+<li>From line <kbd>8</kbd> to <kbd>10</kbd>: We define which pods will be part of our deployment, namely those that have the <kbd>app</kbd> and <kbd>service</kbd> labels with values of <kbd>pets</kbd> and <kbd>web</kbd>, respectively.</li>
+<li>On line <kbd>11</kbd>: In the template for the pods starting at line <kbd>11</kbd>, we define that each pod will have the <kbd>app</kbd> and <kbd>service</kbd> labels applied to them.</li>
+<li>From line <kbd>17</kbd>: We define the single container that will be running in the pod. The image for the container is our well-known <kbd>fundamentalsofdocker/ch11-web:2.0</kbd> image and the name of the container will be <kbd>web</kbd>.</li>
+<li><kbd>ports</kbd>: Finally, we declare that the container exposes port <kbd>3000</kbd> for TCP-type traffic.</li>
+</ul>
+<p class="mce-root"/>
+<p>Please make sure that you have set the context of kubectl to Minikube. See <a href="99a92fe1-4652-4934-9c33-f3e19483afcd.xhtml" target="_blank">Chapter 2</a>, <em>Setting Up a Working Environment</em>, for details on how to do that.</p>
+<p>We can deploy this Deployment object using kubectl:</p>
+<pre><strong>$ kubectl create -f web-deployment.yaml</strong></pre>
+<p>We can double-check that the deployment has been created again using our Kubernetes CLI. We should see the following output:</p>
+<div><img src="img/b631548b-c83b-4421-a037-a931a77b9ba7.png" style="width:31.58em;height:12.42em;"/></div>
+<p>Listing all resources running in Minikube</p>
+<p>In the preceding output, we can see that Kubernetes created three objects – the deployment, a pertaining ReplicaSet, and a single pod (remember that we specified that we want one replica only). The current state corresponds to the desired state for all three objects, so we are fine so far.</p>
+<p>Now, the web service needs to be exposed to the public. For this, we need to define a Kubernetes Service object of the <kbd>NodePort</kbd> type. Here is the definition, which can be found in the <kbd>web-service.yaml</kbd> file in the <kbd>~/fod/ch16</kbd> folder:</p>
+<div><img src="img/aa181850-9aab-492a-a132-e99ecbb7f102.png" style="width:10.33em;height:13.42em;"/></div>
+<p>Definition of the Service object for our web component</p>
+<p>The preceding lines of codes are as follows:</p>
+<ul>
+<li>On line <kbd>4</kbd>: We set the <kbd>name</kbd> of this Service object to <kbd>web</kbd>.</li>
+<li>On line <kbd>6</kbd>: We define the <kbd>type</kbd> of Service object we're using. Since the web component has to be accessible from outside of the cluster, this cannot be a Service object of the <kbd>ClusterIP</kbd> type and must be either of the <kbd>NodePort</kbd> or <kbd>LoadBalancer</kbd> type. We discussed the various types of Kubernetes services in the previous chapter, so will not go into further detail about this. In our sample, we're using a <kbd>NodePort</kbd> type of service.</li>
+<li>On lines <kbd>8</kbd> and <kbd>9</kbd>: We specify that we want to expose port <kbd>3000</kbd> for access through the <kbd>TCP</kbd> protocol. Kubernetes will map container port <kbd>3000</kbd> automatically to a free host port in the range of 30,000 to 32,768. Which port Kubernetes effectively chooses can be determined using the <kbd>kubectl</kbd> get service or <kbd>kubectl</kbd> describe command for the service after it has been created. </li>
+<li>From line <kbd>10</kbd> to <kbd>12</kbd>: We define the filter criteria for the pods that this service will be a stable endpoint for. In this case, it is all the pods that have the <kbd>app</kbd> and <kbd>service</kbd> labels with the <kbd>pets</kbd> and <kbd>web</kbd> values, respectively.</li>
+</ul>
+<p>Now that we have this specification for a Service object, we can create it using <kbd>kubectl</kbd>:</p>
+<pre><strong>$ kubectl create -f web-service.yaml</strong></pre>
+<p>We can list all the services to see the result of the preceding command:</p>
+<div><img src="img/68357689-66d7-4587-97d9-369552a5fe75.png" style="width:40.75em;height:5.33em;"/></div>
+<p>The Service object created for the web component</p>
+<p>In the preceding output, we can see that a service called <kbd>web</kbd> has been created. A unique clusterIP of <kbd>10.99.99.133</kbd> has been assigned to this service, and the container port <kbd>3000</kbd> has been published on port <kbd>31331</kbd> on all cluster nodes.</p>
+<p>If we want to test this deployment, we need to find out what IP address Minikube has, and then use this IP address to access our web service. The following is the command that we can use to do this:</p>
+<pre><strong>$ IP=$(minikube ip)</strong><br/><strong>$ curl -4 $IP:31331/</strong><br/>Pets Demo Application</pre>
+<p>OK, the response is <kbd>Pets Demo Application</kbd>, which is what we expected. The web service is up and running in the Kubernetes cluster. Next, we want to deploy the database.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Deploying the database</h1>
+                
+            
+            
+                
+<p>A database is a stateful component and has to be treated differently to stateless components, such as our web component. We discussed the difference between stateful and stateless components in a distributed application architecture in detail in <a href="bbbf480e-3d5a-4ad7-94e9-fae735b025ae.xhtml" target="_blank">Chapter 9</a>, <em>Distributed Application Architecture</em>, and <a href="27c0d9ce-fab6-4ce9-9034-4f2fb62931e8.xhtml" target="_blank">Chapter 12</a>, <em>Orchestrators</em>.</p>
+<p>Kubernetes has defined a special type of <kbd>ReplicaSet</kbd> object for stateful components. The object is called a <kbd>StatefulSet</kbd>. Let's use this kind of object to deploy our database. The definition can be found in the <kbd>~fod/ch16/db-stateful-set.yaml</kbd> file. The details are as follows:</p>
+<div><img src="img/a0e35643-c85e-4f8d-8e9c-b62a372a42dd.png" style="width:20.08em;height:30.33em;"/></div>
+<p>A StatefulSet for the DB component</p>
+<p>OK, this looks a bit scary, but it isn't. It is a bit longer than the definition of the deployment for the <kbd>web</kbd> component due to the fact that we also need to define a volume where the PostgreSQL database can store the data. The volume claim definition is on lines <kbd>25</kbd> to <kbd>33</kbd>. We want to create a volume with the name <kbd>pets-data</kbd> that has a maximum size equal to <kbd>100 MB</kbd>. On lines <kbd>22</kbd> to <kbd>24</kbd>, we use this volume and mount it into the container at <kbd>/var/lib/postgresql/data</kbd>, where PostgreSQL expects it. On line <kbd>21</kbd>, we also declare that PostgreSQL is listening at port <kbd>5432</kbd>.</p>
+<p>As always, we use kubectl to deploy the <kbd>StatefulSet</kbd>:</p>
+<pre><strong>$ kubectl create -f db-stateful-set.yaml</strong></pre>
+<p>Now, if we list all the resources in the cluster, we will be able to see the additional objects that were created:</p>
+<p class="CDPAlignCenter CDPAlign"><img class="alignnone size-full wp-image-973 image-border" src="img/65326383-101f-44f5-a370-5e936b3933fd.png" style="width:41.17em;height:19.75em;"/></p>
+<p>The StatefulSet and its pod</p>
+<p>Here, we can see that a <kbd>StatefulSet</kbd> and a pod have been created. For both, the current state corresponds to the desired state and thus the system is healthy. But that doesn't mean that the web component can access the database at this time. Service discovery won't work so far. Remember that the web component wants to access the <kbd>db</kbd> service under the name <kbd>db</kbd>.</p>
+<p>To make service discovery work inside the cluster, we have to define a Kubernetes Service object for the database component too. Since the database should only ever be accessible from within the cluster, the type of Service object we need is <kbd>ClusterIP</kbd>. Here is the specification, which can be found in the <kbd>~/fod/ch16/db-service.yaml</kbd> file:</p>
+<div><img src="img/50834c86-6427-4c33-b811-089547e1aef2.png" style="width:11.92em;height:15.58em;"/></div>
+<p>Definition of the Kubernetes Service object for the database</p>
+<p>The database component will be represented by this Service object and it can be reached by the name <kbd>db</kbd>, which is the name of the service, as defined on line <kbd>4</kbd>. The database component does not have to be publicly accessible, so we decided to use a Service object of the <kbd>ClusterIP</kbd> type. The selector on lines <kbd>10</kbd> to <kbd>12</kbd> defines that this service represents a stable endpoint for all the pods that have the according labels defined, that is, <kbd>app: pets</kbd> and <kbd>service: db</kbd>.</p>
+<p>Let's deploy this service with the following command:</p>
+<pre><strong>$ kubectl create -f db-service.yaml</strong></pre>
+<p>Now, we should be ready to test the application. We can use the browser this time to enjoy the beautiful animal images:</p>
+<p class="mce-root"/>
+<div><img src="img/5a43f3ff-7ac5-4b0e-af24-e2ceb59bf180.png" style="width:38.33em;height:28.08em;"/></div>
+<p>Testing the pets application running in Kubernetes</p>
+<p><kbd>172.29.64.78</kbd> is the IP address of my Minikube. Verify your address using the <kbd>minikube ip</kbd> command. Port number <kbd>32722</kbd> is the number that Kubernetes automatically selected for my <kbd>web</kbd> Service object. Replace this number with the port that Kubernetes assigned to your service. You can get the number by using the <kbd>kubectl get services</kbd> command.</p>
+<p>Now, we have successfully deployed the pets application to Minikube, which is a single-node Kubernetes cluster. We had to define four artifacts to do so, which are as follows:</p>
+<ul>
+<li>A Deployment and a Service object for the web component </li>
+<li>A StatefulSet and a Service object for the database component</li>
+</ul>
+<p>To remove the application from the cluster, we can use the following small script:</p>
+<pre>kubectl delete svc/web<br/>kubectl delete deploy/web<br/>kubectl delete svc/db<br/>kubectl delete statefulset/db</pre>
+<p>Next, we will be streamlining the deployment.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Streamlining the deployment</h1>
+                
+            
+            
+                
+<p>So far, we have created four artifacts that needed to be deployed to the cluster. This is only a very simple application, consisting of two components. Imagine having a much more complex application. It would quickly become a maintenance nightmare. Luckily, we have several options as to how we can simplify the deployment. The method that we are going to discuss here is the possibility of defining all the components that make up an application in Kubernetes in a single file.</p>
+<p>Other solutions that lie outside of the scope of this book would include the use of a package manager, such as Helm.</p>
+<p>If we have an application consisting of many Kubernetes objects such as <kbd>Deployment</kbd> and <kbd>Service</kbd> objects, then we can keep them all in one single file and separate the individual object definitions by three dashes. For example, if we wanted to have the <kbd>Deployment</kbd> and the <kbd>Service</kbd> definition for the <kbd>web</kbd> component in a single file, this would look as follows:</p>
+<pre>apiVersion: extensions/v1beta1<br/>kind: Deployment<br/>metadata:<br/>  name: web<br/>spec:<br/>  replicas: 1<br/>  selector:<br/>    matchLabels:<br/>      app: pets<br/>      service: web<br/>  template:<br/>    metadata:<br/>      labels:<br/>        app: pets<br/>        service: web<br/>    spec:<br/>      containers:<br/>      - image: fundamentalsofdocker/ch11-web:2.0<br/>        name: web<br/>        ports:<br/>        - containerPort: 3000<br/>          protocol: TCP<br/>---<br/>apiVersion: v1<br/>kind: Service<br/>metadata:<br/>  name: web<br/>spec:<br/>  type: NodePort<br/>  ports:<br/>  - port: 3000<br/>    protocol: TCP<br/>  selector:<br/>    app: pets<br/>    service: web</pre>
+<p>Here, we have collected all four object definitions for the <kbd>pets</kbd> application in the <kbd>~/fod/ch16/pets.yaml</kbd> file, and we can deploy the application in one go:</p>
+<div><img src="img/76a4ab56-40ed-4d1b-b372-5267d4702597.png" style="width:16.67em;height:7.58em;"/></div>
+<p>Using a single script to deploy the pets application</p>
+<p>Similarly, we have created a script called <kbd>~/fod/ch16/remove-pets.sh</kbd> to remove all the artifacts of the pets application from the Kubernetes cluster:</p>
+<div><img src="img/5670017a-1e32-4999-8ee1-79d171f3830b.png" style="width:16.00em;height:9.17em;"/></div>
+<p>Removing pets from the Kubernetes cluster</p>
+<p>With this, we have taken our pets application we introduced in <a href="412c6f55-a00b-447f-b22a-47b305453507.xhtml" target="_blank">Chapter 11</a>, <em>Docker Compose</em>, and defined all the Kubernetes objects that are necessary to deploy this application into a Kubernetes cluster. In each step, we have made sure that we got the expected result, and once all the artifacts existed in the cluster, we showed the running application. </p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Defining liveness and readiness</h1>
+                
+            
+            
+                
+<p>Container orchestration systems such as Kubernetes and Docker swarm make it significantly easier to deploy, run, and update highly distributed, mission-critical applications. The orchestration engine automates many of the cumbersome tasks such as scaling up or down, asserting that the desired state is maintained at all times, and more.</p>
+<p>But, the orchestration engine cannot just do everything automagically. Sometimes, we developers need to support the engine with some information that only we can know about. So, what do I mean by that?</p>
+<p>Let's look at a single application service. Let's assume it is a microservice and let's call it <strong>service A</strong>. If we run service A containerized on a Kubernetes cluster, then Kubernetes can make sure that we have the five instances that we require in the service definition running at all times. If one instance crashes, Kubernetes can quickly launch a new instance and thus maintain the desired state. But, what if an instance of the service does not crash, but is unhealthy or just not ready yet to serve requests? It is evident that Kubernetes should know about both situations. But it can't, since healthy or not from an application service perspective is outside of the knowledge of the orchestration engine. Only we application developers can know when our service is healthy and when it is not.</p>
+<p>The application service could, for example, be running, but its internal state could have been corrupted due to some bug, it could be in an endless loop, or in a deadlock situation. Similarly, only we application developers know if our service is ready to work, or if it is still initializing. Although it is highly recommended to keep the initialization phase of a microservice as short as possible, it often cannot be avoided if there is a significant time span needed by a particular service so that it's ready to operate. Being in this state of initialization is not the same thing as being unhealthy, though. The initialization phase is an expected part of the life cycle of a microservice or any other application service.</p>
+<p>Thus, Kubernetes should not try to kill our microservice if it is in the initialization phase. If our microservice is unhealthy, though, Kubernetes should kill it as quickly as possible and replace it with a fresh instance.</p>
+<p>Kubernetes has a concept of probes to provide the seam between the orchestration engine and the application developer. Kubernetes uses these probes to find out more about the inner state of the application service at hand. Probes are executed locally, inside each container. There is a probe for the health – also called liveness – of the service, a startup probe, and a probe for the readiness of the service. Let's look at them in turn.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Kubernetes liveness probe</h1>
+                
+            
+            
+                
+<p>Kubernetes uses the liveness probe to decide when a container needs to be killed and when another instance should be launched instead. Since Kubernetes operates at a pod level, the respective pod is killed if at least one of its containers reports as being unhealthy. Alternatively, we can say it the other way around: only if all the containers of a pod report to be healthy, is the pod considered to be healthy.</p>
+<p>We can define the liveness probe in the specification for a pod as follows:</p>
+<pre>apiVersion: v1<br/>kind: Pod<br/>metadata:<br/> ...<br/>spec:<br/> containers:<br/> - name: liveness-demo<br/> image: postgres:12.10<br/> ...<br/> <strong>livenessProbe:</strong><br/><strong>   exec:</strong><br/><strong>    command: nc localhost 5432 || exit -1</strong><br/><strong>   initialDelaySeconds: 10</strong><br/><strong>   periodSeconds: 5</strong></pre>
+<p>The relevant part is in the <kbd>livenessProbe</kbd> section. First, we define a command that Kubernetes will execute as a probe inside the container. In our case, we have a PostresSQL container and use the <kbd>netcat</kbd> Linux tool to probe port <kbd>5432</kbd> over TCP. The <kbd>nc localhost 5432</kbd> command is successful once Postgres listens at it.</p>
+<p>The other two settings, <kbd>initialDelaySeconds</kbd> and <kbd>periodSeconds</kbd>, define how long Kubernetes should wait after starting the container until it first executes the probe and how frequently the probe should be executed thereafter. In our case, Kubernetes waits for 10 seconds prior to executing the first probe and then executes a probe every 5 seconds.</p>
+<p>It is also possible to probe an HTTP endpoint instead of using a command. Let's assume we're running a microservice from an image, <kbd>acme.com/my-api:1.0</kbd>, with an API that has an endpoint called <kbd>/api/health</kbd> that returns status <kbd>200 (OK)</kbd> if the microservice is healthy, and <kbd>50x (Error)</kbd> if it is unhealthy. Here, we can define the liveness probe as follows:</p>
+<pre>apiVersion: v1<br/>kind: Pod<br/>metadata:<br/>  ...<br/>spec:<br/>  containers:<br/>  - name: liveness<br/>    image: acme.com/my-api:1.0<br/>    ...<br/>    <strong>livenessProbe:</strong><br/><strong>      httpGet:</strong><br/><strong>        path: /api/health</strong><br/><strong>        port: 3000</strong><br/><strong>      initialDelaySeconds: 5</strong><br/><strong>      periodSeconds: 3</strong></pre>
+<p>In the preceding snippet, I have defined the liveness probe so that it uses the HTTP protocol and executed a <kbd>GET</kbd> request to the <kbd>/api/health</kbd> endpoint on port <kbd>5000</kbd> of localhost. Remember, the probe is executed inside the container, which means I can use localhost.</p>
+<p>We can also directly use the TCP protocol to probe a port on the container. But wait a second – didn't we just do that in our first sample, where we used the generic liveness probe based on an arbitrary command? Yes, you're right, we did. But we had to rely on the presence of the <kbd>netcat</kbd> tool in the container to do so. We cannot assume that this tool is always there. Thus, it is favorable to rely on Kubernetes to do the TCP-based probing for us out of the box. The modified pod spec looks like this:</p>
+<pre>apiVersion: v1<sup><br/></sup>kind: Pod<br/>metadata:<br/> ...<br/>spec:<br/> containers:<br/> - name: liveness-demo<br/>   image: postgres:12.10<br/>   ...<br/><strong>   livenessProbe:</strong><br/><strong>     tcpSocket:</strong><br/><strong>       port: 5432</strong><br/><strong>     initialDelaySeconds: 10</strong><br/><strong>     periodSeconds: 5</strong></pre>
+<p>This looks very similar. The only change is that the type of probe has been changed from <kbd>exec</kbd> to <kbd>tcpSocket</kbd> and that, instead of providing a command, we provide the <kbd>port</kbd> to probe.</p>
+<p>Let's try this out:</p>
+<ol>
+<li>Navigate to the <kbd>~/fod/ch16/probes</kbd> folder and build the Docker image with the following command:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ docker image build -t fundamentalsofdocker/probes-demo:2.0 .</strong></pre>
+<ol start="2">
+<li>Use <kbd>kubectl</kbd> to deploy the sample pod that's defined in <kbd>probes-demo.yaml</kbd>:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ kubectl apply -f probes-demo.yaml</strong></pre>
+<ol start="3">
+<li>Describe the pod and specifically analyze the log part of the output:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ kubectl describe pods/probes-demo</strong></pre>
+<p style="padding-left: 60px">During the first half minute or so, you should get the following output:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="img/fe42b23f-d21f-4e2a-bd16-6f14c31d71b4.png"/></p>
+<p>Log output of the healthy pod</p>
+<ol start="4">
+<li>Wait at least 30 seconds and then describe the pod again. This time, you should see the following output:</li>
+</ol>
+<div><img src="img/bb3c27de-375c-4cf1-8e23-81762ff9447f.png"/></div>
+<p>Log output of the pod after it has changed its state to <kbd>Unhealthy</kbd></p>
+<p>The last two lines are indicating the failure of the probe and the fact that the pod is going to be restarted.</p>
+<p>If you get the list of pods, you will see that the pod has been restarted a number of times:</p>
+<pre><strong>$ kubectl get pods</strong><br/>NAME         READY   STATUS    RESTARTS   AGE<br/>probes-demo  1/1     Running   5          7m22s</pre>
+<p>When you're done with the sample, delete the pod with the following command:</p>
+<pre><strong>$</strong> <strong>kubectl delete pods/probes-demo</strong></pre>
+<p>Next, we will have a look at the Kubernetes readiness probe.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Kubernetes readiness probe</h1>
+                
+            
+            
+                
+<p>Kubernetes uses a readiness probe to decide when a service instance, that is, a container, is ready to accept traffic. Now, we all know that Kubernetes deploys and runs pods and not containers, so it only makes sense to talk about the readiness of a pod. Only if all containers in a pod report to be ready is the pod considered to be ready itself. If a pod reports not to be ready, then Kubernetes removes it from the service load balancers.</p>
+<p>Readiness probes are defined exactly the same way as liveness probes: just switch the <kbd>livenessProbe</kbd> key in the pod spec to <kbd>readinessProbe</kbd>. Here is an example using our prior pod spec:</p>
+<pre> ...<br/>spec:<br/> containers:<br/> - name: liveness-demo<br/>   image: postgres:12.10<br/>   ...<br/>   livenessProbe:<br/>     tcpSocket:<br/>       port: 5432<br/>     <strong>failureThreshold: 2</strong><br/>     periodSeconds: 5<br/>   <br/>   <strong>readinessProbe:</strong><br/><strong>     tcpSocket:</strong><br/><strong>       port: 5432</strong><br/><strong>     initialDelaySeconds: 10</strong><br/><strong>     periodSeconds: 5</strong></pre>
+<p>Note that, in this example, we don't really need an initial delay for the liveness probe anymore since we now have a readiness probe. Thus, I have replaced the initial delay entry for the liveness probe with an entry called <kbd>failureThreshold</kbd>, which is indicating how many times Kubernetes should repeat probing in case of a failure until it assumes that the container is unhealthy.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Kubernetes startup probe</h1>
+                
+            
+            
+                
+<p>It is often helpful for Kubernetes to know when a service instance has started. If we define a startup probe for a container, then Kubernetes does not execute the liveness or readiness probes, as long as the container's startup probe does not succeed. Once again, Kubernetes looks at pods and starts executing liveness and readiness probes on its containers if the startup probes of all the pod's containers succeed.</p>
+<p>When would we use a startup probe, given the fact that we already have the liveness and readiness probes? There might be situations where we have to account for exceptionally long startup and initialization times, such as when containerizing a legacy application. We could technically configure the readiness or the liveness probes to account for this fact, but that would defeat the purpose of these probes. The latter probes are meant to provide quick feedback to Kubernetes on the health and availability of the container. If we configure for long initial delays or periods, then this would counter the desired outcome.</p>
+<p>Unsurprisingly, the startup probe is defined exactly the same way as the readiness and liveness probes. Here is an example:</p>
+<pre>spec:<br/>  containers:<br/>    ..<br/>    <strong>startupProbe:</strong><br/><strong>      tcpSocket:</strong><br/><strong>        port: 3000</strong><br/><strong>      failureThreshold: 30</strong><br/><strong>      periodSeconds: 5<br/>  ...</strong></pre>
+<p>Make sure that you define the <kbd>failureThreshold * periodSeconds</kbd> product so that it's big enough to account for the worst startup time.</p>
+<p>In our example, the max startup time should not exceed 150 seconds.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Zero downtime deployments</h1>
+                
+            
+            
+                
+<p>In a mission-critical environment, it is important that the application is always up and running. These days, we cannot afford any downtime anymore. Kubernetes gives us various means of achieving this. Performing an update on an application in the cluster that causes no downtime is called a zero downtime deployment. In this section, we will present two ways of achieving this. These are as follows:</p>
+<ul>
+<li>Rolling updates</li>
+<li>Blue-green deployments</li>
+</ul>
+<p>Let's start by discussing rolling updates.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Rolling updates</h1>
+                
+            
+            
+                
+<p>In the previous chapter, we learned that the Kubernetes Deployment object distinguishes itself from the ReplicaSet object in that it adds rolling updates and rollbacks on top of the latter's functionality. Let's use our web component to demonstrate this. Evidently, we will have to modify the manifest or description of the deployment for the web component.</p>
+<p>We will use the same deployment definition as in the previous section, with one important difference – we will have five replicas of the web component running. The following definition can also be found in the <kbd>~/fod/ch16/web-deploy-rolling-v1.yaml</kbd> file:</p>
+<pre>apiVersion: apps/v1<br/>kind: Deployment<br/>metadata:<br/>  name: web<br/>spec:<br/>  replicas: 5<br/>  selector:<br/>    matchLabels:<br/>      app: pets<br/>      service: web<br/>  template:<br/>    metadata:<br/>      labels:<br/>        app: pets<br/>        service: web<br/>    spec:<br/>      containers:<br/>      - image: fundamentalsofdocker/ch11-web:2.0<br/>        name: web<br/>        ports:<br/>        - containerPort: 3000<br/>          protocol: TCP</pre>
+<p>Now, we can create this deployment as usual and also, at the same time, the service that makes our component accessible:</p>
+<pre><strong>$ kubectl create -f web-deploy-rolling-v1.yaml</strong><br/><strong>$ kubectl create -f web-service.yaml</strong></pre>
+<p>Once we have deployed the pods and the service, we can test our web component with the following command:</p>
+<pre><strong>$ PORT=$(kubectl get svc/web -o yaml | grep nodePort | cut -d' ' -f5)</strong><br/><strong>$ IP=$(minikube ip)</strong><br/><strong>$ curl -4 ${IP}:${PORT}/</strong><br/>Pets Demo Application</pre>
+<p>As we can see, the application is up and running and returns the expected message, <kbd>Pets Demo Application</kbd>.</p>
+<p>Now. our developers have created a new version, 2.1, of the <kbd>web</kbd> component. The code of the new version of the <kbd>web</kbd> component can be found in the <kbd>~/fod/ch16/web</kbd> folder, and the only change is located on line <kbd>12</kbd> of the <kbd>server.js</kbd> file:</p>
+<div><img src="img/70fa34d3-69f4-4f3a-a7ae-593b02df74f6.png" style="width:37.17em;height:7.67em;"/></div>
+<p>Code change for version 2.0 of the web component</p>
+<p>The developers have built the new image as follows:</p>
+<pre><strong>$ docker image build -t fundamentalsofdocker/ch16-web:2.1 web</strong></pre>
+<p>Subsequently, they pushed the image to Docker Hub, as follows:</p>
+<pre><strong>$ docker image push fundamentalsofdocker/ch16-web:2.1</strong></pre>
+<p>Now, we want to update the image that's used by our pods that are part of the web Deployment object. We can do this by using the <kbd>set image</kbd> command of <kbd>kubectl</kbd>:</p>
+<pre><strong>$ kubectl set image deployment/web \</strong><br/><strong>    web=fundamentalsofdocker/ch16-web:2.1</strong></pre>
+<p>If we test the application again, we'll get a confirmation that the update has indeed happened:</p>
+<pre><strong>$ curl -4 ${IP}:${PORT}/</strong><br/>Pets Demo Application v2</pre>
+<p>Now, how do we know that there hasn't been any downtime during this update? Did the update really happen in a rolling fashion? What does rolling update mean at all? Let's investigate. First, we can get a confirmation from Kubernetes that the deployment has indeed happened and was successful by using the <kbd>rollout status</kbd> command:</p>
+<pre><strong>$ kubectl rollout status deploy/web</strong><br/>deployment "web" successfully rolled out</pre>
+<p>If we describe the deployment web with <kbd>kubectl describe deploy/web</kbd>, we get the following list of events at the end of the output:</p>
+<div><img src="img/5fd7c6ba-dbce-4d6e-8d77-f6296c87dc06.png"/></div>
+<p>List of events found in the output of the deployment description of the web component</p>
+<p>The first event tells us that, when we created the deployment, a ReplicaSet called <kbd>web-769b88f67</kbd> with five replicas was created. Then, we executed the update command. The second event in the list tells us that this meant creating a new ReplicaSet called <kbd>web-55cdf67cd</kbd> with, initially, one replica only. Thus, at that particular moment, six pods existed on the system: the five initial pods and one pod with the new version. But, since the desired state of the Deployment object states that we want five replicas only, Kubernetes now scales down the old ReplicaSet to four instances, which we can see in the third event.</p>
+<p>Then, again, the new ReplicaSet is scaled up to two instances and, subsequently, the old ReplicaSet scaled was down to three instances, and so on, until we had five new instances and all the old instances were decommissioned. Although we cannot see any precise time (other than 3 minutes) when that happened, the order of the events tells us that the whole update happened in a rolling fashion.</p>
+<p>During a short time period, some of the calls to the web service would have had an answer from the old version of the component, and some calls would have received an answer from the new version of the component, but, at no time would the service have been down.</p>
+<p>We can also list the ReplicaSet objects in the cluster and will get confirmation of what I said in the preceding section:</p>
+<div><img src="img/3a04d23d-d8d2-4f3b-a4d2-4235bac45448.png" style="width:20.92em;height:5.42em;"/></div>
+<p>Listing all the ReplicaSet objects in the cluster</p>
+<p>Here, we can see that the new ReplicaSet has five instances running and that the old one has been scaled down to zero instances. The reason that the old ReplicaSet object is still lingering is that Kubernetes provides us with the possibility of rolling back the update and, in that case, will reuse that ReplicaSet.</p>
+<p>To roll back the update of the image in case some undetected bug sneaked into the new code, we can use the <kbd>rollout undo</kbd> command: </p>
+<pre><strong>$ kubectl rollout undo deploy/web</strong><br/>deployment "web"<br/><strong>$ curl -4 ${IP}:${PORT}/</strong><br/>Pets Demo Application</pre>
+<p>I have also listed the test command using <kbd>curl</kbd> in the preceding snippet to verify that the rollback indeed happened. If we list the ReplicaSets, we will see the following output:</p>
+<div><img src="img/7ef8b322-07e3-43e1-81a1-9bd7af4d1a3d.png" style="width:22.00em;height:5.17em;"/></div>
+<p>Listing ReplicaSet objects after rollback</p>
+<p>This confirms that the old ReplicaSet (<kbd>web-769b88f67</kbd>) object has been reused and that the new one has been scaled down to zero instances.</p>
+<p>Sometimes, though, we cannot, or do not want to, tolerate the mixed state of an old version coexisting with the new version. We want an <em>all-or-nothing</em> strategy. This is where blue-green deployments come into play, which we will discuss next.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Blue-green deployment</h1>
+                
+            
+            
+                
+<p>If we want to do a blue-green style deployment for our component web of the pets application, then we can do so by using labels creatively. First, let's remind ourselves how blue-green deployments work. Here is a rough step-by-step instruction:</p>
+<ol>
+<li>Deploy the first version of the <kbd>web</kbd> component as <kbd>blue</kbd>. We will label the pods with a label of <kbd>color: blue</kbd> to do so.</li>
+<li>Deploy the Kubernetes service for these pods with the <kbd>color: blue</kbd> label in the selector section.</li>
+<li>Now, we can deploy version 2 of the web component, but, this time, the pods have a label of <kbd>color: green</kbd>.</li>
+<li>We can test the green version of the service to check that it works as expected.</li>
+<li>Now, we flip traffic from blue to green by updating the Kubernetes service for the web component. We modify the selector so that it uses the <kbd>color: green</kbd> label.</li>
+</ol>
+<p>Let's define a Deployment object for version 1, blue:</p>
+<div><img src="img/9f7a8ee5-54bb-4e8d-99f6-63deae81e7bd.png" style="width:27.83em;height:32.83em;"/></div>
+<p>Specification of the blue deployment for the web component</p>
+<p>The preceding definition can be found in the <kbd>~/fod/ch16/web-deploy-blue.yaml</kbd> file. Please take note of line <kbd>4</kbd>, where we define the name of the deployment as <kbd>web-blue</kbd> to distinguish it from the upcoming deployment, <kbd>web-green</kbd>. Also, note that we have added the label <kbd>color: blue</kbd> on lines <kbd>11</kbd> and <kbd>17</kbd>. Everything else remains the same as before.</p>
+<p>Now, we can define the Service object for the web component. It will be the same as the one we used before but with a minor change, as shown in the following screenshot:</p>
+<div><img src="img/7a1661a0-137e-402c-a664-a8ad9ea1df56.png" style="width:14.58em;height:18.25em;"/></div>
+<p>Kubernetes service for the web component supporting blue-green deployments</p>
+<p>The only difference regarding the definition of the service we used earlier in this chapter is line <kbd>13</kbd>, which adds the <kbd>color: blue</kbd> label to the selector. We can find the preceding definition in the <kbd>~/fod/ch16/web-svc-blue-green.yaml</kbd> file.</p>
+<p class="mce-root">Then, we can deploy the blue version of the web component with the following command:</p>
+<pre class="mce-root"><strong>$ kubectl create -f web-deploy-blue.yaml</strong><br/><strong>$</strong> <strong>kubectl create -f web-svc-blue-green.yaml</strong></pre>
+<p>Once the service is up and running, we can determine its IP address and port number and test it:</p>
+<pre><strong>$ PORT=$(kubectl get svc/web -o yaml | grep nodePort | cut -d' ' -f5)</strong><br/><strong>$ IP=$(minikube ip)</strong><br/><strong>$ curl -4 ${IP}:${PORT}/</strong><br/>Pets Demo Application</pre>
+<p>As expected, we get the response <kbd>Pets Demo Application</kbd>. Now, we can deploy the green version of the web component. The definition of its Deployment object can be found in the <kbd>~/fod/ch16/web-deploy-green.yaml</kbd> file and looks as follows:</p>
+<p class="mce-root"/>
+<div><img src="img/b87b509f-c2ac-4dd6-bc19-5b7f55c9143a.png" style="width:30.33em;height:34.92em;"/></div>
+<p>Specification of the deployment green for the web component</p>
+<p>The interesting lines are as follows:</p>
+<ul>
+<li>Line <kbd>4</kbd>: Named <kbd>web-green</kbd> to distinguish it from <kbd>web-blue</kbd> and allow for parallel installation</li>
+<li>Lines <kbd>11</kbd> and <kbd>17</kbd>: Have the color <kbd>green</kbd></li>
+<li>Line <kbd>20</kbd>: Now using version <kbd>2.1</kbd> of the image</li>
+</ul>
+<p>Now, we're ready to deploy this green version of the service. It should run separately from the blue service:</p>
+<pre><strong>$ kubectl create -f web-deploy-green.yaml</strong></pre>
+<p>We can make sure that both deployments coexist like so:</p>
+<div><img src="img/4bd95b70-62d5-4697-a3d4-e67b4383a4ae.png" style="width:35.67em;height:6.75em;"/></div>
+<p>Displaying the list of Deployment objects running in the cluster</p>
+<p>As expected, we have both blue and green running. We can verify that blue is still the active service:</p>
+<pre><strong>$ curl -4 ${IP}:${PORT}/</strong><br/>Pets Demo Application</pre>
+<p>Now comes the interesting part. We can flip traffic from blue to green by editing the existing service for the web component. To do so, execute the following command:</p>
+<pre><strong>$ kubectl edit svc/web</strong></pre>
+<p>Change the value of the label color from <kbd>blue</kbd> to <kbd>green</kbd>. Then, save and quit the editor. The Kubernetes CLI will automatically update the service. When we now query the web service again, we get this:</p>
+<pre><strong>$ curl -4 ${IP}:${PORT}/</strong><br/>Pets Demo Application v2</pre>
+<p>This confirms that the traffic has indeed switched to the green version of the web component (note the <kbd>v2</kbd> at the end of the response to the <kbd>curl</kbd> command).</p>
+<p>If we realize that something went wrong with our green deployment and the new version has a defect, we can easily switch back to the blue version by editing the service web again and replacing the value of the label color with blue. This rollback is instantaneous and should always work. Then, we can remove the buggy green deployment and fix the component. When we have corrected the problem, we can deploy the green version once again.</p>
+<p>Once the green version of the component is running as expected and performing well, we can decommission the blue version:</p>
+<pre><strong>$ kubectl delete deploy/web-blue</strong></pre>
+<p>When we're ready to deploy a new version, 3.0, this one becomes the blue version. We update the <kbd>~/fod/ch16/web-deploy-blue.yaml</kbd> file accordingly and deploy it. Then, we flip the service web from <kbd>green</kbd> to <kbd>blue</kbd>, and so on.</p>
+<p>We have successfully demonstrated, with our component web of the pets application, how blue-green deployment can be achieved in a Kubernetes cluster.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Kubernetes secrets</h1>
+                
+            
+            
+                
+<p>Sometimes, services that we want to run in the Kubernetes cluster have to use confidential data such as passwords, secret API keys, or certificates, to name just a few. We want to make sure that this sensitive information can only ever be seen by the authorized or dedicated service. All other services running in the cluster should not have any access to this data.</p>
+<p>For this reason, Kubernetes secrets have been introduced. A secret is a key-value pair where the key is the unique name of the secret and the value is the actual sensitive data. Secrets are stored in etcd. Kubernetes can be configured so that secrets are encrypted at rest, that is, in etcd, and in transit, that is, when the secrets are going over the wire from a master node to the worker nodes that the pods of the service using this secret are running on.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Manually defining secrets</h1>
+                
+            
+            
+                
+<p>We can create a secret declaratively the same way as we can create any other object in Kubernetes. Here is the YAML for such a secret:</p>
+<pre>apiVersion: v1<br/>kind: Secret<br/>metadata:<br/>  name: pets-secret<br/>type: Opaque<br/>data:<br/>  username: am9obi5kb2UK<br/>  password: c0VjcmV0LXBhc1N3MHJECg==</pre>
+<p>The preceding definition can be found in the <kbd>~/fod/ch16/pets-secret.yaml</kbd> file. Now, you might be wondering what the values are. Are these the real (unencrypted) values? No, they are not. And they are also not really encrypted values, but just base64-encoded values. Thus, they are not really secure, since base64-encoded values can be easily reverted to clear text values. How did I get these values? That's easy: follow these steps:</p>
+<ol>
+<li>Use the <kbd>base64</kbd> tool as follows to encode the values:</li>
+</ol>
+<div><img src="img/bbd59476-831a-40c9-b69e-96b1cacfe2f1.png" style="width:18.75em;height:6.92em;"/></div>
+<p>Creating base64-encoded values for the secret</p>
+<ol start="2">
+<li>Using the preceding values, we can create the secret and describe it:</li>
+</ol>
+<div><img src="img/df5c56b3-47a4-4ad5-9724-dc08beca28e5.png" style="width:22.00em;height:19.33em;"/></div>
+<p>Creating and describing the Kubernetes secret</p>
+<ol start="3">
+<li>In the description of the secret, the values are hidden and only their length is given. So, maybe the secrets are safe now? No, not really. We can easily decode this secret using the <kbd>kubectl get</kbd> command:</li>
+</ol>
+<div><img src="img/75e781a7-6783-47aa-afe0-d26ff4e7e7b6.png" style="width:33.00em;height:20.08em;"/></div>
+<p>Kubernetes secret decoded</p>
+<p style="padding-left: 60px">As we can see in the preceding screenshot, we have our original secret values back.</p>
+<ol start="4">
+<li>Decode the values you got previously:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ echo "c0VjcmV0LXBhc1N3MHJECg==" | base64 --decode</strong><br/>sEcret-pasSw0rD</pre>
+<p>Thus, the consequences are that this method of creating a Kubernetes is not to be used in any environment other than development, where we deal with non-sensitive data. In all other environments, we need a better way to deal with secrets.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Creating secrets with kubectl</h1>
+                
+            
+            
+                
+<p>A much safer way to define secrets is to use <kbd>kubectl</kbd>. First, we create files containing the base64-encoded secret values similar to what we did in the preceding section, but, this time, we store the values in temporary files:</p>
+<pre><strong>$ echo "sue-hunter" | base64 &gt; username.txt</strong><br/><strong>$ echo "123abc456def" | base64 &gt; password.txt</strong></pre>
+<p>Now, we can use <kbd>kubectl</kbd> to create a secret from those files, as follows:</p>
+<pre><strong>$ kubectl create secret generic pets-secret-prod \</strong><br/><strong>    --from-file=./username.txt \</strong><br/><strong>    --from-file=./password.txt</strong><br/><strong>secret "pets-secret-prod" created</strong></pre>
+<p> The secret can then be used the same way as the manually created secret.</p>
+<p>Why is this method more secure than the other one, you might ask? Well, first of all, there is no YAML that defines a secret and is stored in some source code version control system, such as GitHub, which many people have access to and so can see and decode the secrets. Only the admin that is authorized to know the secrets ever sees their values and uses them to directly create the secrets in the (production) cluster. The cluster itself is protected by role-based access control so that no unauthorized persons have access to it, nor can they possibly decode the secrets defined in the cluster.</p>
+<p>Now, let's see how we can actually use the secrets that we have defined.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Using secrets in a pod</h1>
+                
+            
+            
+                
+<p>Let's say we want to create a Deployment object where the web component uses our secret, <kbd>pets-secret</kbd>, that we introduced in the preceding section. We can use the following command to create the secret in the cluster:</p>
+<pre><strong>$ kubectl create -f pets-secret.yaml</strong></pre>
+<p>In the <kbd>~/fod/ch16/web-deploy-secret.yaml</kbd> file, we can find the definition of the <kbd>Deployment</kbd> object. We had to add the part starting from line <kbd>23</kbd> to the original definition of the <kbd>Deployment</kbd> object:</p>
+<div><img src="img/f52d1a33-412d-4270-8f9c-8bc86346e616.png" style="width:30.33em;height:42.17em;"/></div>
+<p>Deployment object for the web component with a secret</p>
+<p>On lines <kbd>27</kbd> through <kbd>30</kbd>, we define a volume called <kbd>secrets</kbd> from our secret, <kbd>pets-secret</kbd>. Then, we use this volume in the container, as described on lines <kbd>23</kbd> through <kbd>26</kbd>. We mount the secrets in the container filesystem at <kbd>/etc/secrets</kbd> and we mount the volume in read-only mode. Thus, the secret values will be available to the container as files in the said folder. The names of the files will correspond to the key names, and the content of the files will be the values of the corresponding keys. The values will be provided in unencrypted form to the application running inside the container.</p>
+<p>In our case, since we have the <kbd>username</kbd> and <kbd>password</kbd> keys in the secret, we will find two files, named <kbd>username </kbd>and <kbd>password</kbd>, in the <kbd>/etc/secrets</kbd> folder in the container filesystem. The <kbd>username</kbd> file should contain the value <kbd>john.doe</kbd> and the <kbd>password</kbd> file should contain the value <kbd>sEcret-pasSw0rD</kbd>. Here is the confirmation:</p>
+<div><img src="img/1c911dec-f905-45e6-adff-8df72c62b729.png" style="width:40.58em;height:11.50em;"/></div>
+<p>Confirming that secrets are available inside the container</p>
+<p>On line <kbd>1</kbd> of the preceding output, we <kbd>exec</kbd> into the container where the web component runs. Then, on lines <kbd>2</kbd> to <kbd>5</kbd>, we list the files in the <kbd>/etc/secrets</kbd> folder, and, finally, on lines <kbd>6</kbd> to <kbd>8</kbd>, we show the content of the two files, which, unsurprisingly, show the secret values in clear text.</p>
+<p>Since any application written in any language can read simple files, this mechanism of using secrets is very backward compatible. Even an old Cobol application can read clear text files from the filesystem.</p>
+<p>Sometimes, though, applications expect secrets to be available in environment variables. Let's look at what Kubernetes offers us in this case.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Secret values in environment variables</h1>
+                
+            
+            
+                
+<p>Let's say our web component expects the username in the environment variable, <kbd>PETS_USERNAME</kbd>, and the password in <kbd>PETS_PASSWORD</kbd>. If this is the case, we can modify our deployment YAML so that it looks as follows:</p>
+<div><img src="img/30bcf71f-93a0-4fd9-855c-808380d22767.png" style="width:27.25em;height:41.50em;"/></div>
+<p>Deployment mapping secret values to environment variables</p>
+<p>On lines <kbd>23</kbd> through <kbd>33</kbd>, we define the two environment variables, <kbd>PETS_USERNAME</kbd> and <kbd>PETS_PASSWORD</kbd>, and map the corresponding key-value pair of <kbd>pets-secret</kbd> to them.</p>
+<p>Note that we don't need a volume anymore; instead, we directly map the individual keys of our <kbd>pets-secret</kbd> into the corresponding environment variables that are valid inside the container. The following sequence of commands shows that the secret values are indeed available inside the container in the respective environment variables:</p>
+<div><img src="img/e8372fc5-eb69-49c9-be2d-3fe7570f0b74.png" style="width:27.33em;height:6.58em;"/></div>
+<p>Secret values are mapped to environment variables</p>
+<p>In this section, we have shown you how to define secrets in a Kubernetes cluster and how to use those secrets in containers running as part of the pods of a deployment. We have shown two variants of how secrets can be mapped inside a container, the first using files and the second using environment variables.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Summary</h1>
+                
+            
+            
+                
+<p>In this chapter, we have learned how to deploy an application into a Kubernetes cluster and how to set up application-level routing for this application. Furthermore, we have learned how to update application services running in a Kubernetes cluster without causing any downtime. Finally, we used secrets to provide sensitive information to application services running in the cluster.</p>
+<p>In the next chapter, we are going to learn about different techniques that are used to monitor an individual service or a whole distributed application running on a Kubernetes cluster. We will also learn how we can troubleshoot an application service that is running in production without altering the cluster or the cluster nodes that the service is running on. Stay tuned. </p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Questions</h1>
+                
+            
+            
+                
+<p>To assess your learning progress, please answer the following questions:</p>
+<ol>
+<li>You have an application consisting of two services, the first one being a web API and the second one being a DB, such as Mongo DB. You want to deploy this application into a Kubernetes cluster. In a few short sentences, explain how you would proceed.</li>
+<li>Describe in your own words what components you need in order to establish layer 7 (or application level) routing for your application. </li>
+<li>List the main steps needed to implement a blue-green deployment for a simple application service. Avoid going into too much detail.</li>
+<li>Name three or four types of information that you would provide to an application service through Kubernetes secrets.</li>
+<li>Name the sources that Kubernetes accepts when creating a secret.</li>
+</ol>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Further reading</h1>
+                
+            
+            
+                
+<p>Here are a few links that provide additional information on the topics that were discussed in this chapter:</p>
+<ul>
+<li>Performing a rolling update: <a href="https://bit.ly/2o2okEQ" target="_blank">https://bit.ly/2o2okEQ</a></li>
+<li>Blue-green deployment: <a href="https://bit.ly/2r2IxNJ" target="_blank">https://bit.ly/2r2IxNJ</a> </li>
+<li>Secrets in Kubernetes: <a href="https://bit.ly/2C6hMZF" target="_blank">https://bit.ly/2C6hMZF</a></li>
+</ul>
+
+
+            
+
+            
+        
+    </body></html>

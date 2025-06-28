@@ -1,0 +1,410 @@
+<html><head></head><body><div><div><div><div><h1 class="title"><a id="ch04"/>Chapter 4. Network Plugins</h1></div></div></div><p>In this chapter, we are going to be looking at the next type of plugin: networking. We will discuss how to make use of the new networking tools introduced with Docker 1.9, along with third-party tools that add even more functionality to the already powerful built-in tools. The two main<a id="id158" class="indexterm"/> tools that we are going to look at are as follows:</p><div><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc"><strong>Docker Overlay Network</strong>: <a class="ulink" href="https://docs.docker.com/engine/userguide/networking/dockernetworks">https://docs.docker.com/engine/userguide/networking/dockernetworks/</a></li><li class="listitem" style="list-style-type: disc"><strong>Weave</strong>: <a class="ulink" href="https://weave.works">https://weave.works/</a></li></ul></div><div><div><h3 class="title"><a id="note13"/>Note</h3><p>This chapter assumes that you are using Docker 1.10+, some commands may not work in the previous versions.</p></div></div><div><div><div><div><h1 class="title"><a id="ch04lvl1sec21"/>Docker networking</h1></div></div></div><p>Before <a id="id159" class="indexterm"/>we start to go into detail about Networking in Docker, I should mention<a id="id160" class="indexterm"/> that we have managed to make it to the fourth chapter in the book without having to really think about networking, this is because, by default, Docker creates a network bridge between the containers and your host machine's network interface. This is Docker networking at its most basic form.</p><p>Like basic storage, this limits you to bring up your containers on a single host even when using a clustering tool such as Docker Swarm, as you may have already noticed in <a class="link" href="ch02.html" title="Chapter 2. Introducing First-party Tools">Chapter 2</a>, <em>Introducing First-party Tools</em>, when we were bringing up our WordPress installation, the web and database containers where launched on a single host within the cluster. If we were to try and bind each of the two containers to different host, they would not be able to talk to each other.</p><p>Luckily, Docker has you covered and provides its own multi-host networking layer to use with Docker Swarm.</p></div></div>
+<div><div><div><div><h1 class="title"><a id="ch04lvl1sec22"/>Multi-host networking with overlays</h1></div></div></div><p>Docker released<a id="id161" class="indexterm"/> its production-ready multi-host overlay networking functionality in Docker 1.9. Before this release, the functionality was classed as experimental.</p><div><div><h3 class="title"><a id="note14"/>Note</h3><p>An overlay network is a computer network that is built on top of another network. Nodes in the overlay network can be thought of as being connected by virtual or logical links, each of which corresponds to a path, perhaps through many physical links, in the<a id="id162" class="indexterm"/> underlying network:</p><p>
+<a class="ulink" href="https://en.wikipedia.org/wiki/Overlay_ne">https://en.wikipedia.org/wiki/Overlay_network</a>
+</p></div></div><p>In Docker terms, it allows containers on one Docker host to talk directly to containers on another Docker host as if they were on the same host, as shown in the following screenshot:</p><div><img src="img/B05468_04_06.jpg" alt="Multi-host networking with overlays"/></div><p>As you can see from the preceding diagram, there are some prerequisites. Firstly, you must be running a Docker Swarm cluster. Here we have a Docker Swarm cluster made up of two nodes and a master, all of which have the overlay network configured. You will also need a Service Discovery service, where it can be accessed by the Docker Swarm cluster. For this, you<a id="id163" class="indexterm"/> can use the following applications:</p><div><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc"><strong>Consul</strong>: <a class="ulink" href="https://www.consul.io/">https://www.consul.io/</a></li><li class="listitem" style="list-style-type: disc"><strong>Etcd</strong>: <a class="ulink" href="https://coreos.com/etcd/">https://coreos.com/etcd/</a></li><li class="listitem" style="list-style-type: disc"><strong>ZooKeeper</strong>: <a class="ulink" href="http://zookeeper.apache.org/">http://zookeeper.apache.org/</a></li></ul></div><p>For the purpose of this <a id="id164" class="indexterm"/>chapter, we will be using Consul by HashiCorp (<a class="ulink" href="https://hashicorp.com/">https://hashicorp.com/</a>) and we <a id="id165" class="indexterm"/>will also be launching our cluster using Docker Machine in DigitalOcean.</p><div><div><div><div><h2 class="title"><a id="ch04lvl2sec24"/>Launching Discovery</h2></div></div></div><p>Back in <a class="link" href="ch02.html" title="Chapter 2. Introducing First-party Tools">Chapter 2</a>, <em>Introducing First-party Tools</em>, we launched our Docker Swarm cluster using a <a id="id166" class="indexterm"/>one-off token from the Docker hub. One of the requirements of multi-host networking is a persistent key/value store so that we have permanent and accessible place to store values about our cluster, we will be using Consul to provide this in our example cluster.</p><p>Consul is an open source tool written by HashiCorp for discovering and configuring services in an infrastructure. It provides several key features, including Service Discovery, health checking, and a key/value store, all while being multi-datacenter aware.</p><p>To launch the Docker host, which will run Consul, run the following command:</p><div><pre class="programlisting">
+<strong>docker-machine create \</strong>
+<strong>    --driver digitalocean \</strong>
+<strong>    --digitalocean-access-token sdnjkjdfgkjb345kjdgljknqwetkjwhgoih314rjkwergoiyu34rjkherglkhrg0 \</strong>
+<strong>    --digitalocean-region lon1 \</strong>
+<strong>    --digitalocean-size 512mb \</strong>
+<strong>    --digitalocean-private-networking \</strong>
+<strong>    service-discovery</strong>
+</pre></div><p>You may notice that we have added an additional line to the <code class="literal">docker-machine</code> command, this launches the DigitalOcean Droplet with private networking enabled. Once the Docker host has launched, we can launch the Consul service by running the following command:</p><div><pre class="programlisting">
+<strong>docker $(docker-machine config service-discovery) run -d \</strong>
+<strong>    -p "8400:8400" \</strong>
+<strong>    -p "8500:8500" \</strong>
+<strong>    -h "consul" \</strong>
+<strong>    russmckendrick/consul agent -data-dir /data -server -bootstrap-expect 1 -ui-dir /ui -client=0.0.0.0</strong>
+</pre></div><p>This will download a copy of my Consul container image, also now there is an official image that can be<a id="id167" class="indexterm"/> found at <a class="ulink" href="https://hub.docker.com/_/consul/">https://hub.docker.com/_/consul/</a>; however, this image as it is new may not work with the preceding example.</p><p>As this is the only command we need to run on this host, we are not configuring our local Docker client <a id="id168" class="indexterm"/>to use the host; instead, we are passing the configuration over at runtime using <code class="literal">$(docker-machine config service-discovery)</code>. To check whether everything is running as expected, you can run the following command:</p><div><pre class="programlisting">
+<strong>docker $(docker-machine config service-discovery) ps</strong>
+</pre></div><p>Here, you should see a single container running something similar to the following terminal output:</p><div><img src="img/B05468_04_07.jpg" alt="Launching Discovery"/></div><div><div><h3 class="title"><a id="note15"/>Note</h3><p>Before we progress further, it should be noted that launching Consul with the <code class="literal">-bootstrap-expect 1</code> flag should never be attempted in production. You should consider bringing multiple Consul hosts. For more information on a highly available Consul cluster, refer to the following URL for details on how to configure a full <a id="id169" class="indexterm"/>Consul cluster:</p><p>
+<a class="ulink" href="https://www.consul.io/docs/guides/bootstrapping.html">https://www.consul.io/docs/guides/bootstrapping.html</a>
+</p></div></div><p>You can also get an idea of what information Docker will be storing in Consul by opening the web interface, to do this type the following command:</p><div><pre class="programlisting">
+<strong>open http://$(docker-machine ip service-discovery):8500/ui</strong>
+</pre></div><p>You should see an almost empty Consul view, as shown in the following image:</p><div><img src="img/B05468_04_08.jpg" alt="Launching Discovery"/></div><p>We will<a id="id170" class="indexterm"/> come back to the web interface once we have launched the Docker Swarm cluster. Now we have the service discover container running and accessible, it's time to start launching the rest of the cluster.</p></div><div><div><div><div><h2 class="title"><a id="ch04lvl2sec25"/>Readying the Swarm</h2></div></div></div><p>Let's start to<a id="id171" class="indexterm"/> launch the Docker Swarm cluster, first of all the Swarm master. We will call this <code class="literal">chapter04-00</code>:</p><div><pre class="programlisting">
+<strong>docker-machine create \</strong>
+<strong>    --driver digitalocean \</strong>
+<strong>    --digitalocean-access-token sdnjkjdfgkjb345kjdgljknqwetkjwhgoih314rjkwergoiyu34rjkherglkhrg0 \</strong>
+<strong>    --digitalocean-region lon1 \</strong>
+<strong>    --digitalocean-size 1gb \</strong>
+<strong>    --digitalocean-private-networking \</strong>
+<strong>    --swarm --swarm-master \</strong>
+<strong>    --swarm-discovery="consul://$(docker-machine ip service-discovery):8500" \</strong>
+<strong>    --engine-opt="cluster-store=consul://$(docker-machine ip service-discovery):8500" \</strong>
+<strong>    --engine-opt="cluster-advertise=eth1:2376" \</strong>
+<strong>    chapter04-00</strong>
+</pre></div><p>As you can see, the command is very similar to the one used in <a class="link" href="ch02.html" title="Chapter 2. Introducing First-party Tools">Chapter 2</a>, <em>Introducing First-party Tools</em>; however, we are supplying details of our Consul installation. We are doing this by passing in the IP address of the <code class="literal">service-discovery</code> host using the <code class="literal">docker-machine ip</code> command.</p><p>Once the Swarm master is booted, we are going to launch two Swarm nodes using the following commands:</p><div><pre class="programlisting">
+<strong>docker-machine create \</strong>
+<strong>   --driver digitalocean \</strong>
+<strong>    --digitalocean-access-token sdnjkjdfgkjb345kjdgljknqwetkjwhgoih314rjkwergoiyu34rjkherglkhrg0 \</strong>
+<strong>    --digitalocean-region lon1 \</strong>
+<strong>    --digitalocean-size 1gb \</strong>
+<strong>    --digitalocean-private-networking \</strong>
+<strong>    --swarm \</strong>
+<strong>    --swarm-discovery="consul://$(docker-machine ip service-discovery):8500" \</strong>
+<strong>    --engine-opt="cluster-store=consul://$(docker-machine ip service-discovery):8500" \</strong>
+<strong>    --engine-opt="cluster-advertise=eth1:2376" \</strong>
+<strong>    chapter04-01</strong>
+</pre></div><p>For the <a id="id172" class="indexterm"/>second node, we are going to use the following commands:</p><div><pre class="programlisting">
+<strong>docker-machine create \</strong>
+<strong>    --driver digitalocean \</strong>
+<strong>    --digitalocean-access-token sdnjkjdfgkjb345kjdgljknqwetkjwhgoih314rjkwergoiyu34rjkherglkhrg0 \</strong>
+<strong>    --digitalocean-region lon1 \</strong>
+<strong>    --digitalocean-size 1gb \</strong>
+<strong>    --digitalocean-private-networking \</strong>
+<strong>    --swarm \</strong>
+<strong>    --swarm-discovery="consul://$(docker-machine ip service-discovery):8500" \</strong>
+<strong>    --engine-opt="cluster-store=consul://$(docker-machine ip service-discovery):8500" \</strong>
+<strong>    --engine-opt="cluster-advertise=eth1:2376" \</strong>
+<strong>    chapter04-02</strong>
+</pre></div><p>Now that we have our master and two nodes up and running, let's switch to the environment and make sure that the cluster is showing the correct number of hosts:</p><div><pre class="programlisting">
+<strong>eval $(docker-machine env --swarm chapter04-00)</strong>
+<strong>docker info</strong>
+</pre></div><p>You should see something similar to the following screenshot when running <code class="literal">docker info</code>:</p><div><img src="img/B05468_04_01.jpg" alt="Readying the Swarm"/></div><p>So, we <a id="id173" class="indexterm"/>now have our cluster launched, and everything is talking to each other. We will now be able to create our overlay network.</p></div><div><div><div><div><h2 class="title"><a id="ch04lvl2sec26"/>Adding the overlay network</h2></div></div></div><p>For<a id="id174" class="indexterm"/> testing purpose, we are going to be creating a very basic network and launching a very basic container. The following command will create the overlay network, and thanks to the service-discovery provided by Consul, the network settings will be distributed to each node within our Docker Swarm cluster:</p><div><pre class="programlisting">
+<strong>docker network create --driver overlay --subnet=10.0.9.0/24 chapter04-overlay-network</strong>
+</pre></div><p>So, there you have it, we have created an overlay network called <code class="literal">chapter04-overlay-network</code> with a subnet of <code class="literal">10.0.9.0/24</code> on our cluster. To make sure that everything is OK, you can run the following commands to list the networks configured within the cluster:</p><div><pre class="programlisting">
+<strong>docker network ls</strong>
+</pre></div><p>You can also check on the individual nodes by running the following command:</p><div><pre class="programlisting">
+<strong>docker $(docker-machine config chapter04-01) network ls</strong>
+<strong>docker $(docker-machine config chapter04-02) network ls</strong>
+</pre></div><div><img src="img/B05468_04_02.jpg" alt="Adding the overlay network"/></div><p>As you<a id="id175" class="indexterm"/> can see, each node has its host and bridge networks available, meaning that you don't have to use the overlay network if you don't want to; however, we do so that its time to launch a container and configure it to use our newly added network.</p></div><div><div><div><div><h2 class="title"><a id="ch04lvl2sec27"/>Using the overlay network</h2></div></div></div><p>To start <a id="id176" class="indexterm"/>with, we will be launching a container that runs NGINX:</p><div><pre class="programlisting">
+<strong>docker run -itd \</strong>
+<strong>    --name=chapter04-web \</strong>
+<strong>    --net=chapter04-overlay-network \</strong>
+<strong>    -p 80:80 \</strong>
+<strong>    --env="constraint:node==chapter04-01" \</strong>
+<strong>    russmckendrick/nginx</strong>
+</pre></div><p>As you can see, we are configuring our container to use <code class="literal">chapter04-overlay-network</code> by passing the <code class="literal">--net</code> flag. We are also making sure that the container is launched on the <code class="literal">chapter04-01</code> node. Next up, let's see if we can view the content being served by our NGINX container.</p><p>To do this, let's launch a container on our second node, <code class="literal">chapter04-02</code>, and run <code class="literal">wget</code> to fetch the page being served by NGINX:</p><div><pre class="programlisting">
+<strong>docker run -it \</strong>
+<strong>    --rm \</strong>
+<strong>    --net=chapter04-overlay-network \</strong>
+<strong>    --env="constraint:node==chapter04-02" \</strong>
+<strong>    russmckendrick/base wget -q -O- http://chapter04-web</strong>
+</pre></div><p>If <a id="id177" class="indexterm"/>everything went as planned, you will see <code class="literal">Hello from NGINX</code> returned by the command. We can also ping the NGINX container from the second node by running the following command:</p><div><pre class="programlisting">
+<strong>docker run -it \</strong>
+<strong>    --rm \</strong>
+<strong>    --net=chapter04-overlay-network \</strong>
+<strong>    --env="constraint:node==chapter04-02" \</strong>
+<strong>    russmckendrick/base ping -c 3 chapter04-web</strong>
+</pre></div><p>You should see an IP address within the 10.0.9.0/24 subnet returned, as shown in the following screenshot:</p><div><img src="img/B05468_04_03.jpg" alt="Using the overlay network"/></div><p>If you want to take a look at the network that has been configured on the <code class="literal">chapter04-web</code> container, you can run the following commands:</p><div><pre class="programlisting">
+<strong>docker exec chapter04-web ip addr</strong>
+<strong>docker exec chapter04-web route -n</strong>
+<strong>docker exec chapter04-web ping -c 3 google.com</strong>
+</pre></div><p>You should see something similar to the following terminal output returned:</p><div><img src="img/B05468_04_04.jpg" alt="Using the overlay network"/></div><p>Finally, you<a id="id178" class="indexterm"/> can access the container in your browser by running the following command:</p><div><pre class="programlisting">
+<strong>open http://$(docker-machine ip chapter04-01)/</strong>
+</pre></div><p>The page will look something similar to the following screenshot:</p><div><img src="img/B05468_04_05.jpg" alt="Using the overlay network"/></div><p>While the page itself isn't much to look at, there are actually some quite clever things going on in the background that you may not have noticed, the biggest <a id="id179" class="indexterm"/>of which is that we haven't had to link our containers together. In the previous chapters, we had used the link flag when launching multiple containers to link them together. Now we are launching our containers in the same Overlay Network, Docker assumes that all of the containers within this network will be able to talk each other, and it handles the linking of the containers automatically.</p><p>Docker has also configured a gateway for the containers in order to be able to route traffic outside of our Overlay Network by default. If you wanted to create an internal only networking, then you could add the <code class="literal">--internal</code> flag.</p></div><div><div><div><div><h2 class="title"><a id="ch04lvl2sec28"/>Back to Consul</h2></div></div></div><p>Don't forget <a id="id180" class="indexterm"/>that while we have been creating the networks and launching our containers, the service discovery container has been running in the background. Going back to the Consul web interface, you should notice that under the <strong>Key/Value</strong> option, you will see a list of the nodes within our Docker Swarm cluster:</p><div><img src="img/B05468_04_09.jpg" alt="Back to Consul"/></div><p>Clicking around, you should also see other values, such as the networking ones, that are being shared within the Docker Swarm cluster:</p><div><img src="img/B05468_04_10.jpg" alt="Back to Consul"/></div><p>Before we<a id="id181" class="indexterm"/> tear down our Docker Swarm cluster, let's look at launching our WordPress stack using Docker Compose.</p></div><div><div><div><div><h2 class="title"><a id="ch04lvl2sec29"/>Composing multi-host networks</h2></div></div></div><p>As in the <a id="id182" class="indexterm"/>previous chapters, we are going to launch our trusty WordPress installation. We are going to make it a little interesting by:</p><div><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">Creating an external network called <code class="literal">wpoutside</code>. This network will be able to get external access, our webserver will be launched over here.</li><li class="listitem" style="list-style-type: disc">Creating an internal network called <code class="literal">wpinside</code>. This network will not be able to get any external access, on containers on the same network will be able to access, we will be adding both web server and database containers to this network.</li><li class="listitem" style="list-style-type: disc">Launching our web server container one node and the database container on our second node.</li></ul></div><p>Before we launch our containers, we should terminate the <code class="literal">chapter04-web</code> container:</p><div><pre class="programlisting">
+<strong>docker rm -f chapter04-web</strong>
+</pre></div><p>Now, let's create two overlay networks:</p><div><pre class="programlisting">
+<strong>docker network create --driver overlay --subnet=10.0.10.0/24 wpoutside</strong>
+<strong>docker network create --driver overlay --internal --subnet=10.0.11.0/24 wpinside</strong>
+</pre></div><p>As you <a id="id183" class="indexterm"/>can see, we are giving the networks different subnets, and for <code class="literal">wpinside</code>, we are passing the <code class="literal">--internal</code> flag, meaning that the network will not have an external gateway.</p><p>Now, let's take a look at our <code class="literal">docker-compose.yml</code> file:</p><div><pre class="programlisting">version: '2'
+services:
+  wordpress:
+    container_name: my-wordpress-app
+    image: wordpress
+    ports:
+      - "80:80"
+<strong>    networks:</strong>
+<strong>      - wpoutside</strong>
+<strong>      - wpinside</strong>
+    environment:
+      - "WORDPRESS_DB_HOST=mysql:3306"
+      - "WORDPRESS_DB_PASSWORD=password"
+<strong>     - "constraint:node==chapter04-01"</strong>
+    volumes:
+      - "uploads:/var/www/html/wp-content/uploads/"
+  mysql:
+    container_name: my-wordpress-database
+    image: mysql
+<strong>    networks:</strong>
+<strong>      - wpinside</strong>
+    environment:
+      - "MYSQL_ROOT_PASSWORD=password"
+<strong>      - "constraint:node==chapter04-02"</strong>
+    volumes:
+      - "database:/var/lib/mysql"
+volumes:
+  uploads:
+    driver: local
+  database:
+    driver: local
+<strong>networks:</strong>
+<strong>  wpoutside:</strong>
+<strong>    external: true</strong>
+<strong>  wpinside:</strong>
+<strong>    external: true</strong>
+</pre></div><p>As you <a id="id184" class="indexterm"/>can see, I have highlighted the changes made in the file since the previous chapter. The interesting thing to note is that while it is possible to define your network within the <code class="literal">docker-compose.yml</code> file, you will get a lot more control by setting up the network using the <code class="literal">docker network create</code> command. To do this, we need to tell Docker Compose to use the externally defined networks for the project. We are also using labels to bind the containers to a host in our Docker Swarm cluster.</p><p>Now that we have the two overlay networks created, you can launch the WordPress stack by running the following command:</p><div><pre class="programlisting">
+<strong>docker-compose up -d</strong>
+</pre></div><p>You can check everything launched as expected by running the following command:</p><div><pre class="programlisting">
+<strong>docker-compose ps</strong>
+</pre></div><p>To make sure that the containers have launched on different hosts, run the following command and check the last column:</p><div><pre class="programlisting">
+<strong>docker ps</strong>
+</pre></div><p>To see what IP addresses are assigned to the containers, run the following commands:</p><div><pre class="programlisting">
+<strong>docker inspect my-wordpress-app | grep IPAddress</strong>
+<strong>docker inspect my-wordpress-database | grep IPAddress</strong>
+</pre></div><p>You should see two IP addresses for <code class="literal">my-wordpress-app</code> and a single for <code class="literal">my-wordpress-database</code>:</p><div><img src="img/B05468_04_11.jpg" alt="Composing multi-host networks"/></div><p>Before we log in to WordPress, we can try some ping tests. First, we will run the tests on your <code class="literal">my-wordpress-app</code> container by running the following commands:</p><div><pre class="programlisting">
+<strong>docker exec my-wordpress-app ping -c 3 google.com</strong>
+<strong>docker exec my-wordpress-app ping -c 3 my-wordpress-database</strong>
+</pre></div><p>For the first <a id="id185" class="indexterm"/>command, you will see Google's external IP address returned. For the second, you will get the IP of your <code class="literal">my-wordpress-database</code> container, which will be on the <code class="literal">10.0.11.0/24</code> subnet we defined for the <code class="literal">wpinside</code> overlay network:</p><div><img src="img/B05468_04_11.jpg" alt="Composing multi-host networks"/></div><p>Trying similar commands on <code class="literal">my-wordpress-database</code> should give you different results, try running the following commands:</p><div><pre class="programlisting">
+<strong>docker exec my-wordpress-database ping -c 3 my-wordpress-app</strong>
+<strong>docker exec my-wordpress-database ping -c 3 google.com</strong>
+</pre></div><p>As you can see, pinging <code class="literal">my-wordpress-app</code> works fine; however, when you try and ping Google, you get an error saying something like <code class="literal">Network is unreachable</code> or some another error. This is exactly what we would expect to see as <code class="literal">my-wordpress-database</code> has no external network access and therefore it cannot route to <code class="literal">www.google.com</code>:</p><div><img src="img/B05468_04_12.jpg" alt="Composing multi-host networks"/></div><p>Finally, if <a id="id186" class="indexterm"/>you would like to access WordPress, you can type in either of the following commands. First of all, we need to confirm which host the <code class="literal">my-wordpress-app</code> container is launched on. To confirm the host, run:</p><div><pre class="programlisting">
+<strong>docker ps</strong>
+</pre></div><p>Then, depending on which host, run one of the following three commands:</p><div><pre class="programlisting">
+<strong>open http://$(docker-machine ip chapter04-00)/</strong>
+<strong>open http://$(docker-machine ip chapter04-01)/</strong>
+<strong>open http://$(docker-machine ip chapter04-02)/</strong>
+</pre></div><p>Your browser will open the now familiar WordPress installation page.</p><p>Before moving on further, you should tear down your Docker Swarm cluster. To do this, run the following command:</p><div><pre class="programlisting">
+<strong>docker-machine stop chapter04-00 chapter04-01 chapter04-02 service-discovery</strong>
+<strong>docker-machine rm chapter04-00 chapter04-01 chapter04-02 service-discovery</strong>
+</pre></div></div><div><div><div><div><h2 class="title"><a id="ch04lvl2sec30"/>Summing up multi-host networking</h2></div></div></div><p>Although <a id="id187" class="indexterm"/>overlay networks were classed as production-ready in Docker version 1.9, with the advancements in Docker version 1.10 and the new Docker Compose v2 file format, Docker networking has really come into its own.</p><p>While the overlay network functionality is built into Docker and Swarm, as you have seen in the examples we have worked through, it is extremely powerful. When used in conjunction with third-party volume plugins that we covered in <a class="link" href="ch03.html" title="Chapter 3. Volume Plugins">Chapter 3</a>, <em>Volume Plugins</em>, and Docker Swarm, we can start to build highly available deployments.</p></div></div>
+<div><div><div><div><h1 class="title"><a id="ch04lvl1sec23"/>Weaving a network</h1></div></div></div><p>Next up, we <a id="id188" class="indexterm"/>are going to take a look at Weave Net and Scope by Weaveworks. This is one of the original Docker networking tools, and at its core, it is a mature software-defined networking service.</p><p>Weave Net is described as follows:</p><div><blockquote class="blockquote"><p><em>"Weave Net creates a container SDN that can run across any mixture of public and private cloud, virtual machines and bare metal. The container SDN can carry any layer 2 and layer 3 traffic, including multicast. If you can run it over Ethernet, you can run it on Weave Net."</em></p></blockquote></div><p>In fact, there are two drivers provided by Weave, as follows:</p><div><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">Weave Mesh is a local scope driver that operates without the need for a cluster store. It can be used to create networks that span non-clustered machines. With this, you get a single network called Weave, which spans all of the machines you have Weave launched on.</li><li class="listitem" style="list-style-type: disc">Weave, like Docker's own overlay driver, is a global scope driver. This means that it can be used with Docker Swarm and Docker Compose, because of this, you will need to launch a cluster store.</li></ul></div><p>First of all, let's look at the Weave driver and how to use it with Docker Swarm and then we will take a look at using the Weavemesh driver.</p><div><div><div><div><h2 class="title"><a id="ch04lvl2sec31"/>Configuring a Cluster again</h2></div></div></div><p>Like <a id="id189" class="indexterm"/>Docker multi-host networking, we will need to launch a service discovery instance and our Swarm cluster. Let's launch the service discovery host with Docker Machine:</p><div><pre class="programlisting">
+<strong>docker-machine create \</strong>
+<strong>    --driver digitalocean \</strong>
+<strong>    --digitalocean-access-token sdnjkjdfgkjb345kjdgljknqwetkjwhgoih314rjkwergoiyu34rjkherglkhrg0 \</strong>
+<strong>    --digitalocean-region lon1 \</strong>
+<strong>    --digitalocean-size 512mb \</strong>
+<strong>    --digitalocean-private-networking \</strong>
+<strong>    service-discovery</strong>
+</pre></div><p>This time, we don't need to enable the Consul web interface, so run the following command:</p><div><pre class="programlisting">
+<strong>docker $(docker-machine config service-discovery) run -d \</strong>
+<strong>    -p "8400:8400" \</strong>
+<strong>    -p "8500:8500" \</strong>
+<strong>    -h "consul" \</strong>
+<strong>    russmckendrick/consul agent -data-dir /data -server -bootstrap-expect 1 -client=0.0.0.0</strong>
+</pre></div><p>Now launch the Docker Swarm cluster, first the master:</p><div><pre class="programlisting">
+<strong>docker-machine create \</strong>
+<strong>    --driver digitalocean \</strong>
+<strong>    --digitalocean-access-token sdnjkjdfgkjb345kjdgljknqwetkjwhgoih314rjkwergoiyu34rjkherglkhrg0 \</strong>
+<strong>    --digitalocean-region lon1 \</strong>
+<strong>    --digitalocean-size 1gb \</strong>
+<strong>    --digitalocean-private-networking \</strong>
+<strong>    --swarm --swarm-master \</strong>
+<strong>    --swarm-discovery="consul://$(docker-machine ip service-discovery):8500" \</strong>
+<strong>    --engine-opt="cluster-store=consul://$(docker-machine ip service-discovery):8500" \</strong>
+<strong>    --engine-opt="cluster-advertise=eth1:2376" \</strong>
+<strong>    chapter04-00</strong>
+</pre></div><p>Then we <a id="id190" class="indexterm"/>will launch our first node:</p><div><pre class="programlisting">
+<strong>docker-machine create \</strong>
+<strong>   --driver digitalocean \</strong>
+<strong>    --digitalocean-access-token sdnjkjdfgkjb345kjdgljknqwetkjwhgoih314rjkwergoiyu34rjkherglkhrg0 \</strong>
+<strong>    --digitalocean-region lon1 \</strong>
+<strong>    --digitalocean-size 1gb \</strong>
+<strong>    --digitalocean-private-networking \</strong>
+<strong>    --swarm \</strong>
+<strong>    --swarm-discovery="consul://$(docker-machine ip service-discovery):8500" \</strong>
+<strong>    --engine-opt="cluster-store=consul://$(docker-machine ip service-discovery):8500" \</strong>
+<strong>    --engine-opt="cluster-advertise=eth1:2376" \</strong>
+<strong>    chapter04-01</strong>
+</pre></div><p>Finally, we will launch the second node:</p><div><pre class="programlisting">
+<strong>docker-machine create \</strong>
+<strong>    --driver digitalocean \</strong>
+<strong>    --digitalocean-access-token sdnjkjdfgkjb345kjdgljknqwetkjwhgoih314rjkwergoiyu34rjkherglkhrg0 \</strong>
+<strong>    --digitalocean-region lon1 \</strong>
+<strong>    --digitalocean-size 1gb \</strong>
+<strong>    --digitalocean-private-networking \</strong>
+<strong>    --swarm \</strong>
+<strong>    --swarm-discovery="consul://$(docker-machine ip service-discovery):8500" \</strong>
+<strong>    --engine-opt="cluster-store=consul://$(docker-machine ip service-discovery):8500" \</strong>
+<strong>    --engine-opt="cluster-advertise=eth1:2376" \</strong>
+<strong>    chapter04-02</strong>
+</pre></div><p>To check <a id="id191" class="indexterm"/>whether everything is working as expected, run the following commands to switch our local Docker client to connect to the Swarm cluster and also check whether the three nodes are visible:</p><div><pre class="programlisting">
+<strong>eval $(docker-machine env --swarm chapter04-00)</strong>
+<strong>docker info</strong>
+</pre></div></div><div><div><div><div><h2 class="title"><a id="ch04lvl2sec32"/>Installing and configuring Weave</h2></div></div></div><p>Now that <a id="id192" class="indexterm"/>we have our cluster up and running, we can install and configure Weave. Installing Weave is simple, all you have to do is download the<a id="id193" class="indexterm"/> binary and give it the correct permissions. Let's do this on the Swarm master using <code class="literal">docker-machine ssh</code> to connect to the host <a id="id194" class="indexterm"/>and run the <code class="literal">install</code> command:</p><div><pre class="programlisting">
+<strong>docker-machine ssh chapter04-00 'curl -L git.io/weave -o /usr/local/bin/weave; chmod a+x /usr/local/bin/weave'</strong>
+</pre></div><p>Next, we start Weave, again using <code class="literal">docker-machine ssh</code>, we can run the following command:</p><div><pre class="programlisting">
+<strong>docker-machine ssh chapter04-00 weave launch --init-peer-count 3</strong>
+</pre></div><p>You will have notice <a id="id195" class="indexterm"/>that Weave deployed three containers from the Docker Hub, they are as follows:</p><div><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">weaveworks/weaveexec</li><li class="listitem" style="list-style-type: disc">weaveworks/weave</li><li class="listitem" style="list-style-type: disc">weaveworks/plugin</li></ul></div><p>Also, we are telling Weave to expect three peers to join the cluster by passing the <code class="literal">--init-peer-count 3</code> flag, that's pretty much all we have to do to configure Weave on our first cluster node.</p><p>Next, we need to install Weave onto our other two cluster nodes, again using the <code class="literal">docker-machine ssh</code> command run the following:</p><div><pre class="programlisting">
+<strong>docker-machine ssh chapter04-01 'curl -L git.io/weave -o /usr/local/bin/weave; chmod a+x /usr/local/bin/weave'</strong>
+<strong>docker-machine ssh chapter04-01 weave launch --init-peer-count 3</strong>
+</pre></div><p>Now that we have Weave up and running on the node, we need to tell it to connect to the Weave installation running on the Swarm master. To do this, run the following command:</p><div><pre class="programlisting">
+<strong>docker-machine ssh chapter04-01 weave connect "$(docker-machine ip chapter04-00)"</strong>
+</pre></div><p>Then on<a id="id196" class="indexterm"/> our <a id="id197" class="indexterm"/>last cluster node, we will run the following command:</p><div><pre class="programlisting">
+<strong>docker-machine ssh chapter04-02 'curl -L git.io/weave -o /usr/local/bin/weave; chmod a+x /usr/local/bin/weave'</strong>
+<strong>docker-machine ssh chapter04-02 weave launch --init-peer-count 3</strong>
+<strong>docker-machine ssh chapter04-02 weave connect "$(docker-machine ip chapter04-00)"</strong>
+</pre></div><p>Once all three nodes in the Swarm cluster have Weave installed and configured, we will run the following command to ensure that all three nodes are talking to each other:</p><div><pre class="programlisting">
+<strong>docker-machine ssh chapter04-00 weave status</strong>
+</pre></div><p>The command should <a id="id198" class="indexterm"/>return confirmation that there are three peers with six established connections along with other information about the installation, as shown in the following screenshot:</p><div><img src="img/B05468_04_14.jpg" alt="Installing and configuring Weave"/></div><p>Now that we have confirmation that everything is working as expected, we will list the networks in Docker using the following command:</p><div><pre class="programlisting">
+<strong>docker network ls</strong>
+</pre></div><p>As per the <a id="id199" class="indexterm"/>following terminal session, you should<a id="id200" class="indexterm"/> see that there is<a id="id201" class="indexterm"/> a <code class="literal">weavemesh</code> network called <code class="literal">weave</code> on each of the nodes within the cluster; we will discuss more about that later:</p><div><img src="img/B05468_04_15.jpg" alt="Installing and configuring Weave"/></div></div><div><div><div><div><h2 class="title"><a id="ch04lvl2sec33"/>Docker Compose and Weave</h2></div></div></div><p>So, let's launch <a id="id202" class="indexterm"/>our WordPress installation. The Docker Compose file looks a little different from the overlay network one:</p><div><pre class="programlisting">version: '2'
+services:
+  wordpress:
+    container_name: "my-wordpress-app"
+    image: wordpress
+    ports:
+      - "80:80"
+    environment:
+<strong>      - "WORDPRESS_DB_HOST=mysql.weave.local:3306"</strong>
+      - "WORDPRESS_DB_PASSWORD=password"
+      - "constraint:node==chapter04-01"
+<strong>    hostname: "wordpress.weave.local"</strong>
+<strong>    dns: "172.17.0.1"</strong>
+<strong>    dns_search: "weave.local"</strong>
+    volumes:
+      - "uploads:/var/www/html/wp-content/uploads/"
+  mysql:
+    container_name: "my-wordpress-database"
+    image: mysql
+    environment:
+      - "MYSQL_ROOT_PASSWORD=password"
+      - "constraint:node==chapter04-02"
+<strong>    hostname: "mysql.weave.local"</strong>
+<strong>    dns: "172.17.0.1"</strong>
+<strong>    dns_search: "weave.local"</strong>
+    volumes:
+      - "database:/var/lib/mysql"
+volumes:
+  uploads:
+    driver: local
+  database:
+    driver: local
+<strong>networks:</strong>
+<strong>  default:</strong>
+<strong>    driver: weave</strong>
+</pre></div><p>I have <a id="id203" class="indexterm"/>highlighted a few changes from the Overlay Docker Compose file: first off, we will define a hostname and provide a DNS server and search domain. To get the right values for the <code class="literal">dns</code> and <code class="literal">dns_search</code> keys, you can run the following command to have Weave let you know what it has configured:</p><div><pre class="programlisting">
+<strong>docker-machine ssh chapter04-00 weave dns-args</strong>
+</pre></div><p>As you can see, in my case, it returned <code class="literal">172.17.0.1</code> and <code class="literal">weave.local</code>:</p><div><img src="img/B05468_04_16.jpg" alt="Docker Compose and Weave"/></div><p>Also, for the MySQL connection from the WordPress container to the Database one, we are using the internal DNS name as well.</p><p>We are also letting Docker Compose create a network for us using the Weave driver, this will add a single network named after the project. Docker Compose gets the project name from the folder our Docker Compose file is, in my case, it's a folder called <code class="literal">wordpress</code>.</p><p>To launch your containers and check whether they are running as expected, run the following commands:</p><div><pre class="programlisting">
+<strong>docker-compose up -d</strong>
+<strong>docker-compose ps</strong>
+<strong>docker ps</strong>
+</pre></div><p>You should see something similar to the following terminal output:</p><div><img src="img/B05468_04_17.jpg" alt="Docker Compose and Weave"/></div><p>If you<a id="id204" class="indexterm"/> really want to, you can access your WordPress installation by running the following command:</p><div><pre class="programlisting">
+<strong>open http://$(docker-machine ip chapter04-01)/</strong>
+</pre></div><p>There are some things happening in the background that Docker's multi-host networking doesn't give you, such as internal DNS. Weave has its own internal DNS system that you can register your containers with, as you saw in the Docker Compose file that we provided details for records for both containers. Run the following command:</p><div><pre class="programlisting">
+<strong>docker-machine ssh chapter04-00 weave status dns</strong>
+</pre></div><p>It will show you all the DNS records that Weave has configured. In my case, it looks like the following screenshot:</p><div><img src="img/B05468_04_18.jpg" alt="Docker Compose and Weave"/></div></div><div><div><div><div><h2 class="title"><a id="ch04lvl2sec34"/>Weave Scope</h2></div></div></div><p>While <a id="id205" class="indexterm"/>we have our three-node Swarm cluster up and running, let's quickly install <a id="id206" class="indexterm"/>Scope. Scope is a tool for visualizing your Containers and host. We will just be installing it to run locally, but Weave Works will be offering a cloud-based service, which can be found at <a class="ulink" href="http://scope.weave.works/">http://scope.weave.works/</a> (at the time of writing this book, it was in private beta).</p><p>Similar <a id="id207" class="indexterm"/>to<a id="id208" class="indexterm"/> the way we installed Weave Net, we will be using the <code class="literal">docker-machine ssh</code> command to download the binary and launch and configure the service.</p><p>We will write the code on the Swarm master first:</p><div><pre class="programlisting">
+<strong>docker-machine ssh chapter04-00 'curl -L git.io/scope -o /usr/local/bin/scope; chmod a+x /usr/local/bin/scope'</strong>
+<strong>docker-machine ssh chapter04-00 scope launch</strong>
+</pre></div><p>Then, we will write the code for remaining two nodes:</p><div><pre class="programlisting">
+<strong>docker-machine ssh chapter04-01 'curl -L git.io/scope -o /usr/local/bin/scope; chmod a+x /usr/local/bin/scope'</strong>
+<strong>docker-machine ssh chapter04-01 scope launch $(docker-machine ip chapter04-00)</strong>
+<strong>docker-machine ssh chapter04-02 'curl -L git.io/scope -o /usr/local/bin/scope; chmod a+x /usr/local/bin/scope'</strong>
+<strong>docker-machine ssh chapter04-02 scope launch $(docker-machine ip chapter04-00)</strong>
+</pre></div><p>As you can see on the two remaining nodes, we are telling Scope to connect to the Scope instance running on the Swarm master.</p><p>Now that Scope is installed, open it in your browser by running the following command:</p><div><pre class="programlisting">
+<strong>open http://$(docker-machine ip chapter04-00):4040/</strong>
+</pre></div><p>When your browser opens, you will be presented with a visual representation of your Swarm cluster, and the containers that are running.</p><p>I am not going to go into any more detail on Scope here, as at the moment, it doesn't have much to do with networking, have a look around to start seeing more information on your cluster and how it all hangs together. Mine looked similar to the following screenshot:</p><div><img src="img/B05468_04_19.jpg" alt="Weave Scope"/></div></div><div><div><div><div><h2 class="title"><a id="ch04lvl2sec35"/>Calling off the Swarm</h2></div></div></div><p>As you <a id="id209" class="indexterm"/>can see, while Weave is quite a powerful SDN, it is straightforward to configure. However, replicating the multi-host networking Docker provides is only one of its tricks.</p><p>Let's shut down our Swarm cluster and terminate the hosts before we start to look at the Weavemesh network driver:</p><div><pre class="programlisting">
+<strong>docker-machine stop chapter04-00 chapter04-01 chapter04-02 service-discovery</strong>
+<strong>docker-machine rm chapter04-00 chapter04-01 chapter04-02 service-discovery</strong>
+</pre></div><p>Before you move on, log in to your DigitalOcean control panel and make sure that you don't have any machines labelled with <code class="literal">chapter04</code> running, remember that you will be charged per hour whether you are using them or not.</p></div><div><div><div><div><h2 class="title"><a id="ch04lvl2sec36"/>Weavemesh Driver</h2></div></div></div><p>We have<a id="id210" class="indexterm"/> looked at how Weave Net can by used alongside a Docker Swarm cluster to create multi-host networking, now let's take a look at the second Weave network driver, Weavemesh. As you may recall, when we first installed Weave Net, a network called "weave" was automatically create using the "weavemesh" driver on each node within our cluster.</p><p>This time, let's bring up two independent Docker hosts DigitalOcean using Docker Machine. To make it interesting, we will launch one host in London and the other in New York City. As these are going to be acting as individual hosts, we do not need to launch a key/value store, or <a id="id211" class="indexterm"/>configure Docker Swarm.</p><p>First, type the following command to launch a host in London host:</p><div><pre class="programlisting">
+<strong>docker-machine create \</strong>
+<strong>    --driver digitalocean \</strong>
+<strong>    --digitalocean-access-token sdnjkjdfgkjb345kjdgljknqwetkjwhgoih314rjkwergoiyu34rjkherglkhrg0 \</strong>
+<strong>    --digitalocean-region lon1 \</strong>
+<strong>    --digitalocean-size 1gb \</strong>
+<strong>    mesh-london</strong>
+</pre></div><p>Then, the following command is to launch another host is New York City.</p><div><pre class="programlisting">
+<strong>docker-machine create \</strong>
+<strong>    --driver digitalocean \</strong>
+<strong>    --digitalocean-access-token sdnjkjdfgkjb345kjdgljknqwetkjwhgoih314rjkwergoiyu34rjkherglkhrg0 \</strong>
+<strong>    --digitalocean-region nyc2 \</strong>
+<strong>    --digitalocean-size 1gb \</strong>
+<strong>    mesh-nyc</strong>
+</pre></div><p>Now that we have our two Docker hosts up and running, let's install and configure Weave:</p><div><pre class="programlisting">
+<strong>docker-machine ssh mesh-london 'curl -L git.io/weave -o /usr/local/bin/weave; chmod a+x /usr/local/bin/weave'</strong>
+<strong>docker-machine ssh mesh-london weave launch --password 3UnFh4jhahFC</strong>
+</pre></div><p>As you can see, this time we are telling Weave to launch with a password. This flag will enable encryption between the networking layer on our two hosts. Now that we have the London host configured, let's do the one in New York City and then get it talking to the host in London:</p><div><pre class="programlisting">
+<strong>docker-machine ssh mesh-nyc 'curl -L git.io/weave -o /usr/local/bin/weave; chmod a+x /usr/local/bin/weave'</strong>
+<strong>docker-machine ssh mesh-nyc weave launch --password 3UnFh4jhahFC</strong>
+<strong>docker-machine ssh mesh-nyc weave connect "$(docker-machine ip mesh-london)"</strong>
+</pre></div><p>Now that we have Weave configured on our two hosts, we can check the status of Weave by running the following command:</p><div><pre class="programlisting">
+<strong>docker-machine ssh mesh-nyc weave status</strong>
+</pre></div><p>As you can see from the following terminal output, encryption is enabled and we have two peers within our Weave network:</p><div><img src="img/B05468_04_20.jpg" alt="Weavemesh Driver"/></div><p>So, let's take<a id="id212" class="indexterm"/> a look at Weave's party trick. We will keep it basic to start with by launching our NGINX container:</p><div><pre class="programlisting">
+<strong>docker $(docker-machine config mesh-nyc) run -itd \</strong>
+<strong>    --name=nginx \</strong>
+<strong>    --net=weave \</strong>
+<strong>    --hostname="nginx.weave.local" \</strong>
+<strong>    --dns="172.17.0.1" \</strong>
+<strong>    --dns-search="weave.local" \</strong>
+<strong>    russmckendrick/nginx</strong>
+</pre></div><p>Now we can check whether the container is up and running:</p><div><pre class="programlisting">
+<strong>docker $(docker-machine config mesh-nyc) ps</strong>
+</pre></div><p>Let's also check whether it's responding on port 80:</p><div><pre class="programlisting">
+<strong>docker $(docker-machine config mesh-london) run -it \</strong>
+<strong>    --rm \</strong>
+<strong>    --net=weave \</strong>
+<strong>    --dns="172.17.0.1" \</strong>
+<strong>    --dns-search="weave.local" \</strong>
+<strong>    russmckendrick/base wget -q -O- http://nginx.weave.local</strong>
+</pre></div><p>Finally, let's do a ping test:</p><div><pre class="programlisting">
+<strong>docker $(docker-machine config mesh-london) run -it \</strong>
+<strong>    --rm \</strong>
+<strong>    --net=weave \</strong>
+<strong>    --dns="172.17.0.1" \</strong>
+<strong>    --dns-search="weave.local" \</strong>
+<strong>    russmckendrick/base ping -c 3 nginx.weave.local</strong>
+</pre></div><p>Your terminal <a id="id213" class="indexterm"/>session should look something similar to the following screenshot:</p><div><img src="img/B05468_04_21.jpg" alt="Weavemesh Driver"/></div><p>On the surface, this test doesn't look like much; however, if you look closely at the commands we used, you will see just how powerful the weavemesh driver is.</p><p>First of all, when we launched our NGINX container on the New York City Docker host, we did not publish any ports, meaning that port 80 was only available on the weave network that we attached it to.</p><p>Secondly, when we ran the check on port 80 and did the ping test, we did that from our Docker host in London. We temporally launched a basic container, attached it to the <code class="literal">weave</code> network and configured it use Weave DNS service so that it could resolve the <code class="literal">nginx.weave.local</code> domain.</p><p>Let's do our tests again, but this time, using a local virtual machine:</p><div><pre class="programlisting">
+<strong>docker-machine create -d virtualbox mesh-local</strong>
+</pre></div><p>Now, install Weave as we did on our other two Docker hosts:</p><div><pre class="programlisting">
+<strong>docker-machine ssh mesh-local 'sudo curl -L git.io/weave -o /usr/local/bin/weave; sudo chmod a+x /usr/local/bin/weave'</strong>
+<strong>docker-machine ssh mesh-local sudo weave launch --password 3UnFh4jhahFC</strong>
+<strong>docker-machine ssh mesh-local sudo weave connect "$(docker-machine ip mesh-london)"</strong>
+</pre></div><p>Then run the tests again:</p><div><pre class="programlisting">
+<strong>docker $(docker-machine config mesh-local) run -it \</strong>
+<strong>    --rm \</strong>
+<strong>    --net=weave \</strong>
+<strong>    --dns="172.17.0.1" \</strong>
+<strong>    --dns-search="weave.local" \</strong>
+<strong>    russmckendrick/base wget -q -O- http://nginx.weave.local</strong>
+</pre></div><p>Run the <a id="id214" class="indexterm"/>ping test, as follows:</p><div><pre class="programlisting">
+<strong>docker $(docker-machine config mesh-local) run -it \</strong>
+<strong>    --rm \</strong>
+<strong>    --net=weave \</strong>
+<strong>    --dns="172.17.0.1" \</strong>
+<strong>    --dns-search="weave.local" \</strong>
+<strong>    russmckendrick/base ping -c 3 nginx.weave.local</strong>
+</pre></div><p>As you can see, it worked!</p><div><img src="img/B05468_04_22.jpg" alt="Weavemesh Driver"/></div><p>We now have three Docker hosts in our Weavemesh network, all of which can talk to each other. To prove this, we are going to do one final test. Let's launch a container on our local Docker host and try the tests from the New York City host.</p><p>Create a<a id="id215" class="indexterm"/> NGINX container called <code class="literal">vm.weave.local</code> on our local Docker host:</p><div><pre class="programlisting">
+<strong>docker $(docker-machine config mesh-local) run -itd \</strong>
+<strong>    --name=vm \</strong>
+<strong>    --net=weave \</strong>
+<strong>    --hostname="vm.weave.local" \</strong>
+<strong>    --dns="172.17.0.1" \</strong>
+<strong>    --dns-search="weave.local" \</strong>
+<strong>    russmckendrick/nginx</strong>
+</pre></div><p>Then try connecting to port 80 and pinging the new container from the Docker host in New York City:</p><div><pre class="programlisting">
+<strong>docker $(docker-machine config mesh-nyc) run -it \</strong>
+<strong>    --rm \</strong>
+<strong>    --net=weave \</strong>
+<strong>    --dns="172.17.0.1" \</strong>
+<strong>    --dns-search="weave.local" \</strong>
+<strong>    russmckendrick/base wget -q -O- http://vm.weave.local</strong>
+</pre></div><div><pre class="programlisting">
+<strong>docker $(docker-machine config mesh-nyc) run -it \</strong>
+<strong>    --rm \</strong>
+<strong>    --net=weave \</strong>
+<strong>    --dns="172.17.0.1" \</strong>
+<strong>    --dns-search="weave.local" \</strong>
+<strong>    russmckendrick/base ping -c 3 vm.weave.local</strong>
+</pre></div><p>My terminal session looked similar to the following screenshot:</p><div><img src="img/B05468_04_23.jpg" alt="Weavemesh Driver"/></div><p>Now<a id="id216" class="indexterm"/> that we don't have the constants of the Docker Swarm cluster, we can also start to do some tasks that are only available outside of Swarm.</p><p>First of all, you attach container to the Weave network after they have been launched, let's launch an NGINX container called <code class="literal">lonely</code> on our London Docker host:</p><div><pre class="programlisting">
+<strong>docker $(docker-machine config mesh-london) run -itd \</strong>
+<strong>    --name=lonely \</strong>
+<strong>    russmckendrick/nginx</strong>
+</pre></div><p>Now, let's connect to the London Docker host and attached the container to the weave network:</p><div><pre class="programlisting">
+<strong>docker-machine ssh mesh-london weave attach lonely</strong>
+</pre></div><p>When you run the command, it will return an IP address. This will be the new IP address of our container; in my case, it is 10.40.0.0. Let's run our test from both the New York City and Local Docker hosts:</p><div><pre class="programlisting">
+<strong>docker $(docker-machine config mesh-nyc) run -it \</strong>
+<strong>    --rm \</strong>
+<strong>    --net=weave \</strong>
+<strong>    --dns="172.17.0.1" \</strong>
+<strong>    --dns-search="weave.local" \</strong>
+<strong>    russmckendrick/base wget -q -O- 10.40.0.0</strong>
+<strong>docker $(docker-machine config mesh-local) run -it \</strong>
+<strong>    --rm \</strong>
+<strong>    --net=weave \</strong>
+<strong>    --dns="172.17.0.1" \</strong>
+<strong>    --dns-search="weave.local" \</strong>
+<strong>    russmckendrick/base ping -c 3 10.40.0.0</strong>
+</pre></div><p>Your terminal<a id="id217" class="indexterm"/> session should look similar to the following screenshot:</p><div><img src="img/B05468_04_24.jpg" alt="Weavemesh Driver"/></div><p>Now that we have our container on the network, we can manually add a DNS for the host by running the following command:</p><div><pre class="programlisting">
+<strong>docker-machine ssh mesh-london weave dns-add lonely -h lonely.weave.local</strong>
+</pre></div><p>As you can see, we can now access port 80 using <a class="ulink" href="http://lonely.weave.local">http://lonely.weave.local</a> from our New York City Docker host:</p><div><pre class="programlisting">
+<strong>docker $(docker-machine config mesh-nyc) run -it \</strong>
+<strong>    --rm \</strong>
+<strong>    --net=weave \</strong>
+<strong>    --dns="172.17.0.1" \</strong>
+<strong>    --dns-search="weave.local" \</strong>
+<strong>    russmckendrick/base wget -q -O- lonely.weave.local</strong>
+</pre></div><p>The only downside is that there is no easy way of adding the DNS resolution to the host we have attached to the "weave" network.</p><p>Now that <a id="id218" class="indexterm"/>we are finished with our Docker hosts, let's terminate them so that we don't incur unnecessary cost:</p><div><pre class="programlisting">
+<strong>docker-machine stop mesh-local mesh-london mesh-nyc</strong>
+<strong>docker-machine rm mesh-local mesh-london mesh-nyc</strong>
+</pre></div><p>Again, remember to check your DigitalOcean control panel to ensure that your hosts have been correctly terminated.</p></div><div><div><div><div><h2 class="title"><a id="ch04lvl2sec37"/>Summarizing Weave</h2></div></div></div><p>As you have<a id="id219" class="indexterm"/> seen and I have already mentioned, Weave is an incredibly powerful software-defined network, which is really easy to configure. Speaking from experience, this is a difficult combination to pull off, as most SDN solutions are incredibly complex to install, configure, and maintain.</p><p>We have only touched on what is possible with "weave" and "weavemesh" drivers. For a full feature list, along<a id="id220" class="indexterm"/> with instructions on some most of the advanced use cases, refer to <a class="ulink" href="http://docs.weave.works/weave/latest_release/features.html">http://docs.weave.works/weave/latest_release/features.html</a>.</p></div></div>
+<div><div><div><div><h1 class="title"><a id="ch04lvl1sec24"/>Summary</h1></div></div></div><p>In this chapter, we have looked at three different network drivers, all three of which add quite powerful functionality to your basic Docker installation. These, along with the volume drivers, really extend Docker to the point where you can run large fault-tolerant clusters of containers.</p><p>Personally, when I first installed Weave and started to communicate with containers across different Docker hosts in different hosting providers so easily, I was absolutely blown away.</p><p>In the next chapter, we will look at how you should approach to creating your own extension.</p></div></body></html>

@@ -1,0 +1,827 @@
+<html><head></head><body>
+        
+
+                            
+                    <h1 class="header-title">Introduction to Kubernetes</h1>
+                
+            
+            
+                
+<p> In the previous chapter, we learned how SwarmKit uses rolling updates to achieve zero downtime deployments. We were also introduced to Docker configs, which are used to store nonsensitive data in clusters and use this to configure application services, as well as Docker secrets, which are used to share confidential data with an application service running in a Docker Swarm.</p>
+<p>In this chapter, we're going to introduce Kubernetes. Kubernetes is currently the clear leader in the container orchestration space. We will start with a high-level overview of the architecture of a Kubernetes cluster and then discuss the main objects used in Kubernetes to define and run containerized applications.</p>
+<p>This chapter covers the following topics:</p>
+<ul>
+<li>Kubernetes architecture</li>
+<li>Kubernetes master nodes</li>
+<li>Cluster nodes</li>
+<li>Introduction to MiniKube</li>
+<li>Kubernetes support in Docker for Desktop</li>
+<li>Introduction to pods</li>
+<li>Kubernetes ReplicaSet</li>
+<li>Kubernetes deployment</li>
+<li>Kubernetes service</li>
+<li>Context-based routing</li>
+<li>Comparing SwarmKit with Kubernetes</li>
+</ul>
+<p>After finishing this chapter, you will be able to do the following:</p>
+<ul>
+<li>Draft the high-level architecture of a Kubernetes cluster on a napkin</li>
+<li>Explain three to four main characteristics of a Kubernetes pod</li>
+<li>Describe the role of Kubernetes ReplicaSets in two to three short sentences</li>
+<li>Explain two or three main responsibilities of a Kubernetes service</li>
+<li>Create a pod in Minikube</li>
+<li>Configure Docker for Desktop in order to use Kubernetes as an orchestrator</li>
+<li>Create a deployment in Docker for Desktop</li>
+<li>Create a Kubernetes service to expose an application service internally (or externally) to the cluster</li>
+</ul>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Technical requirements</h1>
+                
+            
+            
+                
+<p>The code files for this chapter can be found on GitHub at <a href="https://github.com/PacktPublishing/Learn-Docker---Fundamentals-of-Docker-19.x-Second-Edition" target="_blank">https://github.com/PacktPublishing/Learn-Docker---Fundamentals-of-Docker-19.x-Second-Edition</a>. Alternatively, if you cloned the GitHub repository that accompanies this book to your computer, as described in <a href="99a92fe1-4652-4934-9c33-f3e19483afcd.xhtml" target="_blank">Chapter 2</a>, <em>Setting Up a Working Environment</em>, then you can find the code at <kbd>~/fod-solution/ch15</kbd>.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Kubernetes architecture</h1>
+                
+            
+            
+                
+<p>A Kubernetes cluster consists of a set of servers. These servers can be VMs or physical servers. The latter are also called <em>bare metal</em>. Each member of the cluster can have one of two roles. It is either a Kubernetes master or a (worker) node. The former is used to manage the cluster, while the latter will run an application workload. I have put the worker in parentheses since, in Kubernetes parlance, you only talk about a node when you're talking about a server that runs application workloads. But in Docker parlance and in Swarm, the equivalent is a <em>worker node</em>. I think that the notion of a worker node better describes the role of the server than a simple <em>node</em>.</p>
+<p>In a cluster, you have a small and odd number of masters and as many worker nodes as needed. Small clusters might only have a few worker nodes, while more realistic clusters might have dozens or even hundreds of worker nodes. Technically, there is no limit to how many worker nodes a cluster can have; in reality, though, you might experience a significant slowdown in some management operations when dealing with thousands of nodes. All members of the cluster need to be connected by a physical network, the so-called <strong>underlay network</strong>.</p>
+<p>Kubernetes defines one flat network for the whole cluster. Kubernetes does not provide any networking implementation out of the box; instead, it relies on plugins from third parties. Kubernetes just defines the <strong>Container Network Interface</strong> (<strong>CNI</strong>) and leaves the implementation to others. The CNI is pretty simple. It basically states that each pod running in the cluster must be able to reach any other pod also running in the cluster without any <strong>Network</strong> <strong>Address</strong> <strong>Translation</strong> (<strong>NAT</strong>) happening in-between. The same must be true between cluster nodes and pods, that is, applications or daemons running directly on a cluster node must be able to reach each pod in the cluster and vice versa.</p>
+<p>The following diagram illustrates the high-level architecture of a Kubernetes cluster:</p>
+<div><img class="alignnone size-full wp-image-717 image-border" src="img/8f31f291-f723-4876-8ff9-349f2c42d114.jpg" style="width:52.92em;height:43.75em;"/></div>
+<p>High-level architecture diagram of Kubernetes</p>
+<p class="mce-root">The preceding diagram is explained as follows:</p>
+<ul>
+<li>On the top, in the middle, we have a cluster of <strong>etcd</strong> nodes. <strong>etcd</strong> is a distributed key-value store that, in a Kubernetes cluster, is used to store all the state of the cluster. The number of <strong>etcd</strong> nodes has to be odd, as mandated by the Raft consensus protocol, which states which nodes are used to coordinate among themselves. When we talk about the <strong>Cluster State</strong>, we do not include data that is produced or consumed by applications running in the cluster; instead, we're talking about all the information on the topology of the cluster, what services are running, network settings, secrets used, and more. That said, this <strong>etcd</strong> cluster is really mission-critical to the overall cluster and thus, we should never run only a single <strong>etcd</strong> server in a production environment or any environment that needs to be highly available.</li>
+<li>Then, we have a cluster of Kubernetes <strong>master</strong> nodes, which also form a <strong>Consensus</strong> <strong>Group</strong> among themselves, similar to the <strong>etcd</strong> nodes. The number of master nodes also has to be odd. We can run cluster with a single master but we should never do that in a production or mission-critical system. There, we should always have at least three master nodes. Since the master nodes are used to manage the whole cluster, we are also talking about the management plane. Master nodes use the <strong>etcd</strong> cluster as their backing store. It is good practice to put a <strong>load</strong> <strong>balancer</strong> (<strong>LB</strong>) in front of master nodes with a well-known <strong>Fully Qualified Domain Name</strong> (<strong>FQDN</strong>), such as <kbd>https://admin.example.com</kbd>. All tools that are used to manage the Kubernetes cluster should access it through this LB rather than using the public IP address of one of the master nodes. This is shown on the left upper side of the preceding diagram.</li>
+<li>Toward the bottom of the diagram, we have a cluster of <strong>worker</strong> nodes. The number of nodes can be as low as one and does not have an upper limit. Kubernetes master and worker nodes communicate with each other. It is a bidirectional form of communication that is different from the one we know from Docker Swarm. In Docker Swarm, only manager nodes communicate with worker nodes and never the other way around. All ingress traffic accessing applications running in the cluster should go through another <strong>load balancer</strong>. This is the application <strong>load</strong> <strong>balancer</strong> or reverse proxy. We never want external traffic to directly access any of the worker nodes.</li>
+</ul>
+<p>Now that we have an idea about the high-level architecture of a Kubernetes cluster, let's delve a bit more deeply and look at the Kubernetes master and worker nodes. </p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Kubernetes master nodes</h1>
+                
+            
+            
+                
+<p>Kubernetes master nodes are used to manage a Kubernetes cluster. The following is a high-level diagram of such a master:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="img/36896fcb-357f-497a-822d-6d08c3a72c1e.png" style="width:19.00em;height:16.33em;"/></p>
+<p>Kubernetes master</p>
+<p>At the bottom of the preceding diagram, we have the <strong>Infrastructure</strong>, which can be a VM on-premise or in the cloud or a server (often called bare metal) on-premise or in the cloud. Currently, Kubernetes masters only run on <strong>Linux</strong>. The most popular Linux distributions, such as RHEL, CentOS, and Ubuntu, are supported. On this Linux machine, we have at least the following four Kubernetes services running:</p>
+<ul>
+<li><strong>API server</strong>: This is the gateway to Kubernetes. All requests to list, create, modify, or delete any resources in the cluster must go through this service. It exposes a REST interface that tools such as <kbd>kubectl</kbd> use to manage the cluster and applications in the cluster.</li>
+<li><strong>Controller</strong>: The controller, or more precisely the controller manager, is a control loop that observes the state of the cluster through the API server and makes changes, attempting to move the current or effective state toward the desired state if they differ. </li>
+<li><strong>Scheduler</strong>: The scheduler is a service that tries its best to schedule pods on worker nodes while considering various boundary conditions, such as resource requirements, policies, quality of service requirements, and more.</li>
+<li><strong>Cluster Store</strong>: This is an instance of etcd that is used to store all information about the state of the cluster.</li>
+</ul>
+<p>To be more precise, etcd, which is used as a cluster store, does not necessarily have to be installed on the same node as the other Kubernetes services. Sometimes, Kubernetes clusters are configured to use standalone clusters of etcd servers, as shown in the architecture diagram in the previous section. But which variant to use is an advanced management decision and is outside the scope of this book.</p>
+<p>We need at least one master, but to achieve high availability, we need three or more master nodes. This is very similar to what we have learned about the manager nodes of a Docker Swarm. In this regard, a Kubernetes master is equivalent to a Swarm manager node.</p>
+<p>Kubernetes masters never run application workloads. Their sole purpose is to manage the cluster. Kubernetes masters build a Raft consensus group. The Raft protocol is a standard protocol used in situations where a group of members needs to make decisions. It is used in many well-known software products such as MongoDB, Docker SwarmKit, and Kubernetes. For a more thorough discussion of the Raft protocol, see the link in the <em>Further reading</em> section.</p>
+<p>As we mentioned in the previous section, the state of the Kubernetes cluster is stored in etcd. If the Kubernetes cluster is supposed to be highly available, then etcd must also be configured in HA mode, which normally means that we have at least three etcd instances running on different nodes.</p>
+<p>Let's state once again that the whole cluster state is stored in etcd. This includes all the information about all the cluster nodes, all the replica sets, deployments, secrets, network policies, routing information, and so on. It is, therefore, crucial that we have a robust backup strategy in place for this key-value store.</p>
+<p>Now, let's look at the nodes that will be running the actual workload of the cluster.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Cluster nodes</h1>
+                
+            
+            
+                
+<p>Cluster nodes are the nodes with which Kubernetes schedules application workloads. They are the workhorses of the cluster. A Kubernetes cluster can have a few, dozens, hundreds, or even thousands of cluster nodes. Kubernetes has been built from the ground up for high scalability. Don't forget that Kubernetes was modeled after Google Borg, which has been running tens of thousands of containers for years:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="img/995b10fd-c87a-4b18-b291-104acf1bd1e8.png" style="width:18.08em;height:15.67em;"/></p>
+<p>Kubernetes worker node</p>
+<p>A worker node can run on a VM, bare metal, on-premise, or in the cloud. Originally, worker nodes could only be configured on Linux. But since version 1.10 of Kubernetes, worker nodes can also run on Windows Server. It is perfectly fine to have a mixed cluster with Linux and Windows worker nodes.</p>
+<p>On each node, we have three services that need to run, as follows:</p>
+<ul>
+<li><strong>Kubelet</strong>: This is the first and foremost service. Kubelet is the primary node agent. The kubelet service uses pod specifications to make sure all of the containers of the corresponding pods are running and healthy. Pod specifications are files written in YAML or JSON format and they declaratively describe a pod. We will get to know what pods are in the next section. PodSpecs are provided to kubelet primarily through the API server. </li>
+<li><strong>Container runtime</strong>: The second service that needs to be present on each worker node is a container runtime. Kubernetes, by default, has used <kbd>containerd</kbd> since version 1.9 as its container runtime. Prior to that, it used the Docker daemon. Other container runtimes, such as rkt or CRI-O, can be used. The container runtime is responsible for managing and running the individual containers of a pod.</li>
+<li><strong>kube-proxy</strong>: Finally, there is the kube-proxy. It runs as a daemon and is a simple network proxy and load balancer for all application services running on that particular node.</li>
+</ul>
+<p>Now that we have learned about the architecture of Kubernetes and the master and worker nodes, it is time to introduce the tooling that we can use to develop applications targeted at Kubernetes.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Introduction to Minikube</h1>
+                
+            
+            
+                
+<p>Minikube is a tool that creates a single-node Kubernetes cluster in VirtualBox or Hyper-V (other hypervisors are supported too) ready to be used during the development of a containerized application. In <a href="99a92fe1-4652-4934-9c33-f3e19483afcd.xhtml" target="_blank">Chapter 2</a>, <em>Setting Up a Working Environment,</em> we learned how Minikube and <kbd>kubectl</kbd> can be installed on our macOS or Windows laptop. As stated there, Minikube is a single-node Kubernetes cluster and thus the node is, at the same time, a Kubernetes master as well as a worker node.</p>
+<p>Let's make sure that Minikube is running with the following command:</p>
+<pre><strong>$ minikube start</strong></pre>
+<p>Once Minikube is ready, we can access its single node cluster using <kbd>kubectl</kbd>. We should see something similar to the following:</p>
+<div><img src="img/ee27b902-c2d7-4d1f-8c7d-8412d06b788b.png" style="width:21.83em;height:3.92em;"/></div>
+<p>Listing all nodes in Minikube</p>
+<p>As we mentioned previously, we have a single-node cluster with a node called <kbd>minikube</kbd>. The version of Kubernetes that Minikube is using is <kbd>v1.16.2</kbd> in my case.</p>
+<p>Now, let's try to deploy a pod to this cluster. Don't worry about what a pod is for now; we will delve into all the details about it later in this chapter. For the moment, just take it as-is.</p>
+<p>We can use the <kbd>sample-pod.yaml</kbd> file in the <kbd>ch15</kbd> subfolder of our <kbd>labs</kbd> folder to create such a pod. It has the following content:</p>
+<pre>apiVersion: v1<br/>kind: Pod<br/>metadata:<br/>  name: nginx<br/>spec:<br/>  containers:<br/>  - name: nginx<br/>    image: nginx:alpine<br/>    ports:<br/>    - containerPort: 80<br/>    - containerPort: 443</pre>
+<p>Use the following steps to run the pod:</p>
+<ol>
+<li>First, navigate to the correct folder:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$</strong> <strong>cd ~/fod/ch15</strong></pre>
+<ol start="2">
+<li>Now, let's use the Kubernetes CLI called <kbd>kubectl</kbd> to deploy this pod:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ kubectl create -f sample-pod.yaml</strong><br/>pod/nginx created</pre>
+<p style="padding-left: 60px">If we now list all of the pods, we should see the following:</p>
+<pre style="padding-left: 60px"><strong>$ kubectl get pods</strong><br/>NAME    READY   STATUS    RESTARTS   AGE<br/>nginx   1/1     Running   0          51s</pre>
+<ol start="3">
+<li>To be able to access this pod, we need to create a service. Let's use the <kbd>sample-service.yaml</kbd> file, which has the following content:</li>
+</ol>
+<pre style="padding-left: 60px">apiVersion: v1<br/>kind: Service<br/>metadata:<br/>  name: nginx-service<br/>spec:<br/>  type: LoadBalancer<br/>  ports:<br/>  - port: 8080<br/>    targetPort: 80<br/>    protocol: TCP<br/>  selector:<br/>    app: nginx</pre>
+<ol start="4">
+<li>Again, don't worry about what exactly a service is at this time. We'll explain this later. Let's just create this service:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ kubectl create -f sample-service.yaml</strong></pre>
+<ol start="5">
+<li>Now, we can use <kbd>curl</kbd> to access the service:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ curl -4 http://localhost</strong></pre>
+<p style="padding-left: 60px">We should receive the Nginx welcome page as an answer.</p>
+<ol start="6">
+<li>Before you continue, please remove the two objects you just created:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ kubectl delete po/nginx</strong><br/><strong>$ kubectl delete svc/nginx-service</strong></pre>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Kubernetes support in Docker for Desktop</h1>
+                
+            
+            
+                
+<p>Starting from version 18.01-ce, Docker for macOS and Docker for Windows have started to support Kubernetes out of the box. Developers who want to deploy their containerized applications to Kubernetes can use this orchestrator instead of SwarmKit. Kubernetes support is turned off by default and has to be enabled in the settings. The first time Kubernetes is enabled, Docker for macOS or Windows will need a moment to download all the components that are needed to create a single-node Kubernetes cluster. Contrary to Minikube, which is also a single-node cluster, the version provided by the Docker tools uses containerized versions of all Kubernetes components:</p>
+<div><img class="alignnone size-full wp-image-722 image-border" src="img/bf2e24ff-9110-43ac-8e4a-b30f0c5d2df5.png" style="width:29.00em;height:15.67em;"/></div>
+<p>Kubernetes support in Docker for macOS and Windows</p>
+<p>The preceding diagram gives us a rough overview of how Kubernetes support has been added to Docker for macOS and Windows. Docker for macOS uses hyperkit to run a LinuxKit-based VM. Docker for Windows uses Hyper-V to achieve the result. Inside the VM, the Docker engine is installed. Part of the engine is SwarmKit, which enables <strong>Swarm-Mode</strong>. Docker for macOS or Windows uses the <strong>kubeadm</strong> tool to set up and configure Kubernetes in that VM. The following three facts are worth mentioning: Kubernetes stores its cluster state in <strong>etcd</strong>, thus we have <strong>etcd</strong> running on this VM. Then, we have all the services that make up Kubernetes and, finally, some services that support the deployment of Docker stacks from the <strong>Docker CLI</strong> into Kubernetes. This service is not part of the official Kubernetes distribution, but it is Docker-specific.</p>
+<p>All Kubernetes components run in containers in the <strong>LinuxKit VM</strong>. These containers can be hidden through a setting in Docker for macOS or Windows. Later in this section, we'll provide a complete list of Kubernetes system containers that will be running on your laptop, if you have Kubernetes support enabled. To avoid repetition, from now on, I will only talk about Docker for Desktop instead of Docker for macOS and Docker for Windows. Everything that I will be saying equally applies to both editions.</p>
+<p>One big advantage of Docker for Desktop with Kubernetes enabled over Minikube is that the former allows developers to use a single tool to build, test, and run a containerized application targeted at Kubernetes. It is even possible to deploy a multi-service application into Kubernetes using a Docker Compose file.</p>
+<p>Now, let's get our hands dirty:</p>
+<ol>
+<li>First, we have to enable Kubernetes. On macOS, click on the Docker icon in the menu bar; or, on Windows, go to the command tray and select Preferences. In the dialog box that opens, select Kubernetes, as shown in the following screenshot: </li>
+</ol>
+<div><img src="img/53d9153e-43f2-4b1c-ab52-bf08d8889001.png" style="width:61.83em;height:38.50em;"/></div>
+<p>Enabling Kubernetes in Docker for Desktop</p>
+<ol start="2">
+<li>Then, tick the Enable Kubernetes checkbox. Also, tick the Deploy Docker Stacks to Kubernetes by default and Show system containers (advanced) checkboxes. Then, click the Apply &amp; Restart button. Installing and configuring of Kubernetes takes a few minutes. Now, it's time to take a break and enjoy a nice cup of tea.</li>
+<li>Once the installation is finished (which Docker notifies us of by showing a green status icon in the Settings dialog), we can test it. Since we now have two Kubernetes clusters running on our laptop, that is, Minikube and Docker for Desktop, we need to configure <kbd>kubectl</kbd> to access the latter.</li>
+</ol>
+<p style="padding-left: 60px">First, let's list all the contexts that we have:</p>
+<div><img class="alignnone size-full wp-image-725 image-border" src="img/ca14801c-00eb-46cc-8edc-0b3edaba44f4.png" style="width:42.33em;height:6.58em;"/></div>
+<p>List of contexts for kubectl</p>
+<p>Here, we can see that, on my laptop, I have the two contexts we mentioned previously. Currently, the Minikube context is still active, flagged by the asterisk in the <kbd>CURRENT</kbd> column. We can switch to the <kbd>docker-for-desktop</kbd> context using the following command:</p>
+<div><img class="alignnone size-full wp-image-726 image-border" src="img/903685b8-ecdb-455e-85a1-03188389f5c1.png" style="width:25.58em;height:4.58em;"/></div>
+<p>Changing the context for the Kubernetes CLI</p>
+<p>Now, we can use <kbd>kubectl</kbd> to access the cluster that Docker for Desktop just created. We should see the following:</p>
+<div><img src="img/d3b65b94-4772-4584-9d06-3fa88a05a0eb.png" style="width:24.25em;height:3.75em;"/></div>
+<p>The single-node Kubernetes cluster created by Docker for Desktop</p>
+<p>OK, this looks very familiar. It is pretty much the same as what we saw when working with Minikube. The version of Kubernetes that my Docker for Desktop is using is <kbd>1.15.5</kbd>. We can also see that the node is a master node.</p>
+<p>If we list all the containers that are currently running on our Docker for Desktop, we get the list shown in the following screenshot (note that I use the <kbd>--format</kbd> argument to output the <kbd>Container ID</kbd> and <kbd>Names</kbd> of the containers):</p>
+<div><img src="img/6837f756-ac8a-41a7-b8af-6357e140ea1c.png" style="width:57.83em;height:20.75em;"/></div>
+<p>Kubernetes system containers</p>
+<p>In the preceding list, we can identify all the now-familiar components that make up Kubernetes, as follows:</p>
+<ul>
+<li>API server</li>
+<li>etcd</li>
+<li>Kube proxy</li>
+<li>DNS service</li>
+<li>Kube controller</li>
+<li>Kube scheduler</li>
+</ul>
+<p>There are also containers that have the word <kbd>compose</kbd> in them. These are Docker-specific services and allow us to deploy Docker Compose applications onto Kubernetes. Docker translates the Docker Compose syntax and implicitly creates the necessary Kubernetes objects, such as deployments, pods, and services.</p>
+<p>Normally, we don't want to clutter our list of containers with these system containers. Therefore, we can uncheck the Show system containers (advanced) checkbox in the settings for Kubernetes.</p>
+<p>Now, let's try to deploy a Docker Compose application to Kubernetes. Navigate to the <kbd>ch15</kbd> subfolder of our <kbd>~/fod</kbd> folder. We deploy the app as a stack using the <kbd>docker-compose.yml</kbd> file:</p>
+<pre><strong>$ docker stack deploy -c docker-compose.yml app</strong></pre>
+<p>We should see the following:</p>
+<div><img class="alignnone size-full wp-image-729 image-border" src="img/c712f4fd-1771-4475-a125-e9286974bdb6.png" style="width:23.50em;height:7.42em;"/></div>
+<p>Deploying the stack to Kubernetes</p>
+<p>We can test the application, for example, using <kbd>curl</kbd>, and we will see that it is running as expected:</p>
+<div><img src="img/86a7e757-6c9f-4706-b38d-1d13096cb908.png" style="width:66.42em;height:18.58em;"/></div>
+<p>Pets application running in Kubernetes on Docker for Desktop</p>
+<p class="mce-root CDPAlignLeft CDPAlign">Now, let's see exactly what Docker did when we executed the <kbd>docker stack deploy</kbd> command. We can use <kbd>kubectl</kbd> to find out:</p>
+<div><img class="alignnone size-full wp-image-731 image-border" src="img/d4a81014-a75b-40c2-8c45-56412e93455d.png" style="width:37.17em;height:26.25em;"/></div>
+<p>Listing all Kubernetes objects created by docker stack deploy</p>
+<p>Docker created a deployment for the <kbd>web</kbd> service and a stateful set for the <kbd>db</kbd> service. It also automatically created Kubernetes services for <kbd>web</kbd> and <kbd>db</kbd> so that they can be accessed inside the cluster. It also created the Kubernetes <kbd>svc/web-published</kbd> service, which is used for external access.</p>
+<p>This is pretty cool, to say the least, and tremendously decreases friction in the development process for teams targeting Kubernetes as their orchestration platform</p>
+<p>Before you continue, please remove the stack from the cluster:</p>
+<pre><strong>$ docker stack rm app</strong></pre>
+<p>Also, make sure you reset the context for <kbd>kubectl</kbd> back to Minikube, as we will be using Minikube for all our samples in this chapter:</p>
+<pre><strong>$ kubectl config use-context minikube</strong></pre>
+<p>Now that we have had an introduction to the tools we can use to develop applications that will eventually run in a Kubernetes cluster, it is time to learn about all the important Kubernetes objects that are used to define and manage such an application. We will start with pods.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Introduction to pods</h1>
+                
+            
+            
+                
+<p>Contrary to what is possible in Docker Swarm, you cannot run containers directly in a Kubernetes cluster. In a Kubernetes cluster, you can only run pods. Pods are the atomic units of deployment in Kubernetes. A pod is an abstraction of one or many co-located containers that share the same Kernel namespaces, such as the network namespace. No equivalent exists in Docker SwarmKit. The fact that more than one container can be co-located and share the same network namespace is a very powerful concept. The following diagram illustrates two pods:</p>
+<div><img class="alignnone size-full wp-image-732 image-border" src="img/81cd2bb8-23c9-4034-9ad3-eb03b5d6a1ba.png" style="width:32.42em;height:15.42em;"/></div>
+<p>Kubernetes pods</p>
+<p>In the preceding diagram, we have two pods, <strong>Pod 1</strong> and <strong>Pod 2</strong>. The first pod contains two containers, while the second one only contains a single container. Each pod gets an IP address assigned by Kubernetes that is unique in the whole Kubernetes cluster. In our case, these are the following IP addresses: <kbd>10.0.12.3</kbd> and <kbd>10.0.12.5</kbd>. Both are part of a private subnet managed by the Kubernetes network driver.</p>
+<p>A pod can contain one to many containers. All those containers share the same Linux kernel namespaces, and in particular, they share the network namespace. This is indicated by the dashed rectangle surrounding the containers. Since all containers running in the same pod share the network namespace, each container needs to make sure to use their own port since duplicate ports are not allowed in a single network namespace. In this case, in <strong>Pod 1</strong>, the <strong>main container</strong> is using port <kbd>80</kbd> while the <strong>supporting container</strong> is using port <kbd>3000</kbd>.</p>
+<p>Requests from other pods or nodes can use the pod's IP address combined with the corresponding port number to access the individual containers. For example, you could access the application running in the main container of <strong>Pod 1</strong> through <kbd>10.0.12.3:80</kbd>.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Comparing Docker container and Kubernetes pod networking</h1>
+                
+            
+            
+                
+<p>Now, let's compare Docker's container networking and Kubernetes pod networking. In the following diagram, we have the former on the left-hand side and the latter on the right-hand side:</p>
+<div><img class="alignnone size-full wp-image-733 image-border" src="img/23036596-986c-43b4-83db-2732000cfad9.png" style="width:35.92em;height:16.58em;"/></div>
+<p>Containers in a pod sharing the same network namespace</p>
+<p>When a Docker container is created and no specific network is specified, then the Docker engine creates a <strong>virtual ethernet</strong> (<strong>veth</strong>) endpoint. The first container gets <strong>veth0</strong>, the next one gets <strong>veth1</strong>, and so on. These virtual ethernet endpoints are connected to the Linux bridge, <strong>docker0</strong>, that Docker automatically creates upon installation. Traffic is routed from the <strong>docker0</strong> bridge to every connected <strong>veth</strong> endpoint. Every container has its own network namespace. No two containers use the same namespace. This is on purpose, to isolate applications running inside the containers from each other.</p>
+<p class="mce-root">For a Kubernetes pod, the situation is different. When creating a new pod, Kubernetes first creates a so-called <strong>pause </strong>container whose only purpose is to create and manage the namespaces that the pod will share with all containers. Other than that, it does nothing useful; it is just sleeping. The <strong>pause </strong>container is connected to the <strong>docker0 </strong>bridge through <strong>veth0</strong>. Any subsequent container that will be part of the pod uses a special feature of the Docker engine that allows it to reuse an existing network namespace. The syntax to do so looks like this:</p>
+<pre><strong>$ docker container create --net container:pause ...</strong> </pre>
+<p>The important part is the <kbd>--net</kbd> argument, which uses <kbd>container:&lt;container name&gt;</kbd>as a value. If we create a new container this way, then Docker does not create a new veth endpoint; the container uses the same one as the <kbd>pause</kbd> container.</p>
+<p>Another important consequence of multiple containers sharing the same network namespace is the way they communicate with each other. Let's consider the following situation: a pod containing two containers, one listening at port <kbd>80</kbd> and the other at port <kbd>3000</kbd>:</p>
+<div><img class="alignnone size-full wp-image-734 image-border" src="img/55170356-9c32-42bb-bbcd-a9f51f59017e.png" style="width:14.08em;height:10.75em;"/></div>
+<p>Containers in pods communicating via localhost</p>
+<p>When two containers use the same Linux kernel network namespace, they can communicate with each other through localhost, similarly to how, when two processes are running on the same host, they can communicate with each other through localhost too. This is illustrated in the preceding diagram. From the main container, the containerized application inside it can reach out to the service running inside the supporting container through <kbd>http://localhost:3000</kbd>.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Sharing the network namespace</h1>
+                
+            
+            
+                
+<p>After all this theory, you might be wondering how a pod is actually created by Kubernetes. Kubernetes only uses what Docker provides. So, <em>how does this network namespace share work?</em> First, Kubernetes creates the so-called <kbd>pause</kbd> container, as mentioned previously. This container has no other function than to reserve the kernel namespaces for that pod and keep them alive, even if no other container inside the pod is running. Let's simulate the creation of a pod, then. We start by creating the <kbd>pause</kbd> container and use Nginx for this purpose:</p>
+<pre><strong>$ docker container run -d --name pause nginx:alpine</strong></pre>
+<p>Now, we add a second container called <kbd>main</kbd>, attaching it to the same network namespace as the <kbd>pause</kbd> container:</p>
+<pre><strong>$ docker container run --name main -dit \</strong><br/><strong>    --net container:pause \</strong><br/><strong>    alpine:latest /bin/sh</strong></pre>
+<p>Since <kbd>pause</kbd> and the sample container are both parts of the same network namespace, they can reach each other through <kbd>localhost</kbd>. To show this, we have to <kbd>exec</kbd> into the main container:</p>
+<pre><strong>$ docker exec -it main /bin/sh</strong></pre>
+<p>Now, we can test the connection to Nginx running in the <kbd>pause</kbd> container and listening on port <kbd>80</kbd>. The following what we get if we use the <kbd>wget</kbd> utility to do so:</p>
+<div><img class="alignnone size-full wp-image-735 image-border" src="img/ccfdb453-ac21-47bd-a2af-716d7c2bcb1e.png" style="width:32.83em;height:28.00em;"/></div>
+<p>Two containers sharing the same network namespace</p>
+<p>The output shows that we can indeed access Nginx on <kbd>localhost</kbd>. This is proof that the two containers share the same namespace. If that is not enough, we can use the <kbd>ip</kbd> tool to show <kbd>eth0</kbd> inside both containers and we will get the exact same result, specifically, the same IP address, which is one of the characteristics of a pod where all its containers share the same IP address:</p>
+<div><img class="alignnone size-full wp-image-736 image-border" src="img/ad510dd1-a0ea-4767-ac14-94eecd16c1a3.png" style="width:36.08em;height:6.25em;"/></div>
+<p>Displaying the properties of eth0 with the ip tool</p>
+<p>If we inspect the <kbd>bridge</kbd> network, we can see that only the <kbd>pause</kbd> container is listed. The other container didn't get an entry in the <kbd>Containers</kbd> list since it is reusing the <kbd>pause</kbd> container's endpoint:</p>
+<div><img class="alignnone size-full wp-image-737 image-border" src="img/e553023b-c1e7-4abf-893c-b8cb75208b13.png" style="width:39.58em;height:45.58em;"/></div>
+<p>Inspecting the Docker default bridge network</p>
+<p>Next, we will be looking at the pod life cycle.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Pod life cycle</h1>
+                
+            
+            
+                
+<p>Earlier in this book, we learned that containers have a life cycle. A container is initialized, run, and ultimately exited. When a container exits, it can do this gracefully with an exit code zero or it can terminate with an error, which is equivalent to a nonzero exit code.</p>
+<p>Similarly, a pod has a life cycle. Due to the fact that a pod can contain more than one container, this life cycle is slightly more complicated than that of a single container. The life cycle of a pod can be seen in the following diagram:</p>
+<div><img class="alignnone size-full wp-image-738 image-border" src="img/7f161a33-21c8-4c48-888d-881ef4fbe6a7.png" style="width:30.75em;height:12.33em;"/></div>
+<p>The life cycle of Kubernetes pods</p>
+<p>When a <strong>Pod</strong> is created on a cluster node, it first enters into the <strong>pending</strong> status. Once all the containers of the pod are up and running, the pod enters into the <strong>running</strong> status. The pod only enters into this state if all its containers run successfully. If the pod is asked to terminate, it will request all its containers to terminate. If all containers terminate with exit code zero, then the pod enters into the <strong>succeeded</strong> status. This is the happy path.</p>
+<p>Now, let's look at some scenarios that lead to the pod being in the <strong>failed</strong> state. There are three possible scenarios:</p>
+<ul>
+<li>If, during the startup of the pod, at least one container is not able to run and fails (that is, it exits with a nonzero exit code), the pod goes from the <strong>pending</strong> state into the <strong>failed</strong> state.</li>
+<li>If the pod is in the running status and one of the containers suddenly crashes or exits with a nonzero exit code, then the pod transitions from the <strong>running</strong> state into the <strong>failed</strong> state.</li>
+<li>If the pod is asked to terminate and, during the shutdown at least one of the containers, exits with a nonzero exit code, then the pod also enters into the <strong>failed</strong> state.</li>
+</ul>
+<p>Now, let's look at the specifications for a pod.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Pod specifications</h1>
+                
+            
+            
+                
+<p>When creating a pod in a Kubernetes cluster, we can use either an imperative or a declarative approach. We discussed the difference between the two approaches earlier in this book but, to rephrase the most important aspect, using a declarative approach signifies that we write a manifest that describes the end state we want to achieve. We'll leave out the details of the orchestrator. The end state that we want to achieve is also called the <strong>desired state</strong>. In general, the declarative approach is strongly preferred in all established orchestrators, and Kubernetes is no exception.</p>
+<p>Thus, in this chapter, we will exclusively concentrate on the declarative approach. Manifests or specifications for a pod can be written using either the YAML or JSON formats. In this chapter, we will concentrate on YAML since it is easier to read for us humans. Let's look at a sample specification. Here is the content of the <kbd>pod.yaml</kbd> file, which can be found in the <kbd>ch12</kbd> subfolder of our <kbd>labs</kbd> folder:</p>
+<pre>apiVersion: v1<br/>kind: Pod<br/>metadata:<br/>  name: web-pod<br/>spec:<br/>  containers:<br/>  - name: web<br/>    image: nginx:alpine<br/>    ports:<br/>    - containerPort: 80</pre>
+<p>Each specification in Kubernetes starts with the version information. Pods have been around for quite some time and thus the API version is <kbd>v1</kbd>. The second line specifies the type of Kubernetes object or resource we want to define. Obviously, in this case, we want to specify a <kbd>Pod</kbd>. Next follows a block containing metadata. At a bare minimum, we need to give the pod a name. Here, we call it <kbd>web-pod</kbd>. The next block that follows is the <kbd>spec</kbd> block, which contains the specification of the pod. The most important part (and the only one in this simple sample) is a list of all containers that are part of this pod. We only have one container here, but multiple containers are possible. The name we choose for our container is <kbd>web</kbd> and the container image is <kbd>nginx:alpine</kbd>. Finally, we define a list of ports the container is exposing.</p>
+<p>Once we have authored such a specification, we can apply it to the cluster using the Kubernetes CLI, <kbd>kubectl</kbd>. In a Terminal, navigate to the <kbd>ch15</kbd> subfolder and execute the following command:</p>
+<pre><strong>$ kubectl create -f pod.yaml</strong></pre>
+<p>This will respond with <kbd>pod "web-pod" created</kbd>. We can then list all the pods in the cluster with <kbd>kubectl get pods</kbd>:</p>
+<pre><strong>$ kubectl get pods</strong><br/>NAME      READY   STATUS    RESTARTS   AGE<br/>web-pod   1/1     Running   0          2m</pre>
+<p>As expected, we have one of one pods in the running status. The pod is called <kbd>web-pod</kbd>, as defined. We can get more detailed information about the running pod by using the <kbd>describe</kbd> command:</p>
+<div><img class="alignnone size-full wp-image-739 image-border" src="img/99fb4f13-8084-40a5-a7c5-773f47e056e2.png" style="width:45.75em;height:39.58em;"/></div>
+<p>Describing a pod running in the cluster</p>
+<p>Please note the <kbd>pod/web-pod</kbd> notation in the previous <kbd>describe</kbd> command. Other variants are possible; for example, <kbd>pods/web-pod</kbd>, <kbd>po/web-pod</kbd>. <kbd>pod</kbd> and <kbd>po</kbd> are aliases of <kbd>pods</kbd>. The <kbd>kubectl</kbd> tool defines many aliases to make our lives a bit easier.</p>
+<p>The <kbd>describe</kbd> command gives us a plethora of valuable information about the pod, not the least of which is a list of events that happened and affected this pod. The list is shown at the end of the output.</p>
+<p>The information in the <kbd>Containers</kbd> section is very similar to what we find in a <kbd>docker container inspect</kbd> output.</p>
+<p>We can also see a <kbd>Volumes</kbd> section with an entry of the <kbd>Secret</kbd> type. We will discuss Kubernetes secrets in the next chapter. Volumes, on the other hand, will be discussed next.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Pods and volumes</h1>
+                
+            
+            
+                
+<p>In <a href="f3a48b12-d541-467b-aeb3-df014e60da6b.xhtml" target="_blank">Chapter 5</a>, <em>Data Volumes and Configuration</em>, we learned about volumes and their purpose: accessing and storing persistent data. Since containers can mount volumes, pods can do so as well. In reality, it is really the containers inside the pod that mount the volumes, but that is just a semantic detail. First, let's see how we can define a volume in Kubernetes. Kubernetes supports a plethora of volume types, so we won't delve into too much detail about this. Let's just create a local volume implicitly by defining a <kbd>PersistentVolumeClaim</kbd> called <kbd>my-data-claim</kbd>:</p>
+<pre>apiVersion: v1<br/>kind: PersistentVolumeClaim<br/>metadata:<br/>  name: my-data-claim<br/>spec:<br/>  accessModes:<br/>    - ReadWriteOnce<br/>  resources:<br/>    requests:<br/>      storage: 2Gi</pre>
+<p>We have defined a claim that requests 2 GB of data. Let's create this claim:</p>
+<pre><strong>$ kubectl create -f volume-claim.yaml</strong></pre>
+<p>We can list the claim using <kbd>kubectl</kbd> (<kbd>pvc</kbd> is a shortcut for <kbd>PersistentVolumeClaim</kbd>):</p>
+<div><img class="alignnone size-full wp-image-740 image-border" src="img/e8b60fdf-3b0e-456c-bf0e-5a7a5948ab5c.png" style="width:46.50em;height:5.08em;"/></div>
+<p>List of PersistentStorageClaim objects in the cluster</p>
+<p>In the output, we can see that the claim has implicitly created a volume called <kbd>pvc-&lt;ID&gt;</kbd>. We are now ready to use the volume created by the claim in a pod. Let's use a modified version of the pod specification that we used previously. We can find this updated specification in the <kbd>pod-with-vol.yaml</kbd> file in the <kbd>ch12</kbd> folder. Let's look at this specification in detail:</p>
+<pre>apiVersion: v1<br/>kind: Pod<br/>metadata:<br/>  name: web-pod<br/>spec:<br/>  containers:<br/>  - name: web<br/>    image: nginx:alpine<br/>    ports:<br/>    - containerPort: 80<br/>    volumeMounts:<br/>    - name: my-data<br/>      mountPath: /data<br/>  volumes:<br/>  - name: my-data<br/>    persistentVolumeClaim:<br/>      claimName: my-data-claim</pre>
+<p>In the last four lines, in the <kbd>volumes</kbd> block, we define a list of volumes we want to use for this pod. The volumes that we list here can be used by any of the containers of the pod. In our particular case, we only have one volume. We specify that we have a volume called <kbd>my-data</kbd>, which is a persistent volume claim whose claim name is the one we just created. Then, in the container specification, we have the <kbd>volumeMounts</kbd> block, which is where we define the volume we want to use and the (absolute) path inside the container where the volume will be mounted. In our case, we mount the volume to the <kbd>/data</kbd> folder of the container filesystem. Let's create this pod:</p>
+<pre><strong>$ kubectl create -f pod-with-vol.yaml</strong></pre>
+<p>Then, we can <kbd>exec</kbd> into the container to double-check that the volume has mounted by navigating to the <kbd>/data</kbd> folder, creating a file there, and exiting the container:</p>
+<pre><strong>$ kubectl exec -it web-pod -- /bin/sh</strong><br/><strong>/ # cd /data</strong><br/><strong>/data # echo "Hello world!" &gt; sample.txt</strong><br/><strong>/data # exit</strong></pre>
+<p>If we are right, then the data in this container must persist beyond the life cycle of the pod. Thus, let's delete the pod and then recreate it and exec into it to make sure the data is still there. This is the result:</p>
+<div><img class="alignnone size-full wp-image-741 image-border" src="img/b789efc4-6ea6-4338-a236-22aa885902f9.png" style="width:18.67em;height:9.42em;"/></div>
+<p>Data stored in volume survives pod recreation</p>
+<p>Now that we have a good understanding of pods, let's look into how those pods are managed with the help of ReplicaSets.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Kubernetes ReplicaSet</h1>
+                
+            
+            
+                
+<p>A single pod in an environment with high availability requirements is insufficient. <em>What if the pod crashes?</em> <em>What if we need to update the application running inside the pod but cannot afford any service interruption?</em> These questions and more indicate that pods alone are not enough and we need a higher-level concept that can manage multiple instances of the same pod. In Kubernetes, the <strong>ReplicaSet </strong>is used to define and manage such a collection of identical pods that are running on different cluster nodes. Among other things, a ReplicaSet defines which container images are used by the containers running inside a pod and how many instances of the pod will run in the cluster. These properties and many others are called the desired state. </p>
+<p>The ReplicaSet is responsible for reconciling the desired state at all times, if the actual state ever deviates from it. Here is a Kubernetes ReplicaSet:</p>
+<div><img class="alignnone size-full wp-image-742 image-border" src="img/7f6cc3c9-2f46-4517-8b87-372a24c0c8bc.png" style="width:19.25em;height:7.50em;"/></div>
+<p>Kubernetes ReplicaSet</p>
+<p>In the preceding diagram, we can see a <strong>ReplicaSet</strong> called <strong>rs-api,</strong> which governs a number of pods. The pods are called <strong>pod-api</strong>. The <strong>ReplicaSet</strong> is responsible for making sure that, at any given time, there are always the desired number of pods running. If one of the pods crashes for whatever reason, the <strong>ReplicaSet</strong> schedules a new pod on a node with free resources instead. If there are more pods than the desired number, then the <strong>ReplicaSet</strong> kills superfluous pods. With this, we can say that the <strong>ReplicaSet</strong> guarantees a self-healing and scalable set of pods. There is no limit to how many pods a <strong>ReplicaSet</strong> can hold.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">ReplicaSet specification</h1>
+                
+            
+            
+                
+<p>Similar to what we have learned about pods, Kubernetes also allows us to either imperatively or declaratively define and create a <kbd>ReplicaSet</kbd>. Since the declarative approach is by far the most recommended one in most cases, we're going to concentrate on this approach. Here is a sample specification for a Kubernetes <kbd>ReplicaSet</kbd>:</p>
+<pre>apiVersion: apps/v1<br/>kind: ReplicaSet<br/>metadata:<br/>  name: rs-web<br/>spec:<br/>  selector:<br/>    matchLabels:<br/>      app: web<br/>  replicas: 3<br/>  template: <br/>    metadata:<br/>      labels:<br/>        app: web<br/>    spec:<br/>      containers:<br/>      - name: nginx<br/>        image: nginx:alpine<br/>        ports:<br/>        - containerPort: 80</pre>
+<p>This looks an awful lot like the pod specification we introduced earlier. Let's concentrate on the differences, then. First, on line 2, we have the <kbd>kind</kbd>, which was <kbd>Pod </kbd>and is now <kbd>ReplicaSet</kbd>. Then, on lines 6–8, we have a selector, which determines the pods that will be part of the <kbd>ReplicaSet</kbd>. In this case, it is all the pods that have <kbd>app</kbd> as a label with the value <kbd>web</kbd>. Then, on line 9, we define how many replicas of the pod we want to run; three, in this case. Finally, we have the <kbd>template</kbd> section, which first defines the <kbd>metadata</kbd> and then the <kbd>spec</kbd>, which defines the containers that run inside the pod. In our case, we have a single container using the <kbd>nginx:alpine</kbd> image and exporting port <kbd>80</kbd>.</p>
+<p>The really important elements are the number of replicas and the selector, which specifies the set of pods governed by the <kbd>ReplicaSet</kbd>.</p>
+<p>In our <kbd>ch15</kbd> folder, we have a file called <kbd>replicaset.yaml</kbd> that contains the preceding specification. Let's use this file to create the <kbd>ReplicaSet</kbd>:</p>
+<pre><strong>$ kubectl create -f replicaset.yaml</strong><br/>replicaset "rs-web" created</pre>
+<p>If we list all the ReplicaSets in the cluster, we get the following (<kbd>rs</kbd> is a shortcut for <kbd>replicaset</kbd>):</p>
+<pre><strong>$ kubectl get rs</strong><br/>NAME     DESIRED   CURRENT   READY   AGE<br/>rs-web   3         3         3       51s</pre>
+<p>In the preceding output, we can see that we have a single ReplicaSet called <kbd>rs-web</kbd> whose desired state is three (pods). The current state also shows three pods and tell us that all three pods are ready. We can also list all the pods in the system. This results in the following output:</p>
+<pre><strong>$ kubectl get pods</strong><br/>NAME           READY   STATUS    RESTARTS   AGE<br/>rs-web-6qzld   1/1     Running   0          4m<br/>rs-web-frj2m   1/1     Running   0          4m<br/>rs-web-zd2kt   1/1     Running   0          4m</pre>
+<p>Here, we can see our three expected pods. The names of the pods use the name of the ReplicaSet with a unique ID appended for each pod. In the <kbd>READY</kbd> column, we can see how many containers have been defined in the pod and how many of them are ready. In our case, we only have a single container per pod and, in each case, it is ready. Thus, the overall status of the pod is <kbd>Running</kbd>. We can also see how many times each pod had to be restarted. In our case, we don't have any restarts.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Self-healing</h1>
+                
+            
+            
+                
+<p>Now, let's test the magic powers of the self-healing <kbd>ReplicaSet</kbd> by randomly killing one of its pods and observing what happens. Let's delete the first pod from the previous list:</p>
+<pre><strong>$ kubectl delete po/rs-web-6qzld</strong><br/>pod "rs-web-6qzld" deleted</pre>
+<p>Now, let's list all the pods again. We expect to see only two pods, <em>right</em>? Wrong:</p>
+<div><img class="alignnone size-full wp-image-743 image-border" src="img/71366fbf-4638-484c-b2f6-dab56b41f5f4.png" style="width:25.25em;height:7.83em;"/></div>
+<p>List of pods after killing a pod of the ReplicaSet</p>
+<p>OK; evidently, the second pod in the list has been recreated, as we can see from the <kbd>AGE</kbd> column. This is auto-healing in action. Let's see what we discover if we describe the ReplicaSet:</p>
+<div><img class="alignnone size-full wp-image-744 image-border" src="img/5f1f58fd-fe0d-46a6-8cdb-df8bf3bfc159.png" style="width:37.83em;height:24.67em;"/></div>
+<p>Describe the ReplicaSet</p>
+<p>And indeed, we find an entry under <kbd>Events</kbd> that tells us that the <kbd>ReplicaSet</kbd> created the new pod called <kbd>rs-web-q6cr7</kbd>.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Kubernetes deployment</h1>
+                
+            
+            
+                
+<p>Kubernetes takes the single-responsibility principle very seriously. All Kubernetes objects are designed to do one thing and one thing only, and they are designed to do this one thing very well. In this regard, we have to understand Kubernetes <strong>ReplicaSets</strong> and <strong>Deployments</strong>. A <strong>ReplicaSet</strong>, as we have learned, is responsible for achieving and reconciling the desired state of an application service. This means that the <strong>ReplicaSet</strong> manages a set of pods.</p>
+<p><strong>Deployment</strong> augments a <strong>ReplicaSet</strong> by providing rolling updates and rollback functionality on top of it. In Docker Swarm, the Swarm service incorporates the functionality of both <strong>ReplicaSet</strong> and <strong>Deployment.</strong> In this regard, SwarmKit is much more monolithic than Kubernetes. The following diagram shows the relationship of a <strong>Deployment</strong> to a <strong>ReplicaSet</strong>:</p>
+<div><img class="alignnone size-full wp-image-745 image-border" src="img/d6de18ec-b3ad-45c3-bc88-555afcaea7dd.png" style="width:25.83em;height:13.75em;"/></div>
+<p>Kubernetes deployment</p>
+<p>In the preceding diagram, the <strong>ReplicaSet</strong> is defining and governing a set of identical pods. The main characteristics of the <strong>ReplicaSet</strong> are that it is <strong>self-healing</strong>, <strong>scalable</strong>, and always does its best to reconcile the <strong>desired</strong> <strong>state</strong>. Kubernetes Deployment, in turn, adds rolling updates and rollback functionality to this. In this regard, a deployment is really a wrapper object to a ReplicaSet.</p>
+<p>We will learn more about rolling updates and rollbacks in the <a href="cdf765aa-eed9-4d88-a452-4ba817bc81dd.xhtml" target="_blank">Chapter 16</a>, <em>Deploying, Updating, and Securing an Application with Kubernetes</em>.</p>
+<p>In the next section, we will learn more about Kubernetes services and how they enable service discovery and routing.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Kubernetes service</h1>
+                
+            
+            
+                
+<p>The moment we start to work with applications consisting of more than one application service, we need service discovery. The following diagram illustrates this problem:</p>
+<div><img class="alignnone size-full wp-image-746 image-border" src="img/559a71f8-789e-4f46-ac6f-5366093fdbea.png" style="width:29.75em;height:12.92em;"/></div>
+<p>Service discovery</p>
+<p>In the preceding diagram, we have a <strong>Web API</strong> service that needs access to three other services: <strong>payments</strong>, <strong>shipping</strong>, and <strong>ordering</strong>. The <strong>Web API</strong> should never have to care about how and where to find those three services. In the API code, we just want to use the name of the service we want to reach and its port number. A sample would be the following URL <kbd>http://payments:3000</kbd>, which is used to access an instance of the payments service. </p>
+<p>In Kubernetes, the payments application service is represented by a ReplicaSet of pods. Due to the nature of highly distributed systems, we cannot assume that pods have stable endpoints. A pod can come and go on a whim. But that's a problem if we need to access the corresponding application service from an internal or external client. If we cannot rely on pod endpoints being stable, <em>what else can we do?</em></p>
+<p>This is where Kubernetes services come into play. They are meant to provide stable endpoints to ReplicaSets or Deployments, as follows:</p>
+<div><img class="alignnone size-full wp-image-747 image-border" src="img/09cdd19a-e492-480c-9df1-f65ffc600f9d.png" style="width:26.17em;height:24.08em;"/></div>
+<p>Kubernetes service providing stable endpoints to clients</p>
+<p>In the preceding diagram, in the center, we can see such a Kubernetes <strong>Service</strong>. It provides a <strong>reliable</strong> cluster-wide <strong>IP</strong> address, also called a <strong>virtual IP</strong> (<strong>VIP</strong>), as well as a <strong>reliable</strong> <strong>Port</strong> that's unique in the whole cluster. The pods that the Kubernetes service is proxying are determined by the <strong>Selector</strong> defined in the service specification. Selectors are always based on labels. Every Kubernetes object can have zero to many labels assigned to it. In our case, the <strong>Selector</strong> is <strong>app=web</strong>; that is, all pods that have a label called app with a value of web are proxied.</p>
+<p>In the next section, we will learn more about context-based routing and how Kubernetes alleviates this task.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Context-based routing</h1>
+                
+            
+            
+                
+<p>Often, we want to configure context-based routing for our Kubernetes cluster. Kubernetes offers us various ways to do this. The preferred and most scalable way at this time is to use an <strong>IngressController</strong>. The following diagram tries to illustrate how this ingress controller works:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="img/bc913d65-7d30-4339-b876-5d1c0201e3f5.png" style="width:41.83em;height:25.75em;"/></p>
+<p>Context-based routing using a Kubernetes ingress controller</p>
+<p>In the preceding diagram, we can see how context-based (or layer 7) routing works when using an <strong>IngressController</strong>, such as Nginx. Here, we have the deployment of an application service called <strong>web</strong>. All the pods of this application service have the following label: <strong>app=web</strong>. Then, we have a Kubernetes service called <strong>web</strong> that provides a stable endpoint to those pods. The service has a (virtual) <strong>IP</strong> of <kbd>52.14.0.13</kbd> and exposes port <kbd>30044</kbd>. That is, if a request comes to any node of the Kubernetes cluster for the name <strong>web</strong> and port <kbd>30044</kbd>, then it is forwarded to this service. The service then load-balances the request to one of the pods. </p>
+<p>So far, so good, <em>but how is an ingress request from a client to the </em><kbd>http[s]://example.com/web</kbd><em> URL routed to our web service?</em> First, we have to define routing from a context-based request to a corresponding <kbd>&lt;service name&gt;/&lt;port&gt; request</kbd>. This is done through an <strong>Ingress</strong> object:</p>
+<ol>
+<li>In the <strong>Ingress</strong> object, we define the <strong>Host</strong> and <strong>Path</strong> as the source and the (service) name, and the port as the target. When this Ingress object is created by the Kubernetes API server, then a process that runs as a sidecar in <kbd>IngressController</kbd> picks this change up.</li>
+<li>The process modifies the configuration the configuration file of the Nginx reverse proxy.</li>
+<li>By adding the new route, Nginx is then asked to reload its configuration and thus will be able to correctly route any incoming requests to <kbd>http[s]://example.com/web</kbd>.</li>
+</ol>
+<p>In the next section, we are going to compare Docker SwarmKit with Kubernetes by contrasting some of the main resources of each orchestration engine.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Comparing SwarmKit with Kubernetes</h1>
+                
+            
+            
+                
+<p>Now that we have learned a lot of details about the most important resources in Kubernetes, it is helpful to compare the two orchestrators, SwarmKit and Kubernetes, by matching important resources. Let's take a look:</p>
+<table style="border-collapse: collapse;width: 100%" border="1">
+<tbody>
+<tr>
+<td style="width: 13%">
+<p class="CDPAlignCenter CDPAlign"><strong>SwarmKit</strong></p>
+</td>
+<td style="width: 13.6171%">
+<p class="CDPAlignCenter CDPAlign"><strong>Kubernetes</strong></p>
+</td>
+<td style="width: 71.3829%">
+<p class="CDPAlignCenter CDPAlign"><strong>Description</strong></p>
+</td>
+</tr>
+<tr>
+<td style="width: 13%">
+<p>Swarm</p>
+</td>
+<td style="width: 13.6171%">
+<p>Cluster</p>
+</td>
+<td style="width: 71.3829%">
+<p>Set of servers/nodes managed by the respective orchestrator.</p>
+</td>
+</tr>
+<tr>
+<td style="width: 13%">
+<p>Node</p>
+</td>
+<td style="width: 13.6171%">
+<p>Cluster member</p>
+</td>
+<td style="width: 71.3829%">
+<p>Single host (physical or virtual) that's a member of the Swarm/cluster.</p>
+</td>
+</tr>
+<tr>
+<td style="width: 13%">
+<p>Manager node</p>
+</td>
+<td style="width: 13.6171%">
+<p>Master</p>
+</td>
+<td style="width: 71.3829%">
+<p>Node managing the Swarm/cluster. This is the control plane.</p>
+</td>
+</tr>
+<tr>
+<td style="width: 13%">
+<p>Worker node</p>
+</td>
+<td style="width: 13.6171%">
+<p>Node</p>
+</td>
+<td style="width: 71.3829%">
+<p>Member of the Swarm/cluster running application workload.</p>
+</td>
+</tr>
+<tr>
+<td style="width: 13%">
+<p>Container</p>
+</td>
+<td style="width: 13.6171%">
+<p>Container**</p>
+</td>
+<td style="width: 71.3829%">
+<p class="mce-root">An instance of a container image running on a node.<br/>
+**Note: In a Kubernetes cluster, we cannot run a container directly.</p>
+</td>
+</tr>
+<tr>
+<td style="width: 13%">
+<p>Task</p>
+</td>
+<td style="width: 13.6171%">
+<p>Pod</p>
+</td>
+<td style="width: 71.3829%">
+<p>An instance of a service (Swarm) or ReplicaSet (Kubernetes) running on a node. A task manages a single container while a Pod contains one to many containers that all share the same network namespace.</p>
+</td>
+</tr>
+<tr>
+<td style="width: 13%">
+<p>Service</p>
+</td>
+<td style="width: 13.6171%">
+<p>ReplicaSet</p>
+</td>
+<td style="width: 71.3829%">
+<p>Defines and reconciles the desired state of an application service consisting of multiple instances.</p>
+</td>
+</tr>
+<tr>
+<td style="width: 13%">
+<p>Service</p>
+</td>
+<td style="width: 13.6171%">
+<p>Deployment</p>
+</td>
+<td style="width: 71.3829%">
+<p>A deployment is a ReplicaSet augmented with rolling updates and rollback capabilities.</p>
+</td>
+</tr>
+<tr>
+<td style="width: 13%">
+<p>Routing Mesh</p>
+</td>
+<td style="width: 13.6171%">
+<p>Service</p>
+</td>
+<td style="width: 71.3829%">
+<p>The Swarm Routing Mesh provides L4 routing and load balancing using IPVS. A Kubernetes service is an abstraction that defines a logical set of pods and a policy that can be used to access them. It is a stable endpoint for a set of pods.</p>
+</td>
+</tr>
+<tr>
+<td style="width: 13%">
+<p>Stack</p>
+</td>
+<td style="width: 13.6171%">
+<p>Stack **</p>
+</td>
+<td style="width: 71.3829%">
+<p>The definition of an application consisting of multiple (Swarm) services.</p>
+<p>**Note: While stacks are not native to Kubernetes, Docker's tool, Docker for Desktop, will translate them for deployment onto a Kubernetes cluster.</p>
+</td>
+</tr>
+<tr>
+<td style="width: 13%">
+<p>Network</p>
+</td>
+<td style="width: 13.6171%">
+<p>Network policy</p>
+</td>
+<td style="width: 71.3829%">
+<p>Swarm <strong>software-defined networks</strong> (<strong>SDNs</strong>) are used to firewall containers. Kubernetes only defines a single flat network. Every pod can reach every other pod and/or node, unless network policies are explicitly defined to constrain inter-pod communication.</p>
+</td>
+</tr>
+</tbody>
+</table>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Summary</h1>
+                
+            
+            
+                
+<p>In this chapter, we learned about the basics of Kubernetes. We took an overview of its architecture and introduced the main resources that are used to define and run applications in a Kubernetes cluster. We also introduced Minikube and Kubernetes support in Docker for Desktop.</p>
+<p>In the next chapter, we're going to deploy an application into a Kubernetes cluster. Then, we're going to be updating one of the services of this application using a zero downtime strategy. Finally, we're going to instrument application services running in Kubernetes with sensitive data using secrets. Stay tuned!</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Questions</h1>
+                
+            
+            
+                
+<p>Please answer the following questions to assess your learning progress:</p>
+<ol>
+<li>Explain in a few short sentences what the role of a Kubernetes master is.</li>
+<li>List the elements that need to be present on each Kubernetes (worker) node.</li>
+</ol>
+<ol start="3">
+<li>We cannot run individual containers in a Kubernetes cluster.</li>
+</ol>
+<p style="padding-left: 60px">A. Yes<br/>
+B. No</p>
+<ol start="4">
+<li>Explain the reason why the containers in a pod can use <kbd>localhost</kbd> to communicate with each other.</li>
+<li>What is the purpose of the so-called pause container in a pod?</li>
+<li>Bob tells you "Our application consists of three Docker images: <kbd>web</kbd>, <kbd>inventory</kbd>, and <kbd>db</kbd>. Since we can run multiple containers in a Kubernetes pod, we are going to deploy all the services of our application in a single pod." List three to four reasons why this is a bad idea.</li>
+<li>Explain in your own words why we need Kubernetes ReplicaSets.</li>
+<li>Under which circumstances do we need Kubernetes deployments?</li>
+<li>List at least three types of Kubernetes service and explain their purposes and their differences.</li>
+</ol>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Further reading</h1>
+                
+            
+            
+                
+<p>Here is a list of articles that contain more detailed information about the various topics that we discussed in this chapter:</p>
+<ul>
+<li>The Raft Consensus Algorithm: <a href="https://raft.github.io/" target="_blank">https://raft.github.io/</a></li>
+<li>Docker Compose and Kubernetes with Docker for Desktop: <a href="https://dockr.ly/2G8Iqb9" target="_blank">https://dockr.ly/2G8Iqb9</a></li>
+<li>Kubernetes Documentation: <a href="https://kubernetes.io/docs/home/" target="_blank">https://kubernetes.io/docs/home/</a></li>
+</ul>
+
+
+            
+
+            
+        
+    </body></html>

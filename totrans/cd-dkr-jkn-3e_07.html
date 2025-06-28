@@ -1,0 +1,439 @@
+<html><head></head><body>
+		<div><h1 id="_idParaDest-134"><em class="italic"><a id="_idTextAnchor133"/>Chapter 5</em>: Automated Acceptance Testing</h1>
+			<p>We've configured the commit phase of the <strong class="bold">continuous delivery</strong> (<strong class="bold">CD</strong>) process and it's now time to address the acceptance testing phase, which is usually the most challenging part. By gradually extending the pipeline, we will see different aspects of a well-executed acceptance testing automation.</p>
+			<p>This chapter covers the following topics:</p>
+			<ul>
+				<li>Introducing acceptance testing</li>
+				<li>Installing and using the Docker Registry</li>
+				<li>Acceptance tests in the Jenkins pipeline</li>
+				<li>Writing acceptance tests</li>
+			</ul>
+			<h1 id="_idParaDest-135"><a id="_idTextAnchor134"/>Technical requirements</h1>
+			<p>To complete this chapter, you'll need the following software:</p>
+			<ul>
+				<li>Jenkins</li>
+				<li>Docker</li>
+				<li>The <strong class="bold">Java Development Kit</strong> (<strong class="bold">JDK</strong>) 8+</li>
+			</ul>
+			<p>All examples and solutions to the exercises can be found at <a href="https://github.com/PacktPublishing/Continuous-Delivery-With-Docker-and-Jenkins-3rd-Edition/tree/main/Chapter05">https://github.com/PacktPublishing/Continuous-Delivery-With-Docker-and-Jenkins-3rd-Edition/tree/main/Chapter05</a>.</p>
+			<p>Code in Action videos for this chapter can be viewed at <a href="https://bit.ly/3Ki1alm">https://bit.ly/3Ki1alm</a>.</p>
+			<h1 id="_idParaDest-136"><a id="_idTextAnchor135"/>Introducing acceptance testing</h1>
+			<p><strong class="bold">Acceptance testing</strong> is a <a id="_idIndexMarker494"/>step performed to determine whether the business requirements or contracts are met. It involves black-box testing against a complete system from a user perspective, and a positive result means acceptance of the software delivery. Sometimes also called <strong class="bold">user acceptance testing</strong> (<strong class="bold">UAT</strong>) or end-user testing, it is a phase of the development process<a id="_idIndexMarker495"/> where software meets a <em class="italic">real-world</em> audience.</p>
+			<p>Many projects rely on manual steps performed<a id="_idIndexMarker496"/> by <strong class="bold">quality assurers</strong> (<strong class="bold">QAs</strong>) or users to verify the <strong class="bold">functional</strong> and <strong class="bold">non-functional requirements</strong> (<strong class="bold">FRs</strong> and <strong class="bold">NFRs</strong>), but still, it's way more reasonable to run them as programmed repeatable operations.</p>
+			<p>Automated acceptance<a id="_idIndexMarker497"/> tests, however, can be considered difficult due to their specifics, as outlined here:</p>
+			<ul>
+				<li><strong class="bold">User-facing</strong>: They need to be written together with a user, which requires an understanding between two worlds—technical and non-technical.</li>
+				<li><strong class="bold">Dependencies integration</strong>: The tested application should be run together with its dependencies in order to check that the system as a whole works properly.</li>
+				<li><strong class="bold">Staging environment</strong>: The staging (testing) environment needs to be identical to the production one so as to ensure the same functional and non-functional behavior.</li>
+				<li><strong class="bold">Application identity</strong>: Applications should be built only once, and the same binary should be transferred to production. This eliminates the risk of different building environments.</li>
+				<li><strong class="bold">Relevance and consequences</strong>: If the acceptance test passes, it should be clear that the application is ready for release from the user's perspective.</li>
+			</ul>
+			<p>We address all these difficulties in different sections of this chapter. Application identity can be achieved by building the Docker image only once and using Docker Registry for its storage and versioning. Creating tests in a user-facing manner is explained in the <em class="italic">Writing acceptance tests</em> section, and the environment identity is addressed by the Docker tool itself and can also be improved by other tools described in the next chapters.</p>
+			<p class="callout-heading">Information</p>
+			<p class="callout">Acceptance testing can have multiple meanings; in this book, we treat acceptance testing as a complete integration test suite from a user perspective, excluding NFRs such as performance, load, and recovery.</p>
+			<p>Since we understand the goal and meaning of acceptance testing, let's describe the first aspect we need—the <strong class="bold">Docker Registry</strong>.</p>
+			<h1 id="_idParaDest-137"><a id="_idTextAnchor136"/>Installing and using the Docker Registry</h1>
+			<p>The Docker Registry <a id="_idIndexMarker498"/>is a store for Docker images. To be precise, it is a stateless server application that allows the images to be published (pushed) and later retrieved (pulled). In <a href="B18223_02_ePub.xhtml#_idTextAnchor034"><em class="italic">Chapter 2</em></a>, <em class="italic">Introducing Docker</em>, we already saw an example of the Registry when running the official Docker images, such as <code>hello-world</code>. We pulled the images from Docker Hub, which is an official cloud-based Docker Registry. Having a separate server to store, load, and search software packages is a more general concept called the software repository or, in even more general terms, the artifact repository. Let's look closer at this idea.</p>
+			<h2 id="_idParaDest-138"><a id="_idTextAnchor137"/>The artifact repository</h2>
+			<p>While the source control management stores the source code, the artifact repository is dedicated to storing software binary<a id="_idIndexMarker499"/> artifacts, such as compiled libraries or components, later used to build a complete application. <em class="italic">Why do we need to store binaries on a separate server using a separate tool?</em> Here's why:</p>
+			<ul>
+				<li><strong class="bold">File size</strong>: Artifact<a id="_idIndexMarker500"/> files can be large, so the systems need to be optimized for their download and upload.</li>
+				<li><strong class="bold">Versions</strong>: Each <a id="_idIndexMarker501"/>uploaded artifact needs to have a version that makes it easy to browse and use. Not all versions, however, have to be stored forever; for example, if there was a bug detected, we may not be interested in the related artifact and remove it.</li>
+				<li><strong class="bold">Revision mapping</strong>: Each<a id="_idIndexMarker502"/> artifact should point to exactly one revision of the source control and, what's more, the binary creation process should be repeatable.</li>
+				<li><strong class="bold">Packages</strong>: Artifacts <a id="_idIndexMarker503"/>are stored in a compiled and compressed form so that these time-consuming steps don't need to be repeated.</li>
+				<li><strong class="bold">Access control</strong>: Users <a id="_idIndexMarker504"/>can be restricted differently in terms of access to the source code and artifact binary.</li>
+				<li><strong class="bold">Clients</strong>: Users<a id="_idIndexMarker505"/> of the artifact repository can be developers outside the team or organization who want to use the library via its public <strong class="bold">application programming interface</strong> (<strong class="bold">API</strong>).</li>
+				<li><strong class="bold">Use cases</strong>: Artifact<a id="_idIndexMarker506"/> binaries are used to guarantee that exactly the same build version is deployed to every environment to ease the rollback procedure in case of failure.<p class="callout-heading">Information</p><p class="callout">The most <a id="_idIndexMarker507"/>popular <a id="_idIndexMarker508"/>artifact<a id="_idIndexMarker509"/> repositories<a id="_idIndexMarker510"/> are <strong class="bold">JFrog Artifactory</strong> and <strong class="bold">Sonatype Nexus</strong>.</p></li>
+			</ul>
+			<p>The artifact repository<a id="_idIndexMarker511"/> plays a special role in the CD process because it guarantees that the same binary is used throughout all pipeline steps.</p>
+			<p>Let's look at the<a id="_idIndexMarker512"/> following diagram to understand how it works:</p>
+			<div><div><img src="img/B18223_05_01.jpg" alt="Figure 5.1 – Artifact repository in the CD process&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 5.1 – Artifact repository in the CD process</p>
+			<p>The <strong class="bold">developer</strong> pushes <a id="_idIndexMarker513"/>a <a id="_idIndexMarker514"/>change to the <strong class="bold">source code repository</strong>, which<a id="_idIndexMarker515"/> triggers the pipeline build. As the last step of the <strong class="bold">commit stage</strong>, a binary <a id="_idIndexMarker516"/>is created and stored in the <strong class="bold">artifact repository</strong>. Afterward, during all other stages of the delivery process, the same binary is (pulled and) used.</p>
+			<p class="callout-heading">Information </p>
+			<p class="callout">The binary is often called<a id="_idIndexMarker517"/> the <strong class="bold">release candidate</strong>, and the process of moving the binary to the next stage is <a id="_idIndexMarker518"/>called <strong class="bold">promotion</strong>.</p>
+			<p>Depending on the programming language and technologies, the binary formats can differ. For example, in the case <a id="_idIndexMarker519"/>of Java, <strong class="bold">Java ARchive</strong> (<strong class="bold">JAR</strong>) files are usually stored and, in the case of Ruby, gem files. We work with Docker, so we will store Docker images as artifacts, and the tool to store <a id="_idIndexMarker520"/>Docker images is called the <strong class="bold">Docker Registry</strong>.</p>
+			<p class="callout-heading">Information</p>
+			<p class="callout">Some teams maintain two repositories at the same time; the artifact repository for JAR files and the Docker Registry for Docker images. While it may be useful during the first phase of the Docker introduction, there is no good reason to maintain both forever.</p>
+			<h2 id="_idParaDest-139"><a id="_idTextAnchor138"/>Installing a Docker Registry</h2>
+			<p>First, we <a id="_idIndexMarker521"/>need to install a Docker Registry. There are a number of options available, but all of them fall into two categories: a cloud-based Docker Registry and a self-hosted Docker Registry. Let's dig into them.</p>
+			<h3>Cloud-based Docker Registry</h3>
+			<p>The benefit of <a id="_idIndexMarker522"/>using a cloud-based service is that you don't <a id="_idIndexMarker523"/>need to install or maintain anything on your own. There are a number of cloud offerings available; however, Docker Hub is by far the most popular. That is why we will use it throughout this book.</p>
+			<h4>Docker Hub</h4>
+			<p>Docker Hub<a id="_idIndexMarker524"/> provides<a id="_idIndexMarker525"/> a Docker Registry service and other related features, such as building images, testing them, and pulling code directly from the code repository. Docker Hub is cloud-hosted, so it does not really need any installation process. All you need to do is create a <a id="_idIndexMarker526"/>Docker Hub account, as follows:</p>
+			<ol>
+				<li>Open <a href="https://hub.docker.com/">https://hub.docker.com/</a> in a browser.</li>
+				<li>In <strong class="bold">Sign Up</strong>, fill in the password, email address, and <a id="_idIndexMarker527"/>Docker <strong class="bold">identifier</strong> (<strong class="bold">ID</strong>).</li>
+				<li>After receiving an email and clicking the activation link, an account is created.</li>
+			</ol>
+			<p>Docker Hub is definitely the simplest option to start with, and it allows the storing of both private and public images.</p>
+			<h4>Docker Hub alternatives</h4>
+			<p>There <a id="_idIndexMarker528"/>are more cloud offerings worth mentioning. First of all, each of the following three main cloud platforms offers its own Docker Registry:</p>
+			<ul>
+				<li>Amazon <strong class="bold">Elastic Container Registry</strong> (<strong class="bold">ECR</strong>)</li>
+				<li>Google Artifact Registry</li>
+				<li>Azure Container Registry</li>
+			</ul>
+			<p>Other widely used solutions include the following:</p>
+			<ul>
+				<li>Quay Container Registry</li>
+				<li>JFrog Artifactory</li>
+				<li>GitLab Container Registry</li>
+			</ul>
+			<p>All of the mentioned registries implement the same Docker Registry protocol, so the good news is that no matter which you choose, the commands used are exactly the same.</p>
+			<h3>Self-hosted Docker Registry</h3>
+			<p>Cloud solutions<a id="_idIndexMarker529"/> may not always be acceptable. They are not free for enterprises and, what's even more important, a lot of companies<a id="_idIndexMarker530"/> have policies not to store their software outside their own network. In this case, the only option is to install a self-hosted Docker Registry.</p>
+			<p>The Docker Registry installation process is quick and simple, but making it secure and available in public requires setting up access restrictions and the domain certificate. This is why we split this section into three parts, as follows:</p>
+			<ul>
+				<li>Installing the Docker Registry application</li>
+				<li>Adding a domain certificate</li>
+				<li>Adding an access restriction</li>
+			</ul>
+			<p>Let's have a look at each part.</p>
+			<h4>Installing the Docker Registry application</h4>
+			<p>The <a id="_idIndexMarker531"/>Docker Registry is available as a Docker image. To start this, we can run the following command:</p>
+			<pre>$ docker run -d -p 5000:5000 --restart=always --name registry registry:2</pre>
+			<p class="callout-heading">Tip</p>
+			<p class="callout">By default, the registry data is stored as a Docker volume in the default host filesystem's directory. To change it, you can add <code>-v &lt;host_directory&gt;:/var/lib/registry</code>. Another alternative is to use a volume container.</p>
+			<p>The command starts the registry and makes it accessible through port <code>5000</code>. The <code>registry</code> container is started from the registry image (version 2). The <code>--restart=always</code> option causes the container to automatically restart whenever it's down.</p>
+			<p class="callout-heading">Tip </p>
+			<p class="callout">Consider setting up a load balancer and starting a few Docker Registry containers in case of a large number of users. Note that, in such a case, they need to share the storage or have a synchronization mechanism in place.</p>
+			<h4>Adding a domain certificate</h4>
+			<p>If the <a id="_idIndexMarker532"/>registry is run on the localhost, then everything works fine and no other installation steps are required. However, in most cases, we want to have a dedicated server for the registry so that the images are widely available. In that<a id="_idIndexMarker533"/> case, Docker requires the securing of the registry with <code>--insecure-registry</code> flag.</p>
+			<p class="callout-heading">Information </p>
+			<p class="callout">You can read about <a id="_idIndexMarker535"/>creating and using self-signed certificates at <a href="https://docs.docker.com/registry/insecure/#use-self-signed-certificates">https://docs.docker.com/registry/insecure/#use-self-signed-certificates</a>.</p>
+			<p>Once <a id="_idIndexMarker536"/>the certificates are either signed by the CA or self-signed, we can move <code>domain.crt</code> and <code>domain.key</code> to the <code>certs</code> directory and start the registry, which listens on the <a id="_idIndexMarker537"/>default <strong class="bold">HyperText Transfer Protocol Secure</strong> (<strong class="bold">HTTPS</strong>) port, as follows:</p>
+			<pre>$ docker run -d -p 443:443 --restart=always --name registry -v `pwd`/certs:/certs -e REGISTRY_HTTP_ADDR=0.0.0.0:443 -e REGISTRY_HTTP_TLS_CERTIFICATE=/certs/domain.crt -e REGISTRY_HTTP_TLS_KEY=/certs/domain.key registry:2</pre>
+			<p>Using the <code>--insecure-registry</code> flag is not recommended since it provides no proper CA verification.</p>
+			<p class="callout-heading">Information </p>
+			<p class="callout">Read more <a id="_idIndexMarker538"/>about setting up Docker registries and making them secure in the official Docker documentation at <a href="https://docs.docker.com/registry/deploying/">https://docs.docker.com/registry/deploying/</a>.</p>
+			<h4>Adding an access restriction</h4>
+			<p>Unless<a id="_idIndexMarker539"/> we use the registry inside a highly secure private network, we should configure authentication.</p>
+			<p>The simplest way to do this is to create a user with a password using the <code>htpasswd</code> tool from the <code>registry</code> image, as follows:</p>
+			<pre>$ mkdir auth
+$ docker run --entrypoint htpasswd httpd:2 -Bbn &lt;username&gt; &lt;password&gt; &gt; auth/htpasswd</pre>
+			<p>The command runs the <code>htpasswd</code> tool to create an <code>auth/htpasswd</code> file (with one user inside). Then, we can run the registry with that one user authorized to access it, like this:</p>
+			<pre>$ docker run -d -p 443:443 --restart=always --name registry -v `pwd`/auth:/auth -e "REGISTRY_AUTH=htpasswd" -e "REGISTRY_AUTH_HTPASSWD_REALM=Registry Realm" -e REGISTRY_AUTH_HTPASSWD_PATH=/auth/htpasswd -v `pwd`/certs:/certs -e REGISTRY_HTTP_ADDR=0.0.0.0:443 -e REGISTRY_HTTP_TLS_CERTIFICATE=/certs/domain.crt -e REGISTRY_HTTP_TLS_KEY=/certs/domain.key registry:2</pre>
+			<p>The <a id="_idIndexMarker540"/>command, in addition to setting the certificates, creates an access restriction limited to the users specified in the <code>auth/passwords</code> file.</p>
+			<p>As a result, before using the registry, a client needs to specify the username and password.</p>
+			<p class="callout-heading">Important Note</p>
+			<p class="callout">Access restriction doesn't work in the case of the <code>--insecure-registry</code> flag.</p>
+			<h2 id="_idParaDest-140"><a id="_idTextAnchor139"/>Using the Docker Registry</h2>
+			<p>When our<a id="_idIndexMarker541"/> registry is configured, we can show how to work with it in three stages, as follows:</p>
+			<ul>
+				<li>Building an image</li>
+				<li>Pushing the image into the registry</li>
+				<li>Pulling the image from the registry</li>
+			</ul>
+			<h3>Building an image</h3>
+			<p>Let's use the example from <a href="B18223_02_ePub.xhtml#_idTextAnchor034"><em class="italic">Chapter 2</em></a>, <em class="italic">Introducing Docker</em>, and build an image with Ubuntu <a id="_idIndexMarker542"/>and the Python interpreter installed. In a new directory, we need to create a Dockerfile, as follows:</p>
+			<pre>FROM ubuntu:20.04
+RUN apt-get update &amp;&amp; \
+    apt-get install -y python</pre>
+			<p>Now, we can build the image with the following command:</p>
+			<pre>$ docker build -t ubuntu_with_python .</pre>
+			<p>After the image is built, we can push it into the Docker Registry.</p>
+			<h3>Pushing the image into the registry</h3>
+			<p>In <a id="_idIndexMarker543"/>order to push the created image, we need to tag it according to the naming convention, like this:</p>
+			<pre>&lt;registry_address&gt;/&lt;image_name&gt;:&lt;tag&gt;</pre>
+			<p>The <code>registry_address</code> value can be either of the following:</p>
+			<ul>
+				<li>A username in the case of Docker Hub</li>
+				<li>A domain name<a id="_idIndexMarker544"/> or <code>localhost:5000</code>)<p class="callout-heading">Information </p><p class="callout">In most cases, <code>&lt;tag&gt;</code> is in the form of the image/application version.</p></li>
+			</ul>
+			<p>Let's tag the image to use Docker Hub, as follows:</p>
+			<pre>$ docker tag ubuntu_with_python leszko/ubuntu_with_python:1</pre>
+			<p>Remember to use your Docker Hub username instead of <code>leszko</code>.</p>
+			<p class="callout-heading">Tip</p>
+			<p class="callout">We could have also tagged the image in the <code>build</code> command, like this: <code>docker build -t leszko/ubuntu_with_python:1</code>.</p>
+			<p>If the repository <a id="_idIndexMarker545"/>has access restriction configured, we need to authorize it first, like this:</p>
+			<pre>$ docker login --username &lt;username&gt; --password &lt;password&gt;</pre>
+			<p class="callout-heading">Information</p>
+			<p class="callout">If you use a Docker Registry other than Docker Hub, then you also need to add a <code>login</code> command—for example, <code>docker login quay.io</code>. </p>
+			<p>Now, we can store the image in the registry using the <code>push</code> command, as follows:</p>
+			<pre>$ docker push leszko/ubuntu_with_python:1</pre>
+			<p>Note that there is no need to specify the registry address because Docker uses the naming convention to resolve it. The image is stored, and we can check it using the Docker Hub web interface <a id="_idIndexMarker547"/>available at <a href="https://hub.docker.com">https://hub.docker.com</a>.</p>
+			<h3>Pulling the image from the registry</h3>
+			<p>To <a id="_idIndexMarker548"/>demonstrate how the registry works, we can remove the image locally and retrieve it from the registry, like this:</p>
+			<pre>$ docker rmi ubuntu_with_python leszko/ubuntu_with_python:1</pre>
+			<p>We can see that the image has been removed using the <code>docker images</code> command. Then, let's retrieve the image back from the registry by executing the following code:</p>
+			<pre>$ docker pull leszko/ubuntu_with_python:1</pre>
+			<p class="callout-heading">Tip </p>
+			<p class="callout">If you use a free Docker Hub account, you may need to change the <code>ubuntu_with_python</code> repository to <code>public</code> before pulling it.</p>
+			<p>We can <a id="_idIndexMarker549"/>confirm that the image is back with the <code>docker images</code> command.</p>
+			<p>When we have the registry configured and understand how it works, we can see how to use it inside the CD pipeline and build the acceptance testing stage.</p>
+			<h1 id="_idParaDest-141"><a id="_idTextAnchor140"/>Acceptance tests in the Jenkins pipeline</h1>
+			<p>We already <a id="_idIndexMarker550"/>understand the idea behind acceptance testing and know how to configure the Docker Registry, so<a id="_idIndexMarker551"/> we are ready for its first implementation inside the Jenkins pipeline.</p>
+			<p>Let's look at the following diagram, which presents the process we will use:</p>
+			<div><div><img src="img/B18223_05_02.jpg" alt="Figure 5.2 – Acceptance tests in the Jenkins pipeline&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 5.2 – Acceptance tests in the Jenkins pipeline</p>
+			<p>The process<a id="_idIndexMarker552"/> goes like this:</p>
+			<ol>
+				<li value="1">The developer pushes a code change to GitHub.</li>
+				<li>Jenkins detects the change, triggers the build, and checks out the current code.</li>
+				<li>Jenkins executes the commit phase and builds the Docker image.</li>
+				<li>Jenkins pushes the image to the <strong class="bold">Docker Registry</strong>.</li>
+				<li>Jenkins runs the Docker container in the staging environment.</li>
+				<li>The Docker <a id="_idIndexMarker553"/>host on the staging environment needs to pull the image from the Docker Registry.</li>
+				<li>Jenkins<a id="_idIndexMarker554"/> runs the acceptance test suite against the application running in the staging environment.<p class="callout-heading">Information </p><p class="callout">For the sake of simplicity, we will run the Docker container locally (and not on a separate staging server). In order to run it remotely, we need to use the <code>-H</code> option or configure the <code>DOCKER_HOST</code> environment variable.</p></li>
+			</ol>
+			<p>Let's continue the pipeline we started in <a href="B18223_04_ePub.xhtml#_idTextAnchor106"><em class="italic">Chapter 4</em></a>, <em class="italic">Continuous Integration Pipeline</em>, and add three more stages, as follows:</p>
+			<ul>
+				<li><code>Docker build</code></li>
+				<li><code>Docker push</code></li>
+				<li><code>Acceptance test</code></li>
+			</ul>
+			<p>Keep in mind that you need to have the Docker tool installed on the Jenkins executor (agent or master, in the case of agentless configuration) so that it can build Docker images.</p>
+			<p class="callout-heading">Tip </p>
+			<p class="callout">If you use dynamically provisioned Docker agents, then make sure you use the <code>leszko/jenkins-docker-slave</code> image. Remember to also mark the <code>privileged</code> option in the Docker agent configuration.</p>
+			<h2 id="_idParaDest-142"><a id="_idTextAnchor141"/>The Docker build stage</h2>
+			<p>We <a id="_idIndexMarker556"/>would like to run the calculator project as a <a id="_idIndexMarker557"/>Docker container, so we need to create a Dockerfile and add the <code>Docker build</code> stage to the Jenkinsfile.</p>
+			<h3>Adding a Dockerfile</h3>
+			<p>Let's create a <a id="_idIndexMarker558"/>Dockerfile in the root directory of the calculator project, as follows:</p>
+			<pre>FROM openjdk:11-jre
+COPY build/libs/calculator-0.0.1-SNAPSHOT.jar app.jar
+ENTRYPOINT ["java", "-jar", "app.jar"]</pre>
+			<p class="callout-heading">Information </p>
+			<p class="callout">The default build directory for Gradle is <code>build/libs/</code>, and <code>calculator-0.0.1-SNAPSHOT.jar</code> is the complete application packaged into one JAR file. Note that Gradle automatically versioned the application using the <code>0.0.1-SNAPSHOT</code> Maven-style version.</p>
+			<p>The Dockerfile uses a base image that <a id="_idIndexMarker559"/>contains the <code>openjdk:11-jre</code>). It also copies the application JAR (created by Gradle) and runs it. Let's now check whether the application builds and runs by executing the following code:</p>
+			<pre>$ ./gradlew build
+$ docker build -t calculator .
+$ docker run -p 8080:8080 --name calculator calculator</pre>
+			<p>Using the preceding commands, we've built the application, built the Docker image, and run the Docker container. After a while, we should be able to open the browser at <code>http://localhost:8080/sum?a=1&amp;b=2</code> and see <code>3</code> as a result.</p>
+			<p>We can stop <a id="_idIndexMarker560"/>the container and push the Dockerfile to the GitHub repository, like this:</p>
+			<pre>$ git add Dockerfile
+$ git commit -m "Add Dockerfile"
+$ git push</pre>
+			<h3>Adding the Docker build to the pipeline</h3>
+			<p>The final <a id="_idIndexMarker561"/>step we need to perform is to add the <code>Docker build</code> stage to the Jenkinsfile. Usually, the JAR packaging is also declared as a separate <code>Package</code> stage, as illustrated in the following code snippet:</p>
+			<pre>stage("Package") {
+     steps {
+          sh "./gradlew build"
+     }
+}
+stage("Docker build") {
+     steps {
+          sh "docker build -t leszko/calculator ."
+     }
+}</pre>
+			<p class="callout-heading">Information</p>
+			<p class="callout">We don't explicitly version the image, but each image has a unique hash ID. We will cover explicit versioning in the following chapters.</p>
+			<p>Note that <a id="_idIndexMarker562"/>we used the Docker Registry name in the image tag. There is no need to have the image tagged twice as <code>calculator</code> and <code>leszko/calculator</code>.</p>
+			<p>When we commit and push the Jenkinsfile, the pipeline build should start automatically and we should see all boxes in green. This means that the Docker image has been built successfully.</p>
+			<p class="callout-heading">Tip</p>
+			<p class="callout">If you see a failure in the Docker build stage, then most probably, your Jenkins executor doesn't have access to the Docker daemon. In case you use the Jenkins master as the executor, make sure that the <code>jenkins</code> user is added to the <code>docker</code> user group. In case you use Jenkins agents, make sure they have access to the Docker daemon.</p>
+			<h2 id="_idParaDest-143"><a id="_idTextAnchor142"/>The Docker push stage</h2>
+			<p>When<a id="_idIndexMarker563"/> the<a id="_idIndexMarker564"/> image is ready, we can store it in the registry. The <code>Docker push</code> stage is very simple. It's enough to add the following code to the Jenkinsfile:</p>
+			<pre>stage("Docker push") {
+     steps {
+          sh "docker push leszko/calculator"
+     }
+}</pre>
+			<p class="callout-heading">Information </p>
+			<p class="callout">If the Docker Registry has access restricted, first, we need to log in using the <code>docker login</code> command. Needless to say, the credentials must be well secured—for example, using a dedicated credential store, as described on the official Docker page at <a href="https://docs.docker.com/engine/reference/commandline/login/#credentials-store">https://docs.docker.com/engine/reference/commandline/login/#credentials-store</a>.</p>
+			<p>As always, pushing <a id="_idIndexMarker565"/>changes to the GitHub repository triggers Jenkins to start the build and, after a while, we should have the image automatically stored in the registry.</p>
+			<h2 id="_idParaDest-144"><a id="_idTextAnchor143"/>The acceptance testing stage</h2>
+			<p>To <a id="_idIndexMarker566"/>perform acceptance testing, we first need to deploy the<a id="_idIndexMarker567"/> application to the staging environment and then run the acceptance test suite against it.</p>
+			<h3>Adding a staging deployment to the pipeline</h3>
+			<p>Let's <a id="_idIndexMarker568"/>add a stage to run the <code>calculator</code> container, as follows:</p>
+			<pre>stage("Deploy to staging") {
+     steps {
+          sh "docker run -d --rm -p 8765:8080 --name calculator leszko/calculator"
+     }
+}</pre>
+			<p>After running this stage, the <code>calculator</code> container is running as a daemon, publishing its port as <code>8765</code>, and being removed automatically when stopped.</p>
+			<p>Finally, we are ready to add the acceptance test to our Jenkins pipeline.</p>
+			<h3>Adding an acceptance test to the pipeline</h3>
+			<p>Acceptance testing<a id="_idIndexMarker569"/> usually requires running a dedicated black-box test suite that checks the behavior of the system. We will cover it in the <em class="italic">Writing acceptance tests</em> section. At the moment, for the sake of simplicity, let's perform acceptance testing simply by calling the web service endpoint with the <code>curl</code> tool and checking the result using the <code>test</code> command.</p>
+			<p>In the root<a id="_idIndexMarker570"/> directory of the project, let's create an <code>acceptance_test.sh</code> file, as follows:</p>
+			<pre>#!/bin/bash
+test $(curl localhost:8765/sum?a=1\&amp;b=2) -eq 3</pre>
+			<p>We call the <code>sum</code> endpoint with the <code>a=1</code> and <code>b=2</code> parameters and expect to receive <code>3</code> in response.</p>
+			<p>Then, an <code>Acceptance test</code> stage can be added, as follows:</p>
+			<pre>stage("Acceptance test") {
+     steps {
+          sleep 60
+          sh "chmod +x acceptance_test.sh &amp;&amp; ./acceptance_test.sh"
+     }
+}</pre>
+			<p>Since the <code>docker run -d</code> command is asynchronous, we need to wait, using the <code>sleep</code> operation to make sure the service is already running.</p>
+			<p class="callout-heading">Information </p>
+			<p class="callout">There is no good way to check whether the service is already running. An alternative to sleeping could be a script checking every second to see whether the service has already started.</p>
+			<p>At this point, our pipeline has already performed the automated acceptance tests. One last thing we should never forget about is to add a cleanup stage.</p>
+			<h3>Adding a cleanup stage environment</h3>
+			<p>As the final stage of acceptance testing, we can add the staging environment cleanup. The best<a id="_idIndexMarker571"/> place to do this is in the <code>post</code> section, to make sure it executes even in case of failure. Here's the code we need to execute:</p>
+			<pre>post {
+     always {
+          sh "docker stop calculator"
+     }
+}</pre>
+			<p>This statement makes sure that the <code>calculator</code> container is no longer running on the Docker host.</p>
+			<h1 id="_idParaDest-145"><a id="_idTextAnchor144"/>Writing acceptance tests</h1>
+			<p>So far, we <a id="_idIndexMarker572"/>used the <code>curl</code> command to perform a suite of acceptance tests. That is, obviously, a considerable simplification. Technically speaking, if we write<a id="_idIndexMarker573"/> a <code>curl</code> calls. However, this solution would be very difficult to read, understand, and maintain. What's more, the script would be completely incomprehensible to non-technical, business-related users. <em class="italic">How do we address this issue and create tests with a good structure that are readable by users and meet their fundamental goal: automatically checking that the system is as expected?</em> I will answer this question throughout this section.</p>
+			<h2 id="_idParaDest-146"><a id="_idTextAnchor145"/>Writing user-facing tests</h2>
+			<p>Acceptance tests <a id="_idIndexMarker574"/>are written with users and should be comprehensible to users. This is why the choice of a method for writing them<a id="_idIndexMarker575"/> depends on who the customer is.</p>
+			<p>For example, imagine a purely technical person. If you write a web service that optimizes database storage and your system is used only by other systems and read-only by other developers, your tests can be expressed in the same way as unit tests. As a rule, the test is good if understood by both developers and users.</p>
+			<p>In real life, most<a id="_idIndexMarker576"/> software is written to deliver a specific business value, and that business value is defined by non-developers. Therefore, we need a common language to collaborate. On one side, there is the business, which<a id="_idIndexMarker577"/> understands what is needed but not how to do it; on the other side, the development team knows how but doesn't know what. Luckily, there are a number of frameworks that helps to connect these two worlds, such <a id="_idIndexMarker578"/>as <strong class="bold">Cucumber</strong>, <strong class="bold">FitNesse</strong>, <strong class="bold">JBehave</strong>, and <strong class="bold">Capybara</strong>. They differ <a id="_idIndexMarker579"/>from each other, and each of them may be a subject for a <a id="_idIndexMarker580"/>separate <a id="_idIndexMarker581"/>book; however, the general idea of writing acceptance tests is the same and is shown in the following diagram:</p>
+			<div><div><img src="img/B18223_05_03.jpg" alt="Figure 5.3 – User-facing acceptance tests&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 5.3 – User-facing acceptance tests</p>
+			<p>The <strong class="bold">acceptance criteria</strong> are <a id="_idIndexMarker582"/>written by users (or a product owner as their representative), with the help of developers. They are usually written in the form of the following scenarios:</p>
+			<pre>Given I have two numbers: 1 and 2
+When the calculator sums them
+Then I receive 3 as a result</pre>
+			<p>Developers write the testing implementation, called <strong class="bold">fixtures</strong> or <strong class="bold">step definitions</strong>, that integrates<a id="_idIndexMarker583"/> the<a id="_idIndexMarker584"/> human-friendly <strong class="bold">domain-specific language</strong> (<strong class="bold">DSL</strong>) specification with the programming language. As a result, we have an automated test that can<a id="_idIndexMarker585"/> be easily integrated into the CD pipeline.</p>
+			<p>Needless<a id="_idIndexMarker586"/> to add, writing <a id="_idIndexMarker587"/>acceptance tests is a continuous Agile process, not a Waterfall one. It requires constant collaboration, during which the test specifications are improved and maintained by both developers and the business.</p>
+			<p class="callout-heading">Information </p>
+			<p class="callout">In the case of an application with a <strong class="bold">user interface</strong> (<strong class="bold">UI</strong>), it can be tempting to perform the acceptance test directly through the interface (for example, by recording Selenium scripts). However, this approach, when not done properly, can lead to tests that are slow and tightly coupled to the interface layer.</p>
+			<p>Let's see how writing acceptance tests looks in practice and how to bind them to the CD pipeline.</p>
+			<h2 id="_idParaDest-147"><a id="_idTextAnchor146"/>Using the acceptance testing framework</h2>
+			<p>Let's use the<a id="_idIndexMarker588"/> Cucumber framework and create an acceptance test for the calculator project. As previously described, we will do this in three stages, as follows:</p>
+			<ol>
+				<li value="1">Creating acceptance criteria</li>
+				<li>Creating step definitions</li>
+				<li>Running an automated acceptance test</li>
+			</ol>
+			<h3>Creating acceptance criteria</h3>
+			<p>Let's put <a id="_idIndexMarker589"/>the business specification<a id="_idIndexMarker590"/> in <code>src/test/resources/feature/calculator.feature</code>, as follows:</p>
+			<pre>Feature: Calculator
+  Scenario: Sum two numbers
+    Given I have two numbers: 1 and 2
+    When the calculator sums them
+    Then I receive 3 as a result</pre>
+			<p>This file should be created by users with the help of developers. Note that it is written in a way that non-technical people can understand.</p>
+			<h3>Creating step definitions</h3>
+			<p>The <a id="_idIndexMarker591"/>next step<a id="_idIndexMarker592"/> is to create Java bindings so that the feature specification will be executable. In order to do this, we create a new file, <code>src/test/java/acceptance/StepDefinitions.java</code>, as follows:</p>
+			<pre>package acceptance;
+import io.cucumber.java.en.Given;
+import io.cucumber.java.en.Then;
+import io.cucumber.java.en.When;
+import org.springframework.web.client.RestTemplate;
+import static org.junit.Assert.assertEquals;
+/** Steps definitions for calculator.feature */
+public class StepDefinitions {
+    private String server = System.getProperty("calculator.url");
+    private RestTemplate restTemplate = new RestTemplate();
+    private String a;
+    private String b;
+    private String result;
+    @Given("^I have two numbers: (.*) and (.*)$")
+    public void i_have_two_numbers(String a, String b) throws Throwable {
+        this.a = a;
+        this.b = b;
+    }
+    @When("^the calculator sums them$")
+    public void the_calculator_sums_them() throws Throwable {
+        String url = String.format("%s/sum?a=%s&amp;b=%s", server, a, b);
+        result = restTemplate.getForObject(url, String.class);
+    }
+    @Then("^I receive (.*) as a result$")
+    public void i_receive_as_a_result(String expectedResult) throws Throwable {
+        assertEquals(expectedResult, result);
+    }
+}</pre>
+			<p>Each line (<code>Given</code>, <code>When</code>, and <code>Then</code>) from the feature<a id="_idIndexMarker593"/> specification file is matched by <code>(.*)</code> are passed as parameters. Note<a id="_idIndexMarker595"/> that the server address is passed as the <code>calculator.url</code> Java property. The method performs the following actions:</p>
+			<ul>
+				<li><code>i_have_two_numbers</code>: Saves parameters as fields</li>
+				<li><code>the_calculator_sums_them</code>: Calls the remote calculator service and stores the result in a field</li>
+				<li><code>i_receive_as_a_result</code>: Asserts that the result is as expected</li>
+			</ul>
+			<h3>Running an automated acceptance test</h3>
+			<p>To run an<a id="_idIndexMarker596"/> automated test, we need to make a few configurations, as follows:</p>
+			<ol>
+				<li value="1">Add the Java Cucumber libraries. In the <code>build.gradle</code> file, add the following code to the <code>dependencies</code> section:<pre>        testImplementation("io.cucumber:cucumber-java:7.2.0")
+        testImplementation("io.cucumber:cucumber-junit:7.2.0")</pre></li>
+				<li>Add the Gradle target. In the same file, add the following code:<pre>       tasks.register('acceptanceTest', Test) {
+       include '**/acceptance/**'
+       systemProperties System.getProperties()
+     }
+ 
+     test {
+       useJUnitPlatform()
+       exclude '**/acceptance/**'
+     }       </pre></li>
+			</ol>
+			<p>This splits the tests into unit tests (run with <code>./gradlew test</code>) and acceptance tests (run with <code>./gradlew acceptanceTest</code>).</p>
+			<ol>
+				<li value="3">Add a<a id="_idIndexMarker597"/> JUnit Test Runner, add a new file, <code>src/test/java/acceptance/AcceptanceTest.java</code>, as follows:<pre>        package acceptance;
+        import io.cucumber.junit.CucumberOptions;
+        import io.cucumber.junit.Cucumber;
+        import org.junit.runner.RunWith;
+        /** Acceptance Test */
+        @RunWith(Cucumber.class)
+        @CucumberOptions(features = "classpath:feature")
+        public class AcceptanceTest { }</pre></li>
+			</ol>
+			<p>This is the entry point to the acceptance test suite.</p>
+			<p>After this configuration, if the server is running on the localhost, we can test it by executing the following code:</p>
+			<pre>$ ./gradlew acceptanceTest \
+-Dcalculator.url=http://localhost:8765</pre>
+			<p>Obviously, we can add this command instead of <code>acceptance_test.sh</code>. This would make the Cucumber acceptance test run in the Jenkins pipeline.</p>
+			<h2 id="_idParaDest-148"><a id="_idTextAnchor147"/>Acceptance test-driven development</h2>
+			<p>Acceptance tests, as <a id="_idIndexMarker598"/>with most aspects of the CD process, are less about technology and more about people. The test quality depends, of course, on the engagement of users and developers, but also, what is maybe less intuitive is the time when the tests are created.</p>
+			<p>The last question to ask is this: <em class="italic">During which phase of the software development life cycle should the acceptance tests be prepared?</em> Or, to rephrase it: <em class="italic">Should we create acceptance tests before or after writing the code?</em></p>
+			<p>Technically speaking, the result is the same; the code is well covered with both unit and acceptance tests. However, it's tempting to consider writing tests first. The idea of <strong class="bold">test-driven development</strong> (<strong class="bold">TDD</strong>) can <a id="_idIndexMarker599"/>be well adapted for acceptance testing. If unit tests are written before the code, the resulting code is cleaner and better structured. Analogously, if acceptance tests are written before the system feature, the resulting feature corresponds better to the customer's requirements.</p>
+			<p>This process, often called acceptance TDD, is presented in the following diagram:</p>
+			<div><div><img src="img/B18223_05_04.jpg" alt="Figure 5.4 – Acceptance TDD&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 5.4 – Acceptance TDD</p>
+			<p>Users (with developers) write the acceptance criteria specification in the human-friendly DSL format. Developers write the fixtures, and the tests fail. Then, feature development starts using the TDD methodology internally. Once the feature is completed, the acceptance test should pass, and this is a sign that the feature is completed.</p>
+			<p>A very good practice is to attach the Cucumber feature specification to the request ticket in the issue-tracking tool (for example, JIRA) so that the feature would always be requested together<a id="_idIndexMarker600"/> with its acceptance test. Some development teams take an even more radical approach and refuse to start the development process if no acceptance tests are prepared. There is a lot of sense in that. After all, how can you develop something that the client can't test?</p>
+			<h1 id="_idParaDest-149"><a id="_idTextAnchor148"/>Summary</h1>
+			<p>In this chapter, you learned how to build a complete and functional acceptance test stage, which is an essential part of the CD process. Here are the key takeaways:</p>
+			<ul>
+				<li>Acceptance tests can be difficult to create because they combine technical challenges (application dependencies; setting up the environment) with personal challenges (developer/business collaboration).</li>
+				<li>Acceptance testing frameworks provide a way to write tests in a human-friendly language that makes them comprehensible to non-technical people.</li>
+				<li>The Docker Registry is an artifact repository for Docker images.</li>
+				<li>The Docker Registry fits well with the CD process because it provides a way to use exactly the same Docker image throughout the stages and environments.</li>
+			</ul>
+			<p>In the next chapter, we will cover clustering and service dependencies, which is the next step toward creating a complete CD pipeline.</p>
+			<h1 id="_idParaDest-150"><a id="_idTextAnchor149"/>Exercises</h1>
+			<p>We covered a lot of new material throughout this chapter, so to aid your understanding, I recommend doing the following exercises:</p>
+			<ol>
+				<li value="1">Create a Ruby-based web service, <code>book-library</code>, to store books.</li>
+			</ol>
+			<p>The acceptance criteria are delivered in the form of the following Cucumber feature: </p>
+			<pre>Scenario: Store book in the library
+  Given Book "The Lord of the Rings" by "J.R.R. Tolkien" with ISBN number "0395974682"
+  When I store the book in library
+  Then I am able to retrieve the book by the ISBN number</pre>
+			<p>Proceed as follows:</p>
+			<ol>
+				<li>Write step definitions for the Cucumber test.</li>
+				<li>Write the web service (the simplest way is to use the Sinatra framework (http://www.sinatrarb.com/), but you can also use Ruby on Rails).</li>
+				<li>The book should have the following attributes: <code>name</code>, <code>author</code>, and <code>ISBN</code>).</li>
+				<li>The web service should have the following endpoints:<ul><li><code>POST /books</code> to add a book</li><li><code>GET /books/&lt;isbn&gt;</code> to retrieve the book</li></ul></li>
+				<li>The data can be stored in the memory.</li>
+				<li>At the end, check that the acceptance test is green.</li>
+			</ol>
+			<ol>
+				<li value="2">Add <code>book-library</code> as a Docker image to the Docker Registry by doing the following:<ol><li>Create an account on Docker Hub.</li><li>Create a Dockerfile for the application.</li><li>Build the Docker image and tag it according to the naming convention.</li><li>Push the image to Docker Hub.</li></ol></li>
+				<li>Create a Jenkins pipeline to build the Docker image, push it to the Docker Registry, and perform acceptance testing by doing the following:<ol><li>Create a <code>Docker build</code> stage.</li><li>Create <code>Docker login</code> and <code>Docker push</code> stages.</li><li>Add an <code>Acceptance test</code> stage to the pipeline.</li><li>Run the pipeline and observe the result.</li></ol></li>
+			</ol>
+			<h1 id="_idParaDest-151"><a id="_idTextAnchor150"/>Questions</h1>
+			<p>To verify the knowledge acquired from this chapter, please answer the following questions:</p>
+			<ol>
+				<li value="1">What is the Docker Registry?</li>
+				<li>What is Docker Hub?</li>
+				<li>What is the convention for naming Docker images (later pushed to the Docker Registry)?</li>
+				<li>What is the staging environment?</li>
+				<li>Which Docker commands would you use to build an image and push it into Docker Hub?</li>
+				<li>What is the main purpose of acceptance testing frameworks such as Cucumber and FitNesse?</li>
+				<li>What are the three main parts of a Cucumber test?</li>
+				<li>What is acceptance TDD?</li>
+			</ol>
+			<h1 id="_idParaDest-152"><a id="_idTextAnchor151"/>Further reading</h1>
+			<p>To learn more about Docker Registry, acceptance testing, and Cucumber, please refer to the following resources:</p>
+			<ul>
+				<li><strong class="bold">Docker Registry documentation</strong>: <a href="https://docs.docker.com/registry/">https://docs.docker.com/registry/</a></li>
+				<li><em class="italic">Jez Humble</em>, <em class="italic">David Farley</em>—<em class="italic">Continuous Delivery</em>: <a href="https://continuousdelivery.com/">https://continuousdelivery.com/</a></li>
+				<li><strong class="bold">Cucumber framework</strong>: <a href="https://cucumber.io/">https://cucumber.io/</a></li>
+			</ul>
+		</div>
+	</body></html>

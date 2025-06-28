@@ -1,0 +1,481 @@
+<html><head></head><body>
+<div><div><h1 class="chapter-number" id="_idParaDest-303"><a id="_idTextAnchor303"/>14</h1>
+<h1 id="_idParaDest-304"><a id="_idTextAnchor304"/>Introducing Docker Swarm</h1>
+<p>In the last chapter, we introduced orchestrators. Like a conductor in an orchestra, an orchestrator makes sure that all our containerized application services play together nicely and contribute harmoniously to a common goal. Such orchestrators have quite a few responsibilities, which we discussed in detail. Finally, we provided a short overview of the most important container orchestrators on the market.</p>
+<p>This chapter introduces Docker’s native orchestrator, <strong class="bold">SwarmKit</strong>. It elaborates on all of the concepts and objects SwarmKit uses to deploy and run distributed, resilient, robust, and highly available applications in a cluster on-premises or in the cloud. This chapter also introduces how SwarmKit ensures secure applications by using a <strong class="bold">Software-Defined Network</strong> (<strong class="bold">SDN</strong>) to isolate containers. We will learn how to create a Docker Swarm locally, in a special environment called <strong class="bold">Play with Docker</strong> (<strong class="bold">PWD</strong>), and in the cloud. Lastly, we will deploy an application that consists of multiple services related to Docker Swarm.</p>
+<p>These are the topics we are going to discuss in this chapter:</p>
+<ul>
+<li>The Docker Swarm architecture</li>
+<li>Stacks, services, and tasks</li>
+<li>Multi-host networking</li>
+<li>Creating a Docker Swarm</li>
+<li>Deploying a first application</li>
+</ul>
+<p>After completing this chapter, you will be able to do the following:</p>
+<ul>
+<li>Sketch the essential parts of a highly available Docker Swarm on a whiteboard</li>
+<li>Explain what a (Swarm) service is in two or three simple sentences to an interested layman</li>
+<li>Create a highly available Docker Swarm in AWS, Azure, or GCP consisting of three manager and two worker nodes</li>
+<li>Successfully deploy a replicated service such as Nginx on a Docker Swarm</li>
+<li>Scale a running Docker Swarm service up and down</li>
+<li>Retrieve the aggregated log of a replicated Docker Swarm service</li>
+<li>Write a simple stack file for a sample application consisting of at least two interacting services</li>
+<li>Deploy a stack into a Docker Swarm</li>
+</ul>
+<p>Let’s get started!</p>
+<h1 id="_idParaDest-305"><a id="_idTextAnchor305"/>The Docker Swarm architecture</h1>
+<p>The architecture of <a id="_idIndexMarker1180"/>a Docker Swarm from a 30,000-foot view consists of two main parts—a raft consensus group of an odd number of manager nodes, and a group of worker nodes that communicate with each other over a gossip network, also<a id="_idIndexMarker1181"/> called the <strong class="bold">control plane</strong>. The following diagram illustrates this architecture:</p>
+<div><div><img alt="Figure 14.1 – High-level architecture of a Docker Swarm" height="521" src="img/Figure_14.01_B19199.jpg" width="731"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 14.1 – High-level architecture of a Docker Swarm</p>
+<p>The manager nodes manage the swarm while the worker nodes execute the applications deployed into the swarm. Each manager has a complete copy of the full state of the Swarm in its local raft store. Managers synchronously communicate with each other, and their raft stores are always in sync.</p>
+<p>The workers, on the other hand, communicate with each other asynchronously for scalability reasons. There can be hundreds if not thousands of worker nodes in a Swarm.</p>
+<p>Now that we have a<a id="_idIndexMarker1182"/> high-level overview of what a Docker Swarm is, let’s describe all of the individual elements of a Docker Swarm in more detail.</p>
+<h2 id="_idParaDest-306"><a id="_idTextAnchor306"/>Swarm nodes</h2>
+<p>A Swarm is a<a id="_idIndexMarker1183"/> collection of nodes. We can classify a node as a physical <a id="_idIndexMarker1184"/>computer or <strong class="bold">Virtual Machine</strong> (<strong class="bold">VM</strong>). Physical computers these days are often referred to as bare metal. People say we’re running on bare metal to distinguish from running on a VM.</p>
+<p>When we install Docker on such a node, we call this node a Docker host. The following diagram illustrates a bit better what a node and a Docker host are:</p>
+<div><div><img alt="Figure 14.2 – Bare-metal and VM types of Docker Swarm nodes" height="372" src="img/Figure_14.02_B19199.jpg" width="532"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 14.2 – Bare-metal and VM types of Docker Swarm nodes</p>
+<p>To become a member of a Docker Swarm, a node must be a Docker host. A node in a Docker Swarm can have one of two roles: it can be a manager or it can be a worker. Manager nodes do what their name implies; they manage the Swarm. The worker nodes, in turn, execute the application workload.</p>
+<p>Technically, a manager node can also be a worker node and hence run the application workload—although<a id="_idIndexMarker1185"/> that is not recommended, especially if the Swarm is a production system running mission-critical applications.</p>
+<h3>Swarm managers</h3>
+<p>Each Docker Swarm <a id="_idIndexMarker1186"/>needs to include at least one manager node. For high-availability reasons, we should have more than one manager node in a Swarm. This is especially true for production or production-like environments. If we have more than one manager node, then these nodes work together using the Raft consensus protocol. The Raft consensus protocol is a standard protocol that is often used when multiple entities need to work together and always need to agree with each other as to which activity to execute next.</p>
+<p>To work well, the Raft consensus protocol asks for an odd number of members in what is called the <strong class="bold">consensus group</strong>. Hence, we<a id="_idIndexMarker1187"/> should always have 1, 3, 5, 7, and so on manager nodes. In such a consensus group, there is always a leader. In the case of Docker Swarm, the first node that starts the Swarm initially becomes the leader. If the leader goes away, then the remaining manager nodes elect a new leader. The other nodes in the consensus<a id="_idIndexMarker1188"/> group are called followers.</p>
+<p class="callout-heading">Raft leader election</p>
+<p class="callout">Raft uses a heartbeat mechanism to trigger leader election. When servers start up, they begin as followers. A server remains in the follower state as long as it receives valid <strong class="bold">Remote Procedure Calls</strong> (<strong class="bold">RPCs</strong>) from a leader or candidate. Leaders send periodic heartbeats to<a id="_idIndexMarker1189"/> all followers in order to maintain their authority. If a follower receives no communication over a period of time called the election timeout, then it assumes there is no viable leader and begins an election to choose a new leader. During the election, each server will start a timer with a random time chosen. When this timer fires, the server turns itself from a follower into a candidate. At the same time, it increments the term and sends messages to all its peers asking for a vote and waits for the responses back.</p>
+<p class="callout">In the context of the Raft consensus algorithm, a “term” corresponds to a round of election and serves as a logical clock for the system, allowing Raft to detect obsolete information such as stale leaders. Every time an election is initiated, the term value is incremented.</p>
+<p class="callout">When a server receives a vote request, it casts its vote only if the candidate has a higher term or the candidate has the same term. Otherwise, the vote request will be rejected. One peer can only vote for one candidate for one term, but when it receives another vote request with a higher term than the candidate it voted for, it will discard its previous vote.</p>
+<p class="callout">In the context of Raft and many other distributed systems, “logs” refer to the state machine logs or operation logs, not to be confused with traditional application logs.</p>
+<p>If the candidate doesn’t receive enough votes before the next timer fires, the current vote will be void and the candidate will start a new election with a higher term. Once the candidate receives votes from the majority of their peers, it turns itself from candidate to leader and immediately broadcasts the authorities to prevent other servers from starting the leader election. The leader will periodically broadcast this information. Now, let’s assume that we shut down the current leader node for maintenance reasons. The remaining manager nodes will elect a new leader. When the previous leader node comes back online, it will now become a follower. The new leader remains the leader.</p>
+<p>All of the members of the consensus group communicate synchronously with each other. Whenever the consensus group needs to make a decision, the leader asks all followers for agreement. If the majority of the manager nodes gives a positive answer, then the leader executes the task. That means if we have three manager nodes, then at least one of the followers has to agree with the leader. If we have five manager nodes, then at least two followers have to agree with the leader.</p>
+<p>Since all manager<a id="_idIndexMarker1190"/> follower nodes have to communicate synchronously with the leader node to make a decision in the cluster, the decision-making process gets slower and slower the more manager nodes we have forming the consensus group. The recommendation of Docker is to use one manager for development, demo, or test environments. Use three managers nodes in small to medium-sized Swarms and use five managers in large to extra-large Swarms. Using more than five managers in a Swarm is hardly ever justified.</p>
+<p>The manager nodes are not only responsible for managing the Swarm but also for maintaining the state of the Swarm. What do we mean by that? When we talk about the state of the Swarm, we mean all the information about it—for example, how many nodes are in the Swarm and what the properties of each node are, such as the name or IP address. We also mean what containers are running on which node in the Swarm and more. What, on the other hand, is not included in the state of the Swarm is data produced by the application services running in containers on the Swarm. This is called <strong class="bold">application data</strong> and is<a id="_idIndexMarker1191"/> definitely not part of the state that is managed by the manager nodes:</p>
+<div><div><img alt="Figure 14.3 – A Swarm manager consensus group" height="221" src="img/Figure_14.03_B19199.jpg" width="621"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 14.3 – A Swarm manager consensus group</p>
+<p>All of the Swarm states are stored in <a id="_idIndexMarker1192"/>a high-performance <strong class="bold">key-value store</strong> (<strong class="bold">kv-store</strong>) on each manager node. That’s right, each manager node stores a complete replica of the whole Swarm state. This redundancy makes the Swarm highly available. If a manager node goes down, the remaining managers all have the complete state at hand.</p>
+<p>If a new manager joins the consensus group, then it synchronizes the Swarm state with the existing members<a id="_idIndexMarker1193"/> of the group until it has a complete replica. This replication is usually pretty fast in typical Swarms but can take a while if the Swarm is big and many applications are running on it.</p>
+<h3>Swarm workers</h3>
+<p>As we mentioned <a id="_idIndexMarker1194"/>earlier, a Swarm worker node is meant to host and run containers that contain the actual application services we’re interested in running on our cluster. They are the workhorses of the Swarm. In theory, a manager node can also be a worker. But, as we already said, this is not recommended on a production system. On a production system, we should let managers be managers.</p>
+<p>Worker nodes communicate with each other over the so-called control plane. They use the gossip protocol for their communication. This communication is asynchronous, which means that, at any given time, it is likely that not all worker nodes are in perfect sync.</p>
+<p>Now, you might ask—what information do worker nodes exchange? It is mostly information that is needed for service discovery and routing, that is, information about which containers are running on with nodes and more:</p>
+<div><div><img alt="Figure 14.4 – Worker nodes communicating with each other" height="341" src="img/Figure_14.04_B19199.jpg" width="761"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 14.4 – Worker nodes communicating with each other</p>
+<p>In the preceding diagram, you can see how workers communicate with each other. To make sure the gossiping scales well in a large Swarm, each worker node only synchronizes its own state with three random neighbors. For those who are familiar with Big O notation, that means that the synchronization of the worker nodes using the gossip protocol <a id="_idIndexMarker1195"/>scales with O(0).</p>
+<p class="callout-heading">Big O notation explained</p>
+<p class="callout">Big O notation is a way to describe the speed or complexity of a given algorithm. It tells you the number of operations an algorithm will make. It’s used to communicate how fast an algorithm is, which can be important when evaluating other people’s algorithms, and when evaluating your own.</p>
+<p class="callout">For example, let’s say you have a list of numbers and you want to find a specific number in the list. There are different algorithms you can use to do this, such as simple search or binary search. Simple search checks each number in the list one by one until it finds the number you’re looking for. Binary search, on the other hand, repeatedly divides the list in half until it finds the number you’re looking for.</p>
+<p class="callout">Now, let’s say you have a list of 100 numbers. With simple search, in the worst case, you’ll have to check all 100 numbers, so it takes 100 operations. With binary search, in the worst case, you’ll only have to check about 7 numbers (because log2(100) is roughly 7), so it takes 7 operations.</p>
+<p class="callout">In this example, binary search is faster than simple search. But what if you have a list of 1 billion numbers? Simple search would take 1 billion operations, while binary search would take only about 30 operations (because log2(1 billion) is roughly 30). So, as the list gets bigger, binary search becomes much faster than simple search.</p>
+<p class="callout">Big O notation is used to describe this difference in speed between algorithms. In Big O notation, simple search is described as O(n), which means that the number of operations grows linearly with the size of the list (n). Binary search is described as O(log n), which means that the number of operations grows logarithmically with the size of the list.</p>
+<p>Worker nodes are kind of passive. They never actively do anything other than run the workloads they get assigned by the manager nodes. The worker makes sure, though, that it runs these workloads to the best of its capabilities. Later on in this chapter, we will get to know more about exactly what workloads the worker nodes are assigned by the manager nodes.</p>
+<p>Now that we know<a id="_idIndexMarker1196"/> what master and worker nodes in a Docker Swarm are, we are going to introduce stacks, services, and tasks next.</p>
+<h1 id="_idParaDest-307"><a id="_idTextAnchor307"/>Stacks, services, and tasks</h1>
+<p>When using a Docker <a id="_idIndexMarker1197"/>Swarm<a id="_idIndexMarker1198"/> versus a single<a id="_idIndexMarker1199"/> Docker host, there is a paradigm change. Instead of talking about individual containers that run processes, we are abstracting away to services that represent a set of replicas of each process, and, in this way, become highly available. We also do not speak anymore of individual Docker hosts with well-known names and IP addresses to which we deploy containers; we’ll now be referring to clusters of hosts to which we deploy services. We don’t care about an individual host or node anymore. We don’t give it a meaningful name; each node rather becomes a number to us.</p>
+<p>We also don’t care about individual containers and where they are deployed any longer—we just care about having a desired state defined through a service. We can try to depict that as shown in the following diagram:</p>
+<div><div><img alt="Figure 14.5 – Containers are deployed to well-known servers" height="206" src="img/Figure_14.05_B19199.jpg" width="530"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 14.5 – Containers are deployed to well-known servers</p>
+<p>Instead of deploying individual containers to well-known servers like in the preceding diagram, where we<a id="_idIndexMarker1200"/> deploy <a id="_idIndexMarker1201"/>the web container to the <a id="_idIndexMarker1202"/>alpha server with the IP address <code>52.120.12.1</code>, and the payments container to the beta server with the IP <code>52.121.24.33</code>, we switch to this new paradigm of services and Swarms (or, more generally, clusters):</p>
+<div><div><img alt="Figure 14.6 – Services are deployed to Swarms" height="472" src="img/Figure_14.06_B19199.jpg" width="822"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 14.6 – Services are deployed to Swarms</p>
+<p>In the preceding diagram, we see that a web service and an inventory service are both deployed to a Swarm that consists of many nodes. Each of the services has a certain number of replicas: five for web and seven for inventory. We don’t really care which node the replicas will run<a id="_idIndexMarker1203"/> on; we<a id="_idIndexMarker1204"/> only care that the requested number of replicas is <a id="_idIndexMarker1205"/>always running on whatever nodes the Swarm scheduler decides to put them on.</p>
+<p>That said, let’s now introduce the concept of a service in the context of a Docker swarm.</p>
+<h2 id="_idParaDest-308"><a id="_idTextAnchor308"/>Services</h2>
+<p>A Swarm service is an <a id="_idIndexMarker1206"/>abstract thing. It is a description of the desired state of an application or application service that we want to run in a Swarm. The Swarm service is like a manifest describing things such as the following:</p>
+<ul>
+<li>The name of the service</li>
+<li>The image from which to create the containers</li>
+<li>The number of replicas to run</li>
+<li>The network(s) that the containers of the service are attached to</li>
+<li>The ports that should be mapped</li>
+</ul>
+<p>Having this service manifest, the Swarm manager then makes sure that the described desired state is always reconciled if the actual state should ever deviate from it. So, if, for example, one instance of the service crashes, then the scheduler on the Swarm manager schedules a new instance of this particular service on a node with free resources so that the desired state is re-established.</p>
+<p>Now, what is a task? This is what we’re going to learn next.</p>
+<h2 id="_idParaDest-309"><a id="_idTextAnchor309"/>Tasks</h2>
+<p>We have learned that a <a id="_idIndexMarker1207"/>service corresponds to a description of the desired state in which an application service should be at all times. Part of that description was the number of replicas the service should be running. Each replica is represented by a task. In this regard, a Swarm service contains a collection of tasks. On Docker Swarm, a task is an atomic unit of deployment. Each task of a service is deployed by the Swarm scheduler to a worker node. The task contains all of the necessary information that the worker node needs to run a container based on the image, which is part of the service description. Between a task and a container, there is a one-to-one relation. The container is the instance that runs on the worker node, while the task is the <a id="_idIndexMarker1208"/>description of this container as a part of a Swarm service.</p>
+<p>Finally, let’s talk about a stack in the context of a Docker swarm.</p>
+<h2 id="_idParaDest-310"><a id="_idTextAnchor310"/>Stacks</h2>
+<p>Now that we have a<a id="_idIndexMarker1209"/> good idea about what a Swarm service is and what tasks are, we can introduce the stack. A stack is used to describe a collection of Swarm services that are related, most probably because they are part of the same application. In that sense, we could also say that a stack describes an application that consists of one-to-many services that we want to run on the Swarm.</p>
+<p>Typically, we describe a stack declaratively in a text file that is formatted using the YAML format and that uses the same syntax as the already known Docker Compose file. This leads to a situation where people sometimes say that a stack is described by a Docker Compose file. A better wording would be that a stack is described in a stack file that uses similar syntax to a Docker Compose file.</p>
+<p>Let’s try to illustrate the relationship between the stack, services, and tasks in the following diagram and connect it with the typical content of a stack file:</p>
+<div><div><img alt="Figure 14.7 – Diagram showing the relationship between stack, services, and tasks" height="392" src="img/Figure_14.07_B19199.jpg" width="711"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 14.7 – Diagram showing the relationship between stack, services, and tasks</p>
+<p>In the preceding diagram, we see on the right-hand side a declarative description of a sample Stack. The Stack consists of three services, called <code>web</code>, <code>payments</code>, and <code>inventory</code>. We also see that the <code>web</code> service uses the <code>example/web:1.0</code> image and has four replicas. On the left-hand side of the diagram, we see that the Stack embraces the three services mentioned. Each service, in turn, contains a collection of Tasks, as many as there are replicas. In the case of the <code>web</code> service, we have a collection of four Tasks. Each Task contains the name of the Image from which it will instantiate a container once the Task is scheduled on a Swarm node.</p>
+<p>Now that you have<a id="_idIndexMarker1210"/> a good understanding of the main concepts of a Docker swarm, such as nodes, stack, services, and tasks, let’s look a bit more closely into the networking used in a swarm.</p>
+<h1 id="_idParaDest-311"><a id="_idTextAnchor311"/>Multi-host networking</h1>
+<p>In <a href="B19199_10.xhtml#_idTextAnchor218"><em class="italic">Chapter 10</em></a>, <em class="italic">Using Single-Host Networking</em>, we discussed how containers communicate <a id="_idIndexMarker1211"/>on a single Docker host. Now, we have a Swarm that consists of a cluster of nodes or Docker hosts. Containers that are located on different nodes need to be able to communicate with each other. Many techniques can help us to achieve this goal. Docker has chosen to implement an overlay network driver for Docker Swarm. This overlay network allows containers attached to the same overlay network to discover each other and freely communicate with each other. The following is a schema for how an overlay network works:</p>
+<div><div><img alt="Figure 14.8 – The overlay network" height="231" src="img/Figure_14.08_B19199.jpg" width="711"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 14.8 – The overlay network</p>
+<p>We have two nodes or Docker hosts with the IP addresses <code>172.10.0.15</code> and <code>172.10.0.16</code>. The values we have chosen for the IP addresses are not important; what is important is that both hosts have a distinct IP address and are connected by a physical network (a network cable), which is called <a id="_idIndexMarker1212"/>the <strong class="bold">underlay network</strong>.</p>
+<p>On the node on the left-hand side, we have a container running with the IP address <code>10.3.0.2</code>, and on the node on the right-hand side, we have  another container with the IP address <code>10.3.0.5</code>. Now, the former container wants to communicate with the latter. How can this <a id="_idIndexMarker1213"/>happen? In <a href="B19199_10.xhtml#_idTextAnchor218"><em class="italic">Chapter 10</em></a>, <em class="italic">Using</em> <em class="italic">Single-Host Networking</em>, we saw how this works when both containers are located on the same node—by using a Linux bridge. But Linux bridges only operate locally and cannot span across nodes. So, we need another mechanism. Linux VXLAN comes to the rescue. VXLAN has been available on Linux since way before containers were a thing.</p>
+<p class="callout-heading">VXLAN explained</p>
+<p class="callout"><strong class="bold">VXLAN</strong>, or <strong class="bold">Virtual eXtensible Local Area Network</strong>, is a networking protocol that allows for the<a id="_idIndexMarker1214"/> creation of virtual layer 2 domains over an IP network using the UDP protocol. It was designed to solve the problem of limited VLAN IDs (4,096) in IEEE 802.1q by expanding the size of the identifier to 24 bits (16,777,216).</p>
+<p class="callout">In simpler terms, VXLAN allows for the creation of virtual networks that can span across different physical locations. For example, certain VMs that are running on different hosts can communicate over a VXLAN tunnel. The hosts can be in different subnets or even in different data centers around the world. From the perspective of the VMs, other VMs in the same VXLAN are within the same layer 2 domain.</p>
+<p>When the left-hand container in <em class="italic">Figure 14</em><em class="italic">.8</em> sends a data packet, the bridge realizes that the target of the packet is not on this host. Now, each node participating in an overlay network gets a<a id="_idIndexMarker1215"/> so-called <strong class="bold">VXLAN Tunnel Endpoint</strong> (<strong class="bold">VTEP</strong>) object, which intercepts the packet (the packet at that moment is an OSI layer 2 data packet), wraps it with a header containing the target IP address of the host that runs the destination container (this now makes it an OSI layer 3 data packet), and sends it over the VXLAN tunnel. The VTEP on the other side of the tunnel unpacks the data packet and forwards it to the local bridge, which in turn forwards it to the destination container.</p>
+<p>The overlay driver is included in SwarmKit and is in most cases the recommended network driver for Docker Swarm. There are other multi-node-capable network drivers available from third<a id="_idIndexMarker1216"/> parties that can be installed as plugins in each participating Docker host. Certified network plugins are available from the Docker store.</p>
+<p>Great, we have all the basic knowledge about a Docker swarm. So, let’s create one.</p>
+<h1 id="_idParaDest-312"><a id="_idTextAnchor312"/>Creating a Docker Swarm</h1>
+<p>Creating a Docker Swarm is<a id="_idIndexMarker1217"/> almost trivial. It is so easy that if you know how orchestrators work, it might even seem unbelievable. But it is true, Docker has done a fantastic job in making Swarms simple and elegant to use. At the same time, Docker Swarm has been proven to be very robust and scalable when used by large enterprises.</p>
+<h2 id="_idParaDest-313"><a id="_idTextAnchor313"/>Creating a local single-node swarm</h2>
+<p>So, enough imagining—let’s <a id="_idIndexMarker1218"/>demonstrate <a id="_idIndexMarker1219"/>how we can create a Swarm. In its most simple form, a fully functioning Docker Swarm consists only of a single node. If you’re using Docker Desktop, or even if you’re using Docker Toolbox, then your personal computer or laptop is such a node. Hence, we can start right there and demonstrate some of the most important features of a Swarm.</p>
+<p>Let’s initialize a Swarm. On the command line, just enter the following command:</p>
+<pre class="source-code">
+$ docker swarm init</pre> <p>After an incredibly short time, you should see an output like the following:</p>
+<pre class="source-code">
+Swarm initialized: current node (zqzxn4bur43lywp55fysnymd4) is now a manager.To add a worker to this swarm, run the following command:
+    docker swarm join --token SWMTKN-1-57ayqfyc8cdg09hi9tzuztzcg2gk2rd6abu71ennaide3r20q5-21j3wpm8scytn9u5n1jrvlbzf 192.168.0.13:2377
+To add a manager to this swarm, run 'docker swarm join-token manager' and follow the instructions.</pre>
+<p>Our computer is now a Swarm node. Its role is that of a manager and it is the leader (of the managers, which<a id="_idIndexMarker1220"/> makes sense since there<a id="_idIndexMarker1221"/> is only one manager at this time). Although it took only a very short time to finish <code>docker swarm init</code>, the command did a lot of things during that time. Some of them are as follows:</p>
+<ul>
+<li>It created <a id="_idIndexMarker1222"/>a root <strong class="bold">Certificate </strong><strong class="bold">Authority</strong> (<strong class="bold">CA</strong>)</li>
+<li>It created a kv-store that is used to store the state of the whole Swarm</li>
+</ul>
+<p>Now, in the preceding output, we can see a command that can be used to join other nodes to the Swarm that we just created. The command is as follows:</p>
+<pre class="source-code">
+$ docker swarm join --token &lt;join-token&gt; &lt;IP address&gt;:2377</pre> <p>Here, we have the following:</p>
+<ul>
+<li><code>&lt;join-token&gt;</code> is a token generated by the Swarm leader at the time the Swarm was initialized</li>
+<li><code>&lt;IP address&gt;</code> is the IP address of the leader</li>
+</ul>
+<p>Although our cluster remains simple, as it consists of only one member, we can still ask the Docker CLI to list all of the nodes of the Swarm using the <code>docker node ls</code> command. This will look similar to the following screenshot:</p>
+<div><div><img alt="Figure 14.9 – Listing the nodes of the Docker Swarm" height="92" src="img/Figure_14.09_B19199.jpg" width="989"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 14.9 – Listing the nodes of the Docker Swarm</p>
+<p>In this output, we first see the ID that was given to the node. The star (<code>*</code>) that follows the ID indicates that this is the node on which <code>docker node ls</code> was executed—basically saying that this is the active node. Then, we have the (human-readable) name of the node and its status, availability, and manager status. As mentioned earlier, this very first node of the Swarm automatically became the leader, which is indicated in the preceding screenshot. Lastly, we see which version of Docker Engine we’re using.</p>
+<p>To get even more <a id="_idIndexMarker1223"/>information about a node, we can <a id="_idIndexMarker1224"/>use the <code>docker node inspect</code> command, as shown in the following truncated output:</p>
+<pre class="source-code">
+$ docker node inspect node1[
+    {
+        "ID": "zqzxn4bur43lywp55fysnymd4",
+        "Version": {
+            "Index": 9
+        },
+        "CreatedAt": "2023-04-21T06:48:06.434268546Z",
+        "UpdatedAt": "2023-04-21T06:48:06.955837213Z",
+        "Spec": {
+            "Labels": {},
+            "Role": "manager",
+            "Availability": "active"
+        },
+        "Description": {
+            "Hostname": "node1",
+            "Platform": {
+                "Architecture": "x86_64",
+                "OS": "linux"
+            },
+            "Resources": {
+                "NanoCPUs": 8000000000,
+                "MemoryBytes": 33737699328
+            },
+            "Engine": {
+                "EngineVersion": "20.10.17",
+                "Plugins": [
+                    {
+                        "Type": "Log",
+                        "Name": "awslogs"
+                    },
+...
+    }
+]</pre>
+<p>There is a lot of<a id="_idIndexMarker1225"/> information generated by this <a id="_idIndexMarker1226"/>command, so we have only presented a shortened version of the output. This output can be useful, for example, when you need to troubleshoot a misbehaving cluster node.</p>
+<p>Before you continue, don’t forget to shut down or dissolve the swarm by using the following command:</p>
+<pre class="source-code">
+$ docker swarm leave --force</pre> <p>In the next section, we will use the PWD environment to generate and use a Docker Swarm.</p>
+<h2 id="_idParaDest-314"><a id="_idTextAnchor314"/>Using PWD to generate a Swarm</h2>
+<p>To experiment<a id="_idIndexMarker1227"/> with Docker Swarm without<a id="_idIndexMarker1228"/> having to install or configure anything locally on our computer, we can use PWD. PWD is a website that can be accessed with a browser and that offers us the ability to create a Docker Swarm consisting of up to five nodes. It is definitely a playground, as the name implies, and the time for which we can use it is limited to four hours per session. We can open as many sessions as we want, but each session automatically ends after four hours. Other than that, it is a fully functional Docker environment that is ideal for tinkering with Docker or demonstrating some features.</p>
+<p>Let’s access the site now. In your browser, navigate to the website <a href="https://labs.play-with-docker.com">https://labs.play-with-docker.com</a>. You will be presented with a welcome and login screen. Use your Docker ID to log in. After successfully doing so, you will be presented with a screen that looks like the following screenshot:</p>
+<div><div><img alt="Figure 14.10 – PWD window" height="453" src="img/Figure_14.10_B19199.jpg" width="1102"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 14.10 – PWD window</p>
+<p>As we can see immediately, there is a big timer counting down from four hours. That’s how much time we have left to play in this session. Furthermore, we see an <strong class="bold">+ ADD NEW INSTANCE</strong> link. Click it to create a new Docker host. When you do that, your screen should look as in the following screenshot:</p>
+<div><div><img alt="Figure 14.11 – PWD with one new node" height="653" src="img/Figure_14.11_B19199.jpg" width="1101"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 14.11 – PWD with one new node</p>
+<p>On the left-hand side, we see the newly created node with its IP address (<code>192.168.0.13</code>) and its name (<code>node1</code>). On the right-hand side, we have some additional information about this new node in the upper half of the screen and a terminal in the<a id="_idIndexMarker1229"/> lower half. Yes, this terminal<a id="_idIndexMarker1230"/> is used to execute commands on this node that we just created. This node has the Docker CLI installed, and hence we can execute all of the familiar Docker commands on it, such as the Docker version. Try it out.</p>
+<p>But now we want to create a Docker Swarm. Execute the following command in the terminal in your browser:</p>
+<pre class="source-code">
+$ docker swarm init --advertise-addr=eth0</pre> <p>The output generated by the preceding command is similar to the one we saw when creating a local Docker Swarm. The important thing to note is the <code>join</code> command, which is what we want to use to join additional nodes to the cluster we just created.</p>
+<p>You might have noted that we specified the <code>--advertise-addr</code> parameter in the Swarm <code>init</code> command. Why is that necessary here? The reason is that the nodes generated by PWD have more than one IP address associated with them. We can easily verify that by executing the <code>ip</code> command on the node. This command will show us that there are indeed two endpoints, <code>eth0</code> and <code>eth1</code>, present. We hence have to specify explicitly to the new to-be swarm manager which one we want to use. In our case, it is <code>eth0</code>.</p>
+<p>Create four additional nodes in PWD by clicking four times on the <code>node2</code>, <code>node3</code>, <code>node4</code>, and <code>node5</code> and will all be listed on the left-hand side. If you click on one of the nodes on the left-hand side, then the right-hand side shows the details of the respective node and a terminal window for that node.</p>
+<p>Select each node (2 to 5) and execute the <code>docker swarm join</code> command that you have copied from the leader node (<code>node1</code>) in the respective terminal:</p>
+<pre class="source-code">
+$ docker swarm join --token SWMTKN-1-4o1ybxxg7cv... 192.168.0.13:2377</pre> <p>This <a id="_idIndexMarker1231"/>node <a id="_idIndexMarker1232"/>joined the swarm as a worker.</p>
+<p>Once you have joined all four nodes to the Swarm, switch back to <code>node1</code> and list all nodes:</p>
+<pre class="source-code">
+$ docker node ls</pre> <p>This, unsurprisingly, results in this (slightly reformatted for readability):</p>
+<pre class="source-code">
+ID           HOSTNAME STATUS  AVAIL. MANAGER ST. ENGINE VER.Nb16ey2p... *  node1   Ready  Active   Leader     20.10.17
+Kdd0yv15...    node2   Ready  Active              20.10.17
+t5iw0clx...    node3   Ready  Active              20.10.17
+Nr6ngsgs...    node4   Ready  Active              20.10.17
+thbiwgft...    node5   Ready  Active              20.10.17</pre>
+<p>Still on <code>node1</code>, we can now promote, say, <code>node2</code> and <code>node3</code>, to make the Swarm highly available:</p>
+<pre class="source-code">
+$ docker node promote node2 node3</pre> <p>This results in this output:</p>
+<pre class="source-code">
+Node node2 promoted to a manager in the swarm.Node node3 promoted to a manager in the swarm.</pre>
+<p>With this, our Swarm on PWD is ready to accept a workload. We have created a highly available Docker <a id="_idIndexMarker1233"/>Swarm with three manager<a id="_idIndexMarker1234"/> nodes that form a Raft consensus group and two worker nodes.</p>
+<h2 id="_idParaDest-315"><a id="_idTextAnchor315"/>Creating a Docker Swarm in the cloud</h2>
+<p>All of the Docker Swarms<a id="_idIndexMarker1235"/> we have created so far are wonderful to <a id="_idIndexMarker1236"/>use in development, to experiment with, or to use for demonstration purposes. If we want to create a Swarm that can be used as a production environment where we run our mission-critical applications, though, then we need to create a—I’m tempted to say—real Swarm in the cloud or on-premises. In this book, we are going to demonstrate how to create a Docker Swarm in AWS.</p>
+<p>We can manually create a Swarm through the AWS console:</p>
+<ol>
+<li>Log in to your AWS account. If you do not have one yet, create a free one.</li>
+<li>First, we create <a id="_idIndexMarker1237"/>an AWS <code>aws-docker-demo-sg</code>:<ol><li>Navigate to your default VPC.</li><li>On the left-hand side, select <code>aws-docker-demo-sg</code>, as mentioned, and add a description such as <code>A SG for our </code><code>Docker demo</code>.</li><li>Now, click the <code>sg-030d0...</code>)</li><li><strong class="bold">Type</strong>: Custom UDP, <strong class="bold">Protocol</strong>: UDP, <strong class="bold">Port range</strong>: 7946, <strong class="bold">Source</strong>: Custom</li><li>For the value, select the SG just created</li><li><strong class="bold">Type</strong>: Custom TCP, <strong class="bold">Protocol</strong>: TCP, <strong class="bold">Port range</strong>: 7946, <strong class="bold">Source</strong>: Custom</li><li>For the value select the SG just created</li><li><strong class="bold">Type</strong>: Custom TCP, <strong class="bold">Protocol</strong>: TCP, <strong class="bold">Port range</strong>: 4789, <strong class="bold">Source</strong>: Custom</li><li>For the <a id="_idIndexMarker1238"/>value, select<a id="_idIndexMarker1239"/> the SG just created</li><li><strong class="bold">Type</strong>: Custom TCP, <strong class="bold">Protocol</strong>: TCP, <strong class="bold">Port range</strong>: 22, <strong class="bold">Source</strong>: My IP</li><li>This last rule is to be able to access the instances from your host via SSH</li></ol></li></ol></li>
+</ol>
+<p class="callout-heading">Docker Swarm ports</p>
+<p class="callout"><strong class="bold">TCP port 2377</strong>: This is the<a id="_idIndexMarker1240"/> main communication port for swarm mode. The Swarm management and orchestration commands are communicated over this port. It’s used for communication between nodes and plays a crucial role in the Raft consensus algorithm, which ensures that all the nodes in a swarm act as a single system.</p>
+<p class="callout"><strong class="bold">TCP and UDP port 7946</strong>: This port is used for communication among nodes (container network discovery). It helps the nodes in the swarm to exchange information about the services and tasks running on each of them.</p>
+<p class="callout"><strong class="bold">UDP port 4789</strong>: This <a id="_idIndexMarker1241"/>port is used for overlay network traffic. When you create an overlay network for your services, Docker Swarm uses this port for the data traffic between the containers.</p>
+<div><div><img alt="Figure 14.12 – Inbound rules for the AWS SG" height="656" src="img/Figure_14.12_B19199.jpg" width="1094"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 14.12 – Inbound rules for the AWS SG</p>
+<ol>
+<li value="11">When<a id="_idIndexMarker1242"/> done, click <strong class="bold">Save rules</strong>.</li>
+</ol>
+<ol>
+<li value="3">Go to the<a id="_idIndexMarker1243"/> EC2 dashboard.</li>
+<li>First, we create a key pair for all EC2 instances we are going to create next:<ol><li>Locate and click the <code>aws-docker-demo</code>.</li><li>Make sure the private key file format is <code>.pem</code>.</li><li>Click the <code>.pem</code> file in a safe location.</li></ol></li>
+<li>Back on the EC2 dashboard, launch a new EC2 instance with the following settings:<ol><li>Name the instance <code>manager1</code>.</li><li>Select the <code>t2.micro</code> as the instance type.</li><li>Use the key pair that we created before, called <code>aws-docker-demo</code>.</li><li>Select <a id="_idIndexMarker1244"/>the <a id="_idIndexMarker1245"/>existing SG, <code>aws-docker-demo-sg</code>, that we created previously.</li><li>Then, click the <strong class="bold">Launch</strong> button.</li></ol></li>
+<li>Repeat the previous step to create two worker nodes and call them <code>worker1 </code>and <code>worker2</code>, respectively.</li>
+<li>Go to the list of EC2 instances. You may have to wait a few minutes until they are all ready.</li>
+<li>Start with the <code>manager1</code> instance by selecting it and then clicking the <code>ssh</code>. Follow those instructions carefully.</li>
+<li>Once connected to the <code>manager1</code> instance, let’s install Docker:<pre class="source-code">
+$ sudo apt-get update &amp;&amp; sudo apt -y install docker.io</pre></li> </ol>
+<p>This may take a couple of minutes to finish.</p>
+<ol>
+<li value="10">Now, make sure you can use Docker without having to use the <code>sudo</code> command:<pre class="source-code">
+$ sudo usermod -aG docker $USER</pre></li> <li>To apply the preceding command, you have to quickly exit from the AWS instance:<pre class="source-code">
+$ exit</pre></li> </ol>
+<p>Then, immediately connect again using the <code>ssh</code> command from <em class="italic">step 6</em>.</p>
+<ol>
+<li value="12">Back on the EC2 instance, make sure you can access Docker with the following:<pre class="source-code">
+$ docker version</pre></li> </ol>
+<p>If everything is installed and configured correctly, you should see the version information of the Docker client and engine.</p>
+<ol>
+<li value="13">Now repeat <em class="italic">steps 6</em> to <em class="italic">10</em> for the other two EC2 instances, <code>worker1</code> and <code>worker2</code>.</li>
+<li>Now go back to your <code>manager1</code> instance and initialize a Docker swarm on it:<pre class="source-code">
+$ docker swarm init</pre></li> </ol>
+<p>The output<a id="_idIndexMarker1246"/> should be the same as you saw for the<a id="_idIndexMarker1247"/> case when you created a swarm locally or on PWD.</p>
+<ol>
+<li value="15">Copy the <code>docker swarm join</code> command from the preceding output.</li>
+<li>Go to each worker node and run the command. The node should respond with the following:<pre class="source-code">
+This node joined a swarm as a worker.</pre></li> <li>Go back to the <code>manager1</code> node and run the following command to list all nodes of the swarm:<pre class="source-code">
+$ docker node ls</pre></li> </ol>
+<p>What you should see is similar to this:</p>
+<div><div><img alt="Figure 14.13 – List of swarm nodes on AWS" height="129" src="img/Figure_14.13_B19199.jpg" width="1270"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 14.13 – List of swarm nodes on AWS</p>
+<p>Now that we<a id="_idIndexMarker1248"/> have <a id="_idIndexMarker1249"/>a Docker swarm in the (AWS) cloud, let’s deploy a simple application to it.</p>
+<h1 id="_idParaDest-316"><a id="_idTextAnchor316"/>Deploying a first application</h1>
+<p>We have created a few Docker <a id="_idIndexMarker1250"/>Swarms on various platforms. Once created, a Swarm behaves the same way on any platform. The way we deploy and update applications on a Swarm is not platform-dependent. It has been one of Docker’s main goals to avoid vendor lock-in when using a Swarm. Swarm-ready applications can be effortlessly migrated from, say, a Swarm running on-premises to a cloud-based Swarm. It is even technically possible to run part of a Swarm on-premises and another part in the cloud. It works, yet we have, of course, to consider possible side effects due to the higher latency between nodes in geographically distant areas.</p>
+<p>Now that we have a highly available Docker Swarm up and running, it is time to run some workloads on it. I’m using the swarm just created on AWS. We’ll start by first creating a single service. For this, we need to SSH into one of the manager nodes. I selected the swarm node on the <code>manager1</code> instance:</p>
+<pre class="source-code">
+$ ssh -i "aws-docker-demo.pem" &lt;public-dns-name-of-manager1&gt;</pre> <p>We start the deployment of our first application to the swarm by creating a service.</p>
+<h2 id="_idParaDest-317"><a id="_idTextAnchor317"/>Creating a service</h2>
+<p>A service can be<a id="_idIndexMarker1251"/> created either as part of a stack or directly using the Docker CLI. Let’s first look at a sample stack file that defines a single service:</p>
+<ol>
+<li>Use the Vi editor to create a new file called <code>stack.yml</code> and add this content:<pre class="source-code">
+version: "3.7"services:  whoami:    image: training/whoami:latest    networks:    - test-net    ports:    - 81:8000    deploy:      replicas: 6      update_config:        parallelism: 2        delay: 10s      labels:         app: sample-app         environment: prod-southnetworks:  test-net:    driver: overlay</pre></li> <li>Exit the Vi editor<a id="_idIndexMarker1252"/> by first pressing the <em class="italic">Esc</em> key, then typing <code>:wq</code>, and then pressing <em class="italic">Enter</em>. This will save the code snippet and exit vi.</li>
+</ol>
+<p class="callout-heading">Note</p>
+<p class="callout">If you are not familiar with Vi, you can also use nano instead.</p>
+<p>In the preceding example, we see what the desired state of a service called <code>whoami</code> is:</p>
+<ul>
+<li>It is based on the <code>training/whoami:latest</code> image</li>
+<li>Containers of the service are attached to the <code>test-net</code> network</li>
+<li>The container port <code>8000</code> is published to port <code>81</code></li>
+<li>It is running with six replicas (or tasks)</li>
+<li>During a rolling update, the individual tasks are updated in batches of two, with a delay of 10 seconds between each successful batch</li>
+<li>The service (and its tasks and containers) is assigned the two labels, <code>app</code> and <code>environment</code>, with the values <code>sample-app</code> and <code>prod-south</code>, respectively</li>
+</ul>
+<p>There are many <a id="_idIndexMarker1253"/>more settings that we could define for a service, but the preceding ones are some of the more important ones. Most settings have meaningful default values. If, for example, we do not specify the number of replicas, then Docker defaults it to <code>1</code>. The name and image of a service are, of course, mandatory. Note that the name of the service must be unique in the Swarm.</p>
+<ol>
+<li value="3">To create the preceding service, we use the <code>docker stack deploy</code> command. Assuming that the file in which the preceding content is stored is called <code>stack.yaml</code>, we have the following:<pre class="source-code">
+$ docker stack deploy -c stack.yaml sample-stack</pre></li> </ol>
+<p>Here, we have created a stack called <code>sample-stack</code> that consists of one service, <code>whoami</code>.</p>
+<ol>
+<li value="4">We can list all stacks on our Swarm:<pre class="source-code">
+$ docker stack ls</pre></li> </ol>
+<p>Upon doing so, we should get this:</p>
+<pre class="source-code">
+NAME                       SERVICESsample-stack            1</pre>
+<ol>
+<li value="5">We can list the services defined in our Swarm, as follows:<pre class="source-code">
+$ docker service ls</pre></li> </ol>
+<p>We get the following output:</p>
+<div><div><img alt="Figure 14.14 – List of all services running in the Swarm" height="98" src="img/Figure_14.14_B19199.jpg" width="1411"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 14.14 – List of all services running in the Swarm</p>
+<p>In the output, we can see that currently, we have only one service running, which was to be expected. The service has an ID. The format of the ID, contrary to what you have used so far for containers, networks, or volumes, is alphanumeric (in the latter cases, it was always SHA-256). We can also see that the name of the service is a combination of the service name we defined in the stack file and the name of the stack, which is used as a prefix. This makes sense since we want to be able to deploy multiple stacks (with different names) using the same stack file into our Swarm. To make sure that service names are unique, Docker decided to combine the service name and stack name.</p>
+<p>In the third column, we see the mode, which is replicated. The number of replicas is shown as <code>6/6</code>. This<a id="_idIndexMarker1254"/> tells us that six out of the six requested replicas are running. This corresponds to the desired state. In the output, we also see the image that the service uses and the port mappings of the service.</p>
+<h2 id="_idParaDest-318"><a id="_idTextAnchor318"/>Inspecting the service and its tasks</h2>
+<p>In the<a id="_idIndexMarker1255"/> preceding output, we<a id="_idIndexMarker1256"/> cannot see the details of the six replicas that have been created.</p>
+<p>To get some deeper insight into that, we can use the <code>docker service ps &lt;service-id&gt;</code> command. If we execute this command for our service, we will get the following output:</p>
+<div><div><img alt="Figure 14.15 – Details of the whoami service" height="142" src="img/Figure_14.15_B19199.jpg" width="1101"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 14.15 – Details of the whoami service</p>
+<p>In the preceding output, we can see the list of six tasks that corresponds to the requested six replicas of our <code>whoami</code> service. In the <strong class="bold">NODE</strong> column, we can also see the node to which each task has been deployed. The name of each task is a combination of the service name plus an increasing index. Also note that, similar to the service itself, each task gets an alphanumeric ID assigned.</p>
+<p>In my case, apparently tasks 3 and 6, with the names <code>sample-stack_whoami.3</code> and <code>sample-stack_whoami.6</code>, have been deployed to <code>ip-172-31-32-21</code>, which is the<a id="_idIndexMarker1257"/> leader <a id="_idIndexMarker1258"/>of our Swarm. Hence, I should find a container running on this node. Let’s see what we get if we list all containers running on <code>ip-172-31-32-21</code>:</p>
+<div><div><img alt="Figure 14.16 – List of containers on node ip-172-31-32-21" height="69" src="img/Figure_14.16_B19199.jpg" width="1099"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 14.16 – List of containers on node ip-172-31-32-21</p>
+<p>As expected, we find a container running from the <code>training/whoami:latest</code> image with a name that is a combination of its parent task name and ID. We can try to visualize the whole hierarchy of objects that we generated when deploying our sample stack:</p>
+<div><div><img alt="Figure 14.17 – Object hierarchy of a Docker Swarm stack" height="443" src="img/Figure_14.17_B19199.jpg" width="487"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 14.17 – Object hierarchy of a Docker Swarm stack</p>
+<p>A stack can consist of one-to-many services. Each service has a collection of tasks. Each task has a one-to-one<a id="_idIndexMarker1259"/> association<a id="_idIndexMarker1260"/> with a container. Stacks and services are created and stored on the Swarm manager nodes. Tasks are then scheduled to Swarm worker nodes, where the worker node creates the corresponding container. We can also get some more information about our service by inspecting it. Execute the following command:</p>
+<pre class="source-code">
+$ docker service inspect sample-stack_whoami</pre> <p>This provides a wealth of information about all of the relevant settings of the service. This includes those we have explicitly defined in our <code>stack.yaml</code> file, but also those that we didn’t specify and that, therefore, got their default values assigned. We’re not going to list the whole output here, as it is too long, but I encourage you to inspect it on your own machine. We <a id="_idIndexMarker1261"/>will <a id="_idIndexMarker1262"/>discuss part of the information in more detail in the <em class="italic">The swarm routing mesh</em> section in <a href="B19199_15.xhtml#_idTextAnchor328"><em class="italic">Chapter 15</em></a>.</p>
+<h2 id="_idParaDest-319"><a id="_idTextAnchor319"/>Testing the load balancing</h2>
+<p>To see that the<a id="_idIndexMarker1263"/> swarm load balances incoming requests to our sample <code>whoami</code> application, we can use the <code>curl</code> tool. Execute the following command a few times and observe how the answer changes:</p>
+<pre class="source-code">
+$ for i in {1..7}; do curl localhost:81; done</pre> <p>This results in an output like this:</p>
+<pre class="source-code">
+I'm ae8a50b5b058I'm 1b6b507d900c
+I'm 83864fb80809
+I'm 161176f937cf
+I'm adf340def231
+I'm e0911d17425c
+I'm ae8a50b5b058</pre>
+<p>Note that after the sixth item, the sequence is repeating. This is due to the fact that the Docker swarm is load balancing calls using a round-robin algorithm.</p>
+<h2 id="_idParaDest-320"><a id="_idTextAnchor320"/>Logs of a service</h2>
+<p>In an earlier chapter, we <a id="_idIndexMarker1264"/>worked with the logs produced by a container. Here, we’re concentrating on a service. Remember that, ultimately, a service with many replicas has many containers running. Hence, we would expect that, if we asked the service for its logs, Docker would return an aggregate of all logs of those containers belonging to the service. And indeed, we’ll see this when we use the <code>docker service </code><code>logs</code> command:</p>
+<pre class="source-code">
+$ docker service logs sample-stack_whoami</pre> <p>This is what we get:</p>
+<div><div><img alt="Figure 14.18 – Logs of the whoami service" height="216" src="img/Figure_14.18_B19199.jpg" width="1067"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 14.18 – Logs of the whoami service</p>
+<p>There is not much information in the logs at this point, but it is enough to discuss what we get. The first part of each line in the log always contains the name of the container combined with the node name from which the log entry originates. Then, separated by the vertical bar (<code>Listening </code><code>on :8000</code>.</p>
+<p>The aggregated logs that we get with the <code>docker service logs</code> command are not sorted in any particular way. So, if the correlation of events is happening in different containers, you should add information to your log output that makes this correlation possible.</p>
+<p>Typically, this is a timestamp for each log entry. But this has to be done at the source; for example, the application that produces a log entry needs to also make sure a timestamp is added.</p>
+<p>We can also query the logs of an individual task of the service by providing the task ID instead of the service ID or name. So, say we queried the logs from task 6 with the following:</p>
+<pre class="source-code">
+$ docker service logs w90b8</pre> <p>This gives us the following output:</p>
+<pre class="source-code">
+sample-stack_whoami.6.w90b8xmkdw53@ip-172-31-32-21    | Listening on :8000</pre> <p>In the next section, we are investigating how the swarm reconciles the desired state.</p>
+<h2 id="_idParaDest-321"><a id="_idTextAnchor321"/>Reconciling the desired state</h2>
+<p>We have learned that<a id="_idIndexMarker1266"/> a Swarm service is a description or manifest of the desired state that we want an application or application service to run in. Now, let’s see how Docker Swarm reconciles this desired state if we do something that causes the actual state of the service to be different from the desired state. The easiest way to do this is to forcibly kill one of the tasks or containers of the service.</p>
+<p>Let’s do this with the container that has been scheduled on <code>node-1</code>:</p>
+<pre class="source-code">
+$ docker container rm -f sample-stack_whoami.3. nqxqs...</pre> <p>If we do that and then run <code>docker service ps</code> right afterward, we will see the following output:</p>
+<div><div><img alt="Figure 14.19 – Docker Swarm reconciling the desired state after one task failed" height="146" src="img/Figure_14.19_B19199.jpg" width="1225"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 14.19 – Docker Swarm reconciling the desired state after one task failed</p>
+<p>We see that task 2 failed with exit code <code>137</code> and that the Swarm immediately reconciled the desired state by rescheduling the failed task on a node with free resources. In this case, the scheduler selected the same node as the failed tasks, but this is not always the case. So, without us intervening, the Swarm completely fixed the problem, and since the service is running in multiple replicas, at no time was the service down.</p>
+<p>Let’s try another failure scenario. This time, we’re going to shut down an entire node and are going to see how the Swarm reacts. Let’s take node <code>ip-172-31-47-124</code> for this, as it has two tasks (tasks 1 and 4) running on it. For this, we can head over to the AWS console and in the EC2 dashboard, stop the instance called <code>ip-172-31-47-124</code>.</p>
+<p>Note that I had to go into the details of each worker instance to find out which one has the hostname <code>ip-172-31-47-124</code>; in my case, it was <code>worker2</code>.</p>
+<p>Back on the master node, we can now again run <code>docker service ps</code> to see what happened:</p>
+<div><div><img alt="Figure 14.20 – Swarm reschedules all tasks of a failed node" height="179" src="img/Figure_14.20_B19199.jpg" width="1225"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 14.20 – Swarm reschedules all tasks of a failed node</p>
+<p>In the preceding screenshot, we can see that immediately, task 1 was rescheduled on node <code>ip-172-31-32-189</code>, while task 4 was rescheduled on node <code>ip-172-31-32-21</code>. Even this more radical failure is handled gracefully by Docker Swarm.</p>
+<p>It is important to note though that if node <code>ip-172-31-47-124</code> ever comes back online in the <a id="_idIndexMarker1267"/>Swarm, the tasks that had previously been running on it will not automatically be transferred back to it.</p>
+<p>But the node is now ready for a new workload.</p>
+<h2 id="_idParaDest-322"><a id="_idTextAnchor322"/>Deleting a service or a stack</h2>
+<p>If we want to remove a<a id="_idIndexMarker1268"/> particular service from the Swarm, we can use the <code>docker service rm</code> command. If, on the other hand, we want to remove a stack from the Swarm, we analogously use the <code>docker stack rm</code> command. This command removes all services that are part of the stack definition. In the case of the <code>whoami </code>service, it was created by using a stack file and hence we’re going to use the latter command:</p>
+<pre class="source-code">
+$ docker stack rm sample-stack</pre> <p>This gives us this output:</p>
+<pre class="source-code">
+Removing service sample-stack_whoamiRemoving network sample-stack_test-net</pre>
+<p>The preceding command will make sure that all tasks of each service of the stack are terminated, and the corresponding containers are stopped by first sending <code>SIGTERM</code>, and then, if not successful, <code>SIGKILL</code> after 10 seconds of timeout.</p>
+<p>It is important to note that the stopped containers are not removed from the Docker host.</p>
+<p>Hence, it is advised to purge containers from time to time on worker nodes to reclaim unused resources. Use <code>docker container purge -f</code> for this purpose.</p>
+<p><strong class="bold">Question</strong>: Why does<a id="_idIndexMarker1269"/> it make sense to leave stopped or crashed containers on the worker node and not automatically remove them?</p>
+<h2 id="_idParaDest-323"><a id="_idTextAnchor323"/>Deploying a multi-service stack</h2>
+<p>In <a href="B19199_11.xhtml#_idTextAnchor237"><em class="italic">Chapter 11</em></a>, <em class="italic">Managing Containers with Docker Compose</em>, we used an application consisting of two <a id="_idIndexMarker1270"/>services that were declaratively described in a Docker Compose file. We can use this Compose file as a template to create a stack file that allows us to deploy the same application into a Swarm:</p>
+<ol>
+<li>Create a new file called <code>pets-stack.yml</code>, and add this content to it:<pre class="source-code">
+version: "3.7"services:  web:    image: fundamentalsofdocker/ch11-web:2.0    networks:    - pets-net    ports:    - 3000:3000    deploy:      replicas: 3  db:    image: fundamentalsofdocker/ch11-db:2.0    networks:    - pets-net    volumes:    - pets-data:/var/lib/postgresql/datavolumes:  pets-data:networks:  pets-net:    driver: overlay</pre></li> </ol>
+<p>We request that <a id="_idIndexMarker1271"/>the web service has three replicas, and both services are attached to the overlay network, <code>pets-net</code>.</p>
+<ol>
+<li value="2">We can deploy this application using the <code>docker stack </code><code>deploy</code> command:<pre class="source-code">
+$ docker stack deploy -c pets-stack.yml pets</pre></li> </ol>
+<p>This results in this output:</p>
+<pre class="source-code">
+Creating network pets_pets-netCreating service pets_db
+Creating service pets_web</pre>
+<p>Docker creates the <code>pets_pets-net</code> overlay network and then the two services, <code>pets_web</code> and <code>pets_db</code>.</p>
+<ol>
+<li value="3">We can then list all of the tasks in the <code>pets</code> stack:</li>
+</ol>
+<div><div><img alt="Figure 14.21 – List of all of the tasks in the pets stack" height="108" src="img/Figure_14.21_B19199.jpg" width="1182"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 14.21 – List of all of the tasks in the pets stack</p>
+<ol>
+<li value="4">Finally, let’s test the application using <code>curl</code> to retrieve an HTML page with a pet. And, indeed, the application works as expected, as the expected page is returned:</li>
+</ol>
+<div><div><img alt="Figure 14.22 – Testing the pets application using curl" height="272" src="img/Figure_14.22_B19199.jpg" width="1099"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 14.22 – Testing the pets application using curl</p>
+<p>The container ID is in the output, where it says <code>Delivered to you by container d01e2f1f87df</code>. If you run the <code>curl</code> command multiple times, the ID should cycle between three different values. These are the IDs of the three containers (or replicas) that we have requested for the web service.</p>
+<ol>
+<li value="5">Once we’re done, we <a id="_idIndexMarker1272"/>can remove the stack with <code>docker stack </code><code>rm pets</code>.</li>
+</ol>
+<p>Once we’re done with the swarm in AWS, we can remove it.</p>
+<h2 id="_idParaDest-324"><a id="_idTextAnchor324"/>Removing the swarm in AWS</h2>
+<p>To clean up the<a id="_idIndexMarker1273"/> Swarm in<a id="_idIndexMarker1274"/> the AWS cloud and avoid incurring unnecessary costs, we can use the following command:</p>
+<pre class="source-code">
+$ for NODE in `seq 1 5`; do    docker-machine rm -f aws-node-${NODE}
+done</pre>
+<p>Next, let’s summarize what we have learned in this chapter.</p>
+<h1 id="_idParaDest-325"><a id="_idTextAnchor325"/>Summary</h1>
+<p>In this chapter, we introduced Docker Swarm, which, next to Kubernetes, is the second most popular orchestrator for containers. We looked into the architecture of a Swarm, discussed all of the types of resources running in a Swarm, such as services, tasks, and more, and we created services in the Swarm. We learned how to create a Docker Swarm locally, in a special environment called PWD, as well as in the cloud. Lastly, we deployed an application that consists of multiple services related to Docker Swarm.</p>
+<p>In the next chapter, we are going to introduce the routing mesh, which provides layer 4 routing and load balancing in a Docker Swarm. After that, we will demonstrate how to deploy a first application consisting of multiple services onto the Swarm. We will also learn how to achieve zero downtime when updating an application in the swarm and finally how to store configuration data in the swarm and how to protect sensitive data using Docker secrets. Stay tuned.</p>
+<h1 id="_idParaDest-326"><a id="_idTextAnchor326"/>Questions</h1>
+<p>To assess your learning progress, please try to answer the following questions:</p>
+<ol>
+<li>What is Docker Swarm?</li>
+<li>What are the main components of a Docker Swarm?</li>
+<li>How do you initialize a Docker Swarm?</li>
+<li>How do you add nodes to a Docker Swarm?</li>
+<li>What is a Docker Service in the context of Docker Swarm?</li>
+<li>How do you create and update services in Docker Swarm?</li>
+<li>What is Docker Stack and how does it relate to Docker Swarm?</li>
+<li>How do you deploy a Docker Stack in Docker Swarm?</li>
+<li>What are the networking options in Docker Swarm?</li>
+<li>How does Docker Swarm handle container scaling and fault tolerance?</li>
+</ol>
+<h1 id="_idParaDest-327"><a id="_idTextAnchor327"/>Answers</h1>
+<p>Here are sample answers to the preceding questions:</p>
+<ol>
+<li>Docker Swarm is a native container orchestration tool built into Docker Engine that allows you to create, manage, and scale a cluster of Docker nodes, orchestrating the deployment, scaling, and management of containers across multiple hosts.</li>
+<li>A Docker Swarm consists of two primary components: the manager nodes, which are responsible for managing the cluster’s state, orchestrating tasks, and maintaining the desired state of services, and the worker nodes, which execute the tasks and run the container instances.</li>
+<li>You can initialize a Docker Swarm by running the <code>docker swarm init</code> command on a Docker host, which will become the first manager node of the Swarm. The command will provide a token that can be used to join other nodes to the Swarm.</li>
+<li>To add nodes to a Docker Swarm, use the <code>docker swarm join</code> command on the new node, along with the token and the IP address of the existing manager node.</li>
+<li>A Docker Service is a high-level abstraction that represents a containerized application or microservice in a Docker Swarm. It defines the desired state of the application, including the container image, number of replicas, network, and other configuration options.</li>
+<li>You can create a new service using the <code>docker service create</code> command, and update an existing service using the <code>docker service update</code> command, followed by the desired configuration options.</li>
+<li>A Docker Stack is a collection of services that is deployed together and shares dependencies, defined in a Docker Compose file. Docker Stacks can be deployed in a Docker Swarm to manage and orchestrate multi-service applications.</li>
+<li>To deploy a Docker Stack in Docker Swarm, use the <code>docker stack deploy</code> command, followed by the stack name and the path to the Docker Compose file.</li>
+<li>Docker Swarm supports various networking options, including the default ingress network for load balancing and routing, overlay networks for container-to-container communication across nodes, and custom networks for specific use cases.</li>
+<li>Docker Swarm automatically manages container scaling by adjusting the number of replicas based on the desired state specified in the service definition. It also monitors the health of containers and replaces any failed instances to maintain fault tolerance.</li>
+</ol>
+</div>
+</div></body></html>

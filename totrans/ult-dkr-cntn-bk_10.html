@@ -1,0 +1,557 @@
+<html><head></head><body>
+<div><div><h1 class="chapter-number" id="_idParaDest-218"><a id="_idTextAnchor218"/>10</h1>
+<h1 id="_idParaDest-219"><a id="_idTextAnchor219"/>Using Single-Host Networking</h1>
+<p>In the previous chapter, we learned about the most important architectural patterns and best practices that are used when dealing with distributed application architecture.</p>
+<p>In this chapter, we will introduce the Docker container networking model and its single-host implementation in the form of the bridge network. This chapter also introduces the concept of <strong class="bold">Software Defined Networks</strong> (<strong class="bold">SDNs</strong>) and <a id="_idIndexMarker851"/>how they are used to secure containerized applications. Furthermore, we will demonstrate how container ports can be opened to the public and thus make containerized components accessible to the outside world. Finally, we will introduce Traefik, a reverse proxy, which can be used to enable sophisticated HTTP application-level routing between containers.</p>
+<p>This chapter covers the following topics:</p>
+<ul>
+<li>Dissecting the container network model</li>
+<li>Network firewalling</li>
+<li>Working with the bridge network</li>
+<li>The host and null network</li>
+<li>Running in an existing network namespace</li>
+<li>Managing container ports</li>
+<li>HTTP-level routing using a reverse proxy</li>
+</ul>
+<p>After completing this chapter, you will be able to do the following:</p>
+<ul>
+<li>Create, inspect, and delete a custom bridge network</li>
+<li>Run a container attached to a custom bridge network</li>
+<li>Isolate containers from each other by running them on different bridge networks</li>
+<li>Publish a container port to a host port of your choice</li>
+<li>Add Traefik as a reverse proxy to enable application-level routing</li>
+</ul>
+<h1 id="_idParaDest-220"><a id="_idTextAnchor220"/>Technical requirements</h1>
+<p>For this chapter, the only thing you will need is a Docker host that is able to run Linux containers. You can use your laptop with Docker Desktop for this purpose.</p>
+<p>To start with, let’s first create a folder for this chapter where we are going to store the code for our examples:</p>
+<ol>
+<li>Navigate to the folder where you have cloned the repository accompanying this book. Usually, this is the following:<pre class="source-code">
+$ cd ~/The-Ultimat-Docker-Container-Book</pre></li> <li>Create a subfolder for this chapter and navigate to it:<pre class="source-code">
+$ mkdir ch10 &amp;&amp; cd ch10</pre></li> </ol>
+<p>Let’s get started!</p>
+<h1 id="_idParaDest-221"><a id="_idTextAnchor221"/>Dissecting the container network model</h1>
+<p>So far, we have mostly worked with single containers, but in reality, a containerized business application<a id="_idIndexMarker852"/> consists of several containers that need to collaborate to achieve a goal. Therefore, we need a way for individual containers to communicate with each other. This is achieved by establishing pathways, which we can use to send data packets back and forth between containers. These pathway<a id="_idIndexMarker853"/>s are called networks. Docker has defined a very simple networking model, the so-called <strong class="bold">container network model</strong> (<strong class="bold">CNM</strong>), to specify the requirements that any software that implements a container network has to fulfill. The following is a graphical representation<a id="_idIndexMarker854"/> of the CNM:</p>
+<div><div><img alt="Figure 10.1 – The Docker CNM" height="201" src="img/B19199_10_01.jpg" width="457"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.1 – The Docker CNM</p>
+<p>The CNM has three elements – sandboxes, endpoints, and networks:</p>
+<ul>
+<li><strong class="bold">Network Sandboxes</strong>: The sandbox perfectly isolates a container from the outside world. No<a id="_idIndexMarker855"/> inbound network connection is<a id="_idIndexMarker856"/> allowed into the sandboxed container, but it is very unlikely that a container will be of any value in a system if absolutely no communication with it is possible. To work around this, we have element number two, which is the endpoint.</li>
+<li><strong class="bold">Endpoint</strong>: An endpoint<a id="_idIndexMarker857"/> is a controlled gateway from<a id="_idIndexMarker858"/> the outside world into the network’s sandbox, which shields the container. The endpoint connects the network sandbox (but not the container) to the third element of the model, which is the network.</li>
+<li><strong class="bold">Network</strong>: The network<a id="_idIndexMarker859"/> is the pathway that transports the <a id="_idIndexMarker860"/>data packets of an instance of communication from endpoint to endpoint or, ultimately, from container to container.</li>
+</ul>
+<p>It is important to note that a network sandbox can have zero to many endpoints, or, said differently, each container living in a network sandbox can either be attached to no network at all or it can be attached to multiple different networks at the same time. In the preceding diagram, the middle one of the three <strong class="bold">Network Sandboxes</strong> is attached to both <strong class="bold">Network 1</strong> and <strong class="bold">Network 2</strong> using an endpoint.</p>
+<p>This networking model is very generic and does not specify where the individual containers that communicate with each other over a network run. All containers could, for example, run on the same host (local) or they could be distributed across a cluster of hosts (global).</p>
+<p>Of course, the CNM <a id="_idIndexMarker861"/>is just a model describing how networking works among containers. To be able to use networking with our containers, we need real implementations of the CNM. For both local and global scopes, we have multiple implementations of the CNM. In the following table, we’ve given a short overview of the existing implementations and their main characteristics. The list is in no particular order:</p>
+<table class="No-Table-Style _idGenTablePara-1" id="table001-5">
+<colgroup>
+<col/>
+<col/>
+<col/>
+<col/>
+</colgroup>
+<tbody>
+<tr class="No-Table-Style">
+<td class="No-Table-Style">
+<p><strong class="bold">Network</strong></p>
+</td>
+<td class="No-Table-Style">
+<p><strong class="bold">Company</strong></p>
+</td>
+<td class="No-Table-Style">
+<p><strong class="bold">Scope</strong></p>
+</td>
+<td class="No-Table-Style">
+<p><strong class="bold">Description</strong></p>
+</td>
+</tr>
+<tr class="No-Table-Style">
+<td class="No-Table-Style">
+<p>Bridge</p>
+</td>
+<td class="No-Table-Style">
+<p>Docker</p>
+</td>
+<td class="No-Table-Style">
+<p>Local</p>
+</td>
+<td class="No-Table-Style">
+<p>Simple network based on Linux bridges to allow networking on a single host</p>
+</td>
+</tr>
+<tr class="No-Table-Style">
+<td class="No-Table-Style">
+<p>Macvlan</p>
+</td>
+<td class="No-Table-Style">
+<p>Docker</p>
+</td>
+<td class="No-Table-Style">
+<p>Local</p>
+</td>
+<td class="No-Table-Style">
+<p>Configures multiple layer-2 (that is, MAC) addresses on a single physical host interface</p>
+</td>
+</tr>
+<tr class="No-Table-Style">
+<td class="No-Table-Style">
+<p>Overlay</p>
+</td>
+<td class="No-Table-Style">
+<p>Docker</p>
+</td>
+<td class="No-Table-Style">
+<p>Global</p>
+</td>
+<td class="No-Table-Style">
+<p>Multi-node capable container network based on <strong class="bold">Virtual Extensible </strong><strong class="bold">LAN</strong> (<strong class="bold">VXLan</strong>)</p>
+</td>
+</tr>
+<tr class="No-Table-Style">
+<td class="No-Table-Style">
+<p>Weave Net</p>
+</td>
+<td class="No-Table-Style">
+<p>Weaveworks</p>
+</td>
+<td class="No-Table-Style">
+<p>Global</p>
+</td>
+<td class="No-Table-Style">
+<p>Simple, resilient, multi-host Docker networking</p>
+</td>
+</tr>
+<tr class="No-Table-Style">
+<td class="No-Table-Style">
+<p>Contiv Network Plugin</p>
+</td>
+<td class="No-Table-Style">
+<p>Cisco</p>
+</td>
+<td class="No-Table-Style">
+<p>Global</p>
+</td>
+<td class="No-Table-Style">
+<p>Open source container networking</p>
+</td>
+</tr>
+</tbody>
+</table>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Table 10.1 – Network types</p>
+<p>All network types not directly provided by Docker can be added to a Docker host as a plugin.</p>
+<p>In the next section, we will describe how network firewalling works.</p>
+<h1 id="_idParaDest-222"><a id="_idTextAnchor222"/>Network firewalling</h1>
+<p>Docker has always had the mantra <a id="_idIndexMarker862"/>of security first. This philosophy had a direct influence on how networking in a single- and multi-host Docker environment was designed and implemented. SDNs are easy and cheap to create, yet they perfectly firewall containers that are attached to this network from other non-attached containers, and from the outside world. All containers that belong to the same network can freely communicate with each other, while others have no means to do so.</p>
+<p>In the following diagram, we have two networks called <strong class="bold">front</strong> and <strong class="bold">back</strong>. Attached to the <strong class="bold">front</strong> network, we have containers <strong class="bold">c1</strong> and <strong class="bold">c2</strong>, and attached to the <strong class="bold">back</strong> network, we have containers <strong class="bold">c3</strong> and <strong class="bold">c4</strong>. <strong class="bold">c1</strong> and <strong class="bold">c2</strong> can freely communicate with each other, as can <strong class="bold">c3</strong> and <strong class="bold">c4</strong>, but <strong class="bold">c1</strong> and <strong class="bold">c2</strong> have no way to communicate with either <strong class="bold">c3</strong> or <strong class="bold">c4</strong>, and vice versa:</p>
+<div><div><img alt="Figure 10.2 – Docker networks" height="141" src="img/B19199_10_02.jpg" width="442"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.2 – Docker networks</p>
+<p>Now, what about a situation in which we have an application consisting of three services: <code>webAPI</code>, <code>productCatalog</code>, and <code>database</code>? We want <code>webAPI</code> to be able to communicate with <code>productCatalog</code>, but not with the database, and we want <code>productCatalog</code> to be able to communicate with the database service. We can solve this situation by placing <code>webAPI</code> and the database on different networks and attaching <code>productCatalog</code> to both of these networks, as shown in the following diagram:</p>
+<div><div><img alt="Figure 10.3 – Container attached to multiple networks" height="141" src="img/B19199_10_03.jpg" width="511"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.3 – Container attached to multiple networks</p>
+<p>Since creating <a id="_idIndexMarker863"/>SDNs is cheap, and each network provides added security by isolating resources from unauthorized access, it is highly recommended that you design and run applications so that they use multiple networks and only run services on the same network that absolutely need to communicate with each other. In the preceding example, there is absolutely no need for the <code>webAPI</code> component to ever communicate directly with the <code>database</code> service, so we have put them on different networks. If the worst-case scenario happens and a hacker compromises <code>webAPI</code>, they won't be able to access the database from there without also hacking the <code>productCatalog</code> service.</p>
+<p>Now we are ready to discuss the first implementation of the CNM, the bridge network.</p>
+<h1 id="_idParaDest-223"><a id="_idTextAnchor223"/>Working with the bridge network</h1>
+<p>The Docker bridge network <a id="_idIndexMarker864"/>is the first implementation of the CNM that we’re going to look at in detail. This network implementation is based on the Linux bridge.</p>
+<p>When the Docker daemon runs for the first time, it creates a Linux bridge and calls it <code>docker0</code>. This is the default behavior and can be changed by changing the configuration.</p>
+<p>Docker then creates a network with this Linux bridge and calls it the network bridge. All the containers that we create on a Docker host and that we do not explicitly bind to another network lead to Docker automatically attaching the containers to this bridge network.</p>
+<p>To verify that we indeed have a network called <code>bridge</code> of the <code>bridge</code> type defined on our host, we can list all the networks on the host with the following command:</p>
+<pre class="source-code">
+$ docker network ls</pre> <p>This should provide an output similar to the following:</p>
+<div><div><img alt="Figure 10.4 – Listing all the Docker networks available by default" height="112" src="img/B19199_10_04.jpg" width="428"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.4 – Listing all the Docker networks available by default</p>
+<p>In your case, the IDs will be different, but the rest of the output should look the same. We do indeed have a first network called <code>bridge</code> using the <code>bridge</code> driver. The scope being <code>local</code> just means that this type of network is restricted to a single host and cannot span across multiple hosts. In <em class="italic"> </em><a href="B19199_14.xhtml#_idTextAnchor303"><em class="italic">Chapter 14</em></a>, <em class="italic">Introducing</em><em class="italic"> Docker Swarm</em>, we will also discuss other types of networks that have a global scope, meaning they can span whole clusters of hosts.</p>
+<p>Now, let’s look a <a id="_idIndexMarker865"/>little bit deeper into what this bridge network is all about. For this, we are going to use the Docker <code>inspect</code> command:</p>
+<pre class="source-code">
+$ docker network inspect bridge</pre> <p>When executed, this outputs a big chunk of detailed information about the network in question. This information should look as follows:</p>
+<div><div><img alt="Figure 10.5 – Output generated when inspecting the Docker bridge network" height="801" src="img/B19199_10_05.jpg" width="835"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.5 – Output generated when inspecting the Docker bridge network</p>
+<p>We<a id="_idIndexMarker866"/> saw the <code>ID</code>, <code>Name</code>, <code>Driver</code>, and <code>Scope</code> values when we listed<a id="_idIndexMarker867"/> all the networks, so that is nothing new, but let’s have a look at the <strong class="bold">IP address management</strong> (<strong class="bold">IPAM</strong>) block.</p>
+<p>IPAM is a piece of software that is used to track the IP addresses that are used on a computer. The important part of the IPAM block is the <em class="italic">config</em> node with its values for the subnet and gateway. The subnet for the bridge network is defined by default as <code>172.17.0.0/16</code>. This means that all containers attached to this network will get an IP address assigned by Docker that is taken from the given range, which is <code>172.17.0.2</code> to <code>172.17.255.255</code>. The <code>172.17.0.1</code> address is reserved for the router of this network whose role in this type of network is taken by the Linux bridge. We can expect that the very first container that will be attached to this network by Docker will get the <code>172.17.0.2</code> address. All subsequent containers will get a higher number; the following diagram illustrates this fact:</p>
+<div><div><img alt="Figure 10.6 – The bridge network" height="185" src="img/B19199_10_06.jpg" width="722"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.6 – The bridge network</p>
+<p>In the preceding diagram, we can see the network namespace of the host, which includes the host’s <code>eth0</code> endpoint, which is typically an NIC if the Docker host runs on bare metal or a virtual NIC if the Docker host is a VM. All traffic to the host comes through <code>eth0</code>. The Linux bridge is responsible for routing the network traffic between the host’s <a id="_idIndexMarker868"/>network and the subnet of the bridge network.</p>
+<p class="callout-heading">What is a NIC?</p>
+<p class="callout">A <strong class="bold">Network Interface Card</strong> (<strong class="bold">NIC</strong>), sometimes <a id="_idIndexMarker869"/>referred to as a network interface connector, is a hardware component that enables a computer or device to connect to a network. It serves as an interface between the computer and the network, allowing data to be transmitted and received. NICs are typically built-in components on motherboards or installed as expansion cards and support various types of network connections, such as Ethernet, Wi-Fi, or fiber-optic connections.</p>
+<p>By default, only egress traffic is allowed, and all ingress is blocked. What this means is that while containerized applications can reach the internet, they cannot be reached by any outside traffic. Each container attached to the network gets its own <strong class="bold">virtual ethernet</strong> (<strong class="bold">veth</strong>) connection<a id="_idIndexMarker870"/> to the bridge. This is illustrated in the following diagram:</p>
+<div><div><img alt="Figure 10.7 – Details of the bridge network" height="347" src="img/B19199_10_07.jpg" width="352"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.7 – Details of the bridge network</p>
+<p>The preceding <a id="_idIndexMarker871"/>diagram shows us the world from the perspective of the host. We will explore what this situation looks like from within a container later on in this section. We are not limited to just the bridge network, as Docker allows us to define our own custom bridge networks. This is not just a feature that is nice to have; it is a recommended best practice not to run all containers on the same network. Instead, we should use additional bridge networks to further isolate containers that have no need to communicate with each other. To create a custom bridge network called <code>sample-net</code>, use the following command:</p>
+<pre class="source-code">
+$ docker network create --driver bridge sample-net</pre> <p>If we do this, we can then inspect what subnet Docker has created for this new custom network, as follows:</p>
+<pre class="source-code">
+$ docker network inspect sample-net | grep Subnet</pre> <p>This returns the following value:</p>
+<pre class="source-code">
+"Subnet": "172.18.0.0/16",</pre> <p>Evidently, Docker has just assigned the next free block of IP addresses to our new custom bridge network. If, for some reason, we want to specify our own subnet range when creating a network, we can do so by using the <code>--</code><code>subnet</code> parameter:</p>
+<pre class="source-code">
+$ docker network create --driver bridge --subnet "10.1.0.0/16" test-net</pre> <p class="callout-heading">Note</p>
+<p class="callout">To avoid conflicts due to duplicate IP addresses, make sure you avoid creating networks with overlapping subnets.</p>
+<p>Now that<a id="_idIndexMarker872"/> we have discussed what a bridge network is and how we can create a custom bridge network, we want to understand how we can attach containers to these networks.</p>
+<p>First, let’s interactively run an Alpine container without specifying the network to be attached:</p>
+<pre class="source-code">
+$ docker container run --name c1 -it --rm alpine:latest /bin/sh</pre> <p>In another Terminal window, let’s inspect the <code>c1</code> container:</p>
+<pre class="source-code">
+$ docker container inspect c1</pre> <p>In the vast output, let’s concentrate for a moment on the part that provides network-related information. This can be found under the <code>NetworkSettings</code> node. I have it listed in the following output:</p>
+<div><div><img alt="Figure 10.8 – The NetworkSettings section of the container metadata" height="910" src="img/B19199_10_08.jpg" width="953"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.8 – The NetworkSettings section of the container metadata</p>
+<p>In the <a id="_idIndexMarker873"/>preceding output, we can see that the container is indeed attached to the bridge network since <code>NetworkID</code> is equal to <code>d172692...</code>, which we can see from the preceding code being the ID of the bridge network. We can also see that the container was assigned the IP address of <code>172.17.0.2</code> as expected and that the gateway is at <code>172.17.0.1</code>.</p>
+<p>Please note that the container also had a <code>MacAddress</code> associated with it. This is important as the Linux bridge uses the <code>MacAddress</code> for routing.</p>
+<p>So far, we have approached this from the outside of the container’s network namespace. Now, let’s see what the situation looks like when we’re not only inside the container but inside the container’s network namespace. Inside the <code>c1</code> container, let’s use the <code>ip</code> tool to inspect what’s going on. Run the <code>ip addr</code> command and observe the output that is generated, as follows:</p>
+<div><div><img alt="Figure 10.9 – Container namespace, as seen by the IP tool" height="270" src="img/B19199_10_09.jpg" width="1169"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.9 – Container namespace, as seen by the IP tool</p>
+<p>The interesting part of the preceding output is <code>54:</code>, that is, the <code>eth0</code> endpoint. The <code>veth0</code> endpoint that the Linux bridge created outside of the container namespace is mapped to <code>eth0</code> inside the container. Docker always maps the first endpoint of a container network namespace to <code>eth0</code>, as seen from inside the namespace. If the network namespace is attached to an additional network, then that endpoint will be mapped to <code>eth1</code>, and so on.</p>
+<p>Since at this point, we’re <a id="_idIndexMarker874"/>not really interested in any endpoint other than <code>eth0</code>, we could have used a more specific variant of the command, which would have given us the following:</p>
+<div><div><img alt="Figure 10.10 – eth0 endpoint as seen from inside of the container" height="109" src="img/B19199_10_10.jpg" width="879"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.10 – eth0 endpoint as seen from inside of the container</p>
+<p>In the output, we can also see what MAC address (<code>02:42:ac:11:00:02</code>) and what IP (<code>172.17.0.2</code>) have been associated with this container network namespace by Docker.</p>
+<p>We can also get some information about how requests are routed by using the <code>ip </code><code>route</code> command:</p>
+<pre class="source-code">
+/ # ip route</pre> <p>This gives us the following output:</p>
+<pre class="source-code">
+default via 172.17.0.1 dev eth0172.17.0.0/16 dev eth0 scope link  src 172.17.0.2</pre>
+<p>This output tells us that all the traffic to the gateway at <code>172.17.0.1</code> is routed through the <code>eth0</code> device.</p>
+<p>Now, let’s run another container called <code>c2</code> on the same network and in <code>detach</code> mode:</p>
+<pre class="source-code">
+$ docker container run --name c2 -d --rm alpine:latest ping 127.0.0.1</pre> <p>The <code>c2</code> container will also be attached to the bridge network since we have not specified any other network. Its IP address will be the next free one within the subnet, which is <code>172.17.0.3</code>, as we can readily test with the following command:</p>
+<pre class="source-code">
+$ docker container inspect --format "{{.NetworkSettings.IPAddress}}" c2</pre> <p>This results in the following output:</p>
+<pre class="source-code">
+172.17.0.3</pre> <p>Now, we have two <a id="_idIndexMarker875"/>containers attached to the bridge network. We can try to inspect this network once again to find a list of all containers attached to it in the output:</p>
+<pre class="source-code">
+$ docker network inspect bridge</pre> <p>This information can be found under the <code>Containers</code> node:</p>
+<div><div><img alt="Figure 10.11 – The Containers section of the output of the Docker network inspect bridge" height="450" src="img/B19199_10_11.jpg" width="946"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.11 – The Containers section of the output of the Docker network inspect bridge</p>
+<p>Once again, we <a id="_idIndexMarker876"/>have shortened the output to the relevant part for readability.</p>
+<p>Now, let’s create two additional containers, <code>c3</code> and <code>c4</code>, and attach them to <code>sample-net</code>, which we created earlier. For this, we’ll use the <code>--</code><code>network</code> parameter:</p>
+<pre class="source-code">
+$ docker container run --name c3 --rm -d \    --network sample-net \
+    alpine:latest ping 127.0.0.1
+$ docker container run --name c4 --rm -d \
+    --network sample-net \
+    alpine:latest ping 127.0.0.1</pre>
+<p>Let’s inspect the <code>sample-net</code> network and confirm that <code>c3</code> and <code>c4</code> are indeed attached to it:</p>
+<pre class="source-code">
+$ docker network inspect sample-net</pre> <p>This will give us the following output for the <code>Containers</code> section:</p>
+<div><div><img alt="Figure 10.12 – The Containers section of the Docker network inspect test-net command" height="453" src="img/B19199_10_12.jpg" width="943"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.12 – The Containers section of the Docker network inspect test-net command</p>
+<p>The next question we’re<a id="_idIndexMarker877"/> going to ask ourselves is whether the <code>c3</code> and <code>c4</code> containers can freely communicate with each other. To demonstrate that this is indeed the case, we can <code>exec</code> into the <code>c3</code> container:</p>
+<pre class="source-code">
+$ docker container exec -it c3 /bin/sh</pre> <p>Once inside the container, we can try to <code>ping</code> container <code>c4</code> by name and by IP address:</p>
+<pre class="source-code">
+/ # ping c4</pre> <p>We should get this output:</p>
+<pre class="source-code">
+PING c4 (172.20.0.3): 56 data bytes64 bytes from 172.20.0.3: seq=0 ttl=64 time=3.092 ms
+64 bytes from 172.20.0.3: seq=1 ttl=64 time=0.481 ms
+...</pre>
+<p>Instead of the container name, here, we use <code>c4</code>’s IP address:</p>
+<pre class="source-code">
+/ # ping 172.20.0.3</pre> <p>We should see the following result:</p>
+<pre class="source-code">
+PING 172.20.0.3 (172.20.0.3): 56 data bytes64 bytes from 172.20.0.3: seq=0 ttl=64 time=0.200 ms
+64 bytes from 172.20.0.3: seq=1 ttl=64 time=0.172 ms
+...</pre>
+<p>The answer in both cases confirms to us that the communication between containers attached to the same network is working as expected. The fact that we can even use the name of the container we want to connect to shows us that the name resolution provided by the Docker DNS service works inside this network.</p>
+<p>Now, we want to make sure that the <code>bridge</code> and <code>sample-net</code> networks are firewalled from each other. To demonstrate this, we can try to <code>ping</code> the <code>c2</code> container from the <code>c3</code> container, either by its name or by its IP address. Let’s start with pinging by name:</p>
+<pre class="source-code">
+/ # ping c2</pre> <p>This results in the<a id="_idIndexMarker878"/> following output:</p>
+<pre class="source-code">
+ping: bad address 'c2'</pre> <p>The following is the result of the ping using the IP address of the <code>c2</code> container instead:</p>
+<pre class="source-code">
+/ # ping 172.17.0.3</pre> <p>It gives us this output:</p>
+<pre class="source-code">
+PING 172.17.0.3 (172.17.0.3): 56 data bytes^C
+--- 172.17.0.3 ping statistics ---
+11 packets transmitted, 0 packets received, 100% packet loss</pre>
+<p>The preceding command remained hanging and I had to terminate the command with <em class="italic">Ctrl </em>+ <em class="italic">C</em>. From the output of pinging <code>c2</code>, we can also see that the name resolution does not work across networks. This is the expected behavior. Networks provide an extra layer of isolation, and thus security, to containers.</p>
+<p>Earlier, we learned that a container can be attached to multiple networks. Let’s first create a network called <code>test-net</code>. Note that the following command does not define the driver of the network; thus, the default driver is used, which happens to be the bridge driver:</p>
+<pre class="source-code">
+$ docker network create test-net</pre> <p>Then, we attach a container, <code>c5</code>, to our <code>sample-net</code> network:</p>
+<pre class="source-code">
+$ docker container run --name c5 --rm -d \    --network sample-net
+    alpine:latest ping 127.0.0.1</pre>
+<p>Then, we attach the <code>c6</code> container to the <code>sample-net</code> and <code>test-net</code> networks at the same time:</p>
+<pre class="source-code">
+$ docker container run --name c6 --rm -d \    --network sample-net \
+    alpine:latest ping 127.0.0.1
+$ docker network connect test-net c6</pre>
+<p>Now, we can test that <code>c6</code> is <a id="_idIndexMarker879"/>reachable from the <code>c5</code> container attached to the <code>test-net</code> network, as well as from the <code>c3</code> container attached to the <code>sample-net</code> network. The result will show that the connection indeed works.</p>
+<p>If we want to remove an existing network, we can use the <code>docker network rm</code> command, but note that we cannot accidentally delete a network that has containers attached to it:</p>
+<pre class="source-code">
+$ docker network rm test-net</pre> <p>It results in this output:</p>
+<pre class="source-code">
+Error response from daemon: network test-net id 455c922e... has active endpoints</pre> <p>Before we continue, let’s clean up and remove all the containers:</p>
+<pre class="source-code">
+$ docker container rm -f $(docker container ls -aq)</pre> <p>Now, we can remove the two custom networks that we created:</p>
+<pre class="source-code">
+$ docker network rm sample-net$ docker network rm test-net</pre>
+<p>Alternatively, we could remove all the networks that no container is attached to with the <code>prune</code> command:</p>
+<pre class="source-code">
+$ docker network prune --force</pre> <p>I used the <code>--force</code> (or <code>-f</code>) argument here to prevent Docker from reconfirming that I really want to remove all unused networks.</p>
+<p>Double-check with the <code>docker network ls</code> command that you are only left with the three default <a id="_idIndexMarker880"/>networks provided by Docker.</p>
+<p>The next network types we are going to inspect a bit are the <code>host</code> and <code>null</code> network types.</p>
+<h1 id="_idParaDest-224"><a id="_idTextAnchor224"/>The host and null networks</h1>
+<p>In this section, we are going to look at two predefined and somewhat unique types of networks, the host and the null networks. Let’s start with the former.</p>
+<h2 id="_idParaDest-225"><a id="_idTextAnchor225"/>The host network</h2>
+<p>There are occasions<a id="_idIndexMarker881"/> when we want to run a container in the network namespace of the host. This may be necessary when we need to run some software in a container that is used to analyze or debug the host network's traffic, but keep in mind that these are very specific scenarios. When running business software in containers, there is no good reason to ever run the respective containers attached to the host’s network. For security reasons, it is strongly recommended that you do not run any such container attached to the host network in a production or production-like environment.</p>
+<p>That said, how can we run a container inside the network namespace of the host? Simply by attaching the container to the <code>host</code> network:</p>
+<ol>
+<li>Run an Alpine container and attach it to the <code>host</code> network:<pre class="source-code">
+$ docker container run --rm -it \    --network host \    alpine:latest /bin/sh</pre></li> <li>Use the <code>ip</code> tool to analyze the network namespace from within the container. You will see that we get exactly the same picture as we would if we were running the <code>ip</code> tool directly on the host. For example, I inspect the <code>eth0</code> device on my laptop with the following:<pre class="source-code">
+/ # ip addr show eth0</pre></li> </ol>
+<p>As a result, I get this:</p>
+<div><div><img alt="Figure 10.13 – Showing the eth0 device from inside a container" height="151" src="img/B19199_10_13.jpg" width="861"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.13 – Showing the eth0 device from inside a container</p>
+<p>Here, I can see<a id="_idIndexMarker882"/> that <code>192.168.65.3</code> is the IP address that the host has been assigned and that the MAC address shown here also corresponds to that of the host.</p>
+<ol>
+<li value="3">We can also inspect the routes:<pre class="source-code">
+/ # ip route</pre></li> </ol>
+<p>On my MacBook Air M1, this is what I get:</p>
+<div><div><img alt="Figure 10.14 – Routes from within a container" height="86" src="img/B19199_10_14.jpg" width="530"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.14 – Routes from within a container</p>
+<p>Before we move on to the next section of this chapter, I want to once again point out that running a container on the host network can be dangerous due to potential security vulnerabilities and conflicts:</p>
+<ul>
+<li><strong class="bold">Security risks</strong>: By using <a id="_idIndexMarker883"/>the host network, the container has the same network access as the host machine. This means that if an application running within the container has a vulnerability that is exploited, the attacker could gain access to the host network and potentially compromise other services or data.</li>
+<li><strong class="bold">Port conflicts</strong>: When<a id="_idIndexMarker884"/> a container uses the host network, it shares the same network namespace as the host. This means that if your containerized application and a host application listen on the same port, there can be conflicts.</li>
+<li><strong class="bold">Isolation</strong>: One of the<a id="_idIndexMarker885"/> major benefits of using Docker is the isolation it provides at various levels (process, filesystem, or network). By using the host network, you lose this level of isolation, which could lead to unforeseen issues.</li>
+</ul>
+<p>Therefore, it’s generally recommended to use a user-defined network instead of the host network when running Docker containers, as it provides better isolation and reduces the risk of conflicts and security vulnerabilities.</p>
+<h2 id="_idParaDest-226"><a id="_idTextAnchor226"/>The null network</h2>
+<p>Sometimes, we need to run <a id="_idIndexMarker886"/>a few application services or jobs that do not need any network connection at all to execute the task at hand. It is strongly advised that you run those applications in a container that is attached to the <code>none</code> network. This container will be completely isolated and is thus safe from any outside access. Let’s run such a container:</p>
+<pre class="source-code">
+$ docker container run --rm -it \    --network none \
+    alpine:latest /bin/sh</pre>
+<p>Once inside the container, we can verify that there is no <code>eth0</code> network endpoint available:</p>
+<pre class="source-code">
+/ # ip addr show eth0ip: can't find device 'eth0'</pre>
+<p>There is also no routing information available, as we can demonstrate by using the following command:</p>
+<pre class="source-code">
+/ # ip route</pre> <p>This <a id="_idIndexMarker887"/>returns nothing.</p>
+<p>In the following section, we are going to learn how we can run a container inside the existing network namespace of another container.</p>
+<h1 id="_idParaDest-227"><a id="_idTextAnchor227"/>Running in an existing network namespace</h1>
+<p>Normally, Docker<a id="_idIndexMarker888"/> creates a new network namespace for <a id="_idIndexMarker889"/>each container we run. The network namespace of the container corresponds to the sandbox of the container network model we described earlier on. As we attach the container to a network, we define an endpoint that connects the container network namespace to the actual network. This way, we have one container per network namespace.</p>
+<p>Docker provides an additional way for us to define the network namespace that a container runs in. When creating a new container, we can specify that it should be attached to (or maybe we should say included in) the network namespace of an existing container. With this technique, we can run multiple containers in a single network namespace:</p>
+<div><div><img alt="Figure 10.15 – Multiple containers running in a single network namespace" height="191" src="img/B19199_10_15.jpg" width="452"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.15 – Multiple containers running in a single network namespace</p>
+<p>In the preceding diagram, we can see that in the leftmost network namespace, we have two containers. The two containers, since they share the same namespace, can communicate on <code>localhost</code> with each other. The network namespace (and not the individual containers) is then attached to the <strong class="bold">front</strong> network.</p>
+<p>This is useful when we want to debug the network of an existing container without running additional processes inside that container. We can just attach a special utility container to the network namespace of the container to inspect. This feature is also used by Kubernetes when it creates a Pod. We will learn more about Kubernetes and Pods in subsequent chapters of this book.</p>
+<p>Now, let’s<a id="_idIndexMarker890"/> demonstrate <a id="_idIndexMarker891"/>how this works:</p>
+<ol>
+<li>First, we create a new <code>bridge</code> network:<pre class="source-code">
+$ docker network create --driver bridge test-net</pre></li> <li>Next, we run a container attached to this network:<pre class="source-code">
+$ docker container run --name web -d \    --network test-net \    nginx:alpine</pre></li> <li>Finally, we run another container and attach it to the network of our web container:<pre class="source-code">
+$ docker container run -it --rm \    --network container:web \    alpine:latest /bin/sh</pre></li> </ol>
+<p>Specifically, note how we define the network: <code>--network container:web</code>. This tells Docker that our new container will use the same network namespace as the container called <code>web</code>.</p>
+<ol>
+<li value="4">Since the new container is in the same network namespace as the web container running nginx, we’re now able to access nginx on <code>localhost</code>! We can prove this by using the <code>wget</code> tool, which is part of the Alpine container, to connect to nginx. We should see the following:<pre class="source-code">
+/ # wget -qO – localhost&lt;!DOCTYPE html&gt;&lt;html&gt;&lt;head&gt;&lt;title&gt;Welcome to nginx!&lt;/title&gt;...&lt;/html&gt;</pre></li> </ol>
+<p>Note that we have shortened the output for readability. Please also note that there is an important difference between running two containers attached to the same network and two containers running in the same network namespace. In both cases, the containers can freely communicate with each other, but in the latter case, the communication happens over <code>localhost</code>.</p>
+<ol>
+<li value="5">To<a id="_idIndexMarker892"/> clean up the container and network, we can<a id="_idIndexMarker893"/> use the following command:<pre class="source-code">
+$ docker container rm --force web$ docker network rm test-net</pre></li> </ol>
+<p>In the next section, we are going to learn how to expose container ports on the container host.</p>
+<h1 id="_idParaDest-228"><a id="_idTextAnchor228"/>Managing container ports</h1>
+<p>Now that we know how we can<a id="_idIndexMarker894"/> isolate firewall containers from each other by placing them on different networks, and that we can have a container attached to more than one network, we have one problem that remains unsolved. How can we expose an application service to the outside world? Imagine a container running a web server hosting our <code>webAPI</code> from before. We want customers from the internet to be able to access this API. We have designed it to be a publicly accessible API. To achieve this, we have to, figuratively speaking, open a gate in our firewall through which we can funnel external traffic to our API. For security reasons, we don’t just want to open the doors wide; we want to have a single controlled gate that traffic flows through.</p>
+<p>We can create this kind of gate by mapping a container port to an available port on the host. We’re also calling this container port to publish a port. Remember that the container has its own virtual network stack, as does the host. Therefore, container ports and host ports exist completely independently and by default have nothing in common at all, but we can now wire a container port with a free host port and funnel external traffic through this<a id="_idIndexMarker895"/> link, as illustrated in the following diagram:</p>
+<div><div><img alt="Figure 10.16 – Mapping container ports to host ports" height="263" src="img/B19199_10_16.jpg" width="471"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.16 – Mapping container ports to host ports</p>
+<p>But now, it is time to <a id="_idIndexMarker896"/>demonstrate how we can actually map a container port to a host port. This is done when creating a container. We have different ways of doing so:</p>
+<ol>
+<li>First, we can let Docker decide which host port our container port should be mapped to. Docker will then select one of the free host ports in the range of <code>32xxx</code>. This automatic mapping is done by using the <code>-</code><code>P</code> parameter:<pre class="source-code">
+$ docker container run --name web -P -d nginx:alpine</pre></li> </ol>
+<p>The preceding command runs an nginx server in a container. nginx is listening at port <code>80</code> inside the container. With the <code>-P</code> parameter, we’re telling Docker to map all the exposed container ports to a free port in the <code>32xxx</code> range. We can find out which host port Docker is using by using the <code>docker container </code><code>port</code> command:</p>
+<pre class="source-code">
+$ docker container port web80/tcp -&gt; 0.0.0.0:32768</pre>
+<p>The nginx container only exposes port <code>80</code>, and we can see that it has been mapped to the host port <code>32768</code>. If we open a new browser window and navigate to <code>localhost:32768</code>, we should see the following screen:</p>
+<div><div><img alt="Figure 10.17 – The welcome page of nginx" height="421" src="img/B19199_10_17.jpg" width="918"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.17 – The welcome page of nginx</p>
+<ol>
+<li value="2">An<a id="_idIndexMarker897"/> alternative way to find out which host port Docker is using for our container is to inspect it. The host port is part of the <code>NetworkSettings</code> node:<pre class="source-code">
+$ docker container inspect web | grep HostPort        "HostPort": "32768"</pre></li> <li>Finally, the third way of getting this information is to list the container:<pre class="source-code">
+$ docker container lsCONTAINER ID IMAGE ... PORTS NAMES56e46a14b6f7 nginx:alpine ... 0.0.0.0:32768-&gt;80/tcp web</pre></li> </ol>
+<p>Please note that in the preceding output, the <code>/tcp</code> part tells us that the port has been opened for communication with the TCP protocol, but not for the UDP protocol. TCP is the default, and if we want to specify that we want to open the port for UDP, then we have to specify this explicitly. The special (IP) address, <code>0.0.0.0</code>, in the mapping tells us that traffic from any host IP address can now reach container port <code>80</code> of the web container.</p>
+<ol>
+<li value="4">Sometimes, we want to map a container port to a very specific host port. We can do this by using the <code>-p</code> parameter (or <code>--publish</code>). Let’s look at how this is done with the following command:<pre class="source-code">
+$ docker container run --name web2 -p 8080:80 -d nginx:alpine</pre></li> </ol>
+<p>The value of the <code>-p</code> parameter is in the form of <code>&lt;host port&gt;:&lt;container port&gt;</code>. Therefore, in the preceding case, we map container port <code>80</code> to host port <code>8080</code>. Once the <code>web2</code> container runs, we can test it in the browser by navigating to <code>localhost:8080</code>, and we should be greeted by the same nginx welcome page that we saw in the previous example that dealt with automatic port mapping.</p>
+<p>When using<a id="_idIndexMarker898"/> the UDP protocol for communication over a certain port, the publish parameter will look like so: <code>-p 3000:4321/udp</code>. Note that if we want to allow communication with both TCP and UDP protocols<a id="_idIndexMarker899"/> over the same port, then we have to map each protocol separately.</p>
+<p>In the next section, we will talk about HTTP routing using a reverse proxy.</p>
+<h1 id="_idParaDest-229"><a id="_idTextAnchor229"/>HTTP-level routing using a reverse proxy</h1>
+<p>Imagine <a id="_idIndexMarker900"/>you have been tasked with containerizing a <a id="_idIndexMarker901"/>monolithic application. The application has organically evolved over the years into an unmaintainable behemoth. Changing even a minor feature in the source code may break other features due to the tight coupling that exists in the code base. Releases are rare due to their complexity and require the whole team to be on board. The application has to be taken down during the release window, which costs the company a lot of money due to lost opportunities, not to mention their loss of reputation.</p>
+<p>Management has decided to put an end to that vicious cycle and improve the situation by containerizing the monolith. This alone will lead to a massively decreased time between releases, as witnessed within the industry. As a later step, the company wants to break out every piece of functionality from the monolith and implement it as a microservice. This process will continue until the monolith has been completely starved.</p>
+<p>But it is this second point that leads to some head-scratching for the team involved. How will we break down the monolith into loosely coupled microservices without affecting all the many clients of the monolith out there? The public API of the monolith, though very complex, has a well-structured design. Public URIs were carefully crafted and should not be changed at any cost. For example, there is a product catalog function implemented in the app that can be accessed via <a href="https://acme.com/catalog?category=bicycles">https://acme.com/catalog?category=bicycles</a> so that we can access a list of bicycles offered by the company.</p>
+<p>On the other hand, there is a URL called <code>https://acme.com/checkout</code> that we can use to initiate the checkout of a customer’s shopping cart, and so on. I hope it is clear where we are going with this.</p>
+<h2 id="_idParaDest-230"><a id="_idTextAnchor230"/>Containerizing the monolith</h2>
+<p>Let’s start <a id="_idIndexMarker902"/>with the monolith. I have prepared a simple code base that has been implemented in Python 3.7 and uses Flask to implement the public REST API. The sample app is not really a full-blown application but just complex enough to allow for some redesign. The sample code can be found in the <code>ch10/e-shop</code> folder. Inside this folder is a subfolder called <code>monolith</code> containing the Python application. Follow these steps:</p>
+<ol>
+<li>In a new Terminal window, navigate to that folder, install the required dependencies, and run the application:<pre class="source-code">
+$ cd ~/The-Ultimate-Docker-Container-Book$ cd ch10/e-shop/monolith$ pip install -r requirements.txt$ export FLASK_APP=main.py$ flask run</pre></li> </ol>
+<p>The application will start and listen on localhost on port <code>5000</code>:</p>
+<div><div><img alt="Figure 10.18 – Running the Python monolith" height="131" src="img/B19199_10_18.jpg" width="1189"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.18 – Running the Python monolith</p>
+<ol>
+<li value="2">We can use <code>curl</code> to test the app. Open another Terminal window and use the following command to retrieve a list of all the bicycles the company offers:<pre class="source-code">
+$ curl localhost:5000/catalog?type=bicycle</pre></li> </ol>
+<p>This results in the following output:</p>
+<pre class="source-code">
+[{"id": 1, "name": "Mountanbike Driftwood 24", "unitPrice": 199},{"id": 2, "name": "Tribal 100 Flat Bar Cycle Touring Road Bike",
+"unitPrice": 300}, {"id": 3, "name": "Siech Cycles Bike (58 cm)",
+"unitPrice": 459}]</pre>
+<p>Here, we have a JSON-formatted list of three types of bicycles. OK – so far, so good.</p>
+<ol>
+<li value="3">Now, let’s change the <code>hosts</code> file, add an entry for <code>acme.com</code>, and map it to <code>127.0.0.1</code>, the loop-back address. This way, we can simulate a real client accessing the app at <code>http://acme.com/catalog?type=bicycle</code> instead of using <code>localhost</code>. You need to use <code>sudo</code> to edit the <code>/etc/hosts</code> file on a macOS or on Linux. You should add a line to the <code>hosts</code> file that looks like this:<pre class="source-code">
+127.0.0.1 acme.com</pre></li> </ol>
+<p class="callout-heading">Windows host file</p>
+<p class="callout">On Windows, you can edit the file by, for example, running Notepad as an administrator, opening the <code>c:\Windows\System32\Drivers\etc\hosts</code> file, and modifying it.</p>
+<ol>
+<li value="4">Save your<a id="_idIndexMarker903"/> changes and assert that it works by pinging <code>acme.com</code>:<pre class="source-code">
+$ ping acme.comPING acme.com (127.0.0.1): 56 data bytes64 bytes from 127.0.0.1: icmp_seq=0 ttl=55 time&lt;1 ms64 bytes from 127.0.0.1: icmp_seq=1 ttl=55 time&lt;1 ms64 bytes from 127.0.0.1: icmp_seq=2 ttl=55 time&lt;1 ms...</pre></li> </ol>
+<p>After all this, it is time to containerize the application. The only change we need to make to the application is ensuring that we have the application web server listening on <code>0.0.0.0</code> instead of <code>localhost</code>.</p>
+<ol>
+<li value="5">We can do this easily by modifying the application and adding the following start logic at the end of <code>main.py</code>:<pre class="source-code">
+if __name__ == '__main__':    app.run(host='0.0.0.0', port=5000)</pre></li> <li>Then, we <a id="_idIndexMarker904"/>can start the application as follows:<pre class="source-code">
+$ python main.py.</pre></li> <li>Now, add a Dockerfile to the monolith folder with the following content:</li>
+</ol>
+<div><div><img alt="Figure 10.19 – The Dockerfile for the monolith" height="326" src="img/B19199_10_19.jpg" width="576"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.19 – The Dockerfile for the monolith</p>
+<ol>
+<li value="8">In your Terminal window, from within the monolith folder, execute the following command to build a Docker image for the application:<pre class="source-code">
+$ docker image build -t acme/eshop:1.0 .</pre></li> <li>After the image has been built, try to run the application:<pre class="source-code">
+$ docker container run --rm -it \    --name eshop \    -p 5000:5000 \    acme/eshop:1.0</pre></li> </ol>
+<p>Notice that the output from the app now running inside a container is indistinguishable from what we got when running the application directly on the host. We can now test whether the application still works as before by using the two <code>curl</code> commands to access the catalog and the checkout logic:</p>
+<div><div><img alt="Figure 10.20 – Testing the monolith while running in a container" height="130" src="img/B19199_10_20.jpg" width="1144"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 10.20 – Testing the monolith while running in a container</p>
+<p>Evidently, the <a id="_idIndexMarker905"/>monolith still works exactly the same way as before, even when using the correct URL, that is, <code>http://acme.com</code>. Great! Now, let’s break out part of the monolith’s functionality into a Node.js microservice, which will be deployed separately.</p>
+<h2 id="_idParaDest-231"><a id="_idTextAnchor231"/>Extracting the first microservice</h2>
+<p>The team, after <a id="_idIndexMarker906"/>some brainstorming, has decided that the catalog product is a good candidate for the first piece of functionality that is cohesive yet self-contained enough to be extracted from the monolith. They decide to implement the product catalog as a microservice implemented in Node.js.</p>
+<p>You can find the code they came up with and the Dockerfile in the <code>catalog</code> subfolder of the project folder, that is, <code>e-shop</code>. It is a simple Express.js application that replicates the functionality that was previously available in the monolith. Let’s get started:</p>
+<ol>
+<li>In your Terminal window, from within the <code>catalog</code> folder, build the Docker image for this new microservice:<pre class="source-code">
+$ docker image build -t acme/catalog:1.0 .</pre></li> <li>Then, run a container from the new image you just built:<pre class="source-code">
+$ docker run --rm -it --name catalog -p 3000:3000 \    acme/catalog:1.0</pre></li> <li>From a <a id="_idIndexMarker907"/>different Terminal window, try to access the microservice and validate that it returns the same data as the monolith:<pre class="source-code">
+$ curl http://acme.com:3000/catalog?type=bicycle</pre></li> </ol>
+<p>Please notice the differences in the URL compared to when accessing the same functionality in the monolith. Here, we are accessing the microservice on port <code>3000</code> (instead of <code>5000</code>).</p>
+<p>But we said that we didn’t want to have to change the clients that access our e-shop application. What can we do? Luckily, there are solutions to problems like this. We need to reroute incoming requests. We’ll show you how to do this in the next section.</p>
+<h2 id="_idParaDest-232"><a id="_idTextAnchor232"/>Using Traefik to reroute traffic</h2>
+<p>In the <a id="_idIndexMarker908"/>previous section, we realized that we would have to reroute incoming traffic with a target URL starting with <code>http://acme.com:5000/catalog</code> to an alternative URL such as <code>product-catalog:3000/catalog</code>. We will be using Traefik to do exactly that.</p>
+<p>Traefik<a id="_idIndexMarker909"/> is a cloud-native edge router and it is open source, which is great for our specific case. It even has a nice web UI that you can use to manage and monitor your routes. Traefik can be combined with Docker in a very straightforward way, as we will see in a moment.</p>
+<p>To integrate well with Docker, Traefik relies on the metadata found for each container or service. This metadata can be applied in the form of labels that contain the routing information:</p>
+<ol>
+<li>First, let’s look <a id="_idIndexMarker910"/>at how to run <a id="_idIndexMarker911"/>the <code>catalog</code> service. Here is the Docker <code>run</code> command:<pre class="source-code">
+$ docker container run --rm -d \    --name catalog \    --label traefik.enable=true \    --label traefik.port=3000 \    --label traefik.priority=10 \    --label traefik.http.routers.catalog.rule=\             "Host(\"acme.com\") &amp;&amp; PathPrefix(\"/catalog\")" \    acme/catalog:1.0</pre></li> </ol>
+<p>Let’s quickly look at the four labels we define:</p>
+<ul>
+<li><code>traefik.enable=true</code>: This tells Traefik that this particular container should be included in the routing (the default is <code>false</code>).</li>
+<li><code>traefik.port=3000</code>: The router should forward the call to port <code>3000</code> (which is the port that the Express.js app is listening on).</li>
+<li><code>traefik.priority=10</code>: This gives this route high priority. We will see why in a second.</li>
+<li><code>traefik.http.routers.catalog.rule="Host(\"acme.com\") &amp;&amp; PathPrefix(\"/catalog\")"</code>: The route must include the hostname, <code>acme.com</code>, and the path must start with <code>/catalog</code> in order to be rerouted to this service. As an example, <code>acme.com/catalog?type=bicycles</code> would qualify for this rule.</li>
+<li>Please note the special form of the fourth label. Its general form is <code>traefik.http.routers.&lt;service name&gt;.rule</code>.</li>
+</ul>
+<ol>
+<li value="2">Now, let’s look at how we can run the <code>eshop</code> container:<pre class="source-code">
+$ docker container run --rm -d \    --name eshop \    --label traefik.enable=true \    --label traefik.port=5000 \    --label traefik.priority=1 \    --label traefik.http.routers.eshop.rule=\              "Host(\"acme.com\")" \    acme/eshop:1.0</pre></li> </ol>
+<p>Here, we forward any matching calls to port <code>5000</code>, which corresponds to the port where the <code>eshop</code> application is listening. Pay attention to the priority, which is set to <code>1</code> (low). This, in combination with the high priority of the catalog service, allows us to filter out all URLs starting with <code>/catalog</code> and redirect them to the <code>catalog</code> service, while all other URLs will go to the <code>eshop</code> service.</p>
+<ol>
+<li value="3">Now, we can<a id="_idIndexMarker912"/> finally run Traefik<a id="_idIndexMarker913"/> as the edge router that will serve as a reverse proxy in front of our application. This is how we start it:<pre class="source-code">
+$ docker run -d \    --name traefik \    -p 8080:8080 \    -p 80:80 \    -v /var/run/docker.sock:/var/run/docker.sock \    traefik:v2.0 --api.insecure=true --providers.docker</pre></li> </ol>
+<p>Note how we mount the Docker socket into the container using the <code>-v</code> (or <code>--volume</code>) parameter so that Traefik can interact with the Docker engine. We will be able to send web traffic to port <code>80</code> of Traefik, from where it will be rerouted according to our rules in the routing definitions found in the metadata of the participating container. Furthermore, we can access the web UI of Traefik via port <code>8080</code>.</p>
+<ol>
+<li value="4">Now that everything is running, that is, the monolith, the first microservice called <code>catalog</code>, and Traefik, we can test whether everything works as expected. Use <code>curl</code> once again to do so:<pre class="source-code">
+$ curl http://acme.com/catalog?type=bicycles$ curl http://acme.com/checkout</pre></li> </ol>
+<p>As we<a id="_idIndexMarker914"/> mentioned earlier, we are<a id="_idIndexMarker915"/> now sending all traffic to port <code>80</code>, which is the port Traefik is listening on. This proxy will then reroute the traffic to the correct destination.</p>
+<ol>
+<li value="5">Before proceeding, stop and remove all containers:<pre class="source-code">
+$ docker container rm -f traefik eshop catalog</pre></li> </ol>
+<p>That’s it for this chapter.</p>
+<h1 id="_idParaDest-233"><a id="_idTextAnchor233"/>Summary</h1>
+<p>In this chapter, we learned about how containers running on a single host can communicate with each other. First, we looked at the CNM, which defines the requirements of a container network, and then we looked at several implementations of the CNM, such as the bridge network. We then looked at how the bridge network functions in detail and also what kind of information Docker provides us with about the networks and the containers attached to those networks. We also learned about adopting two different perspectives, from both outside and inside the container.</p>
+<p>In the next chapter, we’re going to introduce Docker Compose. We will learn about creating an application that consists of multiple services, each running in a container, and how Docker Compose allows us to easily build, run, and scale such an application using a declarative approach.</p>
+<h1 id="_idParaDest-234"><a id="_idTextAnchor234"/>Further reading</h1>
+<p>Here are some articles that describe the topics that were presented in this chapter in more detail:</p>
+<ul>
+<li><em class="italic">Docker networking </em><em class="italic">overview</em>: <a href="http://dockr.ly/2sXGzQn">http://dockr.ly/2sXGzQ</a>n</li>
+<li><em class="italic">What is a </em><em class="italic">bridge?</em>: <a href="https://bit.ly/2HyC3Od">https://bit.ly/2HyC3Od</a></li>
+<li><em class="italic">Using bridge </em><em class="italic">networks</em>: <a href="http://dockr.ly/2BNxjRr">http://dockr.ly/2BNxjRr</a></li>
+<li><em class="italic">Using Macvlan </em><em class="italic">networks</em>: <a href="http://dockr.ly/2ETjy2x">http://dockr.ly/2ETjy2x</a></li>
+<li><em class="italic">Networking using the host </em><em class="italic">network</em>: <a href="http://dockr.ly/2F4aI59">http://dockr.ly/2F4aI59</a></li>
+</ul>
+<h1 id="_idParaDest-235"><a id="_idTextAnchor235"/>Questions</h1>
+<p>To assess the skills that you have gained from this chapter, please try to answer the following questions:</p>
+<ol>
+<li>Name the three core elements of the <strong class="bold">container network </strong><strong class="bold">model</strong> (<strong class="bold">CNM</strong>).</li>
+<li>How do you create a custom <code>bridge</code> network called, for example, <code>frontend</code>?</li>
+<li>How do you run two <code>nginx:alpine</code> containers attached to the frontend network?</li>
+<li>For the frontend network, get the following:<ul><li>The IPs of all the attached containers</li><li>The subnet associated with the network</li></ul></li>
+<li>What is the purpose of the <code>host</code> network?</li>
+<li>Name one or two scenarios where the use of the <code>host</code> network is appropriate.</li>
+<li>What is the purpose of the <code>none</code> network?</li>
+<li>In what scenarios should the <code>none</code> network be used?</li>
+<li>Why would we use a reverse proxy such as Traefik together with our containerized application?</li>
+</ol>
+<h1 id="_idParaDest-236"><a id="_idTextAnchor236"/>Answers</h1>
+<p>Here are example answers for the questions of this chapter:</p>
+<ol>
+<li>The three core elements of the Docker CNM are as follows:<ul><li><strong class="bold">Sandbox</strong>: A network namespace for a container where its network stack resides</li><li><strong class="bold">Endpoint</strong>: An interface that connects a container to a network</li><li><strong class="bold">Network</strong>: A collection of endpoints that can communicate with each other directly</li></ul></li>
+<li>To create a custom Docker <code>bridge</code> network called <code>frontend</code>, you can use the <code>docker network create</code> command with the <code>--driver</code> flag set to <code>bridge</code> (which is the default driver) and the <code>--subnet</code> flag to specify the subnet for the network. Here’s an example command:<pre class="source-code">
+$ docker network create --driver bridge \    --subnet 172.25.0.0/16 frontend</pre></li> </ol>
+<p>This will create a bridge network named <code>frontend</code> with a subnet of <code>172.25.0.0/16</code>. You can then use this network when starting containers with the <code>--</code><code>network</code> option:</p>
+<pre class="source-code">
+$ docker run --network frontend &lt;docker-image&gt;</pre> <ol>
+<li value="3">To run two <code>nginx:alpine</code> containers attached to the <code>frontend</code> network that we created earlier, you can use the following <code>docker </code><code>run</code> commands:<pre class="source-code">
+$ docker run --name nginx1 --network frontend -d nginx:alpine$ docker run --name nginx2 --network frontend -d nginx:alpine</pre></li> </ol>
+<p>These commands will start two containers named <code>nginx1</code> and <code>nginx2</code> with the <code>nginx:alpine</code> image and attach them to the <code>frontend</code> network. The <code>-d</code> flag runs the containers in the background as daemons. You can then access the containers by their container names (<code>nginx1</code> and <code>nginx2</code>) or their IP addresses within the <code>frontend</code> network.</p>
+<ol>
+<li value="4">Here is the solution:<ol><li>To get the IPs of all the containers attached to the <code>frontend</code> Docker network, you can use the <code>docker network inspect</code> command, followed by the network name. Here’s an example command:</li></ol><pre class="source-code">
+<code>$ docker network inspect frontend --format='{{range .Containers}}{{.IPv4Address}} {{end}}'</code></pre><ol><li value="2">This will output the IPv4 addresses of all the containers attached to the frontend network, separated by spaces.</li><li>To get the subnet associated with the <code>frontend</code> network, you can again use the <code>docker network inspect</code> command followed by the network name. Here’s an example command:</li></ol><pre class="source-code"><code>$ docker network inspect frontend --format='{{json .IPAM.Config}}' | jq -r '.[].Subnet'</code></pre><ol><li value="4">This will output the subnet associated with the <code>frontend</code> network in CIDR notation (e.g., <code>172.25.0.0/16</code>). The <code>jq</code> command is used here to parse the output of the <code>docker network inspect</code> command and extract the subnet.</li></ol></li> <li>The Docker <code>host</code> network is a networking mode that allows a Docker container to use the host’s networking stack instead of creating a separate network namespace. In other words, containers running in <code>host</code> network mode can directly access the network interfaces and ports of the Docker host machine.</li>
+</ol>
+<p>The purpose of using the <code>host</code> network mode is to improve network performance since it avoids the overhead of containerization and network virtualization. This mode is often used for applications that require low-latency network communication or need to listen on a large number of ports.</p>
+<p>However, using the <code>host</code> network mode can also present security risks since it exposes the container’s services directly on the Docker host’s network interfaces, potentially making them accessible to other containers or hosts on the same network.</p>
+<ol>
+<li value="6">The Docker <code>host</code> network mode is appropriate for scenarios where network performance is critical and where network isolation is not a requirement. For example, see the following:<ul><li>In cases where the containerized application needs to communicate with other services running on the host machine, such as a database or cache service, the use of the <code>host</code> network mode can improve performance by eliminating the need for <code>host</code> network mode can simplify network configuration and management by allowing the container to use the same network interfaces and IP addresses as the host machine, without the need to manage port mapping between the container and host network namespaces.</li></ul></li>
+<li>The purpose of the Docker <code>none</code> network is to completely disable networking for a container. When a container is started with the <code>none</code> network mode, it does not have any network interfaces or access to the network stack of the host machine. This means that the container cannot communicate with the outside world or any other container.</li>
+</ol>
+<p>The <code>none</code> network mode is useful in scenarios where the container does not require network connectivity, such as when running a batch process or a single-use container that performs a specific task and then exits. It can also be used for security purposes, to isolate the container from the network and prevent any potential network-based attacks.</p>
+<p>It’s important to note that when a container is started with the <code>none</code> network mode, it can still access its own filesystem and any volumes that are mounted to it. However, if the container requires network access later on, it must be stopped and restarted with a different network mode.</p>
+<ol>
+<li value="8">The Docker <code>none</code> network mode is useful in scenarios where the container does not require network connectivity, such as the following:<ul><li>Running a batch process or a single-use container that performs a specific task and then exits</li><li>Running a container that does not need to communicate with other containers or the host machine</li><li>Running a container that has no need for external network access, such as a container that is used only for testing or debugging</li><li>Running a container that requires high security and isolation from the network</li></ul></li>
+<li>There are several reasons why we might use a reverse proxy such as Traefik together with our containerized application:<ul><li><strong class="bold">Load balancing</strong>: A reverse proxy can distribute incoming traffic across multiple instances of our application running on different containers, ensuring that no single instance becomes overwhelmed with requests.</li><li><strong class="bold">Routing</strong>: With a reverse proxy, we can route incoming requests to the appropriate container based on the URL or domain name. This allows us to run multiple applications on the same host, each with its own unique domain or URL.</li><li><strong class="bold">SSL/TLS termination</strong>: A reverse proxy can terminate SSL/TLS connections and handle certificate management, eliminating the need for our application to do this itself. This can simplify our application code and reduce the risk of security vulnerabilities.</li><li><strong class="bold">Security</strong>: A reverse proxy can act as a buffer between our application and the public internet, providing an additional layer of security. For example, it can block certain types of traffic or filter out malicious requests.</li><li><strong class="bold">Scalability</strong>: By using a reverse proxy such as Traefik, we can quickly and easily scale our application up or down by adding or removing containers. The reverse proxy can automatically route traffic to the appropriate containers, making it easy to manage our application’s infrastructure.</li></ul></li>
+</ol>
+</div>
+</div></body></html>

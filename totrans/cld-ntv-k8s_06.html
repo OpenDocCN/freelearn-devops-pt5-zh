@@ -1,0 +1,523 @@
+<html><head></head><body>
+		<div><h1 id="_idParaDest-105"><em class="italic"><a id="_idTextAnchor106"/>Chapter 4</em>: Scaling and Deploying Your Application</h1>
+			<p>In this chapter, we will learn about the higher-level Kubernetes resources that are used to run applications and control Pods. First, we'll cover the drawbacks of the Pod, before moving on to the simplest Pod controller, ReplicaSets. From there we will move on to Deployments, the most popular method for deploying applications to Kubernetes. Then we'll cover special resources to help you deploy specific types of applications – Horizontal Pod Autoscalers, DaemonSets, StatefulSets, and Jobs. Finally, we'll put it all together with a full example of how to run a complex application on Kubernetes.</p>
+			<p>In this chapter, we will cover the following topics:</p>
+			<ul>
+				<li>Understanding Pod drawbacks and their solutions</li>
+				<li>Using ReplicaSets</li>
+				<li>Controlling Deployments</li>
+				<li>Harnessing the Horizontal Pod Autoscaler</li>
+				<li>Implementing DaemonSets</li>
+				<li>Reviewing StatefulSets and Jobs</li>
+				<li>Putting it all together</li>
+			</ul>
+			<h1 id="_idParaDest-106"><a id="_idTextAnchor107"/>Technical requirements</h1>
+			<p>In order to run the commands detailed in this chapter, you will need a computer that supports the <code>kubectl</code> command-line tool along with a working Kubernetes cluster. See <a href="B14790_01_Final_PG_ePub.xhtml#_idTextAnchor016"><em class="italic">Chapter 1</em></a>, <em class="italic">Communicating with Kubernetes</em>, for several methods to get up and running with Kubernetes quickly, and for instructions on how to install the <code>kubectl</code> tool.</p>
+			<p>The code used in this chapter can be found in the book's GitHub repository at <a href="https://github.com/PacktPublishing/Cloud-Native-with-Kubernetes/tree/master/Chapter4">https://github.com/PacktPublishing/Cloud-Native-with-Kubernetes/tree/master/Chapter4</a>.</p>
+			<h1 id="_idParaDest-107"><a id="_idTextAnchor108"/>Understanding Pod drawbacks and their solutions</h1>
+			<p>As we <a id="_idIndexMarker197"/>reviewed in the previous chapter, <a href="B14790_03_Final_PG_ePub.xhtml#_idTextAnchor091"><em class="italic">Chapter 3</em></a>, <em class="italic">Running Application Containers on Kubernetes</em>, a Pod in Kubernetes is an instance of one or more application <a id="_idIndexMarker198"/>containers that run on a node. Creating just one Pod is enough to run an application the same way you would in any other container.</p>
+			<p>That being said, using a single Pod to run an application ignores many of the benefits of running containers in the first place. Containers allow us to treat each instance of our application as a stateless item that can be scaled up or down to meet demand by spinning up new instances of the application.</p>
+			<p>This has <a id="_idIndexMarker199"/>the benefits of both allowing us to scale our application easily and making our application more available by providing multiple instances of our application at a given time. If one <a id="_idIndexMarker200"/>of our instances crashes, the application will still continue to function, and will automatically scale to pre-crash levels. The way we do this on Kubernetes is by using a Pod controller resource.</p>
+			<h2 id="_idParaDest-108"><a id="_idTextAnchor109"/>Pod controllers</h2>
+			<p>Kubernetes provides several choices for Pod controllers out of the box. The simplest option is to use a ReplicaSet, which <a id="_idIndexMarker201"/>maintains a given number of Pod instances for a particular Pod. If one instance fails, the ReplicaSet will spin up a new instance to replace it.</p>
+			<p>Secondly, there are Deployments, which themselves control a ReplicaSet. Deployments are the most popular controller when it comes to running an application on Kubernetes, and they make it easy to upgrade applications using a rolling update across a ReplicaSet.</p>
+			<p>Horizontal Pod Autoscalers take Deployments to the next level by allowing applications to autoscale to different numbers of instances based on performance metrics.</p>
+			<p>Finally, there are a few specialty controllers that may be valuable in certain situations: </p>
+			<ul>
+				<li>DaemonSets, which run an instance of the application on each node and maintain them</li>
+				<li>StatefulSets, where the Pod identity is kept static to assist in running stateful workloads</li>
+				<li>Jobs, which start, run to completion, and then shut down on a specified number of Pods</li>
+			</ul>
+			<p>The actual behavior of a controller, be it a default Kubernetes controller like a ReplicaSet or a custom controller (for instance, the PostgreSQL Operator), should be easy to predict. A simplified view of the standard control loop looks something like the following diagram:</p>
+			<div><div><img src="img/B14790_04_001.jpg" alt="Figure 4.1 – A basic control loop for a Kubernetes controller"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 4.1 – A basic control loop for a Kubernetes controller</p>
+			<p>As you can see, the controller constantly checks the<strong class="bold"> Intended cluster state</strong> (we want seven Pods of this app) against the <strong class="bold">Current cluster state</strong> (we have five Pods of this app running). When the intended state does not match the current state, the controller will take action via the API to correct the current state to match the intended state.</p>
+			<p>By now, you should <a id="_idIndexMarker202"/>understand why controllers are necessary on Kubernetes: the Pod itself is not a powerful enough primitive when it comes to delivering highly available applications. Let's move on to the simplest such controller: the ReplicaSet.</p>
+			<h1 id="_idParaDest-109"><a id="_idTextAnchor110"/>Using ReplicaSets</h1>
+			<p>ReplicaSets are the simplest Kubernetes Pod controller resource. They replace the older ReplicationController resource.</p>
+			<p>The major <a id="_idIndexMarker203"/>difference between a ReplicaSet and a ReplicationController is that a ReplicationController uses a more basic type of <em class="italic">selector</em> – the filter that determines which Pods should be controlled. </p>
+			<p>While ReplicationControllers use simple equity-based (<em class="italic">key=value</em>) selectors, ReplicaSets use a selector with multiple possible formats, such as <code>matchLabels</code> and <code>matchExpressions</code>, which will be reviewed in this chapter. </p>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">There shouldn't be any reason to use a ReplicationController over a ReplicaSet – just stick with ReplicaSets unless you have a really good reason not to.</p>
+			<p>ReplicaSets allow us to inform Kubernetes to maintain a certain number of Pods for a particular Pod spec. The YAML for a ReplicaSet is very similar to that for a Pod. In fact, the entire Pod spec is nested in the ReplicaSet YAML, under the <code>template</code> key.</p>
+			<p>There are also a few other key differences, which can be observed in the following code block:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">replica-set.yaml</p>
+			<pre>apiVersion: apps/v1
+kind: ReplicaSet
+metadata:
+  name: myapp-group
+  labels:
+    app: myapp
+spec:
+<strong class="bold">  replicas: 3</strong>
+<strong class="bold">  selector:</strong>
+<strong class="bold">    matchLabels:</strong>
+<strong class="bold">      app: myapp</strong>
+  template:
+    metadata:
+      labels:
+        app: myapp
+    spec:
+      containers:
+      - name: myapp-container
+        image: busybox</pre>
+			<p>As you <a id="_idIndexMarker204"/>can see, in addition to the <code>template</code> section, which is essentially a Pod definition, we have a <code>selector</code> key and a <code>replicas</code> key in our ReplicaSet spec. Let's start with <code>replicas</code>.</p>
+			<h2 id="_idParaDest-110"><a id="_idTextAnchor111"/>Replicas</h2>
+			<p>The <code>replicas</code> key specifies a replica count, which our ReplicaSet will ensure is always running at a given time. If a Pod <a id="_idIndexMarker205"/>dies or stops working, our ReplicaSet will create a new Pod to take its place. This makes the ReplicaSet a self-healing resource.</p>
+			<p>How does <a id="_idIndexMarker206"/>a ReplicaSet controller decide when a Pod stops working? It looks at the Pod's status. If the Pod's current status isn't "<em class="italic">Running</em>" or "<em class="italic">ContainerCreating</em>", the ReplicaSet will attempt to start a new Pod.</p>
+			<p>As we discussed in <a href="B14790_03_Final_PG_ePub.xhtml#_idTextAnchor091"><em class="italic">Chapter 3</em></a>, <em class="italic">Running Application Containers on Kubernetes</em>, the Pod's status after container creation is driven by the liveness, readiness, and startup probes, which can be configured specifically for a Pod. This means that you can set up application-specific ways to know whether a Pod is broken in some way, and your ReplicaSet can jump in and start a new one in its place.</p>
+			<h2 id="_idParaDest-111"><a id="_idTextAnchor112"/>Selector</h2>
+			<p>The <code>selector</code> key is important because of the way a ReplicaSet works – it is a controller that is implemented <a id="_idIndexMarker207"/>with the selector at its core. The ReplicaSet's job is to ensure that the number <a id="_idIndexMarker208"/>of running Pods that match its selector is correct.</p>
+			<p>Let's say, for instance, that you have an existing Pod running your application, <code>MyApp</code>. This Pod is labeled with a <code>selector</code> key as <code>App=MyApp</code>.</p>
+			<p>Now let's say you want to create a ReplicaSet with the same app, which will add an additional three instances of your application. You create a ReplicaSet with the same selector, and specify three replicas, with the intent of running four instances in total, since you already have one running.</p>
+			<p>What will happen once you start the ReplicaSet? You'll find that the total number of Pods running that application will be three, not four. This is because a ReplicaSet has the ability to adopt orphaned Pods and bring them under its reign.</p>
+			<p>When the ReplicaSet starts up, it sees that there is already an existing Pod matching its <code>selector</code> key. Depending on the number of replicas required, a ReplicaSet will shut down existing Pods or start new Pods that match the <code>selector</code> in order to create the correct number.</p>
+			<h2 id="_idParaDest-112"><a id="_idTextAnchor113"/>Template</h2>
+			<p>The <code>template</code> section contains the Pod and supports all the same fields as Pod YAMLs do, including the metadata <a id="_idIndexMarker209"/>section and the spec itself. Most other controllers follow this pattern – they allow you to define the Pod spec within the larger overall controller YAML.</p>
+			<p>You should now understand the various parts of the ReplicaSet spec and what they do. Let's move on to actually running applications using our ReplicaSet.</p>
+			<h2 id="_idParaDest-113"><a id="_idTextAnchor114"/>Testing a ReplicaSet</h2>
+			<p>Now, let's <a id="_idIndexMarker210"/>deploy our ReplicaSet. </p>
+			<p>Copy the <code>replica-set.yaml</code> file listed previously and run it on your cluster using the following command in the same folder as your YAML file:</p>
+			<pre>kubectl apply -f replica-set.yaml</pre>
+			<p>To check that the ReplicaSet has been created properly, run <code>kubectl get pods</code> to fetch the Pods in the default namespace. </p>
+			<p>Since we haven't specified a namespace for our ReplicaSet, it will be created by default. The <code>kubectl get pods</code> command should give you the following:</p>
+			<pre>NAME                            READY     STATUS    RESTARTS   AGE
+myapp-group-192941298-k705b     1/1       Running   0          1m
+myapp-group-192941298-o9sh8     1/1       Running   0        1m
+myapp-group-192941298-n8gh2     1/1       Running   0        1m</pre>
+			<p>Now, try deleting one of the ReplicaSet Pods by using the following command:</p>
+			<pre>kubectl delete pod myapp-group-192941298-k705b</pre>
+			<p>A ReplicaSet will always try to keep the specified number of replicas online. </p>
+			<p>Let's use our <code>kubectl get</code> command to see our running pods again:</p>
+			<pre>NAME                         READY  STATUS             RESTARTS AGE
+myapp-group-192941298-u42s0  1/1    ContainerCreating  0     1m
+myapp-group-192941298-o9sh8  1/1    Running            0     2m
+myapp-group-192941298-n8gh2  1/1    Running            0     2m</pre>
+			<p>As you can see, our ReplicaSet controller is starting a new pod to keep our number of replicas at three.</p>
+			<p>Finally, let's delete our ReplicaSet using the following command:</p>
+			<pre>kubectl delete replicaset myapp-group</pre>
+			<p>With our cluster a bit cleaner, let's move on to a more complex controller – Deployments.</p>
+			<h1 id="_idParaDest-114"><a id="_idTextAnchor115"/>Controlling Deployments</h1>
+			<p>Though ReplicaSets contain much of the functionality you would want to run a high availability application, most of <a id="_idIndexMarker211"/>the time you will want to use Deployments to run applications on Kubernetes.</p>
+			<p>Deployments have a few advantages over ReplicaSets, and they actually work by owning and controlling a ReplicaSet.</p>
+			<p>The main advantage of a Deployment is that it allows you to specify a <code>rollout</code> procedure – that is, how an application upgrade is deployed to the various pods in the Deployment. This lets you easily configure controls to stop bad upgrades in their tracks. </p>
+			<p>Before we review how to do this, let's look at the entire spec for a Deployment:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">deployment.yaml</p>
+			<pre>apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp-deployment
+  labels:
+    app: myapp
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25% 
+  selector:
+    matchLabels:
+      app: myapp
+  template:
+    metadata:
+      labels:
+        app: myapp
+    spec:
+      containers:
+      - name: myapp-container
+        image: busybox</pre>
+			<p>As you can see, this is very similar to the spec for a ReplicaSet. The difference we see here is a new key in the spec: <code>strategy</code>.</p>
+			<p>Using the <code>strategy</code> setting, we can tell our Deployment which way to upgrade our application, either via a <code>RollingUpdate</code>, or <code>Recreate</code>.</p>
+			<p><code>Recreate</code> is a very basic deployment method: all Pods in the Deployment will be deleted at the same time, and new Pods will be created with the new version. <code>Recreate</code> doesn't give us much control against a bad Deployment – if the new Pods don't start for some reason, we're stuck with a completely <a id="_idIndexMarker212"/>non-functioning application.</p>
+			<p>With <code>RollingUpdate</code> on the other hand, Deployments are slower but far more controlled. Firstly, the new application will be rolled out bit by bit, Pod by Pod. We can specify values for <code>maxSurge</code> and <code>maxUnavailable</code> to tune the strategy.</p>
+			<p>A rolling update works like this – when the Deployment spec is updated with a new version of the Pod container, the Deployment will take down one Pod at a time, create a new Pod with the new application version, wait for the new Pod to register <code>Ready</code> as determined by the readiness check, and then move on to the next Pod.</p>
+			<p>The <code>maxSurge</code> and <code>maxUnavailable</code> parameters allow you to speed up or slow down this process. <code>maxUnavailable</code> allows you to tune the maximum number of unavailable Pods during the rollout process. This can be either a percentage or a fixed number. <code>maxSurge</code> allows you to tune the maximum number of Pods over the Deployment replica number that can be created at any given time. Like with <code>maxUnavailable</code>, this can be a percentage or a fixed number.</p>
+			<p>The following diagram shows the <code>RollingUpdate</code> procedure:</p>
+			<div><div><img src="img/B14790_04_002.jpg" alt="Figure 4.2 – RollingUpdate process for a Deployment"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 4.2 – RollingUpdate process for a Deployment</p>
+			<p>As you <a id="_idIndexMarker213"/>can see, the <code>RollingUpdate</code> procedure follows several key steps. The Deployment attempts to update Pods, one by one. Only after a Pod is successfully updated does the update proceed to the next Pod.</p>
+			<h2 id="_idParaDest-115"><a id="_idTextAnchor116"/>Controlling Deployments with imperative commands</h2>
+			<p>As we've <a id="_idIndexMarker214"/>discussed, we can change our Deployment by simply updating its YAML using declarative methods. However, Kubernetes also gives us some <a id="_idIndexMarker215"/>special commands in <code>kubectl</code> for controlling several aspects of Deployments.</p>
+			<p>First off, Kubernetes lets us manually scale a Deployment – that is, we can edit the amount of replicas that should be running.</p>
+			<p>To scale our <code>myapp-deployment</code> up to five replicas, we can run the following:</p>
+			<pre>kubectl scale deployment myapp-deployment --replicas=5</pre>
+			<p>Similarly, we can roll back our <code>myapp-deployment</code> to an older version if required. To demonstrate this, first let's manually edit our Deployment to use a new version of our container:</p>
+			<pre>Kubectl set image deployment myapp-deployment myapp-container=busybox:1.2 –record=true</pre>
+			<p>This command tells Kubernetes to change the version of our container in our Deployment to 1.2. Then, our Deployment will go through the steps in the preceding figure to roll out our change.</p>
+			<p>Now, let's say that we want to go back to our previous version before we updated the container image version. We can easily do this using the <code>rollout undo</code> command:</p>
+			<pre>Kubectl rollout undo deployment myapp-deployment</pre>
+			<p>In our <a id="_idIndexMarker216"/>previous case, we only had two versions, the initial one and our version with the updated container, but if we had others, we could specify <a id="_idIndexMarker217"/>them in the <code>undo</code> command like this:</p>
+			<pre>Kubectl rollout undo deployment myapp-deployment –to-revision=10</pre>
+			<p>This should give you a glimpse into why Deployments are so valuable – they give us fine-tuned control over rollout for new versions of our application. Next, we'll discuss a smart scaler for Kubernetes that works in concert with Deployments and ReplicaSets.</p>
+			<h1 id="_idParaDest-116"><a id="_idTextAnchor117"/>Harnessing the Horizontal Pod Autoscaler</h1>
+			<p>As we've seen, Deployments and ReplicaSets allow you to specify a total number of replicas that should be <a id="_idIndexMarker218"/>available at a certain time. However, neither <a id="_idIndexMarker219"/>of these structures allow automatic scaling – they must be scaled manually. </p>
+			<p><strong class="bold">Horizontal Pod Autoscalers</strong> (<strong class="bold">HPA</strong>) provide this functionality by existing as a higher-level controller that can change the replica count of a Deployment or ReplicaSet based on metrics such as CPU and memory usage.</p>
+			<p>By default, an HPA can autoscale based on CPU utilization, but by using custom metrics this functionality can be extended.</p>
+			<p>The YAML file for an HPA looks like this: </p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">hpa.yaml</p>
+			<pre>apiVersion: autoscaling/v1
+kind: HorizontalPodAutoscaler
+metadata:
+  name: myapp-hpa
+spec:
+  maxReplicas: 5
+  minReplicas: 2
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: myapp-deployment
+  targetCPUUtilizationPercentage: 70</pre>
+			<p>In the preceding spec, we have the <code>scaleTargetRef</code>, which specifies what should be autoscaled by the HPA, and the tuning parameters.</p>
+			<p>The definition of <code>scaleTargetRef</code> can be a Deployment, ReplicaSet, or ReplicationController. In this case, we've defined the HPA to scale our previously created Deployment, <code>myapp-deployment</code>.</p>
+			<p>For tuning parameters, we're using the default CPU utilization-based scaling, so we can use <code>targetCPUUtilizationPercentage</code> to define the intended CPU utilization of each Pod running our application. If the <a id="_idIndexMarker220"/>average CPU usage of our Pods increases past 70%, our HPA will scale the Deployment spec up, and if it drops below for long enough, it will scale the Deployment down.</p>
+			<p>A typical scaling event looks like this:</p>
+			<ol>
+				<li>The average CPU usage of a Deployment exceeds 70% on three replicas.</li>
+				<li>The HPA control loop notices this increase in CPU utilization.</li>
+				<li>The HPA edits the Deployment spec with a new replica count. This count is calculated based on CPU utilization, with the intent of a steady state per-node CPU usage under 70%.</li>
+				<li>The Deployment controller spins up a new replica.</li>
+				<li>This process repeats itself to scale the Deployment up or down.</li>
+			</ol>
+			<p>In summary, the HPA keeps track of CPU and memory utilization and initiates a scaling event when boundaries are exceeded. Next, we will review DaemonSets, which provide a very specific type of Pod controller.</p>
+			<h1 id="_idParaDest-117"><a id="_idTextAnchor118"/>Implementing DaemonSets</h1>
+			<p>From now until the end of the chapter, we will be reviewing more niche options when it comes to running <a id="_idIndexMarker221"/>applications with specific requirements.</p>
+			<p>We'll start with DaemonSets, which are similar to ReplicaSets except that the number of replicas is fixed at one replica per node. This means that each node in the cluster will keep one replica of the application active at any time. </p>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">It's important to keep in mind that this functionality will only create one replica per node in the absence of additional Pod placement controls, such as Taints or Node Selectors, which we will cover in greater detail in <a href="B14790_08_Final_PG_ePub.xhtml#_idTextAnchor186"><em class="italic">Chapter 8</em></a>, <em class="italic">Pod Placement Controls</em>.</p>
+			<p>This ends up looking like the following diagram for a typical DaemonSet:</p>
+			<div><div><img src="img/B14790_04_003.jpg" alt="Figure 4.3 – DaemonSet spread across three nodes"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 4.3 – DaemonSet spread across three nodes</p>
+			<p>As you can see in the preceding figure, each node (represented by a box) contains one Pod of the application, as controlled by the DaemonSet.</p>
+			<p>This makes <a id="_idIndexMarker222"/>DaemonSets great for running applications that collect metrics at the node level or provide networking processes on a per-node basis. A DaemonSet spec looks like this:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">daemonset-1.yaml</p>
+			<pre>apiVersion: apps/v1 
+kind: DaemonSet
+metadata:
+  name: log-collector
+spec:
+  selector:
+      matchLabels:
+        name: log-collector   
+  template:
+    metadata:
+      labels:
+        name: log-collector
+    spec:
+      containers:
+      - name: fluentd
+        image: fluentd</pre>
+			<p>As you can see, this is very similar to your typical ReplicaSet spec, except that we do not specify the number of replicas. This is because a DaemonSet will try to run a Pod on each node in your cluster.</p>
+			<p>If you want to specify a subset of nodes to run your application, you can do this using a node selector as shown in the following file:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">daemonset-2.yaml</p>
+			<pre>apiVersion: apps/v1 
+kind: DaemonSet
+metadata:
+  name: log-collector
+spec:
+  selector:
+      matchLabels:
+        name: log-collector   
+  template:
+    metadata:
+      labels:
+        name: log-collector
+    spec:
+      nodeSelector:
+        type: bigger-node 
+      containers:
+      - name: fluentd
+        image: fluentd</pre>
+			<p>This YAML <a id="_idIndexMarker223"/>will restrict our DaemonSet to nodes that match the <code>type=bigger-node</code> selector in their labels. We will learn much more about Node Selectors in <a href="B14790_08_Final_PG_ePub.xhtml#_idTextAnchor186"><em class="italic">Chapter 8</em></a>, <em class="italic">Pod Placement Controls</em>. For now, let's discuss a type of controller well suited to running stateful applications such as databases – the StatefulSet.</p>
+			<h1 id="_idParaDest-118"><a id="_idTextAnchor119"/>Understanding StatefulSets</h1>
+			<p>StatefulSets are very similar to ReplicaSets and Deployments, but with one key difference that makes them <a id="_idIndexMarker224"/>better for stateful workloads. StatefulSets maintain the order and identity of each Pod, even if the Pods are rescheduled onto new nodes.</p>
+			<p>For instance, in a StatefulSet of 3 replicas, there will always be Pod 1, Pod 2, and Pod 3, and those Pods will maintain their identity in Kubernetes and storage (which we'll get to in <a href="B14790_07_Final_PG_ePub.xhtml#_idTextAnchor166"><em class="italic">Chapter 7</em></a>, <em class="italic">Storage on Kubernetes</em>), regardless of any rescheduling that happens. </p>
+			<p>Let's take a look at a simple StatefulSet configuration: </p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">statefulset.yaml</p>
+			<pre>apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: stateful
+spec:
+  selector:
+    matchLabels:
+      app: stateful-app
+  replicas: 5
+  template:
+    metadata:
+      labels:
+        app: stateful-app
+    spec:
+      containers:
+      - name: app
+        image: busybox</pre>
+			<p>This YAML will create a StatefulSet with five replicas of our app. </p>
+			<p>Let's see <a id="_idIndexMarker225"/>how the StatefulSet maintains Pod identity differently than a typical Deployment or ReplicaSet. Let's fetch all Pods using the command:</p>
+			<pre>kubectl get pods</pre>
+			<p>The output should look like the following: </p>
+			<pre>NAME      		   READY     STATUS    RESTARTS   AGE
+stateful-app-0     1/1       Running   0         55s
+stateful-app-1     1/1       Running   0         48s
+stateful-app-2     1/1       Running   0         26s
+stateful-app-3     1/1       Running   0         18s
+stateful-app-4     0/1       Pending   0         3s</pre>
+			<p>As you can see, in this example, we have our five StatefulSet Pods, each with a numeric indicator of their identity. This property is extremely useful for stateful applications such as a database cluster. In the case of running a database cluster on Kubernetes, the identity of the master versus replica Pods is important, and we can use StatefulSet identities to easily manage that. </p>
+			<p>Another point of interest is that you can see the final Pod is still starting up, and that the Pod ages increase as numeric identity increases. This is because StatefulSet Pods are created one at a time, in order.</p>
+			<p>StatefulSets are valuable in concert with persistent Kubernetes storage in order to run stateful applications. We'll learn <a id="_idIndexMarker226"/>more about this in <a href="B14790_07_Final_PG_ePub.xhtml#_idTextAnchor166"><em class="italic">Chapter 7</em></a>, <em class="italic">Storage On Kubernetes</em>, but for now, let's discuss another controller with a very specific use: Jobs.</p>
+			<h1 id="_idParaDest-119"><a id="_idTextAnchor120"/>Using Jobs</h1>
+			<p>The purpose of the Job resource in Kubernetes is to run tasks that can complete, which makes them not ideal <a id="_idIndexMarker227"/>for long-running applications, but great for batch jobs or similar tasks that can benefit from parallelism.</p>
+			<p>Here's what a Job spec YAML looks like: </p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">job-1.yaml</p>
+			<pre>apiVersion: batch/v1
+kind: Job
+metadata:
+  name: runner
+spec:
+  template:
+    spec:
+      containers:
+      - name: run-job
+        image: node:lts-jessie
+        command: ["node", "job.js"]
+      restartPolicy: Never
+  backoffLimit: 4</pre>
+			<p>This Job will start a single Pod, and run a command, <code>node job.js</code>, until it completes, at which point the Pod will shut down. In this and the future examples, we assume that the container image used has a file, <code>job.js</code>, that runs the job logic. The <code>node:lts-jessie</code> container image will not have this by default. This is an example of a Job that runs without parallelism. As you are likely aware from Docker usage, multiple command arguments must be passed as an array of strings.</p>
+			<p>In order to create a Job that can run with parallelism (that is to say, multiple replicas running the Job at the same time), you need to develop your application code in a way that it can tell that the Job is completed before ending the process. In order to do this, each instance of the Job needs to contain code that ensures it does the right part of the greater batch task and prevents duplicate work from occurring. </p>
+			<p>There are several application patterns that can enable this, including a mutex lock and a Work Queue. In addition, the code needs to check the status of the entire batch task, which could again be handled by updating a value in a database. Once the Job code sees that the greater task is complete, it should exit. </p>
+			<p>Once you've done that, you can add parallelism to your job code using the <code>parallelism</code> key. The following code block shows this:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">job-2.yaml</p>
+			<pre>apiVersion: batch/v1
+kind: Job
+metadata:
+  name: runner
+spec:
+  parallelism: 3
+  template:
+    spec:
+      containers:
+      - name: run-job
+        image: node:lts-jessie
+        command: ["node", "job.js"]
+      restartPolicy: Never
+  backoffLimit: 4</pre>
+			<p>As you can see, we add the <code>parallelism</code> key with three replicas. Further, you can swap pure job parallelism for <a id="_idIndexMarker228"/>a specified number of completions, in which case Kubernetes can keep track of how many times the Job has been completed. You can still set parallelism for this case, but if you don't set it, it will default to 1.</p>
+			<p>This next spec will run a Job <code>4</code> times to completion, with <code>2</code> iterations running at any given time:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">job-3.yaml</p>
+			<pre>apiVersion: batch/v1
+kind: Job
+metadata:
+  name: runner
+spec:
+  parallelism: 2
+  completions: 4
+  template:
+    spec:
+      containers:
+      - name: run-job
+        image: node:lts-jessie
+        command: ["node", "job.js"]
+      restartPolicy: Never
+  backoffLimit: 4</pre>
+			<p>Jobs on <a id="_idIndexMarker229"/>Kubernetes provide a great way to abstract one-time processes, and many third-party applications link them into workflows. As you can see, they are very easy to use.</p>
+			<p>Next, let's look at a very similar resource, the CronJob.</p>
+			<h2 id="_idParaDest-120"><a id="_idTextAnchor121"/>CronJobs</h2>
+			<p>CronJobs are a Kubernetes resource for scheduled job execution. This works very similarly to CronJob <a id="_idIndexMarker230"/>implementations you may find in your favorite programming language or application framework, with one key difference. Kubernetes CronJobs trigger Kubernetes Jobs, which provide an additional layer of abstraction that can be used, for instance, to trigger batch Jobs at night, every night.</p>
+			<p>CronJobs in Kubernetes are configured using a very typical cron notation. Let's take a look at the full spec:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">cronjob-1.yaml</p>
+			<pre>apiVersion: batch/v1beta1
+kind: CronJob
+metadata:
+  name: hello
+spec:
+  schedule: "0 1 * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+           - name: run-job
+             image: node:lts-jessie
+             command: ["node", "job.js"]
+          restartPolicy: OnFailure</pre>
+			<p>This CronJob will, at 1 a.m. every day, create a Job that is identical to our previous Job spec. For a quick review of cron time notation, which will explain the syntax of our 1 a.m. job, read on. For a comprehensive <a id="_idIndexMarker231"/>review of cron notation, check <a href="http://man7.org/linux/man-pages/man5/crontab.5.html">http://man7.org/linux/man-pages/man5/crontab.5.html</a>.</p>
+			<p>Cron notation <a id="_idIndexMarker232"/>consists of five values, separated by spaces. Each value can be a numeric integer, character, or combination. Each of the five values represents a time value with the following format, from left to right:</p>
+			<ul>
+				<li>Minute</li>
+				<li>Hour</li>
+				<li>Day of the month (such as <code>25</code>)</li>
+				<li>Month</li>
+				<li>Day of the week (where, for example, <code>3</code> = Wednesday)</li>
+			</ul>
+			<p>The previous YAML assumes a non-parallel CronJob. If we wanted to increase the batch capacity of our CronJob, we could add parallelism as we did with our previous Job specs. The following code block shows this:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">cronjob-2.yaml</p>
+			<pre>apiVersion: batch/v1beta1
+kind: CronJob
+metadata:
+  name: hello
+spec:
+  schedule: "0 1 * * *"
+  jobTemplate:
+    spec:
+      parallelism: 3
+      template:
+        spec:
+          containers:
+           - name: run-job
+             image: node:lts-jessie
+             command: ["node", "job.js"]
+          restartPolicy: OnFailure</pre>
+			<p>Note that for this to work, the code in your CronJob container needs to gracefully handle parallelism, which could be implemented using a work queue or other such pattern. </p>
+			<p>We've now reviewed all the basic controllers that Kubernetes provides by default. Let's use our knowledge to <a id="_idIndexMarker233"/>run a more complex application example on Kubernetes in the next section.</p>
+			<h1 id="_idParaDest-121"><a id="_idTextAnchor122"/>Putting it all together</h1>
+			<p>We now <a id="_idIndexMarker234"/>have a toolset for running applications on Kubernetes. Let's look at a real-world example to see how this could all be combined to run an application with multiple tiers and functionality spread across Kubernetes resources:</p>
+			<div><div><img src="img/B14790_04_004.jpg" alt="Figure 4.4 – Multi-tier application diagram"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 4.4 – Multi-tier application diagram</p>
+			<p>As you can see, our diagrammed application contains a web tier running a .NET Framework application, a mid-tier or service tier running Java, a database tier running Postgres, and finally a logging/monitoring tier.</p>
+			<p>Our controller choices for each of these tiers are dependent on the applications we plan to run on each tier. For both the web tier and the mid-tier, we're running stateless applications and services, so we can effectively use Deployments to handle rolling out updates, blue/green deploys, and more.</p>
+			<p>For the database tier, we need our database cluster to know which Pod is a replica and which is a master – so we use a StatefulSet. And finally, our log collector needs to run on every node, so we use a DaemonSet to run it.</p>
+			<p>Now, let's go through example YAML specs for each of our tiers.</p>
+			<p>Let's start with our JavaScript-based web app. By hosting this application on Kubernetes, we can do canary tests and blue/green Deployments. As a note, some of the examples in this section use container image names that aren't publicly available in DockerHub. To use this pattern, adapt the examples to your own application containers, or just use busybox if you want to run it without actual application logic. </p>
+			<p>The YAML <a id="_idIndexMarker235"/>file for the web tier could look like this:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">example-deployment-web.yaml</p>
+			<pre>apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webtier-deployment
+  labels:
+    tier: web
+spec:
+  replicas: 10
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 50%
+      maxUnavailable: 25% 
+  selector:
+    matchLabels:
+      tier: web
+  template:
+    metadata:
+      labels:
+        tier: web
+    spec:
+      containers:
+      - name: reactapp-container
+        image: myreactapp</pre>
+			<p>In the preceding YAML, we're labeling our applications using the <code>tier</code> label and using that as our <code>matchLabels</code> selector.</p>
+			<p>Next up is the mid-tier service layer. Let's take a look at the relevant YAML: </p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">example-deployment-mid.yaml</p>
+			<pre>apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: midtier-deployment
+  labels:
+    tier: mid
+spec:
+  replicas: 8
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25% 
+  selector:
+    matchLabels:
+      tier: mid
+  template:
+    metadata:
+      labels:
+        tier: mid
+    spec:
+      containers:
+      - name: myjavaapp-container
+        image: myjavaapp</pre>
+			<p>As you can <a id="_idIndexMarker236"/>see in the preceding code, our mid-tier application is pretty similar to the web tier setup, and we're using another Deployment.</p>
+			<p>Now comes the interesting part – let's look at the spec for our Postgres StatefulSet. We have truncated this code block somewhat in order to fit on the page, but you should be able to see the most important parts:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">example-statefulset.yaml</p>
+			<pre>apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres-db
+  labels:
+    tier: db
+spec:
+  serviceName: "postgres"
+  replicas: 2
+  selector:
+    matchLabels:
+      tier: db
+  template:
+    metadata:
+      labels:
+        tier: db
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:latest
+        envFrom:
+          - configMapRef:
+              name: postgres-conf
+        volumeMounts:
+        - name: pgdata
+          mountPath: /var/lib/postgresql/data
+          subPath: postgres</pre>
+			<p>In the <a id="_idIndexMarker237"/>preceding YAML file, we can see some new concepts that we haven't reviewed yet – ConfigMaps and volumes. We'll get a much closer look at how these work in <em class="italic">Chapters 6</em>, <em class="italic">Kubernetes Application Configuration</em>, and <a href="B14790_07_Final_PG_ePub.xhtml#_idTextAnchor166"><em class="italic">Chapter 7</em></a>, <em class="italic">Storage on Kubernetes</em>, respectively, but for now let's focus on the rest of the spec. We have our <code>postgres</code> container as well as a port set up on the default Postgres port of <code>5432</code>.</p>
+			<p>Finally, let's take a look at our DaemonSet for our logging app. Here's a portion of the YAML file, which we've again truncated for length:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">example-daemonset.yaml</p>
+			<pre>apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: fluentd
+  namespace: kube-system
+  labels:
+    tier: logging
+spec:
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        tier: logging
+    spec:
+      tolerations:
+      - key: node-role.kubernetes.io/master
+        effect: NoSchedule
+      containers:
+      - name: fluentd
+        image: fluent/fluentd-kubernetes-daemonset:v1-debian-papertrail
+        env:
+          - name: FLUENT_PAPERTRAIL_HOST
+            value: "mycompany.papertrailapp.com"
+          - name: FLUENT_PAPERTRAIL_PORT
+            value: "61231"
+          - name: FLUENT_HOSTNAME
+            value: "DEV_CLUSTER"</pre>
+			<p>In this <a id="_idIndexMarker238"/>DaemonSet, we're setting up FluentD (a popular open source log collector) to forward logs to Papertrail, a cloud-based log collector and search tool. Again, in this YAML file, we have some things we haven't reviewed before. For instance, the <code>tolerations</code> section for <code>node-role.kubernetes.io/master</code> will actually allow our DaemonSet to place Pods on master nodes, not just worker nodes. We'll review how this works in <a href="B14790_08_Final_PG_ePub.xhtml#_idTextAnchor186"><em class="italic">Chapter 8</em></a>, <em class="italic">Pod Placement Controls</em>. </p>
+			<p>We're also specifying environment variables directly in the Pod spec, which is fine for relatively basic configurations, but <a id="_idIndexMarker239"/>could be improved by using Secrets or ConfigMaps (which we'll review in <a href="B14790_06_Final_PG_ePub.xhtml#_idTextAnchor143"><em class="italic">Chapter 6</em></a>, <em class="italic">Kubernetes Application Configuration</em>) to keep it out of our YAML code.</p>
+			<h1 id="_idParaDest-122"><a id="_idTextAnchor123"/>Summary</h1>
+			<p>In this chapter, we reviewed some methods of running applications on Kubernetes. To start, we reviewed why Pods themselves are not enough to guarantee application availability and introduced controllers. We then reviewed some simple controllers, including ReplicaSets and Deployments, before moving on to controllers with more specific uses such as HPAs, Jobs, CronJobs, StatefulSets, and DaemonSets. Finally, we took all our learning and used it to implement a complex application running on Kubernetes.</p>
+			<p>In the next chapter, we'll learn how to expose our applications (which are now running properly with high availability) to the world using Services and Ingress.</p>
+			<h1 id="_idParaDest-123"><a id="_idTextAnchor124"/>Questions</h1>
+			<ol>
+				<li value="1">What is the difference between a ReplicaSet and a ReplicationController?</li>
+				<li>What's the advantage of a Deployment over a ReplicaSet?</li>
+				<li>What is a good use case for a Job?</li>
+				<li>Why are StatefulSets better for stateful workloads?</li>
+				<li>How might we support a canary release flow using Deployments?</li>
+			</ol>
+			<h1 id="_idParaDest-124"><a id="_idTextAnchor125"/>Further reading</h1>
+			<ul>
+				<li>The official Kubernetes documentation: <a href="https://kubernetes.io/docs/home/">https://kubernetes.io/docs/home/</a></li>
+				<li>Documentation on the Kubernetes Job resource: <a href="https://kubernetes.io/docs/concepts/workloads/controllers/job/">https://kubernetes.io/docs/concepts/workloads/controllers/job/</a></li>
+				<li>Docs for FluentD DaemonSet installation: <a href="https://github.com/fluent/fluentd-kubernetes-daemonset">https://github.com/fluent/fluentd-kubernetes-daemonset</a></li>
+				<li><em class="italic">Kubernetes The Hard Way</em>: <a href="https://github.com/kelseyhightower/kubernetes-the-hard-way">https://github.com/kelseyhightower/kubernetes-the-hard-way</a></li>
+			</ul>
+		</div>
+	</body></html>

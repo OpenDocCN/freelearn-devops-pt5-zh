@@ -1,0 +1,473 @@
+<html><head></head><body>
+<div><div><div><div><div><h1 class="title" id="calibre_pb_0"><a id="ch02" class="calibre1"/>Chapter 2. Optimizing Docker Images</h1></div></div></div><p class="calibre8">Now that we have built and deployed our Docker containers, we can start reaping the benefits of using them. We have a standard package format that lets developers and sysadmins work together to simplify the management of our application's code. Docker's container format allows us to rapidly iterate the versions of our application and share it with the rest of our organization. Our development, testing, and deployment time has decreased because of the lightweight feature and speed of Docker containers. The portability of Docker containers allows us to scale our applications from physical servers to virtual machines in the cloud.</p><p class="calibre8">However, we will start noticing that the same reasons for which we used Docker in the first place are losing their effect. Development time is increasing because we have to always download the newest version of our application's Docker image runtime library. Deployment takes a lot of time because Docker Hub is slow. At worst, Docker Hub may be down, and we would not be able to do any deployment at all. Our Docker images are now so big, in the order of gigabytes, that simple single-line updates take the whole day.</p><p class="calibre8">This chapter will cover the following scenarios of how Docker containers get out of hand and suggest steps to remediate the problems mentioned earlier:</p><div><ul class="itemizedlist"><li class="listitem">Reducing image deployment time</li><li class="listitem">Reducing image build time</li><li class="listitem">Reducing image size</li></ul></div></div>
+
+<div><div><div><div><div><h1 class="title" id="calibre_pb_1"><a id="ch02lvl1sec12" class="calibre1"/>Reducing deployment time</h1></div></div></div><p class="calibre8">As time <a id="id36" class="calibre1"/>goes by while we build our Docker container, its size gets bigger and bigger. Updating running containers in our existing Docker hosts is not a problem. Docker takes advantage of the Docker image layers that we build over time as our application grows. However, consider a case in which we want to scale out our application. This requires deploying more Docker containers to additional Docker hosts. Each new Docker host has to then download all the large image layers that we built over time. This section will show you how a <em class="calibre9">large</em> Docker application affects deployment time on new Docker hosts. First, let's build this problematic Docker application by carrying out the following steps:</p><div><ol class="orderedlist"><li class="listitem" value="1">Write the following <code class="literal">Dockerfile</code> to create our "large" Docker image:<div><pre class="programlisting">FROM debian:jessie
+
+RUN dd if=/dev/urandom of=/largefile bs=1024 count=524288</pre></div></li><li class="listitem" value="2">Next, build the <code class="literal">Dockerfile</code> as <code class="literal">hubuser/largeapp</code> using the following command:<div><pre class="programlisting">
+<strong class="calibre2">dockerhost$ docker build -t hubuser/largeapp .</strong>
+</pre></div></li><li class="listitem" value="3">Take note of how large the created Docker image is. In the following illustrated output, the size is <code class="literal">662 MB</code>:<div><pre class="programlisting">
+<strong class="calibre2">dockerhost$ docker images</strong>
+<strong class="calibre2">REPOSITORY        TAG      IMAGE ID   CREATED         VIRTUAL SIZE</strong>
+<strong class="calibre2">hubuser/largeapp  latest   450e3123   5 minutes ago   662 MB</strong>
+<strong class="calibre2">debian            jessie   9a61b6b1   4 days ago      125.2 MB</strong>
+</pre></div></li><li class="listitem" value="4">Using <a id="id37" class="calibre1"/>the <code class="literal">time</code> command, record how long it takes to push and pull it from Docker Hub, as follows:<div><pre class="programlisting">
+<strong class="calibre2">dockerhost$ time docker push hubuser/largeapp</strong>
+<strong class="calibre2">The push refers to a repository [hubuser/largeapp] (len: 1)</strong>
+<strong class="calibre2">450e319e42c3: Image already exists</strong>
+<strong class="calibre2">9a61b6b1315e: Image successfully pushed</strong>
+<strong class="calibre2">902b87aaaec9: Image successfully pushed</strong>
+<strong class="calibre2">Digest: sha256:18ef52e36996dd583f923673618483a4466aa2d1d0d6ce9f0...</strong>
+
+<strong class="calibre2">real  11m34.133s</strong>
+<strong class="calibre2">user    0m0.164s</strong>
+<strong class="calibre2">sys     0m0.104s</strong>
+<strong class="calibre2">dockerhost$ time docker pull hubuser/largeapp</strong>
+<strong class="calibre2">latest: Pulling from hubuser/largeapp</strong>
+<strong class="calibre2">902b87aaaec9: Pull complete</strong>
+<strong class="calibre2">9a61b6b1315e: Pull complete</strong>
+<strong class="calibre2">450e319e42c3: Already exists</strong>
+<strong class="calibre2">Digest: sha256:18ef52e36996dd583f923673618483a4466aa2d1d0d6ce9f0...</strong>
+<strong class="calibre2">Status: Downloaded newer image for hubuser/largeapp:latest</strong>
+
+<strong class="calibre2">real    2m56.805s</strong>
+<strong class="calibre2">user    0m0.204s</strong>
+<strong class="calibre2">sys     0m0.188s</strong>
+</pre></div></li></ol><div></div><p class="calibre8">As we can <a id="id38" class="calibre1"/>note in the preceding time values highlighted, it takes a lot of time when we perform <code class="literal">docker push</code> to upload an image to Docker Hub. Upon deployment, <code class="literal">docker pull</code> takes just as long in order to propagate our newly created Docker image to our new production Docker hosts. These upload and download time values also depend on the network connection between Docker Hub and our Docker hosts. Ultimately, when Docker Hub goes down, we will lose the ability to deploy new Docker containers or scale out to additional Docker hosts on demand.</p><p class="calibre8">In order to take advantage of Docker's fast delivery of applications and ease of deployment and scaling, it is important that our method of pushing and pulling Docker images is reliable and fast. Fortunately, we can run our own Docker registry to be able to host and distribute our Docker images without relying on the public Docker Hub. The next few steps describe how to set this up to confirm the improvement in performance:</p><div><ol class="orderedlist"><li class="listitem" value="1">Let's run our own Docker registry by typing the following command. This gives us a local one running at <code class="literal">tcp://dockerhost:5000</code>:<div><pre class="programlisting">
+<strong class="calibre2">dockerhost$ docker run -p 5000:5000 -d registry:2</strong>
+</pre></div></li><li class="listitem" value="2">Next, let's confirm how our Docker image deployments have improved. First, create a tag for the image we created earlier in order to push it to the local Docker registry via the following:<div><pre class="programlisting">
+<strong class="calibre2">dockerhost$ docker tag hubuser/largeapp \</strong>
+<strong class="calibre2">                       dockerhost:5000/largeapp</strong>
+</pre></div></li><li class="listitem" value="3">Observe how much faster it is to push the same Docker image over our newly running Docker registry. The following tests show that pushing Docker images is now at least 10 times faster:<div><pre class="programlisting">
+<strong class="calibre2">dockerhost$ time docker push dockerhost:5000/largeapp</strong>
+<strong class="calibre2">The push refers to a ...[dockerhost:5000/largeapp] (len: 1)</strong>
+<strong class="calibre2">...</strong>
+
+<strong class="calibre2">real   0m52.928s</strong>
+<strong class="calibre2">user    0m0.084s</strong>
+<strong class="calibre2">sys     0m0.048s</strong>
+</pre></div></li><li class="listitem" value="4">Now, confirm the new performance of the pulling of our Docker images before <a id="id39" class="calibre1"/>testing that of the pulling of images from our local Docker registry. Let's make sure we remove the image we built earlier. The following tests show that the downloading of Docker images is now 30 times faster:<div><pre class="programlisting">
+<strong class="calibre2">dockerhost$ docker rmi dockerhost:5000/largeapp \</strong>
+<strong class="calibre2">                       hubuser/largeapp</strong>
+<strong class="calibre2">Untagged: dockerhost:5000/largeapp:latest</strong>
+<strong class="calibre2">Untagged: hubuser/largeapp:latest</strong>
+<strong class="calibre2">Deleted: 549d099c0edaef424edb6cfca8f16f5609b066ba744638990daf3b43...</strong>
+<strong class="calibre2">dockerhost$ time docker pull dockerhost:5000/largeapp</strong>
+<strong class="calibre2">latest: Pulling from dockerhost:5000/largeapp</strong>
+<strong class="calibre2">549d099c0eda: Already exists</strong>
+<strong class="calibre2">902b87aaaec9: Already exists</strong>
+<strong class="calibre2">9a61b6b1315e: Already exists</strong>
+<strong class="calibre2">Digest: sha256:323bed623625b3647a6c678ee6840be23616edc357dbe07c5a0c68b62dd52ecf</strong>
+<strong class="calibre2">Status: Downloaded newer image for dockerhost:5000/largeapp:latest</strong>
+
+<strong class="calibre2">real   0m10.444s</strong>
+<strong class="calibre2">user    0m0.160s</strong>
+<strong class="calibre2">sys     0m0.056s</strong>
+</pre></div></li></ol><div></div><p class="calibre8">The main cause of these improvements is that we uploaded and downloaded the same images from our local network. We saved on the bandwidth of our Docker hosts, and our deployment time got shorter. The best part of all is that we no longer have to rely on the availability of Docker Hub in order to deploy.</p><div><h3 class="title2"><a id="note11" class="calibre1"/>Note</h3><p class="calibre8">In order to deploy our Docker images to other Docker hosts, we need to set up security for <a id="id40" class="calibre1"/>our Docker registry. Details on how to set this up are outside the scope of this book. However, more details <a id="id41" class="calibre1"/>on how to set up a Docker registry are available at <a class="calibre1" href="https://docs.docker.com/registry/deploying">https://docs.docker.com/registry/deploying</a>.</p></div></div></div>
+
+<div><div><div><div><div><h1 class="title" id="calibre_pb_0"><a id="ch02lvl1sec13" class="calibre1"/>Improving image build time</h1></div></div></div><p class="calibre8">Docker <a id="id42" class="calibre1"/>images are the main resulting artifacts that developers work on all the time. The simplicity of Docker files and speed of container <a id="id43" class="calibre1"/>technology allows us to enable rapid iteration on the application that we are working on. However, these advantages of using Docker start to diminish once the time it takes to build Docker images starts to grow uncontrollably. In this section, we will discuss some cases of building Docker images that take some time to run. Then, we will give you a few tips on how to remediate these effects.</p></div>
+
+<div><div><div><div><div><h2 class="title1" id="calibre_pb_1"><a id="ch02lvl2sec14" class="calibre1"/>Using registry mirrors</h2></div></div></div><p class="calibre8">A big <a id="id44" class="calibre1"/>contributor to image build time is the time spent in fetching upstream images. Suppose we have a <code class="literal">Dockerfile</code> with the following line:</p><div><pre class="programlisting">FROM java:8u45-jre</pre></div><p class="calibre8">This image will <a id="id45" class="calibre1"/>have to download <code class="literal">java:8u45-jre</code> to be built. When we move to another Docker host, or if the <code class="literal">java:8u45-jre</code> image is updated in Docker Hub, our build time will increase momentarily. Configuring a local registry mirror will reduce such image build time instances. This is very useful in an organization setting, where each developer has his/her own Docker hosts at their workstations. The organization's network only downloads the image from Docker Hub once. Each workstation Docker host in the organization can now directly fetch the images from the local registry mirror.</p><p class="calibre8">Setting up a registry mirror is as simple as setting up a local registry in the previous section. However, in addition, we need to configure the Docker host to be aware of this registry mirror by passing the <code class="literal">--registry-mirror</code> option to the Docker daemon. Here are the steps to perform this setup:</p><div><ol class="orderedlist"><li class="listitem" value="1">In our Debian Jessie Docker host, configure the Docker daemon by updating and creating a Systemd drop-in file at <code class="literal">/etc/systemd/system/docker.service.d/10-syslog.conf to contain the following line</code>:<div><pre class="programlisting">[Service]   
+ExecStart=  
+ExecStart=/usr/bin/docker daemon-H fd:// \
+                          --registry-mirror=http://dockerhost:5000</pre></div></li><li class="listitem" value="2">Now, we will reload Systemd to pick up the new drop-in configuration for the <code class="literal">docker.service</code> unit, as follows:<div><pre class="programlisting">
+<strong class="calibre2">dockerhost$ systemctl daemon-reload</strong>
+</pre></div></li><li class="listitem" value="3">Next, restart the Docker daemon to start it with the newly configured Systemd <a id="id46" class="calibre1"/>unit via the following command:<div><pre class="programlisting">
+<strong class="calibre2">dockerhost$ systemctl restartdocker.service</strong>
+</pre></div></li><li class="listitem" value="4">Finally, run <a id="id47" class="calibre1"/>the registry mirror Docker container. Run the following command:<div><pre class="programlisting">
+<strong class="calibre2">dockerhost$ docker run -p 5000:5000 -d \</strong>
+<strong class="calibre2">            -e STANDALONE=false \</strong>
+<strong class="calibre2">            -e MIRROR_SOURCE=https://registry-1.docker.io \</strong>
+<strong class="calibre2">            -e MIRROR_SOURCE_INDEX=https://index.docker.io \registry</strong>
+</pre></div></li></ol><div></div><p class="calibre8">To confirm that the registry mirror works as expected, perform the following steps:</p><div><ol class="orderedlist"><li class="listitem" value="1">Build the <code class="literal">Dockerfile</code> described at the start of this subsection and take note of its build time. Note that most of the time needed to build the Docker image is taken up by the time to download the upstream <code class="literal">java:8u45-jre</code> Docker image, as shown in the following command:<div><pre class="programlisting">
+<strong class="calibre2">dockerhost$ time docker build -t hubuser/mirrorupstream .</strong>
+<strong class="calibre2">Sending build context to Docker daemon 2.048 kB</strong>
+<strong class="calibre2">Sending build context to Docker daemon</strong>
+<strong class="calibre2">Step 0 : FROM java:8u45-jre</strong>
+<strong class="calibre2">Pulling repository java</strong>
+<strong class="calibre2">4ac125456dd3: Download complete</strong>
+<strong class="calibre2">902b87aaaec9: Download complete</strong>
+<strong class="calibre2">9a61b6b1315e: Download complete</strong>
+<strong class="calibre2">1ff9f26f09fb: Download complete</strong>
+<strong class="calibre2">6f6bffbbf095: Download complete</strong>
+<strong class="calibre2">4b61c52d7fe4: Download complete</strong>
+<strong class="calibre2">1a9b1e5c4dd5: Download complete</strong>
+<strong class="calibre2">2e8cff440182: Download complete</strong>
+<strong class="calibre2">46bc3bbea0ec: Download complete</strong>
+<strong class="calibre2">3948efdeee11: Download complete</strong>
+<strong class="calibre2">918f0691336e: Download complete</strong>
+<strong class="calibre2">Status: Downloaded newer image for java:8u45-jre</strong>
+<strong class="calibre2"> ---&gt; 4ac125456dd3</strong>
+<strong class="calibre2">Successfully built 4ac125456dd3</strong>
+
+<strong class="calibre2">real   1m58.095s</strong>
+<strong class="calibre2">user    0m0.036s</strong>
+<strong class="calibre2">sys     0m0.028s</strong>
+</pre></div></li><li class="listitem" value="2">Now, remove the image and its upstream dependency and rebuild the image again <a id="id48" class="calibre1"/>using the following <a id="id49" class="calibre1"/>commands:<div><pre class="programlisting">
+<strong class="calibre2">dockerhost$ docker rmi java:8u45-jre hubuser/mirrorupstream</strong>
+<strong class="calibre2">dockerhost$ time docker build -t hubuser/mirrorupstream .</strong>
+<strong class="calibre2">Sending build context to Docker daemon 2.048 kB</strong>
+<strong class="calibre2">Sending build context to Docker daemon</strong>
+<strong class="calibre2">Step 0 : FROM java:8u45-jre</strong>
+<strong class="calibre2">Pulling repository java</strong>
+<strong class="calibre2">4ac125456dd3: Download complete</strong>
+<strong class="calibre2">902b87aaaec9: Download complete</strong>
+<strong class="calibre2">9a61b6b1315e: Download complete</strong>
+<strong class="calibre2">1ff9f26f09fb: Download complete</strong>
+<strong class="calibre2">6f6bffbbf095: Download complete</strong>
+<strong class="calibre2">4b61c52d7fe4: Download complete</strong>
+<strong class="calibre2">1a9b1e5c4dd5: Download complete</strong>
+<strong class="calibre2">2e8cff440182: Download complete</strong>
+<strong class="calibre2">46bc3bbea0ec: Download complete</strong>
+<strong class="calibre2">3948efdeee11: Download complete</strong>
+<strong class="calibre2">918f0691336e: Download complete</strong>
+<strong class="calibre2">Status: Downloaded newer image for java:8u45-jre</strong>
+<strong class="calibre2"> ---&gt; 4ac125456dd3</strong>
+<strong class="calibre2">Successfully built 4ac125456dd3</strong>
+
+<strong class="calibre2">real   0m59.260s</strong>
+<strong class="calibre2">user    0m0.032s</strong>
+<strong class="calibre2">sys     0m0.028s</strong>
+</pre></div></li></ol><div></div><p class="calibre8">When the <code class="literal">java:8u45-jre</code> Docker image was downloaded for the second time, it was retrieved <a id="id50" class="calibre1"/>from the local registry mirror <a id="id51" class="calibre1"/>instead of being connected to Docker Hub. Setting up a Docker registry mirror improved the time of downloading the upstream image by almost two times the usual. If we have other Docker hosts pointed at this same registry mirror, it will do the same thing: skip the downloading from Docker Hub.</p><div><h3 class="title2"><a id="note12" class="calibre1"/>Note</h3><p class="calibre8">This guide on how <a id="id52" class="calibre1"/>to set up a registry mirror is based on the one on the Docker documentation website. More details can be found at <a class="calibre1" href="https://docs.docker.com/articles/registry_mirror">https://docs.docker.com/articles/registry_mirror</a>.</p></div></div></div>
+
+<div><div><div><div><div><h2 class="title1" id="calibre_pb_2"><a id="ch02lvl2sec15" class="calibre1"/>Reusing image layers</h2></div></div></div><p class="calibre8">As we <a id="id53" class="calibre1"/>already know, a Docker image consists of a series of layers combined using the union filesystem of a single image. When we work <a id="id54" class="calibre1"/>on building our Docker image, the preceding instructions in our <code class="literal">Dockerfile</code> are examined by Docker to check whether there is an existing image in its build cache that can be reused instead of creating a similar or duplicate image for these instructions. By finding out how the build cache works, we can greatly increase the speed of the subsequent builds of our Docker images. A good example of this is when we develop our application's behavior; we will not add dependencies to our application all the time. Most of the time, we will just want to update the core behavior of the application itself. Knowing this, we can design the way we will build our Docker images around this in our development workflow.</p><div><h3 class="title2"><a id="note13" class="calibre1"/>Note</h3><p class="calibre8">Detailed rules <a id="id55" class="calibre1"/>on how <code class="literal">Dockerfile</code> instructions are cached can be found at <a class="calibre1" href="http://docs.docker.com/articles/dockerfile_best-practices/#build-cache">http://docs.docker.com/articles/dockerfile_best-practices/#build-cache</a>.</p></div><p class="calibre8">For example, suppose we are working on a Ruby application whose source tree looks similar to the following:</p><div><img src="img/00003.jpeg" alt="Reusing image layers" class="calibre10"/></div><p class="calibre11"> </p><p class="calibre8">The <a id="id56" class="calibre1"/>
+<code class="literal">config.ru</code> would be as follows:</p><div><pre class="programlisting">app =  proc do |env|
+  [200, {}, %w(hello world)]
+end
+run app</pre></div><p class="calibre8">The <code class="literal">Gemfile</code> <a id="id57" class="calibre1"/>would be as follows:</p><div><pre class="programlisting">source 'https://rubygems.org'
+
+gem 'rack'
+gem 'nokogiri'</pre></div><p class="calibre8">The <code class="literal">Dockerfile</code> would be as follows:</p><div><pre class="programlisting">FROM ruby:2.2.2
+
+ADD . /app
+WORKDIR /app
+RUN bundle install
+
+EXPOSE 9292
+CMD rackup -E none</pre></div><p class="calibre8">The following steps will show you how to build the Ruby application we wrote earlier as a Docker image:</p><div><ol class="orderedlist"><li class="listitem" value="1">First, let's build this Docker image through the following command. Note that the <a id="id58" class="calibre1"/>time it took to build is <a id="id59" class="calibre1"/>around one minute:<div><pre class="programlisting">
+<strong class="calibre2">dockerhost$ time docker build -t slowdependencies .</strong>
+<strong class="calibre2">Sending build context to Docker daemon 4.096 kB</strong>
+<strong class="calibre2">Sending build context to Docker daemon</strong>
+<strong class="calibre2">Step 0 : FROM ruby:2.2.2</strong>
+<strong class="calibre2"> ---&gt; d763add83c94</strong>
+<strong class="calibre2">Step 1 : ADD . /app</strong>
+<strong class="calibre2"> ---&gt; 6663d8b8b5d4</strong>
+<strong class="calibre2">Removing intermediate container 2fda8dc40966</strong>
+<strong class="calibre2">Step 2 : WORKDIR /app</strong>
+<strong class="calibre2"> ---&gt; Running in f2bec0dea1c9</strong>
+<strong class="calibre2"> ---&gt; 289108c6655f</strong>
+<strong class="calibre2">Removing intermediate container f2bec0dea1c9</strong>
+<strong class="calibre2">Step 3 : RUN bundle install</strong>
+<strong class="calibre2"> ---&gt; Running in 7025de40c01d</strong>
+<strong class="calibre2">Don't run Bundler as root. Bundler can ask for sudo if ...</strong>
+<strong class="calibre2">Fetching gem metadata from https://rubygems.org/.........</strong>
+<strong class="calibre2">Fetching version metadata from https://rubygems.org/..</strong>
+<strong class="calibre2">Resolving dependencies...</strong>
+<strong class="calibre2">Installing mini_portile 0.6.2</strong>
+<strong class="calibre2">Installing nokogiri 1.6.6.2 with native extensions</strong>
+<strong class="calibre2">Installing rack 1.6.4</strong>
+<strong class="calibre2">Using bundler 1.10.5</strong>
+<strong class="calibre2">Bundle complete! 2 Gemfile dependencies, 4 gems now installed.</strong>
+<strong class="calibre2">Bundled gems are installed into /usr/local/bundle.</strong>
+<strong class="calibre2"> ---&gt; ab26818ccd85</strong>
+<strong class="calibre2">Removing intermediate container 7025de40c01d</strong>
+<strong class="calibre2">Step 4 : EXPOSE 9292</strong>
+<strong class="calibre2"> ---&gt; Running in e4d7647e978b</strong>
+<strong class="calibre2"> ---&gt; a602159cb786</strong>
+<strong class="calibre2">Removing intermediate container e4d7647e978b</strong>
+<strong class="calibre2">Step 5 : CMD rackup -E none</strong>
+<strong class="calibre2"> ---&gt; Running in 407308682d13</strong>
+<strong class="calibre2"> ---&gt; bffce44702f8</strong>
+<strong class="calibre2">Removing intermediate container 407308682d13</strong>
+<strong class="calibre2">Successfully built bffce44702f8</strong>
+
+<strong class="calibre2">real   0m54.428s</strong>
+<strong class="calibre2">user    0m0.004s</strong>
+<strong class="calibre2">sys     0m0.008s</strong>
+</pre></div></li><li class="listitem" value="2">Next, update <a id="id60" class="calibre1"/><code class="literal">config.ru</code> <a id="id61" class="calibre1"/>to change the application's behavior, as follows:<div><pre class="programlisting">app =  proc do |env|
+<strong class="calibre2">  [200, {}, %w(hello other world)]</strong>
+end
+run app</pre></div></li><li class="listitem" value="3">Let's now build again the Docker image and note the time it takes to finish the build. Run the following command:<div><pre class="programlisting">
+<strong class="calibre2">dockerhost$ time docker build -t slowdependencies .</strong>
+<strong class="calibre2">Sending build context to Docker daemon 4.096 kB</strong>
+<strong class="calibre2">Sending build context to Docker daemon</strong>
+<strong class="calibre2">Step 0 : FROM ruby:2.2.2</strong>
+<strong class="calibre2"> ---&gt; d763add83c94</strong>
+<strong class="calibre2">Step 1 : ADD . /app</strong>
+<strong class="calibre2"> ---&gt; 05234a367589</strong>
+<strong class="calibre2">Removing intermediate container e9d33db67914</strong>
+<strong class="calibre2">Step 2 : WORKDIR /app</strong>
+<strong class="calibre2"> ---&gt; Running in 65b3f40d6228</strong>
+<strong class="calibre2"> ---&gt; c656079a833f</strong>
+<strong class="calibre2">Removing intermediate container 65b3f40d6228</strong>
+<strong class="calibre2">Step 3 : RUN bundle install</strong>
+<strong class="calibre2"> ---&gt; Running in c84bd4aa70a0</strong>
+<strong class="calibre2">Don't run Bundler as root. Bundler can ask for sudo ...</strong>
+<strong class="calibre2">Fetching gem metadata from https://rubygems.org/.........</strong>
+<strong class="calibre2">Fetching version metadata from https://rubygems.org/..</strong>
+<strong class="calibre2">Resolving dependencies...</strong>
+<strong class="calibre2">Installing mini_portile 0.6.2</strong>
+<strong class="calibre2">Installing nokogiri 1.6.6.2 with native extensions</strong>
+<strong class="calibre2">Installing rack 1.6.4</strong>
+<strong class="calibre2">Using bundler 1.10.5</strong>
+<strong class="calibre2">Bundle complete! 2 Gemfile dep..., 4 gems now installed.</strong>
+<strong class="calibre2">Bundled gems are installed into /usr/local/bundle.</strong>
+<strong class="calibre2"> ---&gt; 68f5dc363171</strong>
+<strong class="calibre2">Removing intermediate container c84bd4aa70a0</strong>
+<strong class="calibre2">Step 4 : EXPOSE 9292</strong>
+<strong class="calibre2"> ---&gt; Running in 68c1462c2018</strong>
+<strong class="calibre2"> ---&gt; c257c74eb7a8</strong>
+<strong class="calibre2">Removing intermediate container 68c1462c2018</strong>
+<strong class="calibre2">Step 5 : CMD rackup -E none</strong>
+<strong class="calibre2"> ---&gt; Running in 7e13fd0c26f0</strong>
+<strong class="calibre2"> ---&gt; e31f97d2d96a</strong>
+<strong class="calibre2">Removing intermediate container 7e13fd0c26f0</strong>
+<strong class="calibre2">Successfully built e31f97d2d96a</strong>
+
+<strong class="calibre2">real    0m57.468s</strong>
+<strong class="calibre2">user    0m0.008s</strong>
+<strong class="calibre2">sys     0m0.004s</strong>
+</pre></div></li></ol><div></div><p class="calibre8">We can <a id="id62" class="calibre1"/>note that even with a single-line <a id="id63" class="calibre1"/>change to our application, we have to run <code class="literal">bundle install</code> for each iteration of the Docker image that we are building. This can be very inefficient, and it disrupts the flow of our development because it takes one minute to build and run our Docker application. For impatient developers such as us, this feels like an eternity!</p><p class="calibre8">In order to optimize this workflow, we can separate the phase in which we prepare our application's dependencies from that in which we prepare its actual artifacts. The next steps show <a id="id64" class="calibre1"/>us how to do this:</p><div><ol class="orderedlist"><li class="listitem" value="1">First, update our <code class="literal">Dockerfile</code> with the following changes:<div><pre class="programlisting">FROM ruby:2.2.2
+
+<strong class="calibre2">ADD Gemfile /app/Gemfile</strong>
+<strong class="calibre2">WORKDIR /app</strong>
+<strong class="calibre2">RUN bundle install</strong>
+<strong class="calibre2">ADD . /app</strong>
+
+EXPOSE 9292
+CMD rackup -E none</pre></div></li><li class="listitem" value="2">Next, build <a id="id65" class="calibre1"/>the newly refactored Docker image via this command:<div><pre class="programlisting">
+<strong class="calibre2">dockerhost$ time docker build -t separatedependencies .</strong>
+<strong class="calibre2">Sending build context to Docker daemon 4.096 kB</strong>
+<strong class="calibre2">Sending build context to Docker daemon</strong>
+<strong class="calibre2">...</strong>
+<strong class="calibre2">Step 3 : RUN bundle install</strong>
+<strong class="calibre2"> ---&gt; Running in b4cbc6803947</strong>
+<strong class="calibre2">Don't run Bundler as root. Bundler can ask for sudo if it is needed, and</strong>
+<strong class="calibre2">installing your bundle as root will break this application for all non-root</strong>
+<strong class="calibre2">users on this machine.</strong>
+<strong class="calibre2">Fetching gem metadata from https://rubygems.org/.........</strong>
+<strong class="calibre2">Fetching version metadata from https://rubygems.org/..</strong>
+<strong class="calibre2">Resolving dependencies...</strong>
+<strong class="calibre2">Installing mini_portile 0.6.2</strong>
+<strong class="calibre2">Installing nokogiri 1.6.6.2 with native extensions</strong>
+<strong class="calibre2">Installing rack 1.6.4</strong>
+<strong class="calibre2">Using bundler 1.10.5</strong>
+<strong class="calibre2">Bundle complete! 2 Gemfile dependencies, 4 gems now installed.</strong>
+<strong class="calibre2">Bundled gems are installed into /usr/local/bundle.</strong>
+<strong class="calibre2"> ---&gt; 5c009ed03934</strong>
+<strong class="calibre2">Removing intermediate container b4cbc6803947</strong>
+<strong class="calibre2">Step 4 : ADD . /app</strong>
+<strong class="calibre2">...</strong>
+<strong class="calibre2">Successfully built ff2d4efd233f</strong>
+
+<strong class="calibre2">real    0m57.908s</strong>
+<strong class="calibre2">user    0m0.008s</strong>
+<strong class="calibre2">sys     0m0.004s</strong>
+</pre></div></li><li class="listitem" value="3">The <a id="id66" class="calibre1"/>build time is still the same <a id="id67" class="calibre1"/>at first, but note the image ID generated in <code class="literal">Step 3</code>. Now, try updating <code class="literal">config.ru</code> again and rebuilding the image, as follows:<div><pre class="programlisting">
+<strong class="calibre2">dockerhost$ vi config.ru # edit as we please</strong>
+<strong class="calibre2">dockerhost$ time docker build -t separatedependencies .</strong>
+<strong class="calibre2">Sending build context to Docker daemon 4.096 kB</strong>
+<strong class="calibre2">Sending build context to Docker daemon</strong>
+<strong class="calibre2">Step 0 : FROM ruby:2.2.2</strong>
+<strong class="calibre2"> ---&gt; d763add83c94</strong>
+<strong class="calibre2">Step 1 : ADD Gemfile /app/Gemfile</strong>
+<strong class="calibre2"> ---&gt; Using cache</strong>
+<strong class="calibre2"> ---&gt; a7f68475cf92</strong>
+<strong class="calibre2">Step 2 : WORKDIR /app</strong>
+<strong class="calibre2"> ---&gt; Using cache</strong>
+<strong class="calibre2"> ---&gt; 203b5b800611</strong>
+<strong class="calibre2">Step 3 : RUN bundle install</strong>
+<strong class="calibre2"> ---&gt; Using cache</strong>
+<strong class="calibre2"> ---&gt; 5c009ed03934</strong>
+<strong class="calibre2">Step 4 : ADD . /app</strong>
+<strong class="calibre2"> ---&gt; 30b2bfc3f313</strong>
+<strong class="calibre2">Removing intermediate container cd643f871828</strong>
+<strong class="calibre2">Step 5 : EXPOSE 9292</strong>
+<strong class="calibre2"> ---&gt; Running in a56bfd37f721</strong>
+<strong class="calibre2"> ---&gt; 553ae65c061c</strong>
+<strong class="calibre2">Removing intermediate container a56bfd37f721</strong>
+<strong class="calibre2">Step 6 : CMD rackup -E none</strong>
+<strong class="calibre2"> ---&gt; Running in 0ceaa70bee6c</strong>
+<strong class="calibre2"> ---&gt; 762b7ccf7860</strong>
+<strong class="calibre2">Removing intermediate container 0ceaa70bee6c...</strong>
+<strong class="calibre2">Successfully built 762b7ccf7860</strong>
+
+<strong class="calibre2">real   0m0.734s</strong>
+<strong class="calibre2">user    0m0.008s</strong>
+<strong class="calibre2">sys     0m0.000s</strong>
+</pre></div></li></ol><div></div><p class="calibre8">As we can <a id="id68" class="calibre1"/>note in the preceding output, <code class="literal">docker build</code> <a id="id69" class="calibre1"/>reused the cache until <code class="literal">Step 3</code> as there was no change in <code class="literal">Gemfile</code>. Note that our Docker image's build time decreased by 80 times the usual!</p><p class="calibre8">This kind of refactoring for our Docker image is also useful to reduce deployment time. As our Docker hosts in production already have image layers until <code class="literal">Step 3</code> of our Docker image in the previous version of our container, having a new version of our Docker application will only require the Docker host to pull new image layers for <code class="literal">Step 4</code> to <code class="literal">Step 6</code> in order to update our application.</p></div></div>
+
+<div><div><div><div><div><h2 class="title1" id="calibre_pb_3"><a id="ch02lvl2sec16" class="calibre1"/>Reducing the build context size</h2></div></div></div><p class="calibre8">Let's <a id="id70" class="calibre1"/>suppose that we have a <a id="id71" class="calibre1"/>
+<code class="literal">Dockerfile</code> in the Git version control similar to the following:</p><div><img src="img/00004.jpeg" alt="Reducing the build context size" class="calibre10"/></div><p class="calibre11"> </p><p class="calibre8">At some <a id="id72" class="calibre1"/>point, we will notice that our <code class="literal">.git</code> directory is too big. This is probably the result of having more and more code <a id="id73" class="calibre1"/>committed into our source tree:</p><div><pre class="programlisting">
+<strong class="calibre2">dockerhost$ du -hsc .git</strong>
+<strong class="calibre2">1001M   .git</strong>
+<strong class="calibre2">1001M   total</strong>
+</pre></div><p class="calibre8">Now, when we build our Docker application, we will notice that the time taken to build our Docker application is very big as well. Take a look at the following output:</p><div><pre class="programlisting">
+<strong class="calibre2">dockerhost$ time docker build -t hubuser/largecontext .</strong>
+<strong class="calibre2">Sending build context to Docker daemon 1.049 GB</strong>
+<strong class="calibre2">Sending build context to Docker daemon</strong>
+<strong class="calibre2">...</strong>
+<strong class="calibre2">Successfully built 9a61b6b1315e</strong>
+
+<strong class="calibre2">real    0m17.342s</strong>
+<strong class="calibre2">user    0m0.408s</strong>
+<strong class="calibre2">sys     0m1.360s</strong>
+</pre></div><p class="calibre8">If we look closely at the preceding output, we will see that the Docker client uploaded the whole <code class="literal">.git</code> directory of 1 GB onto the Docker daemon because it is a part of our build context. Also, as this is a large build context, it takes time for the Docker daemon to receive it before being able to start building our Docker image.</p><p class="calibre8">However, these files are not necessary to build our application. Moreover, these Git-related <a id="id74" class="calibre1"/>files are not at all needed when we <a id="id75" class="calibre1"/>run our application in production. We can set Docker to ignore a specific set of files that are not needed to build our Docker image. Follow the next few steps to perform this optimization:</p><div><ol class="orderedlist"><li class="listitem" value="1">Create a <code class="literal">.dockerignore</code> file with the following content in the same directory as our <code class="literal">Dockerfile</code>:<div><pre class="programlisting">.git</pre></div></li><li class="listitem" value="2">Finally, build our Docker image again by executing the following command:<div><pre class="programlisting">
+<strong class="calibre2">dockerhost$ time docker build -t hubuser/largecontext .</strong>
+<strong class="calibre2">Sending build context to Docker daemon 3.072 kB</strong>
+<strong class="calibre2">...</strong>
+<strong class="calibre2">Successfully built 9a61b6b1315e</strong>
+
+<strong class="calibre2">real   0m0.030s</strong>
+<strong class="calibre2">user    0m0.004s</strong>
+<strong class="calibre2">sys     0m0.004s</strong>
+</pre></div></li></ol><div></div><p class="calibre8">Note now that the build time is improved by over 500 times the usual just by decreasing the size of the build context!</p><div><h3 class="title2"><a id="note14" class="calibre1"/>Note</h3><p class="calibre8">More information on how to <a id="id76" class="calibre1"/>use .<code class="literal">dockerignore</code> files can be found at <a class="calibre1" href="https://docs.docker.com/reference/builder/#dockerignore-file">https://docs.docker.com/reference/builder/#dockerignore-file</a>.</p></div></div></div>
+
+<div><div><div><div><div><h2 class="title1" id="calibre_pb_4"><a id="ch02lvl2sec17" class="calibre1"/>Using caching proxies</h2></div></div></div><p class="calibre8">Another <a id="id77" class="calibre1"/>common source causing the long runtime in building Docker images are instructions that download dependencies. For example, a Debian-based Docker image needs to fetch packages from APT repositories. Depending on how large these packages are, the build time for an <code class="literal">apt-get install</code> instruction may be long. A useful technique to reduce the time for these build instructions is to introduce proxies that cache such dependency packages. A popular caching proxy is <code class="literal">apt-cacher-ng</code>. This section will describe running and setting it up to improve our Docker image building workflow.</p><p class="calibre8">The following is an example <code class="literal">Dockerfile</code> that installs a lot of Debian packages:</p><div><pre class="programlisting">FROM debian:jessie
+
+RUN echo deb http://httpredir.debian.org/debian \
+         jessie-backports main &gt; \
+         /etc/apt/sources.list.d/jessie-backports.list
+RUN apt-get update &amp;&amp;\
+    apt-get --no-install-recommends \
+            install -y openjdk-8-jre-headless</pre></div><p class="calibre8">Note that its build time in the following output is quite long because this <code class="literal">Dockerfile</code> file downloads a lot of dependencies and packages related to Java (<code class="literal">openjdk-8-jre-headless</code>). Run the following command:</p><div><pre class="programlisting">
+<strong class="calibre2">dockerhost$ time docker build -t beforecaching .</strong>
+<strong class="calibre2">...</strong>
+<strong class="calibre2">Successfully built 476f2ebd35f6</strong>
+
+<strong class="calibre2">real   3m22.949s</strong>
+<strong class="calibre2">user    0m0.048s</strong>
+<strong class="calibre2">sys     0m0.020s</strong>
+</pre></div><p class="calibre8">In order to improve the workflow for building this Docker image, we will set up a caching proxy with <code class="literal">apt-cacher-ng</code>. Fortunately, it is already available as a ready-to-run container from Docker Hub. Follow the next few steps to prepare <code class="literal">apt-cacher-ng</code>:</p><div><ol class="orderedlist"><li class="listitem" value="1">Run the following command in our Docker host to start <code class="literal">apt-cacher-ng</code>:<div><pre class="programlisting">
+<strong class="calibre2">dockerhost$ docker run -d -p 3142:3142 sameersbn/apt-cacher-ng</strong>
+</pre></div></li><li class="listitem" value="2">After this, we will use the caching proxy we ran earlier, as described in the following <code class="literal">Dockerfile</code>:<div><pre class="programlisting">FROM debian:jessie
+
+RUN echo Acquire::http { \
+         Proxy\"http://dockerhost:3142\"\; \
+         }\;&gt;/etc/apt/apt.conf.d/01proxy</pre></div></li><li class="listitem" value="3">Build the <code class="literal">Dockerfile</code> we created earlier as a Docker image tagged as <code class="literal">hubuser/debian:jessie</code> via the following command line:<div><pre class="programlisting">
+<strong class="calibre2">dockerhost$ docker buid -t hubuser/debian:jessie</strong>
+</pre></div></li><li class="listitem" value="4">Finally, make <code class="literal">hubuser/debian:jessie</code> our new base Docker image by updating <a id="id78" class="calibre1"/>our <code class="literal">Dockerfile</code> that installs a lot of Debian packages for dependencies such as the following:<div><pre class="programlisting">
+<strong class="calibre2">FROM hubuser/debian:jessie</strong>
+
+RUN echo deb http://httpredir.debian.org/debian \
+         jessie-backports main &gt; \
+         /etc/apt/sources.list.d/jessie-backports.list
+RUN apt-get update &amp;&amp; \
+    apt-get --no-install-recommends \
+            install -y openjdk-8-jre-headless</pre></div></li><li class="listitem" value="5">To confirm the new workflow, run an initial build to warm up the cache using the following command:<div><pre class="programlisting">
+<strong class="calibre2">dockerhost$ docker build -t aftercaching .</strong>
+</pre></div></li><li class="listitem" value="6">Finally, execute the following commands to build the image again. However, make sure to remove the image first:<div><pre class="programlisting">
+<strong class="calibre2">dockerhost$ docker rmi aftercaching
+dockerhost$ time docker build -t aftercaching .</strong>
+<strong class="calibre2">...</strong>
+<strong class="calibre2">Removing intermediate container 461637e26e05</strong>
+<strong class="calibre2">Successfully built 2b80ca0d16fd</strong>
+
+<strong class="calibre2">real   0m31.049s</strong>
+<strong class="calibre2">user    0m0.044s</strong>
+<strong class="calibre2">sys     0m0.024s</strong>
+</pre></div></li></ol><div></div><p class="calibre8">Note how the subsequent build is faster even though we do not use Docker's build cache. This technique is useful when we develop base Docker images for our team or organization. Team members that try to rebuild our Docker image will run their builds 6.5 times faster because they can download packages from our organization's cache proxy that we prepared earlier. Builds on our continuous integration server will also be faster upon check-in because we already warmed up the caching server during development.</p><p class="calibre8">This <a id="id79" class="calibre1"/>section gave a glance at how to use a very specific caching server. Here are a few others that we can use and their corresponding pages of documentation:</p><div><ul class="itemizedlist"><li class="listitem"><strong class="calibre2">apt-cacher-ng</strong>: This <a id="id80" class="calibre1"/>supports caching Debian, RPM, and other distribution-specific packages and can be found at <a class="calibre1" href="https://www.unix-ag.uni-kl.de/~bloch/acng">https://www.unix-ag.uni-kl.de/~bloch/acng</a>.</li><li class="listitem"><strong class="calibre2">Sonatype Nexus</strong>: This <a id="id81" class="calibre1"/>supports Maven, Ruby Gems, PyPI, and NuGet packages out of the box. It is available at <a class="calibre1" href="http://www.sonatype.org/nexus">http://www.sonatype.org/nexus</a>.</li><li class="listitem"><strong class="calibre2">Polipo</strong>: This is a <a id="id82" class="calibre1"/>generic caching proxy useful for development that can be found at <a class="calibre1" href="http://www.pps.univ-paris-diderot.fr/~jch/software/polipo">http://www.pps.univ-paris-diderot.fr/~jch/software/polipo</a>.</li><li class="listitem"><strong class="calibre2">Squid</strong>: This is another <a id="id83" class="calibre1"/>popular caching proxy that can work with other types of network traffic as well. You can look this up at <a class="calibre1" href="http://www.squid-cache.org">http://www.squid-cache.org</a>.</li></ul></div></div></div>
+
+<div><div><div><div><div><h1 class="title" id="calibre_pb_0"><a id="ch02lvl1sec14" class="calibre1"/>Reducing Docker image size</h1></div></div></div><p class="calibre8">As we keep <a id="id84" class="calibre1"/>working on our Docker applications, the size of images tends to get bigger and bigger if we are not careful. Most people using Docker observe that their team's custom Docker images increase in size to at least 1 GB or more. Having larger images means that the time to build and deploy our Docker application increases as well. As a result, the feedback we get to determine the result of the application we're deploying gets reduced. This diminishes the benefits of Docker, enabling us to develop and deploy our applications in rapid iterations.</p><p class="calibre8">This section examines some further details of how Docker's image layers work and how they affect the size of the resulting image. Next, we will learn how to optimize these image layers by exploiting how Docker images work.</p></div>
+
+<div><div><div><div><div><h2 class="title1" id="calibre_pb_1"><a id="ch02lvl2sec18" class="calibre1"/>Chaining commands</h2></div></div></div><p class="calibre8">Docker images get <a id="id85" class="calibre1"/>big because some instructions are added that are unnecessary to build or run an image. A popular use case is packaging metadata and cache. After installing the packages necessary to build and run our application, such downloaded packages are no longer needed. The following patterns of instructions in a <code class="literal">Dockerfile</code> are commonly found in the wild (such as in Docker Hub) to <em class="calibre9">clean</em> the images of such unnecessary files from Docker images:</p><div><pre class="programlisting">FROM debian:jessie
+
+RUN echo deb http://httpredir.debian.org/debian \
+jessie-backports main \
+&gt; /etc/apt/sources.list.d/jessie-backports.list
+RUN apt-get update
+RUN apt-get --no-install-recommends \
+install -y openjdk-8-jre-headless
+RUN rm -rfv /var/lib/apt/lists/*</pre></div><p class="calibre8">However, a Docker <a id="id86" class="calibre1"/>image's size is basically the sum of each individual layer image; this is how union filesystems work. Hence, the <em class="calibre9">clean</em> steps do not really delete the space. Take a look at the following commands:</p><div><pre class="programlisting">
+<strong class="calibre2">dockerhost$ docker build -t fakeclean .</strong>
+<strong class="calibre2">dockerhost$ docker history fakeclean</strong>
+<strong class="calibre2">IMAGE           CREATED         CREATED BY                      SIZE</strong>
+<strong class="calibre2">33c8eedfc24a    2 minutes ago   /bin/sh -c rm -rfv /var/lib...   0 B</strong>
+<strong class="calibre2">48b87c35b369    2 minutes ago   /bin/sh -c apt-get install ...   318.6 MB</strong>
+<strong class="calibre2">dad9efad9e2d    4 minutes ago   /bin/sh -c apt-get update        9.847 MB</strong>
+<strong class="calibre2">a8f7bf731a7d    5 minutes ago   /bin/sh -c echo 'deb http:/...   61 B</strong>
+<strong class="calibre2">9a61b6b1315e    6 days ago      /bin/sh -c #(nop) CMD ["/bi...   0 B</strong>
+<strong class="calibre2">902b87aaaec9    6 days ago      /bin/sh -c #(nop) ADD file:...   125.2 MB</strong>
+</pre></div><p class="calibre8">There is no such thing as "negative" layer size. Hence, each instruction in a Dockerfile can only keep the image size constant or increase it. Also, as each step also introduces some metadata, the total size keeps increasing.</p><p class="calibre8">In order to reduce the total image size, the cleaning steps should be performed in the same image layer. Hence, the solution is to chain commands from the previously multiple instructions into a single one. As Docker uses <code class="literal">/bin/sh</code> to run each instruction, we can use the Bourne shell's <code class="literal">&amp;&amp;</code> operator to perform the chaining, as follows:</p><div><pre class="programlisting">FROM debian:jessie
+
+RUN echo deb http://httpredir.debian.org/debian \
+         jessie-backports main \
+         &gt; /etc/apt/sources.list.d/jessie-backports.list
+RUN apt-get update &amp;&amp; \
+    apt-get --no-install-recommends \
+            install -y openjdk-8-jre-headless &amp;&amp; \
+    rm -rfv /var/lib/apt/lists/*</pre></div><p class="calibre8">Note how each individual layer is much smaller now. As the individual layers' sizes were reduced, the total <a id="id87" class="calibre1"/>image size also decreased. Now, run the following commands and take a look at the output:</p><div><pre class="programlisting">
+<strong class="calibre2">dockerhost$ docker build -t trueclean .
+dockerhost$ docker history trueclean</strong>
+<strong class="calibre2">IMAGE          CREATED             CREATED BY                    SIZE</strong>
+<strong class="calibre2">03d0b15bad7f   About a minute ago  /bin/sh -c apt-get update...  318.6 MB</strong>
+<strong class="calibre2">a8f7bf731a7d   9 minutes ago       /bin/sh -c echo deb h...      61 B</strong>
+<strong class="calibre2">9a61b6b1315e   6 days ago          /bin/sh -c #(nop) CMD...      0 B</strong>
+<strong class="calibre2">902b87aaaec9   6 days ago          /bin/sh -c #(nop) ADD...      125.2 MB</strong>
+</pre></div></div></div>
+
+<div><div><div><div><div><h2 class="title1" id="calibre_pb_2"><a id="ch02lvl2sec19" class="calibre1"/>Separating build and deployment images</h2></div></div></div><p class="calibre8">Another <a id="id88" class="calibre1"/>source of unnecessary files in Docker images are build time dependencies. Source libraries, such as compilers and source header files, are only necessary when building an application inside a Docker image. Once the application is built, these files are no longer necessary as only the compiled binary and related shared libraries are needed to run the application.</p><p class="calibre8">For example, build the following application that is now ready to be deployed to a Docker host that we prepared in the cloud. The following source tree is a simple web application written in Go:</p><div><img src="img/00005.jpeg" alt="Separating build and deployment images" class="calibre10"/></div><p class="calibre11"> </p><p class="calibre8">The <a id="id89" class="calibre1"/>following is the content of <code class="literal">hello.go</code> describing the application:</p><div><pre class="programlisting">package main
+
+import (
+    "fmt"
+    "net/http"
+)
+
+func handler(w http.ResponseWriter, r *http.Request) {
+    fmt.Fprintf(w, "hello world")
+}
+
+func main() {
+    http.HandleFunc("/", handler)
+    http.ListenAndServe(":8080", nil)
+}</pre></div><p class="calibre8">The following corresponding <code class="literal">Dockerfile</code> shows how to build the source code and run the resulting binary:</p><div><pre class="programlisting">FROM golang:1.4.2
+
+ADD hello.go hello.go
+RUN go build hello.go
+EXPOSE 8080
+ENTRYPOINT ["./hello"]</pre></div><p class="calibre8">In the <a id="id90" class="calibre1"/>next few steps, we will show you how this Docker application's image size gets big:</p><div><ol class="orderedlist"><li class="listitem" value="1">First, build the Docker image and note its size. We will run the following commands for this:<div><pre class="programlisting">
+<strong class="calibre2">dockerhost$ docker build -t largeapp .</strong>
+<strong class="calibre2">dockerhost$ docker images</strong>
+<strong class="calibre2">REPOSITORY   TAG      IMAGE ID        CREATED        VIRTUAL SIZE</strong>
+<strong class="calibre2">largeapp     latest   47a64e67fb81    4 minute...    523.1 MB</strong>
+<strong class="calibre2">golang       1.4.2    124e2127157f    5 days ago     517.3 MB</strong>
+</pre></div></li><li class="listitem" value="2">Now, compare this to the size of the actual application that is run, as follows:<div><pre class="programlisting">
+<strong class="calibre2">dockerhost$ docker run --name large -d largeapp</strong>
+<strong class="calibre2">dockerhost$ docker exec -it large/bin/ls -lh</strong>
+<strong class="calibre2">total 5.6M</strong>
+<strong class="calibre2">drwxrwxrwx 2 root root 4.0K Jul 14 06:26 bin</strong>
+<strong class="calibre2">-rwxr-xr-x 1 root root 5.6M Jul 20 02:40 hello</strong>
+<strong class="calibre2">-rw-r--r-- 1 root root  231 Jul 18 05:59 hello.go</strong>
+<strong class="calibre2">drwxrwxrwx 2 root root 4.0K Jul 14 06:26 src</strong>
+</pre></div></li></ol><div></div><p class="calibre8">One of the advantages of writing Go applications, and compiled code in general, is that we can produce a single binary that is easy to deploy. The remaining size of the Docker image is made up of the unnecessary files provided by the base Docker image. We can note the large overhead coming from the base Docker image that increases the total image size by 100 times the usual.</p><p class="calibre8">We can also optimize the end Docker image deployed to production by only packing the final<code class="literal"> hello </code>binary and some dependent shared libraries. Follow the next few steps to perform the optimization:</p><div><ol class="orderedlist"><li class="listitem" value="1">First, copy the binary from the running container to our Docker host via the following command line:<div><pre class="programlisting">
+<strong class="calibre2">dockerhost$ docker cp -L large:/go/hello ../build</strong>
+</pre></div></li><li class="listitem" value="2">If the preceding library were a static binary, we would now be done and would proceed with the next step. However, Go tooling builds share binaries by default. In order for the binary to run properly, it needs the shared libraries. Run the following command to list them:<div><pre class="programlisting">
+<strong class="calibre2">dockerhost$ docker exec -it large /usr/bin/ldd hello</strong>
+<strong class="calibre2">linux-vdso.so.1 (0x00007ffd84747000)</strong>
+<strong class="calibre2">libpthread.so.0 =&gt; /lib/x86_64-linux-gnu/libpthread.so.0 (0x00007f32f3793000)</strong>
+<strong class="calibre2">libc.so.6 =&gt; /lib/x86_64-linux-gnu/libc.so.6 (0x00007f32f33ea000)</strong>
+<strong class="calibre2">/lib64/ld-linux-x86-64.so.2 (0x00007f32f39b0000)</strong>
+</pre></div></li><li class="listitem" value="3">Next, save <a id="id91" class="calibre1"/>all required shared libraries to our Docker host. Issuing the following <code class="literal">docker cp -L</code> commands will do this:<div><pre class="programlisting">
+<strong class="calibre2">dockerhost$ docker cp -L large:/lib/x86_64-linux-gnu/libpthread.so.0 \</strong>
+<strong class="calibre2">                         ../build  </strong>
+<strong class="calibre2">dockerhost$ docker cp -L large:/lib/x86_64-linux-gnu/libc.so.6 \</strong>
+<strong class="calibre2">                         ../build  </strong>
+<strong class="calibre2">dockerhost$ docker cp -L large:/lib64/ld-linux-x86-64.so.2 \</strong>
+<strong class="calibre2">                         ../build</strong>
+</pre></div></li><li class="listitem" value="4">Create a new <code class="literal">Dockerfile</code> to build this "binary-only" image. Note how the <code class="literal">ADD</code> instructions recreate the shared library paths that the <code class="literal">hello</code> application expects in this new Docker image in the following output:<div><pre class="programlisting">FROM scratch
+
+ADD hello /app/hello
+ADD libpthread-2.19.so \
+/lib/x86_64-linux-gnu/libpthread.so.0
+ADD libc-2.19.so /lib/x86_64-linux-gnu/libc.so.6
+ADD ld-2.19.so /lib64/ld-linux-x86-64.so.2
+
+EXPOSE 8080
+ENTRYPOINT ["/app/hello"]</pre></div></li><li class="listitem" value="5">Now we have all the necessary files needed to run the new "binary-only" Docker image. In the end, the files in our directory tree will look similar to the <a id="id92" class="calibre1"/>following screenshot:<div><img src="img/00006.jpeg" alt="Separating build and deployment images" class="calibre10"/></div><p class="calibre14"> </p></li><li class="listitem" value="6">Now, build the deployable <code class="literal">binary</code> Docker image with the following <code class="literal">build/Dockerfile</code>. The resulting image will be smaller now:<div><pre class="programlisting">
+<strong class="calibre2">dockerhost$ docker build -t binary .</strong>
+<strong class="calibre2">dockerhost$ docker images</strong>
+<strong class="calibre2">REPOSITORY  TAG     IMAGE ID   CREATED       VIRTUAL SIZE</strong>
+<strong class="calibre2">binary   latest 45c327c815 seconds ago 7.853 MB</strong>
+<strong class="calibre2">largeapp  latest  47a64e67f  52 minutes ago  523.1 MB</strong>
+<strong class="calibre2">golang      1.4.2  124e21271  5 days ago      517.3 MB</strong>
+</pre></div></li></ol><div></div><p class="calibre8">The same approach can also be used to make other compiled applications, such as the software normally installed using the <code class="literal">./configure &amp;&amp; make &amp;&amp; make install</code> combinations. We can do the same for interpreted languages such as Python, Ruby, or PHP. However, it will need a little more work to create a "runtime" Ruby Docker image from a "build" Ruby Docker image. An example of a good time to perform this kind of optimization <a id="id93" class="calibre1"/>is when the delivery of our applications gets too long because the images are too big for a sustainable development workflow.</p></div></div>
+<div><div><div><div><h1 class="title" id="calibre_pb_0"><a id="ch02lvl1sec15" class="calibre1"/>Summary</h1></div></div></div><p class="calibre8">In this chapter, you learned more about how Docker builds images and applied it to improve several factors, such as the deploy time, build time, and image size. The techniques specified in this chapter are not comprehensive; there will surely be more ways on how to achieve these objectives as more people discover how to use Docker for their applications. More techniques will also arise as Docker itself matures and develops more features. The most important guiding factor for these optimizations is to ask ourselves whether we are really getting the benefits of using Docker. Some good example questions to ask are as follows:</p><div><ul class="itemizedlist"><li class="listitem">Is deploy time improving?</li><li class="listitem">Is the development team getting feedback fast enough from what the operations team learned when running our application?</li><li class="listitem">Are we able to iterate on new features fast enough to incorporate the new feedback that we discovered from customers using our application?</li></ul></div><p class="calibre8">By keeping in mind our motivation and objective of using Docker, we can come with our own ways to improve our workflows.</p><p class="calibre8">Using some of the preceding optimizations will require updating the configuration of our Docker hosts. To be able to manage several Docker hosts at a scale, we will need some form of automation for their provisioning and configuration. In the next chapter, we will talk about how to automate setting up Docker hosts with configuration management software.</p></div></body></html>

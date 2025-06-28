@@ -1,0 +1,367 @@
+<html><head></head><body>
+		<div><h1 id="_idParaDest-91"><em class="italic"><a id="_idTextAnchor091"/>Chapter 3</em>: Running Application Containers on Kubernetes </h1>
+			<p><a id="_idTextAnchor092"/>This chapter contains a comprehensive overview of the smallest Lego block that Kubernetes provides – the Pod. Included is an explanation of the PodSpec YAML format and possible configurations, and a quick discussion of how Kubernetes handles and schedules Pods. The Pod is the most basic way to run applications on Kubernetes and is used in all higher-order application controllers.</p>
+			<p>In this chapter, we will cover the following topics:</p>
+			<ul>
+				<li>What is a Pod?</li>
+				<li>Namespaces</li>
+				<li>The Pod life cycle</li>
+				<li>The Pod resource spec</li>
+				<li>Pod scheduling</li>
+			</ul>
+			<h1 id="_idParaDest-92"><a id="_idTextAnchor093"/>Technical requirements</h1>
+			<p>In order to run the commands detailed in this chapter, you will need a computer that supports the <code>kubectl</code> command-line tool, along with a working Kubernetes cluster. See <a href="B14790_01_Final_PG_ePub.xhtml#_idTextAnchor016"><em class="italic">Chapter 1</em></a>, <em class="italic">Communicating with Kubernetes</em>, for several methods for getting up and running with Kubernetes quickly, and for instructions on how to install the <code>kubectl</code> tool.</p>
+			<p>The code used in this chapter can be found in the book's GitHub repository at the following link: </p>
+			<p><a href="https://github.com/PacktPublishing/Cloud-Native-with-Kubernetes/tree/master/Chapter3">https://github.com/PacktPublishing/Cloud-Native-with-Kubernetes/tree/master/Chapter3</a></p>
+			<h1 id="_idParaDest-93"><a id="_idTextAnchor094"/>What is a Pod? </h1>
+			<p>The Pod is the <a id="_idIndexMarker132"/>simplest compute resource in Kubernetes. It specifies one or more containers to be started and run by the Kubernetes scheduler on a node. Pods have many potential configurations and extensions but remain the most basic way to run applications on Kubernetes.</p>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">A Pod by itself is not a very good way to run applications on Kubernetes. Pods should be treated like fdisposable things in order to take advantage of the true capabilities of a container orchestrator like Kubernetes. This means treating containers (and therefore Pods) like cattle, not pets. To really make use of containers and Kubernetes, applications should be run in self-healing, scalable groups. The Pod is the building block of these groups, and we'll get into how to configure applications this way in later chapters.</p>
+			<h1 id="_idParaDest-94"><a id="_idTextAnchor095"/>Implementing Pods</h1>
+			<p>Pods are implemented using Linux isolation tenets such as groups and namespaces, and generally can <a id="_idIndexMarker133"/>be thought of as a logical host machine. Pods run one or more containers (which can be based on Docker, CRI-O, or other runtimes) and these containers can communicate with each other in the same ways that different processes on a VM can communicate. </p>
+			<p>In order for containers within two different Pods to communicate, they need to access the other Pod (and container) via its IP. By default, only containers running on the same Pod can use lower-level methods of communication, though it is possible to configure different Pods with the availability to talk to each other via host IPC.</p>
+			<h2 id="_idParaDest-95"><a id="_idTextAnchor096"/>Pod paradigms</h2>
+			<p>At the <a id="_idIndexMarker134"/>most basic level, there are two types of Pods:</p>
+			<ul>
+				<li>Single-container <a id="_idIndexMarker135"/>Pods</li>
+				<li>Multi-container <a id="_idIndexMarker136"/>Pods</li>
+			</ul>
+			<p>It is generally a best practice to include a single container per Pod. This approach allows you to scale the different parts of your application separately, and generally keeps things simple when it comes to creating a Pod that starts and runs without issues.</p>
+			<p>Multi-container Pods, on the other hand, are more complex but can be useful in various circumstances:</p>
+			<ul>
+				<li>If there are multiple parts of your application that run in separate containers but are tightly coupled, you can run them both inside the same Pod to make communication and filesystem access seamless.</li>
+				<li>When implementing the <em class="italic">sidecar</em> pattern, where utility containers are injected alongside your main application to handle logging, metrics, networking, or advanced functionality such as a Service Mesh (more on this in <a href="B14790_14_Final_PG_ePub.xhtml#_idTextAnchor307"><em class="italic">Chapter 14</em></a>, <em class="italic">Service Meshes and Serverless</em>).</li>
+			</ul>
+			<p>The following <a id="_idIndexMarker137"/>diagram shows a common sidecar implementation:</p>
+			<div><div><img src="img/B14790_03_001.jpg" alt="Figure 3.1 – Common sidebar implementation"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 3.1 – Common sidebar implementation</p>
+			<p>In this example, we have a single Pod with two containers: our application container running a web server, and a logging application that pulls logs from our server Pod and forwards them to our logging infrastructure. This is a very applicable use of the sidecar pattern, though many log collectors work at the node level, not at the Pod level, so this is not a universal way of collecting logs from our app containers in Kubernetes.</p>
+			<h2 id="_idParaDest-96"><a id="_idTextAnchor097"/>Pod networking</h2>
+			<p>As we just <a id="_idIndexMarker138"/>mentioned, Pods have their own IP addresses that can be used in inter-pod communication. Each Pod has an IP address as well as ports, which are shared among the containers running in a Pod if there is more than one container.</p>
+			<p>Within a Pod, as we mentioned before, containers can communicate without calling the wrapping Pod's IP – instead they can simply use localhost. This is because containers within a Pod share a network namespace – in essence, they communicate via the same <em class="italic">bridge</em>, which is implemented using a virtual network interface.</p>
+			<h2 id="_idParaDest-97"><a id="_idTextAnchor098"/>Pod storage</h2>
+			<p>Storage in Kubernetes is a large topic on its own, and we will review it in depth in <a href="B14790_07_Final_PG_ePub.xhtml#_idTextAnchor166"><em class="italic">Chapter 7</em></a>, <em class="italic">Storage on Kubernetes</em> – but for now, you can think of Pod storage as either persistent or non-persistent volumes attached to a Pod. Non-persistent volumes can be used by a Pod to store <a id="_idIndexMarker139"/>data or files depending on the type, but they are deleted when the Pod shuts down. Persistent-type volumes will remain past Pod shutdown and can even be used to share data between multiple Pods or applications. </p>
+			<p>Before we can continue with our discussion of Pods, we will take a quick moment to discuss namespaces. Since we'll be working with <code>kubectl</code> commands during our work with Pods, it's important to know how namespaces tie into Kubernetes and <code>kubectl</code>, since it can be a big "gotcha."</p>
+			<h2 id="_idParaDest-98"><a id="_idTextAnchor099"/>Namespaces</h2>
+			<p>We talked briefly about namespaces in the section on authorization in <em class="italic">Chapter 1</em>, <em class="italic">Communicating with Kubernetes</em>, but we will reiterate and expand on their purpose here. Namespaces are <a id="_idIndexMarker140"/>a way to logically separate different areas within your cluster. A common use case is having a namespace per environment – one for dev, one for staging, one for production – all living inside the same cluster. </p>
+			<p>As we mentioned in the <em class="italic">Authorization</em> section, it is possible to specify user permissions on a per-namespace basis – for instance, letting a user deploy new applications and resources to the <code>dev</code> namespace but not to production.</p>
+			<p>In your running cluster, you can see what namespaces exist by running <code>kubectl get namespaces</code> or <code>kubectl get ns</code>, which should result in the following output: </p>
+			<pre>NAME          STATUS    AGE
+default       Active    1d
+kube-system   Active    1d
+kube-public   Active    1d</pre>
+			<p>To create a namespace imperatively, you can simply run <code>kubectl create namespace staging</code>, or run <code>kubectl apply -f /path/to/file.yaml</code> with the following YAML resource spec:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">Staging-ns.yaml</p>
+			<pre>apiVersion: v1
+kind: Namespace
+metadata:
+  name: staging</pre>
+			<p>As you <a id="_idIndexMarker141"/>can see, a <code>Namespace</code> spec is very simple. Let's move on to something more complex – the PodSpec itself.</p>
+			<h2 id="_idParaDest-99"><a id="_idTextAnchor100"/>The Pod life cycle</h2>
+			<p>To quickly <a id="_idIndexMarker142"/>see which Pods are running in your cluster, you can run <code>kubectl get pods</code> or <code>kubectl get pods --all-namespaces</code> to get Pods in either the current namespace (defined by your <code>kubectl</code> context, or the default namespace if none is specified) or all namespaces, respectively.</p>
+			<p>The output of <code>kubectl get pods</code> looks like this:</p>
+			<pre>NAME     READY   STATUS    RESTARTS   AGE
+my-pod   1/1     Running   0          9s</pre>
+			<p>As you can see, Pods have a <code>STATUS</code> value that tells us in which state the Pod currently is.</p>
+			<p>The values for Pod state are as follows:</p>
+			<ul>
+				<li><code>Running</code> status, a Pod has successfully spun up its container(s) without <a id="_idIndexMarker143"/>any issues. If the Pod has a single container, and it's in <code>Running</code> status, then the container has not completed or exited its process. It could also currently be restarting, which you can tell by checking the <code>READY</code> column. If, for instance, the <code>READY</code> value is <code>0/1</code>, that means that the container in the Pod is currently not passing health checks. This could be for a variety of reasons: the container could still be spinning up, a database connection could be non-functional, or some important configuration could be preventing the application process from starting.</li>
+				<li><code>Succeeded</code> state if those containers have completed their process command.</li>
+				<li><code>Pending</code> statuses designate that at least one container in the Pod is waiting <a id="_idIndexMarker145"/>for its image. This is likely because the container image is still being fetched from an external repository, or because the Pod itself is waiting to be scheduled by <code>kube-scheduler</code>.</li>
+				<li><code>Unknown</code> status means that Kubernetes cannot tell what state the Pod is actually in. This usually means that the node that the Pod lives on is experiencing <a id="_idIndexMarker146"/>some form of error. It may be out of disk space, disconnected from the rest of the cluster, or otherwise be encountering problems.</li>
+				<li><code>Failed</code> status, one or more of the containers in the Pod has terminated with a failure status. Additionally, the other containers in the Pod must have <a id="_idIndexMarker147"/>terminated in either success or failure. This can happen for a variety of reasons due to the cluster removing Pods or something inside the container application breaking the process.</li>
+			</ul>
+			<h2 id="_idParaDest-100"><a id="_idTextAnchor101"/>Understanding the Pod resource spec</h2>
+			<p>Since the Pod resource spec is the first one we've really dug into, we will spend our time detailing <a id="_idIndexMarker148"/>the various parts of the YAML file and how they fit together.</p>
+			<p>Let's start things off with a fully spec'd-out Pod file, which we can then pick apart and review:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">Simple-pod.yaml</p>
+			<pre>apiVersion: v1
+kind: Pod
+metadata:
+  name: myApp
+  namespace: dev
+  labels:
+    environment: dev
+  annotations:
+    customid1: 998123hjhsad 
+spec:
+  containers:
+  - name: my-app-container
+    image: busybox</pre>
+			<p>This Pod <a id="_idIndexMarker149"/>YAML file is somewhat more complicated than the one that we looked at in the first chapter. It exposes some new Pod functionality that we will review shortly.</p>
+			<h3>API version</h3>
+			<p>Let's start at line 1: <code>apiVersion</code>. As we mentioned in <a href="B14790_01_Final_PG_ePub.xhtml#_idTextAnchor016"><em class="italic">Chapter 1</em></a>, <em class="italic">Communicating with Kubernetes</em>, <code>apiVersion</code> tells Kubernetes which version of the API to look at when creating and configuring <a id="_idIndexMarker150"/>your resource. Pods have been around for a long time in Kubernetes, so the PodSpec is solidified into API version <code>v1</code>. Other resource types may contain group names in addition to version names – for instance, a CronJob resource in Kubernetes uses <code>batch/v1beta1</code> <code>apiVersion</code>, while the Job resource uses the <code>batch/v1</code> <code>apiVersion</code>. In both of these, <code>batch</code> corresponds to the API group name.</p>
+			<h3>Kind</h3>
+			<p>The <code>kind</code> value corresponds to the actual name of the resource type in Kubernetes. In this case, we're <a id="_idIndexMarker151"/>trying to spec out a Pod, so that's what we put. The <code>kind</code> value is always in camel case, such as <code>Pod</code>, <code>ConfigMap</code>, <code>CronJob</code>, and so on.</p>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">For a <a id="_idIndexMarker152"/>full list of <code>kind</code> values, check the official Kubernetes documentation at <a href="https://kubernetes.io/docs/home/">https://kubernetes.io/docs/home/</a>. New Kubernetes <code>kind</code> values are added in new releases so the ones reviewed in this book may not be an exhaustive list.</p>
+			<h3>Metadata </h3>
+			<p>Metadata is a top-level key that can have several different values underneath. First of all, <code>name</code> is the resource name, which is what the resource will display as via <code>kubectl</code> and what it is stored <a id="_idIndexMarker153"/>as in <code>etcd</code>. <code>namespace</code> corresponds to the namespace that the resource should be created in. If no namespace is specified in the YAML spec, the resource will be created in the <code>default</code> namespace – unless a namespace is specified in the <code>apply</code> or <code>create</code> commands.</p>
+			<p>Next, <code>labels</code> are key-value pairs that are used to add metadata to a resource. <code>labels</code> are special compared to other metadata because they are used by default in Kubernetes native <code>selectors</code> to filter and select resources – but they can also be used for custom functionality.</p>
+			<p>Finally, the <code>metadata</code> block can play host to multiple <code>annotations</code> which, like <code>labels</code>, can be used by controllers and custom Kubernetes functionality to provide additional configuration and feature-specific data. In this PodSpec, we have several annotations specified in our metadata:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">pod-with-annotations.yaml</p>
+			<pre>apiVersion: v1
+kind: Pod
+metadata:
+  name: myApp
+  namespace: dev
+  labels:
+    environment: dev
+  annotations:
+    customid1: 998123hjhsad
+    customid2: 1239808908sd 
+spec:
+  containers:
+  - name: my-app-container
+    image: busybox</pre>
+			<p>Generally, it is better to use <code>labels</code> for Kubernetes-specific functionality and selectors while using <code>annotations</code> for adding data or extension functionality – this is just a convention.</p>
+			<h3>Spec </h3>
+			<p><code>spec</code> is the <a id="_idIndexMarker154"/>top-level key that contains the resource-specific configuration. In this case, since our <code>kind</code> value is <code>Pod</code>, we'll add some configuration that is specific to our Pod. All further keys will be indented under this <code>spec</code> key and will represent our Pod configuration.</p>
+			<h3>Containers </h3>
+			<p>The <code>containers</code> key expects a list of one or more containers that will run within a Pod. Each container <a id="_idIndexMarker155"/>spec will expose its own configuration values, which are indented under the container list item in your resource YAML. We will review some of these configurations here, but for a full list, check the Kubernetes documentation (<a href="https://kubernetes.io/docs/home/">https://kubernetes.io/docs/home/</a>).</p>
+			<h3>Name </h3>
+			<p>Inside a <a id="_idIndexMarker156"/>container spec, <code>name</code> pertains to what the container will be named within a Pod. Container names can be used to specifically access the logs of a particular container using the <code>kubectl logs</code> command, but we'll get to that later. For now, ensure you choose a clear name for each container in your Pod to make things easier when it comes to debugging.</p>
+			<h3>Image </h3>
+			<p>For each <a id="_idIndexMarker157"/>container, <code>image</code> is used to specify the name of the Docker (or other runtime) image that should be started within the Pod. Images will be pulled from the configured repository, which is the public Docker Hub by default, but can be a private repository as well.</p>
+			<p>And that's it – that's all you need to specify a Pod and run it in Kubernetes. Everything from this point on in the <code>Pod</code> section falls under the <em class="italic">additional configuration</em> umbrella.</p>
+			<h3>Pod resource specifications </h3>
+			<p>Pods can <a id="_idIndexMarker158"/>be configured to have specific amounts of memory and compute allocated to them. This prevents particularly hungry applications from impacting cluster performance and can also help prevent memory leaks. There are two possible resources that can be specified – <code>cpu</code> and <code>memory</code>. For each of these, there are two different types of specifications, <code>Requests</code> and <code>Limits</code>, for a total of four possible resource specification keys. </p>
+			<p>Memory requests and limits can be configured with any typical memory number suffix, or its power-of-two equivalent – for instance, 50 Mi (mebibytes), 50 MB (megabytes), or 1 Gi (gibibytes).</p>
+			<p>CPU requests and limits can be configured either by using <code>m</code> which corresponds to 1 milli-CPU, or by just using a decimal number. So <code>200m</code> is equivalent to <code>0.2</code>, which equals 20% or one fifth of a logical CPU. This quantity will be the same amount of compute power regardless <a id="_idIndexMarker159"/>of the number of cores. 1 CPU equals a virtual core in AWS or a core in GCP. Let's look at how these resource requests and limits look in our YAML file:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">pod-with-resource-limits.yaml</p>
+			<pre>apiVersion: v1
+kind: Pod
+metadata:
+  name: myApp
+spec:
+  containers:
+  - name: my-app-container
+    image: mydockername
+    resources:
+      requests:
+        memory: "50Mi"
+        cpu: "100m"
+      limits:
+        memory: "200Mi"
+        cpu: "500m"</pre>
+			<p>In this <code>Pod</code>, we have a container running a Docker image that is specified with both requests and limits on <code>cpu</code> and <code>memory</code>. In this case, our container image name, <code>mydockername</code>, is a placeholder - but if you want to test the Pod resource limits in this example, you can use the busybox image.</p>
+			<h3>Container start commands</h3>
+			<p>When a container starts in a Kubernetes Pod, it runs the default start script for the container – for instance, the script specified in the Docker container spec. In order to override this functionality with different commands or additional arguments, you can provide the <code>command</code> and <code>args</code> keys. Let's look at a container configured with a <code>start</code> command and some arguments:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">pod-with-start-command.yaml</p>
+			<pre>apiVersion: v1
+kind: Pod
+metadata:
+  name: myApp
+spec:
+  containers:
+  - name: my-app-container
+    image: mydockername
+    command: ["run"]
+    args: ["--flag", "T", "--run-type", "static"]</pre>
+			<p>As you can see, we specify a command as well as a list of arguments as an array of strings, separated with commas where spaces would be.</p>
+			<h3>Init containers </h3>
+			<p><code>init</code> containers <a id="_idIndexMarker160"/>are special containers within a Pod that start, run, and shut down before the normal Pod container(s) start.</p>
+			<p><code>init</code> containers <a id="_idIndexMarker161"/>can be used for many different use cases, such as initializing files before an application starts or ensuring that other applications or services are running before starting a Pod.</p>
+			<p>If multiple <code>init</code> containers are specified, they will run in order until all <code>init</code> containers have shut down. For this reason, <code>init</code> containers must run a script that completes and has an endpoint. If your <code>init</code> container script or application keeps running, the normal container(s) in your Pod will not start.</p>
+			<p>In the following Pod, the <code>init</code> container is running a loop to check that our <code>config-service</code> exists via <code>nslookup</code>. Once it sees that <code>config-service</code> is up, the script ends, which triggers our <code>my-app</code> app container to start:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">pod-with-init-container.yaml</p>
+			<pre>apiVersion: v1
+kind: Pod
+metadata:
+  name: myApp
+spec:
+  containers:
+  - name: my-app
+    image: mydockername
+    command: ["run"]
+  initContainers:
+  - name: init-before
+    image: busybox
+    command: ['sh', '-c', 'until nslookup config-service; do echo config-service not up; sleep 2; done;']</pre>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">When <a id="_idIndexMarker162"/>an <code>init</code> container fails, Kubernetes will <a id="_idIndexMarker163"/>automatically restart the Pod, similar to the usual Pod startup functionality. This functionality can be changed by changing <code>restartPolicy</code> at the Pod level.</p>
+			<p>Here's a diagram showing the typical Pod startup flow in Kubernetes:</p>
+			<div><div><img src="img/B14790_03_002.jpg" alt="Figure 3.2 – Init container flowchart"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 3.2 – Init container flowchart</p>
+			<p>If a Pod <a id="_idIndexMarker164"/>has more than one <code>initContainer</code>, they <a id="_idIndexMarker165"/>will be invoked sequentially. This is valuable for times where you set up <code>initContainers</code> with modular steps that must be executed in order. The following YAML shows this:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">pod-with-multiple-init-containers.yaml</p>
+			<pre>apiVersion: v1
+kind: Pod
+metadata:
+  name: myApp
+spec:
+  containers:
+  - name: my-app
+    image: mydockername
+    command: ["run"]
+  initContainers:
+  - name: init-step-1
+    image: step1-image
+    command: ['start-command']
+  - name: init-step-2
+    image: step2-image
+    command: ['start-command']</pre>
+			<p>For <a id="_idIndexMarker166"/>instance, in this <code>Pod</code> YAML file, the <code>step-1 init</code> container <a id="_idIndexMarker167"/>needs to succeed before <code>init-step-2</code> is invoked, and both need to show success before the <code>my-app</code> container will be started.</p>
+			<h3>Introducing different types of probes in Kubernetes</h3>
+			<p>In order to know when a container (and therefore a Pod) has failed, Kubernetes needs to know <a id="_idIndexMarker168"/>how to test that the container <a id="_idIndexMarker169"/>is functioning. We do this by defining <code>probes</code>, which <a id="_idIndexMarker170"/>Kubernetes can run at a specified interval to determine whether the container is working.</p>
+			<p>There are three types of probes that Kubernetes lets us configure – readiness, liveness, and startup.</p>
+			<h3>Readiness probes</h3>
+			<p>First off, readiness probes can be used to determine whether a container is ready to perform a <a id="_idIndexMarker171"/>function such as accepting traffic via HTTP. These probes are helpful in the beginning stages of a running application, where it <a id="_idIndexMarker172"/>may still be fetching the configuration, for instance, and not yet be ready to accept connections.</p>
+			<p>Let's take a look at what a Pod with a readiness probe configured looks like. What follows is a PodSpec with a readiness probe attached:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">pod-with-readiness-probe.yaml</p>
+			<pre>apiVersion: v1
+kind: Pod
+metadata:
+  name: myApp
+spec:
+  containers:
+  - name: my-app
+    image: mydockername
+    command: ["run"]
+    ports:
+    - containerPort: 8080
+    readinessProbe:
+      exec:
+        command:
+        - cat
+        - /tmp/thisfileshouldexist.txt
+      initialDelaySeconds: 5
+      periodSeconds: 5</pre>
+			<p>For starters, as you <a id="_idIndexMarker173"/>can see, probes are defined per container, not per Pod. Kubernetes <a id="_idIndexMarker174"/>will run all probes per container and use that to determine the total health of the Pod.</p>
+			<h3>Liveness probes</h3>
+			<p>Liveness probes can be used to determine whether an application has failed for some reason (for instance, due to a memory error). For application containers that run a long time, liveness probes <a id="_idIndexMarker175"/>can come in handy as a method <a id="_idIndexMarker176"/>to help Kubernetes recycle old and broken Pods for new ones. Though probes in and of themselves won't cause a container to restart, other Kubernetes resources and controllers will check the probe status and use it to restart Pods when necessary. Here is a PodSpec with a liveness probe definition attached to it:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">pod-with-liveness-probe.yaml</p>
+			<pre>apiVersion: v1
+kind: Pod
+metadata:
+  name: myApp
+spec:
+  containers:
+  - name: my-app
+    image: mydockername
+    command: ["run"]
+    ports:
+    - containerPort: 8080
+    livenessProbe:
+      exec:
+        command:
+        - cat
+        - /tmp/thisfileshouldexist.txt
+      initialDelaySeconds: 5
+      failureThreshold: 3
+      periodSeconds: 5</pre>
+			<p>As you <a id="_idIndexMarker177"/>can see, our liveness probe is specified in the same way as our <a id="_idIndexMarker178"/>readiness probe, with one addition – <code>failureThreshold</code>. </p>
+			<p>The <code>failureThreshold</code> value will determine how many times Kubernetes will attempt the probe before taking action. For liveness probes, Kubernetes will restart the Pod once the <code>failureThreshold</code> is crossed. For readiness probes, Kubernetes will simply mark the Pod as <code>Not Ready</code>. The default value for this threshold is <code>3</code>, but it can be changed to any value greater than or equal to <code>1</code>.</p>
+			<p>In this case, we are using the <code>exec</code> mechanism with our probe. We will review the various probe mechanisms available shortly.</p>
+			<h3>Startup probes </h3>
+			<p>Finally, startup probes <a id="_idIndexMarker179"/>are a special type of probe <a id="_idIndexMarker180"/>that will only run once, on container startup. Some (often older) applications will take a long time to start up in a container, so by providing some extra leeway when a container starts up the first time, you can prevent the liveness or readiness probes failing and causing a restart. Here's a startup probe configured with our Pod:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">pod-with-startup-probe.yaml</p>
+			<pre>apiVersion: v1
+kind: Pod
+metadata:
+  name: myApp
+spec:
+  containers:
+  - name: my-app
+    image: mydockername
+    command: ["run"]
+    ports:
+    - containerPort: 8080
+    startupProbe:
+      exec:
+        command:
+        - cat
+        - /tmp/thisfileshouldexist.txt
+      initialDelaySeconds: 5
+      successThreshold: 2
+      periodSeconds: 5</pre>
+			<p>Startup <a id="_idIndexMarker181"/>probes provide a benefit greater than simply extending the time <a id="_idIndexMarker182"/>between liveness or readiness probes – they allow Kubernetes to maintain a quick reaction time when addressing problems that happen after startup and (more importantly) to prevent slow-starting applications from restarting constantly. If your application takes many seconds or even a minute or two to start up, you will have a much easier time implementing a startup probe.</p>
+			<p><code>successThreshold</code> is just what it seems, the opposite side of the coin to <code>failureThreshold</code>. It specifies how many successes in a row are required before a container is marked <code>Ready</code>. For applications <a id="_idIndexMarker183"/>that can go up and down on startup <a id="_idIndexMarker184"/>before stabilizing (like some self-clustering applications), changing this value can be useful. The default is <code>1</code>, and for liveness probes the only possible value is <code>1</code>, but we can change the value for readiness and startup probes.</p>
+			<h3>Probe mechanism configuration</h3>
+			<p>There <a id="_idIndexMarker185"/>are multiple mechanisms to specify any of the three probes: <code>exec</code>, <code>httpGet</code>, and <code>tcpSocket</code>.</p>
+			<p>The <code>exec</code> method allows you to specify a command that will be run inside the container. A successfully executed command will result in a passed probe, while a command that fails will <a id="_idIndexMarker186"/>result in a fail on the probe. All the probes we've configured so far have used the <code>exec</code> method, so configuration should be self-evident. If the chosen command (with any arguments specified in comma-separated list form) fails, the probe will fail.</p>
+			<p>The <code>httpGet</code> method for probes allows you to specify a URL on the container that will be hit with an HTTP <code>GET</code> request. If the HTTP request returns a code anywhere between <code>200</code> to <code>400</code>, it will result in a success on the probe. Any other HTTP code will result in a failure.</p>
+			<p>The configuration for <code>httpGet</code> looks like this:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">pod-with-get-probe.yaml</p>
+			<pre>apiVersion: v1
+kind: Pod
+metadata:
+  name: myApp
+spec:
+  containers:
+  - name: my-app
+    image: mydockername
+    command: ["run"]
+    ports:
+    - containerPort: 8080
+    livenessProbe:
+      httpGet:
+        path: /healthcheck
+        port: 8001
+        httpHeaders:
+        - name: My-Header
+          value: My-Header-Value
+        initialDelaySeconds: 3
+        periodSeconds: 3</pre>
+			<p>Finally, the <code>tcpSocket</code> method will try to open the specified socket on the container and will use <a id="_idIndexMarker187"/>the result to dictate a success <a id="_idIndexMarker188"/>or failure. The <code>tcpSocket</code> configuration looks like this:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">pod-with-tcp-probe.yaml</p>
+			<pre>apiVersion: v1
+kind: Pod
+metadata:
+  name: myApp
+spec:
+  containers:
+  - name: my-app
+    image: mydockername
+    command: ["run"]
+    ports:
+    - containerPort: 8080
+    readinessProbe:
+      tcpSocket:
+        port: 8080
+      initialDelaySeconds: 5
+      periodSeconds: 10</pre>
+			<p>As you <a id="_idIndexMarker189"/>can see, this type of probe <a id="_idIndexMarker190"/>takes in a port, which will be pinged every time the check occurs.</p>
+			<h3>Common Pod transitions</h3>
+			<p>Failing Pods in <a id="_idIndexMarker191"/>Kubernetes tend to transition <a id="_idIndexMarker192"/>between statuses quite a bit. For a first-time user, this can be intimidating, so it is valuable to break down how the Pod statuses we listed earlier interact with probe functionality. Just to reiterate, here are our statuses: </p>
+			<ul>
+				<li><code>Running</code></li>
+				<li><code>Succeeded</code></li>
+				<li><code>Pending</code></li>
+				<li><code>Unknown</code></li>
+				<li><code>Failed</code></li>
+			</ul>
+			<p>A common flow is to run <code>kubectl get pods -w</code> (the <code>-w</code> flag adds a watch to the command) and see offending Pods transitioning between <code>Pending</code> and <code>Failed</code>. Typically, what is occurring is that the Pods (and their containers) are spinning up and pulling images – which is the <code>Pending</code> state since the health checks have not yet started. </p>
+			<p>Once the initial probe timeout (which as we saw in the previous section is configurable) elapses, the first probe fails. This can continue for seconds or even minutes depending on how high the failure threshold is, with the status still pinned at <code>Pending</code>.</p>
+			<p>Finally, our failure threshold is reached, and our Pod status transitions to <code>Failed</code>. At this point, one of two things can happen, and the decision is based purely on the <code>RestartPolicy</code> on the PodSpec, which can either be <code>Always</code>, <code>Never</code>, or <code>OnFailure</code>. If a Pod fails and the <code>restartPolicy</code> is <code>Never</code>, the Pod will stay in the failed status. If it is one of the other two options, the Pod will restart automatically, and go back to <code>Pending</code>, which is the root cause of our never-ending transition cycle.</p>
+			<p>For a different example, you may see Pods stuck forever in the <code>Pending</code> status. This can be due to the Pod failing to be scheduled on any node. This could be due to resource request constraints (which we will cover in depth later in this book, in <a href="B14790_08_Final_PG_ePub.xhtml#_idTextAnchor186"><em class="italic">Chapter 8</em></a>, <em class="italic">Pod Placement Controls</em>), or other <a id="_idIndexMarker193"/>issues such as nodes being unreachable.</p>
+			<p>Finally, with <code>Unknown</code>, typically <a id="_idIndexMarker194"/>the node that the Pod is scheduled on is unreachable for some reason – the node might have shut down, for instance, or is unreachable via the network.</p>
+			<h3>Pod scheduling</h3>
+			<p>The complexities of Pod scheduling and the ways the Kubernetes lets you influence and control <a id="_idIndexMarker195"/>it will be saved for our <a href="B14790_08_Final_PG_ePub.xhtml#_idTextAnchor186"><em class="italic">Chapter 8</em></a>, <em class="italic">Pod Placement Controls</em> – but for now we will review the basics.</p>
+			<p>When deciding where to schedule a Pod, Kubernetes takes many factors into account, but the most <a id="_idIndexMarker196"/>important to consider (when not delving into the more complex controls that Kubernetes lets us use) are Pod priority, node availability, and resource availability.</p>
+			<p>The Kubernetes scheduler operates a constant control loop that monitors the cluster for unbound (unscheduled) Pods. If one or more unbound Pods is found, the scheduler will use the Pod priority to decide which one to schedule first.</p>
+			<p>Once the scheduler has decided on a Pod to schedule, it will perform several rounds and types of checks in order to find the local optima of a node for where to schedule the Pod. The latter rounds of checks are dictated by granular scheduling controls, which we'll get into in the <a href="B14790_08_Final_PG_ePub.xhtml#_idTextAnchor186"><em class="italic">Chapter 8</em></a>, <em class="italic">Pod Placement Controls</em>. We'll worry about the first couple of checks for now.</p>
+			<p>First, Kubernetes checks to see which nodes are even schedulable at the current moment. Nodes may be non-functioning or otherwise encountering issues that would prevent new Pods from being scheduled.</p>
+			<p>Secondly, Kubernetes filters schedulable nodes by checking to see which of those nodes match the minimum resource requirement stated in the PodSpec.</p>
+			<p>At this point, in the absence of any other placement controls, the scheduler will make its decision and assign our new Pod to a node. When the <code>kubelet</code> on that node sees that it has a new Pod assigned to it, the Pod will be spun up.</p>
+			<h1 id="_idParaDest-101"><a id="_idTextAnchor102"/>Summary</h1>
+			<p>In this chapter, we learned that Pods are the most basic building block we have to work with in Kubernetes. It's important to have a strong understanding of Pods and all their subtleties because all compute on Kubernetes uses Pods as a building block. It's probably pretty obvious by now, but Pods are very small, individual things that are not very sturdy. Running an application as a single Pod on Kubernetes with no controller is a bad decision, and any issue with your Pod will result in downtime.</p>
+			<p>In the next chapter, we'll see how to prevent this by using Pod controllers to run multiple replicas of an application at once.</p>
+			<h1 id="_idParaDest-102"><a id="_idTextAnchor103"/>Questions</h1>
+			<ol>
+				<li>How could you use namespaces to separate application environments?</li>
+				<li>What is a possible reason for a Pod status to be listed as <code>Unknown</code>?</li>
+				<li>What could be a reason for constraining Pod memory resources?</li>
+				<li>If an application running on Kubernetes often does not start in time before a failed probe restarts the Pod, which probe type should you tune? Readiness, liveness, or startup?</li>
+			</ol>
+			<h1 id="_idParaDest-103"><a id="_idTextAnchor104"/>Further reading</h1>
+			<ul>
+				<li>The official Kubernetes documentation: <a href="https://kubernetes.io/docs/home/">https://kubernetes.io/docs/home/</a></li>
+				<li><em class="italic">Kubernetes The Hard Way</em>: <a href="https://github.com/kelseyhightower/kubernetes-the-hard-way">https://github.com/kelseyhightower/kubernetes-the-hard-way</a></li>
+			</ul>
+		</div>
+	</body></html>

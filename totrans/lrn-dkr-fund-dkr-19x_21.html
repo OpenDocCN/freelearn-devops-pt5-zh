@@ -1,0 +1,605 @@
+<html><head></head><body>
+        
+
+                            
+                    <h1 class="header-title">Monitoring and Troubleshooting an App Running in Production</h1>
+                
+            
+            
+                
+<p class="mce-root">In the previous chapter, we learned how to deploy a multi-service application into a Kubernetes cluster. We configured application-level routing for the application and updated its services using a zero-downtime strategy. Finally, we provided confidential data to the running services by using Kubernetes Secrets.</p>
+<p class="mce-root">In this chapter, you will learn the different techniques used to monitor an individual service or a whole distributed application running on a Kubernetes cluster. You will also learn how you can troubleshoot an application service that is running in production, without altering the cluster or the cluster nodes on which the service is running.</p>
+<p>The chapter covers the following topics:</p>
+<ul>
+<li>Monitoring an individual service</li>
+<li>Using Prometheus to monitor your distributed application</li>
+<li>Troubleshooting a service running in production</li>
+</ul>
+<p>After working through this chapter, you will be able to do the following:</p>
+<ul>
+<li class="mce-root">Configure application-level monitoring for a service.</li>
+<li class="mce-root">Use Prometheus to collect and centrally aggregate relevant application metrics.</li>
+<li class="mce-root">Troubleshoot a service running in production using a special tools container.</li>
+</ul>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Technical requirements</h1>
+                
+            
+            
+                
+<p>In this chapter, we're going to use Minikube on our local computer. Please refer to <a href="99a92fe1-4652-4934-9c33-f3e19483afcd.xhtml" target="_blank">Chapter 2</a>, <em>Setting Up a Working Environment</em>, for more information on how to install and use Minikube.</p>
+<p>The code for this chapter can be found at: <a href="https://github.com/PacktPublishing/Learn-Docker---Fundamentals-of-Docker-19.x-Second-Edition/tree/master/ch17" target="_blank">https://github.com/PacktPublishing/Learn-Docker---Fundamentals-of-Docker-19.x-Second-Edition/tree/master/ch17</a><a href="https://github.com/fundamentalsofdocker/labs/tree/2nd-edition/ch16/probes">.</a></p>
+<p>Please make sure you have cloned the GitHub repository as described in <a href="99a92fe1-4652-4934-9c33-f3e19483afcd.xhtml" target="_blank">Chapter 2</a>, <em>Setting Up a Working Environment</em>.</p>
+<p>In your Terminal, navigate to the <kbd>~/fod/ch17</kbd> folder.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Monitoring an individual service</h1>
+                
+            
+            
+                
+<p>When working with a distributed mission-critical application in production or in any production-like environment, then it is of utmost importance to gain as much insight as possible into the inner workings of those applications. Have you ever had a chance to look into the cockpit of an airplane or the command center of a nuclear power plant? Both the airplane and the power plant are samples of highly complex systems that deliver mission-critical services. If a plane crashes or a power plant shuts down unexpectedly, a lot of people are negatively affected, to say the least. Thus the cockpit and the command center are full of instruments showing the current or past state of some part of the system. What you see is the visual representation of some sensors that are placed in strategic parts of the system, and constantly collect data such as the temperature or the flow rate. </p>
+<p>Similar to the airplane or the power plant, our application needs to be instrumented with "sensors" that can feel the "temperature" of our application services or the infrastructure they run on. I put the temperature in double quotes since it is only a placeholder for things that matter in an application, such as the number of requests per second on a given RESTful endpoint, or the average latency of request to the same endpoint.</p>
+<p>The resulting values or readings that we collect, such as the average latency of requests, are often called metrics. It should be our goal to expose as many meaningful metrics as possible of the application services we build. Metrics can be both functional and non-functional. Functional metrics are values that say something business-relevant about the application service, such as how many checkouts are performed per minute if the service is part of an e-commerce application, or which are the five most popular songs over the last 24 hours if we're talking about a streaming application.</p>
+<p>Non-functional metrics are important values that are not specific to the kind of business the application is used for, such as what is the average latency of a particular web request or how many <kbd>4xx</kbd> status codes are returned per minute by another endpoint, or how much RAM or how many CPU cycles a given service is using. </p>
+<p class="mce-root"/>
+<p>In a distributed system where each part is exposing metrics, some overarching service should be collecting and aggregating the values periodically from each component. Alternatively, each component should forward its metrics to a central metrics server. Only if the metrics for all components of our highly distributed system are available for inspection in a central location are they of any value. Otherwise, monitoring the system becomes impossible. That's why pilots of an airplane never have to go and inspect individual and critical parts of the airplane in person during a flight; all necessary readings are collected and displayed in the cockpit.</p>
+<p>Today one of the most popular services that is used to expose, collect, and store metrics is Prometheus. It is an open source project and has been donated to the <strong>Cloud Native Computing Foundation</strong> (<strong>CNCF</strong>). Prometheus has first-class integration with Docker containers, Kubernetes, and many other systems and programming platforms. In this chapter, we will use Prometheus to demonstrate how to instrument a simple service that exposes important metrics.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Instrumenting a Node.js-based service</h1>
+                
+            
+            
+                
+<p>In this section, we want to learn how to instrument a microservice authored in Node Express.js by following these steps:</p>
+<ol>
+<li>Create a new folder called <kbd>node</kbd> and navigate to it:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$</strong> <strong>mkdir node &amp;&amp; cd node</strong></pre>
+<ol start="2">
+<li>Run <kbd>npm init</kbd> in this folder, and accept all defaults except the <strong>entry point</strong>, which you change from the <kbd>index.js</kbd> default to <kbd>server.js</kbd>.</li>
+<li>We need to add <kbd>express</kbd> to our project with the following:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$</strong> <strong>npm install --save express</strong></pre>
+<ol start="4">
+<li>Now we need to install the Prometheus adapter for Node Express with the following:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ npm install --save prom-client<br/></strong></pre>
+<ol start="5">
+<li>Add a file called <kbd>server.js</kbd> to the folder with this content:</li>
+</ol>
+<pre style="padding-left: 60px">const app = require("express")();<br/><br/>app.get('/hello', (req, res) =&gt; {<br/>  const { name = 'World' } = req.query;<br/>  res.json({ message: `Hello, ${name}!` });<br/>});<br/><br/>app.listen(port=3000, () =&gt; {<br/>  console.log(`Example api is listening on http://localhost:3000`);<br/>}); </pre>
+<p style="padding-left: 60px">This is a very simple Node Express app with a single endpoint: <kbd>/hello</kbd>. </p>
+<ol start="6">
+<li>To the preceding code, add the following snippet to initialize the Prometheus client:</li>
+</ol>
+<pre style="padding-left: 60px">const client = require("prom-client");<br/>const register = client.register;<br/>const collectDefaultMetrics = client.collectDefaultMetrics;<br/>collectDefaultMetrics({ register });</pre>
+<ol start="7">
+<li>Next, add an endpoint to expose the metrics:</li>
+</ol>
+<pre style="padding-left: 60px">app.get('/metrics', (req, res) =&gt; {<br/>  res.set('Content-Type', register.contentType);<br/>  res.end(register.metrics());<br/>});</pre>
+<ol start="8">
+<li>Now let's run this sample microservice:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$</strong> <strong>npm start</strong><br/><br/>&gt; node@1.0.0 start C:\Users\Gabriel\fod\ch17\node<br/>&gt; node server.js<br/><br/>Example api is listening on http://localhost:3000</pre>
+<p style="padding-left: 60px">We can see in the preceding output that the service is listening at port <kbd>3000</kbd>.</p>
+<ol start="8">
+<li>Let's now try to access the metrics at the <kbd>/metrics</kbd> endpoint, as we defined in the code:</li>
+</ol>
+<pre>$ <strong>curl localhost:3000/metrics</strong><br/>...<br/>process_cpu_user_seconds_total 0.016 1577633206532<br/><br/># HELP process_cpu_system_seconds_total Total system CPU time spent in seconds.<br/># TYPE process_cpu_system_seconds_total counter<br/>process_cpu_system_seconds_total 0.015 1577633206532<br/><br/># HELP process_cpu_seconds_total Total user and system CPU time spent in seconds.<br/># TYPE process_cpu_seconds_total counter<br/>process_cpu_seconds_total 0.031 1577633206532<br/>...<br/>nodejs_version_info{version="v10.15.3",major="10",minor="15",patch="3"} 1</pre>
+<p>What we get as output is a pretty long list of metrics, ready for consumption by a Prometheus server.</p>
+<p>This was pretty easy, wasn't it? By adding a node package and adding a few trivial lines of code to our application startup, we have gained access to a plethora of system metrics.</p>
+<p>Now let's define our own custom metric. Let it be a <kbd>Counter</kbd> object:</p>
+<ol>
+<li>Add the following code snippet to <kbd>server.js</kbd> to define a custom counter called <kbd>my_hello_counter</kbd>:</li>
+</ol>
+<pre style="padding-left: 60px">const helloCounter = new client.Counter({ <br/>  name: 'my_hello_counter', <br/>  help: 'Counts the number of hello requests',<br/>});</pre>
+<ol start="2">
+<li>To our existing <kbd>/hello</kbd> endpoint, add code to increase the counter:</li>
+</ol>
+<pre style="padding-left: 60px">app.get('/hello', (req, res) =&gt; {<br/>  <strong>helloCounter.inc();</strong><br/>  const { name = 'World' } = req.query;<br/>  res.json({ message: `Hello, ${name}!` });<br/>});</pre>
+<ol start="3">
+<li>Rerun the application with <kbd>npm start</kbd>.</li>
+<li>To test the new counter, let's access our <kbd>/hello</kbd> endpoint twice:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$</strong> <strong>curl localhost:3000/hello?name=Sue</strong></pre>
+<ol start="5">
+<li>We will get this output when accessing the <kbd>/metrics</kbd> endpoint:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ curl localhost:3000/metrics</strong><br/><br/><strong>...</strong><br/><strong># HELP my_hello_counter Counts the number of hello requests </strong><br/><strong># TYPE my_hello_counter counter</strong><br/><strong>my_hello_counter 2</strong></pre>
+<p style="padding-left: 60px">The counter we defined in code clearly works and is output with the <kbd>HELP</kbd> text we added.</p>
+<p>Now that we know how to instrument a Node Express application, let's do the same for a .NET Core-based microservice.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Instrumenting a .NET Core-based service</h1>
+                
+            
+            
+                
+<p>Let's start by creating a simple .NET Core microservice based on the Web API template.</p>
+<ol>
+<li>Create a new <kbd>dotnet</kbd> folder, and navigate to it:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$</strong> <strong>mkdir dotnet &amp;&amp; cd dotnet</strong></pre>
+<ol start="2">
+<li>Use the <kbd>dotnet</kbd> tool to scaffold a new microservice called <kbd>sample-api:</kbd></li>
+</ol>
+<pre style="padding-left: 60px">$ <strong>dotnet new webapi --output sample-api</strong></pre>
+<ol start="3">
+<li>We will use the Prometheus adapter for .NET, which is available to us as a NuGet package called <kbd>prometheus-net.AspNetCore</kbd>. Add this package to the <kbd>sample-api</kbd> project, with the following command:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$</strong> <strong>dotnet add sample-api package prometheus-net.AspNetCore</strong></pre>
+<ol start="4">
+<li>Open the project in your favorite code editor; for example, when using VS Code execute the following:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$</strong> <strong>code .</strong></pre>
+<ol start="5">
+<li>Locate the <kbd>Startup.cs</kbd> file, and open it. At the beginning of the file, add a <kbd>using</kbd> statement:</li>
+</ol>
+<pre style="padding-left: 60px">using Prometheus; </pre>
+<ol start="6">
+<li>Then in the <kbd>Configure</kbd> method add the <kbd>endpoints.MapMetrics()</kbd> statement to the mapping of the endpoints. Your code should look as follows:</li>
+</ol>
+<pre style="padding-left: 60px">public void Configure(IApplicationBuilder app, IWebHostEnvironment env)<br/>{<br/>    ...<br/>    app.UseEndpoints(endpoints =&gt;<br/>    {<br/>        endpoints.MapControllers();<br/>        <strong>endpoints.MapMetrics();</strong><br/>    });<br/>}</pre>
+<p>Note that the above is valid for version 3.x of .NET Core. If you're on an earlier version, the configuration looks slightly different. Consult the following repo for more details, at <a href="https://github.com/prometheus-net/prometheus-net">https://github.com/prometheus-net/prometheus-net.</a></p>
+<ol start="7">
+<li>With this, the Prometheus component will start publishing the request metrics of ASP.NET Core. Let's try it. First, start the application with the following:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$</strong> <strong>dotnet run --project sample-api<br/><br/>info: Microsoft.Hosting.Lifetime[0]</strong><br/><strong>      Now listening on: https://localhost:5001 </strong><br/><strong>info: Microsoft.Hosting.Lifetime[0]</strong><br/><strong>      Now listening on: http://localhost:5000 </strong><br/><strong>...</strong></pre>
+<p style="padding-left: 60px">The preceding output tells us that the microservice is listening at <kbd>https://localhost:5001</kbd>.</p>
+<ol start="8">
+<li>We can now use <kbd>curl</kbd> to call the metrics endpoint of the service:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$</strong> <strong>curl --insecure https://localhost:5001/metrics </strong><br/><br/><strong># HELP process_private_memory_bytes Process private memory size</strong><br/><strong># TYPE process_private_memory_bytes gauge</strong><br/><strong>process_private_memory_bytes 55619584</strong><br/><strong># HELP process_virtual_memory_bytes Virtual memory size in bytes. </strong><br/><strong># TYPE process_virtual_memory_bytes gauge</strong><br/><strong>process_virtual_memory_bytes 2221930053632</strong><br/><strong># HELP process_working_set_bytes Process working set</strong><br/><strong># TYPE process_working_set_bytes gauge</strong><br/><strong>process_working_set_bytes 105537536</strong><br/><strong>...</strong><br/><strong>dotnet_collection_count_total{generation="1"} 0</strong><br/><strong>dotnet_collection_count_total{generation="0"} 0</strong><br/><strong>dotnet_collection_count_total{generation="2"} 0</strong></pre>
+<p>What we get is a list of system metrics for our microservice. That was easy: we only needed to add a NuGet package and a single line of code to get our service instrumented!</p>
+<p>What if we want to add our own (functional) metrics? This is equally straightforward. Assume we want to measure the number of concurrent accesses to our <kbd>/weatherforecast </kbd>endpoint. To do this, we define a <kbd>gauge</kbd> and use it to wrap the logic in the appropriate endpoint with this gauge. We can do this by following these steps:</p>
+<ol start="1">
+<li>Locate the <kbd>Controllers/WeatherForecastController.cs</kbd> class.</li>
+<li>Add <kbd>using Prometheus;</kbd> to the top of the file.</li>
+<li>Define a private instance variable of the <kbd>Gauge </kbd>type in the <kbd>WeatherForecastController</kbd> class:</li>
+</ol>
+<pre style="padding-left: 60px">private static readonly Gauge weatherForecastsInProgress = Metrics<br/>    .CreateGauge("myapp_weather_forecasts_in_progress", <br/>                 "Number of weather forecast operations ongoing.");</pre>
+<ol start="4">
+<li>Wrap the logic of the <kbd>Get</kbd> method with a <kbd>using</kbd> statement:</li>
+</ol>
+<pre style="padding-left: 60px">[HttpGet]<br/>public IEnumerable&lt;WeatherForecast&gt; Get()<br/>{<br/>    <strong>using(weatherForecastsInProgress.TrackInProgress())</strong><br/><strong>    {</strong><br/><strong>        </strong>...<br/><strong>    }</strong><br/>}</pre>
+<ol start="5">
+<li>Restart the microservice.</li>
+<li>Call the <kbd>/weatherforecast</kbd> endpoint a couple of times using <kbd>curl</kbd>:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$</strong> <strong>curl --insecure https://localhost:5001/weatherforecast</strong></pre>
+<ol start="7">
+<li>Use <kbd>curl</kbd> to get the metrics, as earlier in this section:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$</strong> <strong>curl --insecure https://localhost:5001/metrics</strong> <br/><br/># HELP myapp_weather_forecasts_in_progress Number of weather forecast operations ongoing.<br/># TYPE myapp_weather_forecasts_in_progress gauge<br/>myapp_weather_forecasts_in_progress 0<br/>...</pre>
+<p>You will notice that there is now a new metric called <kbd>myapp_weather_forecasts_in_progress</kbd> available in the list. Its value will be zero, since currently you are not running any requests against the tracked endpoint, and a <kbd>gauge</kbd> type metric is only measuring the number of ongoing requests.</p>
+<p>Congratulations, you have just defined your first functional metric. This is only a start; many more sophisticated possibilities are readily available to you.</p>
+<p>Node.js or .NET Core-based application services are by no means special. It is just as straightforward and easy to instrument services written in other languages, such as Java, Python, or Go.</p>
+<p>Having learned how to instrument an application service so that it exposes important metrics, let's now have a look how we can use Prometheus to collect and aggregate those values to allow us to monitor a distributed application.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Using Prometheus to monitor a distributed application</h1>
+                
+            
+            
+                
+<p>Now that we have learned how to instrument an application service to expose Prometheus metrics, it's time to show how we can collect the metrics and forward them to a Prometheus server where all metrics will be aggregated and stored. We can then either use the (simple) web UI of Prometheus or a more sophisticated solution like Grafana to display important metrics on a dashboard.</p>
+<p>Unlike most other tools that are used to collect metrics from application services and infrastructure components, the Prometheus server takes the load of work and periodically scrapes all the defined targets. This way applications and services don't need to worry about forwarding data. You can also describe this as pulling metrics versus pushing them. This makes Prometheus servers an excellent fit for our case.</p>
+<p>We will now discuss how to deploy Prometheus to Kubernetes, followed by our two sample application services. Finally, we will deploy Grafana to the cluster, and use it to display our customer metrics on a dashboard.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Architecture</h1>
+                
+            
+            
+                
+<p>Let's have a quick overview of the architecture of the planned system. As mentioned before, we have our microservices, the Prometheus server, and Grafana. Furthermore, everything will be deployed to Kubernetes. The following diagram shows the relationships:</p>
+<p class="CDPAlignCenter CDPAlign"><img class="alignnone size-full wp-image-974 image-border" src="img/567104a5-741d-48cd-9a0f-c6cb04042413.png" style="width:35.83em;height:17.42em;"/></p>
+<p>High-level overview of an application using Prometheus and Grafana for monitoring</p>
+<p>In the top center of the diagram, we have Prometheus, which periodically scrapes metrics from Kubernetes, shown on the left. It also periodically scrapes metrics from the services, in our case from the Node.js and the .NET sample services we created and instrumented in the previous section. Finally, on the right-hand side of the diagram, we have Grafana that is pulling data periodically from Prometheus to then display it on graphical dashboards.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Deploying Prometheus to Kubernetes</h1>
+                
+            
+            
+                
+<p>As indicated, we start by deploying Prometheus to Kubernetes. Let's first define the Kubernetes YAML file that we can use to do so. First, we need to define a Kubernetes <kbd>Deployment</kbd> that will create a <kbd>ReplicaSet</kbd> of Prometheus server instances, and then we will define a Kubernetes service to expose Prometheus to us, so that we can access it from within a browser tab or that Grafana can access it. Let's do it:</p>
+<ol>
+<li>Create a <kbd>ch17/kube</kbd> folder, and navigate to it:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$</strong> <strong>mkdir -p ~/fod/ch17/kube &amp;&amp; cd ~/fod/ch17/kube</strong></pre>
+<ol start="2">
+<li>Add a file called <kbd>prometheus.yaml</kbd> to this folder.</li>
+<li>Add the following code snippet to this file; it defines <kbd>Deployment</kbd> for Prometheus:</li>
+</ol>
+<pre style="padding-left: 60px">apiVersion: apps/v1<br/>kind: Deployment<br/>metadata:<br/>  name: prometheus-deployment<br/>  labels:<br/>    app: prometheus<br/>    purpose: monitoring-demo<br/>spec:<br/>  replicas: 2<br/>  selector:<br/>    matchLabels:<br/>      app: prometheus<br/>      purpose: monitoring-demo<br/>  template:<br/>    metadata:<br/>      labels:<br/>        app: prometheus<br/>        purpose: monitoring-demo<br/>    spec:<br/>      containers:<br/>      - name: prometheus<br/>        image: prom/prometheus<br/>        volumeMounts:<br/>          - name: config-volume<br/>            mountPath: /etc/prometheus/prometheus.yml<br/>            subPath: prometheus.yml<br/>        ports:<br/>        - containerPort: 9090<br/>      volumes:<br/>        - name: config-volume<br/>          configMap:<br/>           name: prometheus-cm</pre>
+<p style="padding-left: 60px">We are defining a replica set with two instances of Prometheus. Each instance is assigned the two labels: <kbd>app: prometheus</kbd> and <kbd>purpose: monitoring-demo</kbd> for identification purposes. The interesting part is in the <kbd>volumeMounts</kbd> of container spec. There we mount a Kubernetes <kbd>ConfigMap</kbd> object, called <kbd>prometheus-cm</kbd> containing the Prometheus configuration, into the container to the location where Prometheus expects its configuration file(s). The volume of the <kbd>ConfigMap</kbd> type is defined on the last four lines of the above code snippet.</p>
+<p>Note that we will define the <kbd>config</kbd> map later on.</p>
+<ol start="4">
+<li>Now let's define the Kubernetes service for Prometheus. Append this snippet to the file:</li>
+</ol>
+<pre style="padding-left: 60px">---<br/>kind: Service<br/>apiVersion: v1<br/>metadata:<br/>  name: prometheus-svc<br/>spec:<br/>  type: NodePort<br/>  selector:<br/>    app: prometheus<br/>    purpose: monitoring-demo<br/>  ports:<br/>  - name: promui<br/>    protocol: TCP<br/>    port: 9090<br/>    targetPort: 9090</pre>
+<p>Please note the three dashes (<kbd>---</kbd>) at the beginning of the snippet are needed to separate individual object definitions in our YAML file.</p>
+<p style="padding-left: 60px">We call our service <kbd>prometheus-svc</kbd> and make it a <kbd>NodePort</kbd> (and not just a service of the <kbd>ClusterIP</kbd> type) to be able to access the Prometheus web UI from the host.</p>
+<ol start="5">
+<li>Now we can define a simple configuration file for Prometheus. This file basically instructs the Prometheus server which services to scrape metrics from and how often to do so. First, create a <kbd>ch17/kube/config</kbd> folder:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ mkdir -p ~/fod/ch17/kube/config</strong></pre>
+<ol start="6">
+<li>Please add a file called <kbd>prometheus.yml</kbd> to the last folder, and add the following content to it:</li>
+</ol>
+<pre style="padding-left: 60px">scrape_configs:<br/>    - job_name: 'prometheus'<br/>      scrape_interval: 5s<br/>      static_configs:<br/>        - targets: ['localhost:9090']<br/>  <br/>    - job_name: dotnet<br/>      scrape_interval: 5s<br/>      static_configs:<br/>        - targets: ['dotnet-api-svc:5000']<br/>  <br/>    - job_name: node<br/>      scrape_interval: 5s<br/>      static_configs:<br/>        - targets: ['node-api-svc:3000']<br/>          labels:<br/>            group: 'production'</pre>
+<p style="margin-left: 4em">In the preceding file, we define three jobs for Prometheus:</p>
+<ul>
+<li style="list-style-type: none">
+<ul>
+<li>The first one called <kbd>prometheus</kbd> scrapes metrics every five seconds from the Prometheus server itself. It finds those metrics the at <kbd>localhost:9090</kbd> target. Note that by default the metrics should be exposed at the <kbd>/metrics</kbd> endpoint.</li>
+<li>The second job called <kbd>dotnet</kbd> scrapes metrics from a service found at <kbd>dotnet-api-svc:5000</kbd>, which will be our .NET Core service that we have defined and instrumented previously.</li>
+<li>Finally, the third job does the same for our Node service. Note that we also have added a <kbd>group: 'production'</kbd> label to this job. This allows for further grouping of jobs or tasks.</li>
+</ul>
+</li>
+</ul>
+<ol start="7">
+<li>Now we can define the <kbd>ConfigMap</kbd> object in our Kubernetes cluster, with the next command. From within the <kbd>ch17/kube</kbd> folder execute the following:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$</strong> <strong>kubectl create configmap prometheus-cm \</strong><br/><strong>    --from-file config/prometheus.yml</strong></pre>
+<ol start="8">
+<li>We can now deploy Prometheus to our Kubernetes server with the following:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$</strong> <strong>kubectl apply -f prometheus.yaml<br/><br/></strong>deployment.apps/prometheus-deployment created<br/>service/prometheus-svc created</pre>
+<ol start="9">
+<li>Let's double-check that the deployment succeeded:</li>
+</ol>
+<pre style="padding-left: 60px">$ <strong>kubectl get all</strong><br/><br/>NAME                                        READY  STATUS   RESTARTS  AGE<br/>pod/prometheus-deployment-779677977f-727hb  1/1    Running  0         24s<br/>pod/prometheus-deployment-779677977f-f5l7k  1/1    Running  0         24s<br/><br/>NAME                    TYPE       CLUSTER-IP      EXTERNAL-IP  PORT(S)         AGE<br/>service/kubernetes      ClusterIP  10.96.0.1       &lt;none&gt;       443/TCP         28d<br/>service/prometheus-svc  NodePort   10.110.239.245  &lt;none&gt;       9090:31962/TCP  24s<br/><br/>NAME                                   READY  UP-TO-DATE  AVAILABLE  AGE<br/>deployment.apps/prometheus-deployment  2/2    2           2          24s<br/><br/>NAME                                              DESIRED  CURRENT  READY  AGE<br/>replicaset.apps/prometheus-deployment-779677977f  2        2        2      24s</pre>
+<p style="padding-left: 60px">Keep a close eye on the list of pods, and make sure they are all up and running. Please also note the port mapping of the <kbd>prometheus-svc</kbd> object. In my case, the <kbd>9090</kbd> port is mapped to the <kbd>31962</kbd> host port. In your case, the latter may be different, but it will also be in the <kbd>3xxxx</kbd> range. </p>
+<ol start="10">
+<li>We can now access the web UI of Prometheus. Open a new browser tab, and navigate to <kbd>http://localhost:&lt;port&gt;/targets</kbd> where <kbd>&lt;port&gt;</kbd> in my case is <kbd>31962</kbd>. You should see something like this:</li>
+</ol>
+<p class="CDPAlignCenter CDPAlign"><img src="img/75ab2089-88ea-4bb2-b5c3-37e6e7c90d18.png"/></p>
+<p>Prometheus web UI showing the configured targets</p>
+<p style="padding-left: 60px">In the last screenshot, we can see that we defined three targets for Prometheus. Only the third one in the list is up and accessible by Prometheus. It is the endpoint we defined in the configuration file for the job that scrapes metrics from Prometheus itself. The other two services are not running at this time, and thus their state is down.</p>
+<ol start="11">
+<li>Now navigate to Graph by clicking on the respective link in the top menu of the UI.</li>
+<li>Open the metrics drop-down list, and inspect all the listed metrics that Prometheus found. In this case, it is only the list of metrics defined by the Prometheus server itself:</li>
+</ol>
+<p class="CDPAlignCenter CDPAlign"><img class="alignnone size-full wp-image-975 image-border" src="img/73ba9c62-5f75-4962-8fff-84911faec999.png" style="width:64.50em;height:47.83em;"/></p>
+<p>Prometheus web UI showing available metrics</p>
+<p>With that, we are ready to deploy the .NET and the Node sample services, we created earlier, to Kubernetes.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Deploying our application services to Kubernetes</h1>
+                
+            
+            
+                
+<p>Before we can use the sample services we created earlier and deploy them to Kubernetes, we must create Docker images for them and push them to a container registry. In our case, we will just push them to Docker Hub.</p>
+<p>Let's start with the .NET Core sample:</p>
+<ol>
+<li>Locate the <kbd>Program.cs</kbd> file in the .NET project and open it.</li>
+<li>Modify the <kbd>CreateHostBuilder</kbd> method so it looks like this:</li>
+</ol>
+<pre style="padding-left: 60px">Host.CreateDefaultBuilder(args)<br/>    .ConfigureWebHostDefaults(webBuilder =&gt;<br/>    {<br/>        webBuilder.UseStartup&lt;Startup&gt;();<br/>        <strong>webBuilder.UseUrls("http://*:5000");</strong><br/>    });</pre>
+<ol start="3">
+<li>Add <kbd>Dockerfile</kbd> with the following content to the <kbd>ch17/dotnet/sample-api</kbd> project folder:</li>
+</ol>
+<pre style="padding-left: 60px">FROM mcr.microsoft.com/dotnet/core/aspnet:3.1 AS base<br/>WORKDIR /app<br/>EXPOSE 5000<br/><br/>FROM mcr.microsoft.com/dotnet/core/sdk:3.1 AS builder<br/>WORKDIR /src<br/>COPY sample-api.csproj ./<br/>RUN dotnet restore<br/>COPY . .<br/>RUN dotnet build -c Release -o /src/build<br/><br/>FROM builder AS publisher<br/>RUN dotnet publish -c Release -o /src/publish<br/><br/>FROM base AS final<br/>COPY --from=publisher /src/publish .<br/>ENTRYPOINT ["dotnet", "sample-api.dll"]</pre>
+<ol start="4">
+<li>Create a Docker image by using this command from within the <kbd>dotnet/sample-api</kbd> project folder:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$</strong> <strong>docker image build -t fundamentalsofdocker/ch17-dotnet-api:2.0 .</strong></pre>
+<p>Note that you may want to replace <kbd>fundamentalsofdocker</kbd> with your own Docker Hub username in the preceding and subsequent command.</p>
+<ol start="5">
+<li>Push the image to Docker Hub:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$</strong> <strong>docker image push fundamentalsofdocker/ch17-dotnet-api:2.0</strong></pre>
+<p>Now we do the same with the Node sample API:</p>
+<ol>
+<li>Add <kbd>Dockerfile</kbd> with the following content to the <kbd>ch17/node</kbd> project folder:</li>
+</ol>
+<pre style="padding-left: 60px" class="mce-root">FROM node:13.5-alpine<br/>WORKDIR /app<br/>COPY package.json ./<br/>RUN npm install<br/>COPY . .<br/>EXPOSE 3000<br/>CMD ["npm", "start"]</pre>
+<ol start="2">
+<li>Create a Docker image by using this command from within the <kbd>ch17/node</kbd> project folder:</li>
+</ol>
+<pre style="color: black;padding-left: 60px"><strong>$</strong> <strong>docker image build -t fundamentalsofdocker/ch17-node-api:2.0 .</strong></pre>
+<p>Note once again that you may want to replace <kbd>fundamentalsofdocker</kbd> with your own Docker Hub username in the preceding and subsequent command.</p>
+<ol start="3">
+<li>Push the image to Docker Hub:</li>
+</ol>
+<pre style="color: black;padding-left: 60px"><strong>$</strong> <strong>docker image push fundamentalsofdocker/ch17-node-api:2.0</strong></pre>
+<p style="padding-left: 60px">With this, we are ready to define the necessary Kubernetes objects for the deployment of the two services. The definition is somewhat lengthy and can be found in the <kbd>~/fod/ch17/kube/app-services.yaml</kbd> file in the repository. Please open that file and analyze its content.</p>
+<p>Let's use this file to deploy the services:</p>
+<ol>
+<li>Use the following command:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ kubectl apply -f app-services.yaml</strong><br/><br/>deployment.apps/dotnet-api-deployment created<br/>service/dotnet-api-svc created<br/>deployment.apps/node-api-deployment created<br/>service/node-api-svc created</pre>
+<ol start="2">
+<li>Double-check that the services are up and running using the <kbd>kubectl get all</kbd> command. Make sure all the pods of the Node and .NET sample API services are up and running.</li>
+<li>List all Kubernetes services to find out the host ports for each application service:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ kubectl get services</strong><br/><br/>NAME             TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)          AGE<br/>dotnet-api-svc   NodePort    10.98.137.249    &lt;none&gt;        5000:30822/TCP   5m29s<br/>grafana-svc      NodePort    10.107.232.211   &lt;none&gt;        8080:31461/TCP   33m<br/>kubernetes       ClusterIP   10.96.0.1        &lt;none&gt;        443/TCP          28d<br/>node-api-svc     NodePort    10.110.15.131    &lt;none&gt;        5000:31713/TCP   5m29s<br/>prometheus-svc   NodePort    10.110.239.245   &lt;none&gt;        9090:31962/TCP   77m</pre>
+<p style="padding-left: 60px">In my case, the .NET API is mapped to port <kbd>30822 </kbd>, and the Node API to port <kbd>31713</kbd>. Your ports may differ.</p>
+<ol start="4">
+<li>Use <kbd>curl</kbd> to access the <kbd>/metrics</kbd> endpoint for both services:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ curl localhost:30822/metrics<br/></strong># HELP process_working_set_bytes Process working set<br/># TYPE process_working_set_bytes gauge<br/>process_working_set_bytes 95236096<br/># HELP process_private_memory_bytes Process private memory size<br/># TYPE process_private_memory_bytes gauge<br/>process_private_memory_bytes 186617856<br/>...<br/><br/><strong>$ curl localhost:31713/metrics</strong><br/># HELP process_cpu_user_seconds_total Total user CPU time spent in seconds.<br/># TYPE process_cpu_user_seconds_total counter<br/>process_cpu_user_seconds_total 1.0394399999999997 1578294999302<br/># HELP process_cpu_system_seconds_total Total system CPU time spent in seconds.<br/># TYPE process_cpu_system_seconds_total counter<br/>process_cpu_system_seconds_total 0.3370890000000001 1578294999302<br/>...</pre>
+<ol start="5">
+<li>Double-check the <kbd>/targets</kbd> endpoint in Prometheus to make sure the two microservices are now reachable:</li>
+</ol>
+<p class="CDPAlignCenter CDPAlign"><img src="img/9500692f-aabe-4ceb-822b-71ef7c743735.png"/></p>
+<p>Prometheus showing all targets are up and running</p>
+<ol start="6">
+<li>To make sure the custom metrics we defined for our Node.js and .NET services are defined and exposed, we need to access each service at least once. Thus use <kbd>curl</kbd> to access the respective endpoints a few times:</li>
+</ol>
+<pre style="padding-left: 60px"><strong># access the /weatherforecast endpoint in the .NET service</strong><br/><strong>$ curl localhost:31713/weatherforecast</strong><br/><br/><strong># and access the /hello endpoint in the Node service </strong><br/><strong>$ curl localhost:30822/hello</strong></pre>
+<p>The last step is to deploy Grafana to Kubernetes so that we have the ability to create sophisticated and graphically appealing dashboards displaying key metrics of our application services and/or infrastructure components.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Deploying Grafana to Kubernetes</h1>
+                
+            
+            
+                
+<p>Now let's also deploy Grafana to our Kubernetes cluster, so that we can manage this tool the same way as all the other components of our distributed application. As the tool that allows us to create dashboards for monitoring the application, Grafana can be considered mission-critical and thus warrants this treatment.</p>
+<p>Deploying Grafana to the cluster is pretty straightforward. Let's do it as follows:</p>
+<ol>
+<li>Add a new file called <kbd>grafana.yaml</kbd> to the <kbd>ch17/kube</kbd> folder.</li>
+<li>To this file, add the definition for a Kubernetes <kbd>Deployment</kbd> for Grafana:</li>
+</ol>
+<pre style="padding-left: 60px">apiVersion: apps/v1<br/>kind: Deployment<br/>metadata:<br/>  name: grafana-deployment<br/>  labels:<br/>    app: grafana<br/>    purpose: monitoring-demo<br/>spec:<br/>  replicas: 1<br/>  selector:<br/>    matchLabels:<br/>      app: grafana<br/>      purpose: monitoring-demo<br/>  template:<br/>    metadata:<br/>      labels:<br/>        app: grafana<br/>        purpose: monitoring-demo<br/>    spec:<br/>      containers:<br/>      - name: grafana<br/>        image: grafana/grafana</pre>
+<p style="padding-left: 60px">There are no surprises in that definition. In this example, we are running a single instance of Grafana, and it uses the <kbd>app</kbd> and <kbd>purpose</kbd> labels for identification, similar to what we used for Prometheus. No special volume mapping is needed this time since we are only working with defaults.</p>
+<ol start="3">
+<li>We also need to expose Grafana, and thus add the following snippet to the preceding file to define a service for Grafana:</li>
+</ol>
+<pre style="padding-left: 60px">---<br/>kind: Service<br/>apiVersion: v1<br/>metadata:<br/>  name: grafana-svc<br/>spec:<br/>  type: NodePort<br/>  selector:<br/>    app: grafana<br/>    purpose: monitoring-demo<br/>  ports:<br/>  - name: grafanaui<br/>    protocol: TCP<br/>    port: 3000<br/>    targetPort: 3000</pre>
+<p style="padding-left: 60px">Once again, we are using a service of the <kbd>NodePort</kbd> type to be able to access the Grafana UI from our host.</p>
+<ol start="4">
+<li>We can now deploy Grafana with this command:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ kubectl apply -f grafana.yaml<br/><br/></strong>deployment.apps/grafana-deployment created<br/>service/grafana-svc created</pre>
+<ol start="5">
+<li>Let's find out what the port number will be, over which we can access Grafana:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$</strong> <strong>kubectl get services</strong><br/><br/>NAME             TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)          AGE<br/>dotnet-api-svc   NodePort    10.100.250.40   &lt;none&gt;        5000:30781/TCP   16m<br/>grafana-svc      NodePort    10.102.239.176  &lt;none&gt;        3000:32379/TCP   11m<br/>kubernetes       ClusterIP   10.96.0.1       &lt;none&gt;        443/TCP          28d<br/>node-api-svc     NodePort    10.100.76.13    &lt;none&gt;        3000:30731/TCP   16m<br/>prometheus-svc   NodePort    10.104.205.217  &lt;none&gt;        9090:31246/TCP   16m</pre>
+<ol start="6">
+<li>Open a new browser tab, and navigate to <kbd>http://localhost:&lt;port&gt;</kbd> where <kbd>&lt;port&gt;</kbd> is the port you identified in the previous step, and in my case is <kbd>32379</kbd>. You should see something like this:</li>
+</ol>
+<p class="CDPAlignCenter CDPAlign"><img src="img/bddbf845-8092-4f22-9777-19b297470767.png"/></p>
+<p>Login screen of Grafana</p>
+<ol start="7">
+<li>Login with the default <kbd>admin</kbd> username, and the password is also <kbd>admin</kbd>. When asked to change the password click the Skip link for now. You will be redirected to the Home dashboard<strong>.</strong></li>
+<li>On the Home Dashboard, click on Create your first data source, and select Prometheus from the list of data sources.</li>
+</ol>
+<ol start="9">
+<li>Add <kbd>http://prometheus-svc:9090</kbd> for the URL to Prometheus, and click the green Save &amp; Test<strong> </strong>button.</li>
+<li>In Grafana, navigate back to the Home dashboard, and then select the New dashboard.</li>
+<li>Click Add query, and then from the Metrics drop-down menu, select the custom metric we defined in the .NET sample service:</li>
+</ol>
+<p class="CDPAlignCenter CDPAlign"><img src="img/cc959094-a62e-4d8d-9af7-fb6b43dcfcfe.png" style="width:40.67em;height:27.75em;"/></p>
+<p>Selecting the .NET custom metric in Grafana</p>
+<ol start="12">
+<li>Change the value of Relative time from <kbd>1h</kbd> to <kbd>5m</kbd> ( five minutes).</li>
+<li>Change the dashboard refresh rate found in the upper-right corner of the view to <kbd>5s</kbd> (five seconds).</li>
+<li>Repeat the same for the custom metric defined in the Node sample service, so that you will have two panels on your new dashboard.</li>
+<li>Modify the dashboard and its panels to your liking by consulting the documentation at <a href="https://grafana.com/docs/grafana/latest/guides/getting_started/" target="_blank">https://grafana.com/docs/grafana/latest/guides/getting_started/</a>.</li>
+<li>Use <kbd>curl</kbd> to access the two endpoints of the sample services, and observe the dashboard. It may look like this:</li>
+</ol>
+<p class="CDPAlignCenter CDPAlign"><img src="img/40be8912-dc9f-4b36-a80b-970944799afa.png"/></p>
+<p>Grafana dashboard with our two custom metrics</p>
+<p>Summarizing, we can say that Prometheus is a good fit to monitor our microservices because we just need to expose a metrics port, and thus don't need to add too much complexity or run additional services. Prometheus then is in charge of periodically scraping the configured targets, so that our services don't need to worry about emitting them.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Troubleshooting a service running in production</h1>
+                
+            
+            
+                
+<p>It is a recommended best practice to create minimal images for production that don't contain anything that is not absolutely needed. This includes common tools that are usually used to debug and troubleshoot an application, such as netcat, iostat, ip, or others. Ideally, a production system only has the container orchestration software such as Kubernetes installed on a cluster node with a minimal OS, such as Core OS. The application container in turn ideally only contains the binaries absolutely necessary to run. This minimizes the attack surface and the risk of having to deal with vulnerabilities. Furthermore, a small image has the advantage of being downloaded quickly, using less space on disk and in memory and showing faster startup times.</p>
+<p>But this can be a problem if one of the application services running on our Kubernetes cluster shows unexpected behavior and maybe even crashes. Sometimes we are not able to find the root cause of the problem just from the logs generated and collected, so we might need to troubleshoot the component on the cluster node itself.</p>
+<p class="mce-root"/>
+<p>We may be tempted to SSH into the given cluster node and run some diagnostic tools. But this is not possible since the cluster node only runs a minimal Linux distro with no such tools installed. As a developer, we could now just ask the cluster administrator to install all the Linux diagnostic tools we intend to use. But that is not a good idea. First of all, this would open the door for potentially vulnerable software now residing on the cluster node, endangering all the other pods that run on that node, and also open a door to the cluster itself that could be exploited by hackers. Furthermore, it is always a bad idea to give developers direct access to nodes of a production cluster, no matter how much you trust your developers. Only a limited number of cluster administrators should ever be able to do so.</p>
+<p>A better solution is to have the cluster admin run a so-called bastion container on behalf of the developers. This bastion or troubleshoot container has all the tools installed that we need to pinpoint the root cause of the bug in the application service. It is also possible to run the bastion container in the host's network namespace; thus, it will have full access to all the network traffic of the container host.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">The netshoot container</h1>
+                
+            
+            
+                
+<p>Nicola Kabar, a former Docker employee, has created a handy Docker image called <kbd>nicolaka/netshoot</kbd> that field engineers at Docker use all the time to troubleshoot applications running in production on Kubernetes or Docker Swarm. We created a copy of the image for this book, available at <kbd>fundamentalsofdocker/netshoot</kbd>. The purpose of this container in the words of the creator is as follows:</p>
+<p>"Purpose: Docker and Kubernetes network troubleshooting can become complex. With proper understanding of how Docker and Kubernetes networking works and the right set of tools, you can troubleshoot and resolve these networking issues. The <kbd>netshoot</kbd> container has a set of powerful networking troubleshooting tools that can be used to troubleshoot Docker networking issues."                                                                                                                                                                                                                                                                                                                                             - <em>Nicola Kabar</em></p>
+<p>To use this container for debugging purposes, we can proceed as follows:</p>
+<ol>
+<li>Spin up a throwaway bastion container for debugging on Kubernetes, using the following command:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ kubectl run tmp-shell --generator=run-pod/v1 --rm -i --tty \</strong><br/><strong>     --image fundamentalsofdocker/netshoot \</strong><br/><strong>     --command -- bash</strong><br/> <br/> bash-5.0#</pre>
+<ol start="2">
+<li>You can now use tools such as <kbd>ip</kbd> from within this container:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>bash-5.0# ip a</strong></pre>
+<p style="padding-left: 60px">On my machine, this results in an output similar to the following if I run the pod on Docker for Windows:</p>
+<pre style="padding-left: 60px"><strong>1: lo: &lt;LOOPBACK,UP,LOWER_UP&gt; mtu 65536 qdisc noqueue state UNKNOWN group default qlen 1000</strong><br/><strong>     link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00</strong><br/><strong>     inet 127.0.0.1/8 scope host lo</strong><br/><strong>        valid_lft forever preferred_lft forever</strong><br/><strong> 2: sit0@NONE: &lt;NOARP&gt; mtu 1480 qdisc noop state DOWN group default qlen 1000</strong><br/><strong>     link/sit 0.0.0.0 brd 0.0.0.0</strong><br/><strong> 4: eth0@if263: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 1500 qdisc noqueue state UP group default</strong><br/><strong>     link/ether 52:52:9d:1d:fd:cc brd ff:ff:ff:ff:ff:ff link-netnsid 0</strong><br/><strong>     inet 10.1.0.71/16 scope global eth0</strong><br/><strong>        valid_lft forever preferred_lft forever</strong></pre>
+<ol start="3">
+<li>To leave this troubleshoot container, just press <em>Ctrl</em> + <em>D</em> or type <kbd>exit</kbd> and then hit <em>Enter</em>.</li>
+<li>If we need to dig a bit deeper and run the container in the same network namespace as the Kubernetes host, then we can use this command instead:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ kubectl run tmp-shell --generator=run-pod/v1 --rm -i --tty \</strong><br/><strong>     --overrides='{"spec": {"hostNetwork": true}}' \</strong><br/><strong>     --image fundamentalsofdocker/netshoot \</strong><br/><strong>     --command -- bash</strong></pre>
+<ol start="5">
+<li>If we run <kbd>ip</kbd> again in this container, we will see everything that the container host sees too, for example, all the <kbd>veth</kbd> endpoints. </li>
+</ol>
+<p>The <kbd>netshoot</kbd> container has all the usual tools installed that an engineer ever needs to troubleshoot network-related problems. Some of the more familiar ones are <kbd>ctop</kbd>, <kbd>curl</kbd>, <kbd>dhcping</kbd>, <kbd>drill</kbd>, <kbd>ethtool</kbd>, <kbd>iftop</kbd>, <kbd>iperf</kbd>, and <kbd>iproute2</kbd>.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Summary</h1>
+                
+            
+            
+                
+<p>In this chapter, you learned some techniques used to monitor an individual service or a whole distributed application running on a Kubernetes cluster. Furthermore, you investigated troubleshooting an application service that is running in production without having to alter the cluster or the cluster nodes on which the service is running.</p>
+<p>In the next and final chapter of this book, you will gain an overview of some of the most popular ways of running containerized applications in the cloud. The chapter includes samples on how to self-host and use hosted solutions and discuss their pros and cons. Fully managed offerings of vendors such as Microsoft Azure and Google Cloud Engine are briefly discussed.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Questions</h1>
+                
+            
+            
+                
+<p>To assess your learning progress, please answer the following questions:</p>
+<ol>
+<li>Why is it important to instrument your application services?</li>
+<li>Can you describe to an interested layperson what Prometheus is?</li>
+<li>Exporting Prometheus metrics is easy. Can you describe in simple words how you can do this for a Node.js application?</li>
+<li>You need to debug a service running on Kubernetes in production. Unfortunately, the logs produced by this service alone don't give enough information to pinpoint the root cause. You decide to troubleshoot the service directly on the respective Kubernetes cluster node. How do you proceed? </li>
+</ol>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Further reading</h1>
+                
+            
+            
+                
+<p>Here are a few links that provide additional information on the topics discussed in this chapter:</p>
+<ul>
+<li>
+<p>Kubernetes Monitoring with Prometheus<em>:</em> <a href="https://sysdig.com/blog/kubernetes-monitoring-prometheus/" target="_blank">https://sysdig.com/blog/kubernetes-monitoring-prometheus/</a></p>
+</li>
+<li>Prometheus Client Libraries<em>: </em><a href="https://prometheus.io/docs/instrumenting/clientlibs/" target="_blank">https://prometheus.io/docs/instrumenting/clientlibs/</a></li>
+<li>
+<p>The <kbd>netshoot</kbd> container<em>: </em><a href="https://github.com/nicolaka/netshoot" target="_blank">https://github.com/nicolaka/netshoot</a></p>
+</li>
+</ul>
+
+
+            
+
+            
+        
+    </body></html>

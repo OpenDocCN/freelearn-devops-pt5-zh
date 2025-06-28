@@ -1,0 +1,921 @@
+<html><head></head><body>
+        
+
+                            
+                    <h1 class="header-title">Debugging Code Running in Containers</h1>
+                
+            
+            
+                
+<p>In the previous chapter, we learned how to work with stateful containers, that is, containers that consume and produce data. We also learned how to configure our containers at runtime and at image build time using environment variables and config files.</p>
+<p>In this chapter, we're going to introduce techniques commonly used to allow a developer to evolve, modify, debug, and test their code while running in a container. With these techniques at hand, you will enjoy a frictionless development process for applications running in a container, similar to what you experience when developing applications that run natively.</p>
+<p class="mce-root">Here is a list of the topics we're going to discuss:</p>
+<ul>
+<li>Evolving and testing code running in a container</li>
+<li>Auto restarting code upon changes</li>
+<li>Line-by-line code debugging inside a container</li>
+<li>Instrumenting your code to produce meaningful logging information</li>
+<li>Using Jaeger to monitor and troubleshoot</li>
+</ul>
+<p>After finishing this chapter, you will be able to do the following:</p>
+<ul>
+<li>Mount source code residing on the host in a running container</li>
+<li>Configure an application running in a container to auto-restart after a code change</li>
+<li>Configure Visual Studio Code to debug applications written in Java, Node.js, Python, or .NET running inside a container line by line</li>
+<li>Log important events from your application code</li>
+</ul>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Technical requirements</h1>
+                
+            
+            
+                
+<p>In this chapter, if you want to follow along with the code, you need Docker for Desktop on macOS or Windows and a code editor—preferably Visual Studio Code. The sample will also work on a Linux machine with Docker and VS Code installed.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Evolving and testing code running in a container</h1>
+                
+            
+            
+                
+<p>When developing code that will eventually be running in a container, it is often the best approach to run the code in the container from the very beginning, to make sure there will be no unexpected surprises. But, we have to do this in the right way in order not to introduce any unnecessary friction into our development process. Let's first look at a naive way that we could run and test code in a container:</p>
+<ol>
+<li>Create a new project folder and navigate to it:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ mkdir -p ~/fod/ch06 &amp;&amp; cd ~/fod/ch06</strong></pre>
+<ol start="2">
+<li>Let's use <kbd>npm</kbd> to create a new Node.js project:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ npm init</strong></pre>
+<ol start="3">
+<li>Accept all the defaults. Notice that a <kbd>package.json</kbd> file is created with the following content:</li>
+</ol>
+<pre style="padding-left: 60px">{<br/>  "name": "ch06",<br/>  "version": "1.0.0",<br/>  "description": "",<br/>  "main": "index.js",<br/>  "scripts": {<br/>    "test": "echo \"Error: no test specified\" &amp;&amp; exit 1"<br/>  },<br/>  "author": "",<br/>  "license": "ISC"<br/>}</pre>
+<ol start="4">
+<li>We want to use the Express.js library in our Node application; thus, use <kbd>npm</kbd> to install it:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ npm install express --save</strong></pre>
+<p style="padding-left: 60px">This will install the newest version of Express.js on our machine and, because of the <kbd>--save</kbd> parameter, add a reference to our <kbd>package.json</kbd> file that looks similar to this:</p>
+<pre style="padding-left: 60px">"dependencies": {<br/>  "express": "^4.17.1"<br/>}</pre>
+<ol start="5">
+<li>Start VS Code from within this folder:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ code .</strong></pre>
+<ol start="6">
+<li>In VS Code, create a new <kbd>index.js</kbd> file and add this code snippet to it. Do not forget to save:</li>
+</ol>
+<pre style="padding-left: 60px">const express = require('express');<br/>const app = express();<br/><br/>app.listen(3000, '0.0.0.0', ()=&gt;{<br/>    console.log('Application listening at 0.0.0.0:3000');<br/>})<br/><br/>app.get('/', (req,res)=&gt;{<br/>    res.send('Sample Application: Hello World!');<br/>})</pre>
+<ol start="7">
+<li>From back within your terminal window, start the application:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ node index.js</strong></pre>
+<p style="padding-left: 60px">You should see this as the output:</p>
+<pre style="padding-left: 60px">Application listening at 0.0.0.0:3000</pre>
+<p style="padding-left: 60px">This means that the application is running and ready to listen at <kbd>0.0.0.0:3000</kbd>. You may ask yourself what the meaning of the host address <kbd>0.0.0.0</kbd> is and why we have chosen it. We will come back to that later, when we run the application inside a container. For the moment, just know that <kbd>0.0.0.0</kbd> is a reserved IP address with a special meaning, similar to the loopback address <kbd>127.0.0.1</kbd>. The <kbd>0.0.0.0</kbd> address simply means <em>all IPv4 addresses on the local machine</em>. If a host has two IP addresses, say <kbd>52.11.32.13</kbd> and <kbd>10.11.0.1</kbd>, and a server running on the host listens on <kbd>0.0.0.0</kbd>, it will be reachable at both of those IPs.</p>
+<ol start="8">
+<li>Now open a new tab in your favorite browser and navigate to <kbd>localhost:3000</kbd>. You should see this:</li>
+</ol>
+<p class="CDPAlignCenter CDPAlign"><img class="alignnone size-full wp-image-863 image-border" src="img/90516b3c-77d7-4443-9850-c5483270a0ea.png" style="width:29.33em;height:8.33em;"/></p>
+<p>Sample Node.js app running in a browser</p>
+<p style="padding-left: 60px">Great—our Node.js application is running on our developer machine. Stop the application by pressing <em>Ctrl</em> + <em>C</em> in the terminal.</p>
+<ol start="9">
+<li>Now we want to test the application we have developed so far by running it inside a container. To do this, we have to create a <kbd>Dockerfile</kbd> first, so that we can build a container image, from which we can then run a container. Let's use VS Code again to add a file called <kbd>Dockerfile</kbd> to our project folder and give it the following content:</li>
+</ol>
+<pre style="padding-left: 60px">FROM node:latest<br/>WORKDIR /app<br/>COPY package.json ./<br/>RUN npm install<br/>COPY . .<br/>CMD node index.js</pre>
+<ol start="10">
+<li>We can then use this <kbd>Dockerfile</kbd> to build an image called <kbd>sample-app</kbd> as follows:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ docker image build -t sample-app .</strong></pre>
+<ol start="11">
+<li>After building, run the application in the container with this command:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ docker container run --rm -it \<br/>    --name my-sample-app \<br/>    -p 3000:3000 \<br/>    sample-app</strong></pre>
+<p style="padding-left: 60px"><strong> </strong>The preceding command runs a container with the name <kbd>my-sample-app</kbd> from the container image <kbd>sample-app</kbd> and maps the container port <kbd>3000</kbd> to the equivalent host port. The port mapping is necessary; otherwise, we could not access the application running inside the container from outside the container. We will learn more about port mapping in <em><a href="f3b1e24a-2ac4-473a-b9c8-270b97df6a8a.xhtml">Chapter 10</a></em>, <em>Single-Host Networking</em>.</p>
+<p style="padding-left: 60px">Similar to when we ran the application directly on our host, the output is as follows:</p>
+<pre style="padding-left: 60px">Application listening at 0.0.0.0:3000</pre>
+<ol start="12">
+<li>Refresh the browser tab from before (or open a new browser tab and navigate to <kbd>localhost:3000</kbd>, if you closed it). You should see that the application still runs and produces the same output as when running natively. This is good. We have just shown that our application not only runs on our host but also inside a container.</li>
+<li>Stop and remove the container by pressing <em>Ctrl</em> + <em>C</em> in the terminal.</li>
+<li>Now let's modify our code and add some additional functionality. We will define another <kbd>HTTP GET</kbd> endpoint at <kbd>/hobbies</kbd>. Please add the following code snippet to your <kbd>index.js</kbd> file:</li>
+</ol>
+<pre style="padding-left: 60px">const hobbies = [<br/>  'Swimming', 'Diving', 'Jogging', 'Cooking', 'Singing'<br/>];<br/><br/>app.get('/hobbies', (req,res)=&gt;{<br/>  res.send(hobbies);<br/>})</pre>
+<p style="padding-left: 60px">We can first test the new functionality on our host by running the app with <kbd>node index.js</kbd> and navigating to <kbd>localhost:3000/hobbies</kbd> in the browser. We should see the expected output in the browser window. Don't forget to stop the application with <em>Ctrl</em> + <em>C</em> when done testing.</p>
+<ol start="15">
+<li>Next, we need to test the code when it runs inside the container. Thus, first, we create a new version of the container image:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$</strong> <strong>docker image build -t sample-app .</strong></pre>
+<ol start="16">
+<li>Next, we run a container from this new image:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ docker container run --rm -it \<br/>    --name my-sample-app \<br/>    -p 3000:3000 \<br/>    sample-app<br/></strong></pre>
+<p style="padding-left: 60px">Now, we can navigate to <kbd>localhost:3000/hobbies</kbd> in our browser and confirm that the application works as expected inside the container too. Once again, don't forget to stop the container when done by pressing <em>Ctrl</em> + <em>C</em>.</p>
+<p>We can repeat this sequence of tasks over and over again for each feature we add or any existing features we improve. It turns out that this is a lot of added friction compared to times when all the applications we developed always ran directly on the host.</p>
+<p>However, we can do better. In the next section, we will look at a technique that allows us to remove most of the friction.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Mounting evolving code into the running container</h1>
+                
+            
+            
+                
+<p>What if, after a code change, we do not have to rebuild the container image and rerun a container? Wouldn't it be great if the changes would immediately, as we save them in an editor such as VS Code, be available inside the container too? Well, exactly that is possible with volume mapping. In the last chapter, we learned how to map an arbitrary host folder into an arbitrary location inside a container. We want to leverage exactly that in this section.</p>
+<p>We saw in <a href="f3a48b12-d541-467b-aeb3-df014e60da6b.xhtml" target="_blank"><em>Chapter 5</em></a>, <em>Data Volumes and Configuration</em>, how we can map host folders as volumes in a container. If I want, for example, to mount a host folder, <kbd>/projects/sample-app</kbd>, into a container at <kbd>/app</kbd>, the syntax for this looks as follows:</p>
+<pre><strong>$ docker container run --rm -it \</strong><br/><strong>    --volume /projects/sample-app:/app \</strong><br/><strong>    alpine /bin/sh</strong></pre>
+<p>Notice the line <kbd>--volume &lt;host-folder&gt;:&lt;container-folder&gt;</kbd>. The path to the host folder needs to be an absolute path, as in the example, <kbd>/projects/sample-app</kbd>.</p>
+<p>If we now want to run a container from our <kbd>sample-app</kbd> container image, and, if we do that from the project folder, then we can map the current folder into the <kbd>/app</kbd> folder of the container as follows:</p>
+<pre><strong>$ docker container run --rm -it \</strong><br/><strong>    --volume $(pwd):/app \<br/>    -p 3000:3000 \</strong></pre>
+<p>Please note the <kbd>$(pwd)</kbd> in place of the host folder path. <kbd>$(pwd)</kbd> evaluates to the absolute path of the current folder, which comes in very handy.</p>
+<p>Now, if we do mount the current folder into the container as described above, then whatever was in the <kbd>/app</kbd> folder of the <kbd>sample-app</kbd> container image will be overridden by the content of the mapped host folder, that is, in our case, the current folder. That's exactly what we want—we want the current source to be mapped from the host in the container.</p>
+<p>Let's test whether it works:</p>
+<ol>
+<li>Stop the container if you have started it by pressing <em>Ctrl</em> + <em>C.</em></li>
+<li>Then add the following snippet to the end of the <kbd>index.js</kbd> file:</li>
+</ol>
+<pre style="padding-left: 60px">app.get('/status', (req,res)=&gt;{<br/>  res.send('OK');<br/>})</pre>
+<p>Do not forget to save.</p>
+<ol start="3">
+<li>Then run the container again – this time without rebuilding the image first – to see what happens:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ docker container run --rm -it \<br/>    --name my-sample-app \</strong><br/><strong>    --volume $(pwd):/app \</strong><br/><strong>    -p 3000:3000 \</strong><br/><strong>    sample-app</strong></pre>
+<ol start="4">
+<li>In your browser, navigate to <kbd>localhost:3000/status</kbd> and expect to see the <kbd>OK</kbd> output in the browser window. Alternatively, you could use <kbd>curl</kbd> in another terminal window:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ curl localhost:3000/status</strong><br/>OK</pre>
+<p>For all those working on Windows and/or Docker for Windows, you can use the PowerShell command <kbd>Invoke-WebRequest</kbd> or <kbd>iwr</kbd> for short instead of <kbd>curl</kbd>. The equivalent to the preceding command would then be <kbd>iwr -Url localhost:3000/status</kbd>.</p>
+<ol start="5">
+<li>Leave the application in the container running for the moment and make yet another change. Instead of just returning <kbd>OK</kbd> when navigating to <kbd>/status</kbd>, we want the message <kbd>OK, all good</kbd> to be returned. Make your modification and save the changes.</li>
+<li>Then execute the <kbd>curl</kbd> command again or, if you did use the browser, refresh the page. What do you see? Right—nothing happened. The change we made is not reflected in the running application.</li>
+<li>Well, let's double-check whether the change has been propagated in the running container. To do this, let's execute the following command:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ docker container exec my-sample-app cat index.js</strong></pre>
+<p style="padding-left: 60px">We should see something like this—I have shortened the output for readability:</p>
+<pre style="padding-left: 60px">...<br/>app.get('/hobbies', (req,res)=&gt;{<br/> res.send(hobbies);<br/>})<br/><br/>app.get('/status', (req,res)=&gt;{<br/> res.send('OK, all good');<br/>})<br/>...</pre>
+<p style="padding-left: 60px">Evidently, our changes have been propagated into the container as expected. Why, then, are the changes not reflected in the running application? Well, the answer is simple: for changes to be applied to the application, the application has to be restarted.</p>
+<ol start="8">
+<li>Let's try that. Stop the container with the application running by pressing <em>Ctrl</em> + <em>C</em>. Then re-execute the preceding <kbd>docker container run</kbd> command and use <kbd>curl</kbd> to probe the endpoint <kbd>localhost:3000/status</kbd>. Now, the following new message should be displayed:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ curl localhost:3000/status</strong><br/> OK, all good</pre>
+<p>So, we have achieved a significant reduction in the friction in the development process by mapping the source code in the running container. We can now add new or modify existing code and test it without having to build the container image first. Yet, there is still a bit of friction left in play. We have to manually restart the container every time we want to test some new or modified code. Can we automate this? The answer is yes! We will demonstrate exactly this in the next section.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Auto restarting code upon changes</h1>
+                
+            
+            
+                
+<p>Cool—in the last section, we showed how we can massively reduce friction by volume mapping the source code folder in the container, thus avoiding having to rebuild the container image and rerun the container over and over again.</p>
+<p>Yet we still feel some remaining friction. The application running inside the container does not automatically restart when a code change happens. Thus, we have to manually stop and restart the container to pick up the new changes.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Auto-restarting for Node.js</h1>
+                
+            
+            
+                
+<p>If you have been coding for a while, you will certainly have heard about helpful tools that can run your applications and restart them automatically whenever they discover a change in the code base. For Node.js applications, the most popular such tool is <kbd>nodemon</kbd>. We can install <kbd>nodemon</kbd> globally on our system with the following command:</p>
+<pre><strong>$ npm install -g nodemon</strong></pre>
+<p>Now, having <kbd>nodemon</kbd> available, instead of starting our application (for example, on the host) with <kbd>node index.js</kbd>, we can just execute <kbd>nodemon</kbd> and we should see the following:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="img/22d2758a-af1d-4dde-8ad2-130203229506.png" style="width:27.42em;height:8.25em;"/></p>
+<p>Using nodemon to run a Node.js application</p>
+<p>Evidently, <kbd>nodemon</kbd> has recognized, from parsing our <kbd>package.json</kbd> file, that it should use <kbd>node index.js</kbd> as the start command.</p>
+<p>Now try to change some code, for example, add the following code snippet at the end of <kbd>index.js</kbd> and then save the file:</p>
+<pre>app.get('/colors', (req,res)=&gt;{<br/> res.send(['red','green','blue']);<br/>})</pre>
+<p>Look at the terminal window. Did you see something happening? You should see this additional output:</p>
+<pre><strong>[nodemon] restarting due to changes...</strong><br/><strong>[nodemon] starting `node index.js`</strong><br/><strong>Application listening at 0.0.0.0:3000</strong></pre>
+<p>This clearly indicates that <kbd>nodemon</kbd> has recognized some changes and automatically restarted the application. Try it out with your browser by navigating to <kbd>localhost:3000/colors</kbd>. You should see the following expected output in the browser:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="img/83c6ee39-05cc-4c27-a7d2-c609feb6f425.png" style="width:22.75em;height:9.50em;"/></p>
+<p>Getting colors</p>
+<p>This is cool—you got this result without having to manually restart the application. This makes us yet another bit more productive. Now, can we do the same within the container? Yes, we can. We won't use the start command <kbd>node index.js</kbd>, as defined in the last line of our <kbd>Dockerfile</kbd>:</p>
+<pre>CMD node index.js</pre>
+<p>We will use <kbd>nodemon</kbd> instead.</p>
+<p>Do we have to modify our <kbd>Dockerfile</kbd>? Or do we need two different <kbd>Dockerfiles</kbd>, one for development and one for production?</p>
+<p>Our original <kbd>Dockerfile</kbd> creates an image that unfortunately does not contain <kbd>nodemon</kbd>. Thus, we need to create a new <kbd>Dockerfile</kbd>. Let's call it <kbd>Dockerfile-dev</kbd>. It should look like this:</p>
+<pre>FROM node:latest          <br/>RUN npm install -g nodemon<br/>WORKDIR /app<br/>COPY package.json ./<br/>RUN npm install<br/>COPY . .<br/>CMD nodemon</pre>
+<p>Comparing with our original Dockerfile, we have added line 2 where we install <kbd>nodemon</kbd>. We have also changed the last line and are now using <kbd>nodemon</kbd> as our start command.</p>
+<p>Let's build our development image as follows:</p>
+<pre><strong>$ docker image build -t sample-app-dev .</strong></pre>
+<p>We'll run a container like this:</p>
+<pre><strong>$ docker container run --rm -it \</strong><br/>   <strong>-v $(pwd):/app \</strong><br/>   <strong>-p 3000:3000 \</strong><br/>   <strong>sample-app-dev</strong></pre>
+<p>Now, while the application is running in the container, change some code, save, and notice that the application inside the container is automatically restarted. Thus, we have achieved the same reduction in friction running in a container as we did when running directly on the host.</p>
+<p>You may ask, does this only apply to Node.js? No, fortunately many of the popular languages support similar concepts.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Auto-restarting for Python</h1>
+                
+            
+            
+                
+<p>Let's look at how the same thing works for Python:</p>
+<ol>
+<li>
+<p>First, create a new project folder for our sample Python application and navigate to it:</p>
+</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$</strong> <strong>mkdir -p ~/fod/ch06/python &amp;&amp; cd ~/fod/ch06/python</strong></pre>
+<ol start="2">
+<li>Open VS Code from within this folder with the command <kbd>code .</kbd>.</li>
+<li>We will create a sample Python application that uses the popular Flask library. Thus, add a <kbd>requirements.txt</kbd> file with the <kbd>flask</kbd> content to this folder.</li>
+</ol>
+<ol start="4">
+<li>Next, add a <kbd>main.py</kbd> file and give it this content:</li>
+</ol>
+<pre style="padding-left: 60px">from flask import Flask<br/>app = Flask(__name__)<br/> <br/>@app.route("/")<br/>def hello():<br/>  return "Hello World!"<br/> <br/>if __name__ == "__main__":<br/>  app.run()</pre>
+<p style="padding-left: 60px">This is a simple <strong>Hello World</strong> type app that implements a single RESTful endpoint at <kbd>localhost:5000/</kbd>.</p>
+<ol start="5">
+<li>Before we can run and test this application, we need to install the dependencies—Flask in our case. In the terminal, run the following:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ pip install -r requirements.txt</strong></pre>
+<p style="padding-left: 60px">This should install Flask on your host. We are now ready to go.</p>
+<ol start="6">
+<li>When using Python, we can also use <kbd>nodemon</kbd> to have our application auto restart upon any changes to the code. For example, assume that your command to start the Python application is <kbd>python main.py</kbd>. Then you would just use <kbd>nodemon</kbd> as follows:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ nodemon main.py</strong></pre>
+<p style="padding-left: 60px">You should see this:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="img/ad1953cc-ef81-47b5-98a3-f1e499a79d2e.png" style="width:45.83em;height:14.58em;"/></p>
+<ol start="7">
+<li>Using <kbd>nodemon</kbd> to start and monitor a Python application, we can test the application by using <kbd>curl</kbd> and should see this:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$</strong> <strong>curl localhost:5000/</strong><br/>Hello World!</pre>
+<ol start="8">
+<li>Let's now modify the code by adding this snippet to <kbd>main.py</kbd>, right after the definition of the <kbd>/</kbd> endpoint, and save:</li>
+</ol>
+<pre style="padding-left: 60px">from flask import jsonify<br/> <br/>@app.route("/colors")<br/>def colors():<br/>   return jsonify(["red", "green", "blue"])</pre>
+<p style="padding-left: 60px"><kbd>nodemon</kbd> will discover the changes and restart the Python app, as we can see in the output produced in the terminal:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="img/4a5a9882-9ffa-4e7c-b3f4-96291e0a18a8.png" style="width:40.92em;height:9.25em;"/></p>
+<p>nodemon discovering a change in the Python code</p>
+<ol start="9">
+<li>Once again, believing is good, testing is better. Thus, let's use our friend <kbd>curl</kbd> once again to probe the new endpoint and see what we get:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$</strong> <strong>curl localhost:5000/colors</strong><br/>["red", "green", "blue"]</pre>
+<p>Nice—it works! With that, we have covered Python. .NET is another popular platform. Let's see if we can do something similar to this when developing a C# application on .NET.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Auto-restarting for .NET</h1>
+                
+            
+            
+                
+<p>Our next candidate is a .NET application written in C#. Let's look at how auto-restart works in .NET.</p>
+<ol start="1">
+<li>First, create a new project folder for our sample C# application and navigate to it:</li>
+</ol>
+<pre style="padding-left: 60px" class="mce-root"><strong>$ mkdir -p ~/fod/ch06/csharp &amp;&amp; cd ~/fod/ch06/csharp</strong></pre>
+<p>If you have not done so before, please install .NET Core on your laptop or workstation. You can get it at <a href="https://dotnet.microsoft.com/download/dotnet-core">https://dotnet.microsoft.com/download/dotnet-core</a>. At the time of writing, version 2.2 is the current stable version. Once it's installed, check the version with <kbd>dotnet --version</kbd>. It is <kbd>2.2.401</kbd> for me.</p>
+<ol start="2">
+<li>Navigate to the source folder for this chapter:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ cd ~/fod/ch06</strong></pre>
+<ol start="3">
+<li>From within this folder, use the <kbd>dotnet</kbd> tool to create a new Web API and have it placed in the <kbd>dotnet</kbd> subfolder:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ dotnet new webapi -o dotnet</strong></pre>
+<ol start="4">
+<li>Navigate to this new project folder:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ cd dotnet</strong></pre>
+<ol start="5">
+<li class="mce-root">Once again, use the <kbd>code .</kbd> command to open VS Code from within the <kbd>dotnet</kbd> folder.</li>
+</ol>
+<p>If this is the first time you have opened a .NET Core 2.2 project with VS Code, then the editor will start to download some C# dependencies. Wait until all dependencies have been downloaded. The editor may also display a popup asking you to add the missing dependencies for our <kbd>dotnet</kbd> project. Click the <kbd>Yes</kbd> button in this case.</p>
+<p>In the project explorer of VS Code, you should see this:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="img/e3bc6adf-1a8c-47a6-abaa-c82a45273bf6.png" style="width:15.83em;height:24.92em;"/></p>
+<p>DotNet Web API project in the VS Code Project Explorer</p>
+<ol start="6">
+<li>Please note the <kbd>Controllers</kbd> folder with the <kbd>ValuesController.cs</kbd> file in it. Open this file and analyze its content. It contains the definition for a <kbd>ValuesController</kbd> class, which implements a simple RESTful controller with <kbd>GET</kbd>, <kbd>PUT</kbd>, <kbd>POST</kbd>, and <kbd>DELETE</kbd> endpoints at <kbd>api/values</kbd>.</li>
+<li>From your terminal, run the application with <kbd>dotnet run</kbd>. You should see something like this:</li>
+</ol>
+<p class="CDPAlignCenter CDPAlign"><img src="img/ce9234ee-0777-4f2a-b923-096fa5eed231.png"/></p>
+<p>Running the .NET sample Web API on the host</p>
+<ol start="8">
+<li>We can use <kbd>curl</kbd> to test the application as follows, for example:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ curl --insecure https://localhost:5001/api/values<br/></strong>["value1","value2"]</pre>
+<p style="padding-left: 60px">The application runs and returns the expected result.</p>
+<p>Please note that the application is configured to redirect <kbd>http://localhost:5000</kbd> to <kbd>https://localhost:5001</kbd> by default. But, this is an insecure endpoint and to suppress the warning, we use the <kbd>--insecure</kbd> switch.</p>
+<ol start="9">
+<li>We can now try to modify the code in <kbd>ValuesController.cs</kbd> and return, say, three items instead of two from the first <kbd>GET</kbd> endpoint:</li>
+</ol>
+<pre style="padding-left: 60px">[HttpGet]<br/>public ActionResult&lt;IEnumerable&lt;string&gt;&gt; Get()<br/>{<br/>    return new string[] { "value1", "value2"<strong>, </strong>"value3" };<br/>}</pre>
+<ol start="10">
+<li>Save your changes and rerun the <kbd>curl</kbd> command. Notice how the result does not contain the new added value. It is the same problem as we observed for Node.js and Python. To see the new updated return value, we need to (manually) restart the application.</li>
+<li>Thus, in your terminal, stop the application with <em>Ctrl</em> + <em>C </em>and restart it with <kbd>dotnet run</kbd>. Try the <kbd>curl</kbd> command again. The result should now reflect your changes.</li>
+<li>Luckily for us, the <kbd>dotnet</kbd> tool has the <kbd>watch</kbd> command. Stop the application by pressing <em>Ctrl</em> + <em>C</em> and execute <kbd>dotnet watch run</kbd>. You should see output resembling the following:</li>
+</ol>
+<p class="CDPAlignCenter CDPAlign"><img src="img/301a815c-a80b-481b-9dc9-62e4c3c3b1c4.png"/></p>
+<p>Running the .NET sample application with the watch task</p>
+<p style="padding-left: 60px">Notice the second line in the preceding output, which states that the running application is now watched for changes.</p>
+<ol start="13">
+<li> Make another change in <kbd>ValuesController.cs</kbd>; for example, add a fourth item to the return value of the first <kbd>GET</kbd> endpoint and save. Observe the output in the terminal. It should look something like this:</li>
+</ol>
+<p class="CDPAlignCenter CDPAlign"><img src="img/9fba6353-e07a-4a10-b126-527c6a8db185.png"/></p>
+<p>Auto restarting the running sample .NET Core application</p>
+<ol start="14">
+<li>With that automatic restart of the application upon changes to the code, the result is immediately available to us and we can easily test it by running the <kbd>curl</kbd> command:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ curl --insecure https://localhost:5001/api/values<br/></strong>["value1","value2","value3","value4"]</pre>
+<ol start="15">
+<li>Now that we have auto restart working on the host, we can author a Dockerfile that does the same for the application running inside a container. In VS Code, add a new file called <kbd>Dockerfile-dev</kbd> to the project and add the following content to it:</li>
+</ol>
+<pre style="padding-left: 60px">FROM mcr.microsoft.com/dotnet/core/sdk:2.2<br/>WORKDIR /app<br/>COPY dotnet.csproj ./<br/>RUN dotnet restore<br/>COPY . .<br/>CMD dotnet watch run</pre>
+<ol start="16">
+<li>Before we can continue and build the container image, we need to add a slight modification to the startup configuration of the .NET application, such that the web server (Kestrel in this case) listens, for example, at <kbd>0.0.0.0:3000</kbd> and will thus be able to run inside a container and be accessible from outside of the container. Open the <kbd>Program.cs</kbd> file and make the following modification to the <kbd>CreateWebHostBuilder</kbd> method:</li>
+</ol>
+<pre style="padding-left: 60px">public static IWebHostBuilder CreateWebHostBuilder(string[] args) =&gt;<br/>    WebHost.CreateDefaultBuilder(args)<br/>    <strong>.UseUrls("http://0.0.0.0:3000")</strong><br/>    .UseStartup&lt;Startup&gt;();</pre>
+<p>With the <kbd>UseUrls</kbd> method, we tell the web server to listen to the desired endpoints.</p>
+<p>Now we're ready to build the container image:</p>
+<ol start="1">
+<li>To build the image use the following command:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ docker image build -f Dockerfile-dev -t sample-app-dotnet .</strong></pre>
+<ol start="2">
+<li>Once the image is built, we can run a container from it:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$</strong> <strong>docker container run --rm -it \</strong><br/>   <strong>-p 3000:3000 \</strong><br/>   <strong>-v $(pwd):/app \</strong><br/>   <strong>sample-app-dotnet</strong></pre>
+<p style="padding-left: 60px">We should see a similar output to that seen when running natively:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="img/4b6f2740-1d2a-41ce-9da3-757f75512528.png" style="width:33.75em;height:17.00em;"/></p>
+<p>A .NET sample application running in a container</p>
+<ol start="3">
+<li>Let's test the application with our friend <kbd>curl</kbd>:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ curl localhost:3000/api/values</strong><br/>["value1","value2","value3","value4"]<br/><strong>$</strong><br/><strong>$ curl localhost:3000/api/values/1</strong><br/>value</pre>
+<p style="padding-left: 60px">No surprises here—it works as expected.</p>
+<ol start="4">
+<li>Now let's do a code change in the controller and then save. Observe what's happening in the terminal window. We should see an output similar to this:</li>
+</ol>
+<p class="CDPAlignCenter CDPAlign"><img src="img/7f7041fc-6e7e-4f62-b663-1f828997d1fa.png"/></p>
+<p>Auto restart happening to the .NET sample application running inside the container</p>
+<p>Well, that's exactly what we expected. With this, we have removed most of the friction introduced by using containers when developing a .NET application.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Line-by-line code debugging inside a container</h1>
+                
+            
+            
+                
+<p>Before we dive into this section about the line-by-line debugging of code running inside a container, let me make a disclaimer. What you will learn here should usually be your last resort, if nothing else works. Ideally, when following a test-driven approach when developing your application, the code is mostly guaranteed to work due to the fact that you have written unit and integration tests for it and run them against your code, which also runs in a container. Alternatively, if unit or integration tests don't provide you with enough insight and you really need to debug your code line by line, you can do so having your code running directly on your host, thus leveraging the support of development environments such as Visual Studio, Eclipse, or IntelliJ, to name just a few IDEs.</p>
+<p>With all this preparation, you should rarely need to have to manually debug your code as it is running inside a container. That said, let's see how you can do it!</p>
+<p>In this section, we are going to concentrate exclusively on how to debug when using Visual Studio Code. Other editors and IDEs may or may not offer similar capabilities.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Debugging a Node.js application</h1>
+                
+            
+            
+                
+<p>We'll start with the easiest one—a Node.js application. We will use our sample application in folder <kbd>~/fod/ch06/node</kbd>, which we worked with earlier in this chapter:</p>
+<ol>
+<li>Make sure that you navigate to this project folder and open VS Code from within it:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ cd ~/fod/ch06/node</strong><br/><strong>$</strong> <strong>code .</strong></pre>
+<ol start="2">
+<li>In the terminal window, from within the project folder, run a container with our sample Node.js application:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$</strong> <strong>docker container run --rm -it \<br/>   --name my-sample-app \</strong><br/>   <strong>-p 3000:3000 \</strong><br/>   <strong>-p 9229:9229 \</strong><br/>   <strong>-v $(pwd):/app \</strong><br/>   <strong>sample-app node --inspect=0.0.0.0 index.js</strong></pre>
+<p>Note how I map port <kbd>9229</kbd> to the host. This port is used by the debugger, and VS Studio will communicate with our Node application via this port. Thus it is important that you open this port—but only during a debugging session! Also note that we override the standard start command defined in the Dockerfile (<kbd>node index.js</kbd>) with <kbd>node --inspect=0.0.0.0 index.js</kbd>. <kbd>--inspect=0.0.0.0</kbd> tells Node to run in debug mode and listen on all IP4 addresses in the container.</p>
+<p>Now we are ready to define a VS Code launch task for the scenario at hand, that is, our code running inside a container:</p>
+<ol start="1">
+<li>To open the<kbd>launch.json</kbd> file, press <em>Ctrl</em>+<em>Shift</em>+<em>P</em><em> </em>(or <em>Ctrl</em>+<em>Shift</em>+<em>P</em> on Windows) to open the command palette and look for <kbd>Debug:Open launch.json</kbd> and select it. The <kbd>launch.json</kbd> file should open in the editor.</li>
+<li>Click the blue Add Configuration... button to add the new configuration we need to debug inside the container.</li>
+</ol>
+<ol start="3">
+<li>From the options, select <kbd>Docker: Attach to Node</kbd>. A new entry will be added to the configurations list in the <kbd>launch.json</kbd> file. It should look similar to this:</li>
+</ol>
+<pre style="padding-left: 60px">{<br/>  "type": "node",<br/>  "request": "attach",<br/>  "name": "Docker: Attach to Node",<br/>  "remoteRoot": "/usr/src/app"<br/>},</pre>
+<p style="padding-left: 60px">Since we have our code in the <kbd>/app</kbd> folder, inside the container, we need to change the value of <kbd>remoteRoot</kbd> accordingly. Change the <kbd>/usr/src/app</kbd> value to just <kbd>/app</kbd>. Do not forget to save your change. That's it, we are ready to roll.</p>
+<ol start="4">
+<li>Open the Debug view in VS Code by pressing c<em>ommand</em> + S<em>hift</em> + <em>D</em> (<em>Ctrl </em>+ <em>Shift </em>+ <em>D</em> on Windows).</li>
+<li>Make sure you select the correct launch task in the dropdown right next to the green start button at the top of the view. Select <kbd>Docker: Attach to Node</kbd> as shown here:</li>
+</ol>
+<p class="CDPAlignCenter CDPAlign"><img class="alignnone size-full wp-image-940 image-border" src="img/b1ea1249-cad6-4c9a-86af-5fc24de37ce6.png" style="width:25.83em;height:13.67em;"/></p>
+<p>Selecting the correct launch task for debugging in VS Code</p>
+<ol start="6">
+<li>Next click on the green start button to attach VS Code to the Node application running in the container.</li>
+<li>Open <kbd>index.js</kbd> in the editor and put a breakpoint on the line that returns the message <kbd>"Sample Application: Hello World!"</kbd> when calling the endpoint <kbd>'/'</kbd>.</li>
+</ol>
+<ol start="8">
+<li>In another terminal window, use <kbd>curl</kbd> to navigate to <kbd>localhost:3000/</kbd> and observe that the code execution stops at the breakpoint:</li>
+</ol>
+<p class="CDPAlignCenter CDPAlign"><img src="img/65e22b06-430b-48ec-ab33-d522d29b3480.png" style="width:42.33em;height:27.33em;"/></p>
+<p>The code execution stops at the breakpoint</p>
+<p>In the preceding screenshot, we can see the yellow bar indicating that the code execution has stopped at the breakpoint. In the upper-right corner, we have a toolbar that allows us to navigate through the code, for example, step by step. On the left-hand side, we see the <kbd>VARIABLES</kbd>, <kbd>WATCH</kbd>, and <kbd>CALL STACK</kbd> windows, which we can use to observe the details of our running application. The fact that we are really debugging the code running inside the container can be verified by the fact that in the terminal windows where we started the container, we see the output <kbd>Debugger attached.</kbd>, which was generated the moment we started debugging inside VS Code.</p>
+<p>Let's look how we can further improve the debugging experience:</p>
+<ol>
+<li>To stop the container, enter the following command in the terminal:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$</strong> <strong>docker container rm -f my-sample-app</strong></pre>
+<ol start="2">
+<li>If we want to use <kbd>nodemon</kbd> for even more flexibility, then we have to change the <kbd>container run</kbd> command slightly:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$</strong> <strong>docker container run --rm -it \<br/>   --name my-sample-app \</strong><br/>   <strong>-p 3000:3000 \</strong><br/>   <strong>-p 9229:9229 \</strong><br/>   <strong>-v $(pwd):/app \</strong><br/>   <strong>sample-app-dev nodemon --inspect=0.0.0.0 index.js</strong></pre>
+<p style="padding-left: 60px">Note how we use the start command, <kbd>nodemon --inspect=0.0.0.0 index.js</kbd>. This will have the benefit that, upon any code changes, the application running inside the container will restart automatically, as we learned earlier in this chapter. You should see the following:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="img/8379cd11-64ae-4823-b772-f879d145b95a.png" style="width:35.25em;height:13.50em;"/></p>
+<p>Starting the Node.js application with nodemon and debugging turned on</p>
+<ol start="3">
+<li>Unfortunately, the consequence of an application restart is that the debugger loses the connection with VS Code. But no worries—we can mitigate this by adding <kbd>"restart": true</kbd> to our launch task in the <kbd>launch.json</kbd> file. Modify the task such that it looks like this:</li>
+</ol>
+<pre style="padding-left: 60px">{<br/>  "type": "node",<br/>  "request": "attach",<br/>  "name": "Docker: Attach to Node",<br/>  "remoteRoot": "/app",<br/>  "<strong>restart": true</strong><br/>},</pre>
+<ol start="4">
+<li>After saving your changes, start the debugger in VS Code by clicking the green start button in the debug window. In the terminal, you should again see that the <kbd>Debugger attached.</kbd> message is output. In addition to that, VS Code shows an orange status bar at the bottom, indicating that the editor is in debug mode.</li>
+<li>In a different terminal window, use <kbd>curl</kbd> and try to navigate to <kbd>localhost:3000/</kbd> to test that line-by-line debugging still works. Make sure code execution stops at any breakpoint you have set in the code.</li>
+<li>Once you have verified that debugging still works, try to modify some code; for example, change the message <kbd>"Sample Application: Hello World!"</kbd> to <kbd>"Sample Application: Message from within container"</kbd> and save your changes. Observe how <kbd>nodemon</kbd> restarts the application and the debugger is automatically re-attached to the application running inside the container:</li>
+</ol>
+<p class="CDPAlignCenter CDPAlign"><img src="img/2786f876-ec6c-47de-b54a-79dc3cde1e03.png" style="width:39.42em;height:6.75em;"/></p>
+<p>nodemon restarting the application and the debugger automatically re-attaching to application</p>
+<p>With that, we have everything assembled and can now work with code running inside a container as if the same code were running natively on the host. We have removed pretty much all of the friction that the introduction of containers brought into the development process. We can now just enjoy the benefits of deploying our code in containers.</p>
+<p>To clean up, stop the container by pressing <em>Ctrl</em> + <em>C</em>.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Debugging a .NET application</h1>
+                
+            
+            
+                
+<p>Now we want to give a quick run-through on how you can debug a .NET application line-by-line. We will use the sample .NET application that we created earlier in this chapter.</p>
+<ol>
+<li>Navigate to the project folder and open VS Code from within there:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ cd ~/fod/ch06/dotnet</strong><br/><strong>$ code .</strong></pre>
+<ol start="2">
+<li>To work with the debugger, we need to first install the debugger in the container. Thus, let's create a new <kbd>Dockerfile</kbd> in the project directory. Call it <kbd>Dockerfile-debug</kbd> and add the following content:</li>
+</ol>
+<pre style="padding-left: 60px">FROM mcr.microsoft.com/dotnet/core/sdk:2.2<br/>RUN apt-get update &amp;&amp; apt-get install -y unzip &amp;&amp; \<br/>    curl -sSL https://aka.ms/getvsdbgsh | \<br/>        /bin/sh /dev/stdin -v latest -l ~/vsdbg<br/>WORKDIR /app<br/>COPY dotnet.csproj ./<br/>RUN dotnet restore<br/>COPY . .<br/>CMD dotnet watch run</pre>
+<p style="padding-left: 60px">Please note the second line of the <kbd>Dockerfile</kbd>, which uses <kbd>apt-get</kbd> to install the <kbd>unzip</kbd> tool and then uses <kbd>curl</kbd> to download and install the debugger.</p>
+<ol start="3">
+<li>We can build an image called <kbd>sample-app-dotnet-debug</kbd> from this <kbd>Dockerfile</kbd> as follows:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ docker image build -t sample-app-dotnet-debug .</strong></pre>
+<p style="padding-left: 60px">This command can take a moment to execute since, among other things, the debugger has to be downloaded and installed.</p>
+<ol start="4">
+<li>Once this is done, we can run a container from this image interactively:</li>
+</ol>
+<pre style="padding-left: 60px" class="mce-root"><strong>$</strong> <strong>docker run --rm -it \</strong><br/>   <strong>-v $(pwd):/app \</strong><br/>   <strong>-w /app \</strong><br/>   <strong>-p 3000:3000 \</strong><br/>   <strong>--name my-sample-app \</strong><br/>   <strong>--hostname sample-app \</strong><br/>   <strong>sample-app-dotnet-debug</strong></pre>
+<p style="padding-left: 60px">We will see something like this:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="img/eecd50e0-5674-474a-b60d-600c956d815a.png"/></p>
+<p>Sample .NET application started interactively inside the SDK container</p>
+<ol start="5">
+<li>In VS Code, open the <kbd>launch.json</kbd> file and add the following launch task:</li>
+</ol>
+<pre style="padding-left: 60px">{<br/>   "name": ".NET Core Docker Attach",<br/>   "type": "coreclr",<br/>   "request": "attach",<br/>   "processId": "${command:pickRemoteProcess}",<br/>   "pipeTransport": {<br/>      "pipeProgram": "docker",<br/>      "pipeArgs": [ "exec", "-i", "my-sample-app" ],<br/>      "debuggerPath": "/root/vsdbg/vsdbg",<br/>      "pipeCwd": "${workspaceRoot}",<br/>      "quoteArgs": false<br/>   },<br/>   "sourceFileMap": {<br/>      "/app": "${workspaceRoot}"<br/>   },<br/>   "logging": {<br/>      "engineLogging": true<br/>   }<br/>},</pre>
+<ol start="6">
+<li>Save your changes and switch to the debug window of VS Code (use <em>command</em> + <em>Shift</em> + <em>D</em> or <em>Ctrl</em> + <em>Shift</em> + <em>D </em>to open it). Make sure you have selected the correct debug launch task—its name is <kbd>.NET Core Docker Attach</kbd>:</li>
+</ol>
+<p class="CDPAlignCenter CDPAlign"><img class="alignnone size-full wp-image-864 image-border" src="img/f4744775-bcb8-4275-add7-0236bbcf96c1.png" style="width:44.17em;height:20.83em;"/></p>
+<p>Select the correct debug launch task in VS Code</p>
+<ol start="7">
+<li>Now click the green start button to start the debugger. As a consequence, the popup to select the process shows up with the list of potential processes to attach to. Select the process that looks like the one marked in the following screenshot:</li>
+</ol>
+<p class="CDPAlignCenter CDPAlign"><img src="img/d80edd11-6973-4b92-a886-569ddbd47bda.png"/></p>
+<p>Select the process to attach the debugger to</p>
+<ol start="8">
+<li>Let's put a breakpoint in the first <kbd>GET</kbd> request of the <kbd>ValuesController.cs</kbd> file and then execute a <kbd>curl</kbd> command:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ curl localhost:3000/api/values</strong></pre>
+<p style="padding-left: 60px">The code execution should stop at the breakpoint, as shown here:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="img/86642156-418e-4b9a-a322-7638e3970993.png" style="width:40.33em;height:15.83em;"/></p>
+<p>Line-by-line debugging a .NET Core application running inside a container</p>
+<ol start="9">
+<li>We can now step through the code, define watches, or analyze the call stack of the application, similar to what we did with the sample Node.js application. Hit the Continue button on the debug toolbar or press <em>F5</em> to continue the code execution.</li>
+<li>Now change some code and save the changes. Observe in the terminal window how the application is automatically restarted.</li>
+<li>Use <kbd>curl</kbd> again to test whether your changes are visible to the application. Indeed, the changes are available, but have you noticed something? Yes—the code execution did not start at the breakpoint. Unfortunately, restarting the application caused the debugger to disconnect. You have to re-attach the debugger afresh by clicking the start button in the debug view of VS Code and selecting the right process.</li>
+<li>To stop the application, press <em>Ctrl</em> + <em>C</em> in the terminal window where you started the container.</li>
+</ol>
+<p>Now that we know how to debug code running in a container line by line, it is time to instrument our code such that it produces meaningful logging information.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Instrumenting your code to produce meaningful logging information</h1>
+                
+            
+            
+                
+<p>Once an application is running in production, it is impossible or strongly discouraged to interactively debug the application. Thus, we need to come up with other ways to find the root cause when the system is behaving unexpectedly or causing errors. The best way is to have the application generate detailed logging information that can then be used by the developers that need to track down any errors. Since logging is such a common task, all relevant programming languages or frameworks offer libraries that make the task of producing logging information inside an application straightforward. </p>
+<p>It is common to categorize the information output by an application as logs into so-called severity levels. Here is the list of those severity levels with a short description of each:</p>
+<table style="border-collapse: collapse;width: 100%" border="1">
+<tbody>
+<tr>
+<td style="width: 17.2039%">
+<p class="CDPAlignCenter CDPAlign"><strong>Security levels</strong></p>
+</td>
+<td style="width: 77.7961%">
+<p class="CDPAlignCenter CDPAlign"><strong>Explanation</strong></p>
+</td>
+</tr>
+<tr>
+<td style="width: 17.2039%">
+<p>TRACE</p>
+</td>
+<td style="width: 77.7961%">
+<p>Very fine-grained information. At this level, you are looking at capturing every detail possible about your application's behavior.</p>
+</td>
+</tr>
+<tr>
+<td style="width: 17.2039%">
+<p>DEBUG</p>
+</td>
+<td style="width: 77.7961%">
+<p>Relatively granular and mostly diagnostic information helping to pin down potential problems if they occur.</p>
+</td>
+</tr>
+<tr>
+<td style="width: 17.2039%">
+<p>INFO</p>
+</td>
+<td style="width: 77.7961%">
+<p>Normal application behavior or milestones.</p>
+</td>
+</tr>
+<tr>
+<td style="width: 17.2039%">
+<p>WARN</p>
+</td>
+<td style="width: 77.7961%">
+<p>The application might have encountered a problem or you detected an unusual situation.</p>
+</td>
+</tr>
+<tr>
+<td style="width: 17.2039%">
+<p>ERROR</p>
+</td>
+<td style="width: 77.7961%">
+<p>The application encountered a serious issue. This most probably represents the failure of an important application task.</p>
+</td>
+</tr>
+<tr>
+<td style="width: 17.2039%">
+<p>FATAL</p>
+</td>
+<td style="width: 77.7961%">
+<p>The catastrophic failure of your application. The immediate shutdown of the application is advised.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<p>List of the severity levels used when generating logging information</p>
+<p>Logging libraries usually allow a developer to define different log sinks, that is, destinations for the logging information. Popular sinks are file sinks or a stream to the console. When working with containerized applications, it is strongly recommended to always direct logging output to the console or <kbd>STDOUT</kbd>. Docker will then make this information available to you via the <kbd>docker container logs</kbd> command. Other log collectors, such as Prometheus, can also be used to scrape this information.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Instrumenting a Python application</h1>
+                
+            
+            
+                
+<p>Let's now try to instrument our existing Python sample application:</p>
+<ol>
+<li>First, in your terminal, navigate to the project folder and open VS Code:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ cd ~/fob/ch06/python</strong><br/><strong>$ code .</strong></pre>
+<ol start="2">
+<li>Open the <kbd>main.py</kbd> file and add the following code snippet to the top of it:</li>
+</ol>
+<p class="CDPAlignCenter CDPAlign"><img src="img/871e4924-7ec2-432a-a734-32236d84e6dd.png"/></p>
+<p>Defining a logger for our Python sample application</p>
+<p style="padding-left: 60px">On line <kbd>1</kbd>, we import the standard <kbd>logging</kbd> library. We then define a <kbd>logger</kbd> for our sample application of line <kbd>3</kbd>. On line <kbd>4</kbd>, we define the filter for logging to be used. In this case, we set it to <kbd>WARN</kbd>. That means that all logging messages produced by the application with a severity equal to or higher than <kbd>WARN</kbd> will be output to the defined <kbd>logging</kbd> handlers or sinks as we called them at the beginning of this section. In our case, only log messages with a log level of <kbd>WARN</kbd>, <kbd>ERROR</kbd>, or <kbd>FATAL</kbd> will be output.</p>
+<p style="padding-left: 60px">On line <kbd>6</kbd>, we create a logging sink or handler. In our case, it is <kbd>StreamHandler</kbd>, which outputs to <kbd>STDOUT</kbd>. Then, on line <kbd>8</kbd>, we define how we want the <kbd>logger</kbd> to format the messages it outputs. Here, the format that we chose will output the time and date, the application (or <kbd>logger</kbd>) name, the log severity level, and finally, the actual message that we developers define in code. On line <kbd>9</kbd>, we add the formatter to the log handler, and, on line <kbd>10</kbd>, we add the handler to the <kbd>logger</kbd>. Note that we can define more than one handler per logger. Now we are ready to use the <kbd>logger</kbd>.</p>
+<ol start="3">
+<li>Let's instrument the <kbd>hello</kbd> function, which is called when we navigate to the endpoint <kbd>/</kbd>:</li>
+</ol>
+<p class="CDPAlignCenter CDPAlign"><img class="alignnone size-full wp-image-865 image-border" src="img/fd0e1528-73d0-4dc2-9f33-1b788f7a9049.png" style="width:25.50em;height:5.67em;"/></p>
+<p>Instrumenting a method with logging</p>
+<p style="padding-left: 60px">As you can see in the preceding screenshot, we have added line <kbd>17</kbd>, where we use the <kbd>logger</kbd> object to produce a logging message with log level <kbd>INFO</kbd>. The message is: <kbd>"Accessing endpoint '/'"</kbd>.</p>
+<ol start="4">
+<li>Let's instrument another function and output a message with the log level <kbd>WARN</kbd>:</li>
+</ol>
+<p class="CDPAlignCenter CDPAlign"><img class="alignnone size-full wp-image-866 image-border" src="img/2e8a0fd1-181f-42ac-9222-60b87d106f48.png" style="width:36.00em;height:6.58em;"/></p>
+<p>Generating a warning</p>
+<p style="padding-left: 60px">This time, we produce a message with the log level <kbd>WARN</kbd> on line <kbd>24</kbd> in the <kbd>colors</kbd> function. So far, so good—that wasn't hard!</p>
+<ol start="5">
+<li>Let's now run the application and see what output we get:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ python main.py</strong></pre>
+<ol start="6">
+<li>Then, in your browser, navigate to <kbd>localhost:5000/</kbd> first and then to <kbd>localhost:5000/colors</kbd>. You should see an output similar to this:</li>
+</ol>
+<p class="CDPAlignCenter CDPAlign"><img src="img/94cb7b3f-8a45-4b3d-a3ee-4888acffcac0.png"/></p>
+<p>Running the instrumented sample Python application</p>
+<p>As you can see, only the warning is output to the console; the <kbd>INFO</kbd> message is not. This is due to the filter we set when defining the logger. Also note how our logging message is formatted with the date and time at the beginning, then the name of the logger, the log level, and finally, our actual message defined on line <kbd>24</kbd> of our application. When done, please stop the application by pressing <em>Ctrl</em> + <em>C</em>.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Instrumenting a .NET C# application</h1>
+                
+            
+            
+                
+<p> Let's now instrument our sample C# application:</p>
+<ol>
+<li>First, navigate to the project folder, from where you'll open VS Code:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ cd ~/fod/ch06/dotnet</strong><br/><strong>$ code .</strong></pre>
+<ol start="2">
+<li>Next, we need to add a NuGet package containing the logging library to the project:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$</strong> <strong>dotnet add package Microsoft.Extensions.Logging</strong></pre>
+<p style="padding-left: 60px">This should add the following line to your <kbd>dotnet.csproj</kbd> project file:</p>
+<pre style="padding-left: 60px">&lt;PackageReference Include="Microsoft.Extensions.Logging" Version="2.2.0" /&gt;</pre>
+<ol start="3">
+<li>Open the <kbd>Program.cs</kbd> class and notice that we call the <kbd>CreateDefaultBuilder(args)</kbd> method on line <kbd>21</kbd>:</li>
+</ol>
+<p class="CDPAlignCenter CDPAlign"><img src="img/cc3af0cf-28b2-4e96-a70e-738c8e871f1b.png" style="width:46.33em;height:7.33em;"/></p>
+<p>Configuring logging in ASP.NET Core 2.2</p>
+<p style="padding-left: 60px">This method, by default, adds a few logging providers to the application, among them the console logging provider. This comes in very handy and frees us from having to do any complicated configuration first. You can, of course, override the default setting any time with your own settings.</p>
+<ol start="4">
+<li>Next, open the <kbd>ValuesController.cs</kbd> file in the <kbd>Controllers</kbd> folder and add the following <kbd>using</kbd> statement to the top of the file:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>using Microsoft.Extensions.Logging;</strong></pre>
+<ol start="5">
+<li>Then, in the class body, add an instance variable, <kbd>_logger</kbd>, of type <kbd>ILogger</kbd> and add a constructor that has a parameter of type <kbd>ILogger&lt;T&gt;</kbd>. Assign this parameter to the instance variable <kbd>_logger</kbd>:</li>
+</ol>
+<p class="CDPAlignCenter CDPAlign"><img src="img/114ba9e1-3443-46be-8da0-70cb5f48bde9.png" style="width:43.25em;height:18.33em;"/></p>
+<p>Defining a logger for the Web API controller</p>
+<ol start="6">
+<li>Now we're ready to use the logger in the controller methods. Let's instrument the <kbd>Get</kbd> method with an <kbd>INFO</kbd> message:</li>
+</ol>
+<p class="CDPAlignCenter CDPAlign"><img src="img/98f9a43a-89d6-4850-993c-3d1f0253e917.png"/></p>
+<p>Logging an INFO message from the API controller</p>
+<ol start="7">
+<li>Let's now instrument the <kbd>Get(int id)</kbd> method:</li>
+</ol>
+<p class="CDPAlignCenter CDPAlign"><img src="img/161ac8ba-ad9b-43a9-9cbe-b3151ddf2062.png"/></p>
+<p>Logging messages with log levels WARN and ERROR</p>
+<p style="padding-left: 60px">On line <kbd>31</kbd>, we have the logger generate a <kbd>DEBUG</kbd> message and then we have some logic on line <kbd>32</kbd> to catch unexpected values for <kbd>id</kbd> and producing <kbd>ERROR</kbd> messages and returning an HTTP response status of <kbd>404</kbd> (not found).</p>
+<ol start="8">
+<li>Let's run the application with the following:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$</strong> <strong>dotnet run</strong></pre>
+<ol start="9">
+<li>We should see this when navigating to <kbd>localhost:3000/api/values</kbd>:</li>
+</ol>
+<p class="CDPAlignCenter CDPAlign"><img src="img/7b90f29e-efdc-4077-ba5e-40260a5a84ad.png" style="width:43.83em;height:20.17em;"/></p>
+<p>Log of our sample .NET application when accessing endpoint <kbd>/api/values</kbd></p>
+<p style="padding-left: 60px">We can see the output of our log message of type <kbd>INFO</kbd>. All the other log items have been produced by the ASP.NET Core library. You can see that there is a lot of helpful information available if you need to debug the application.</p>
+<ol start="10">
+<li>Now let's try to access the endpoint <kbd>/api/values/{id}</kbd> with an invalid value for <kbd>{id}</kbd>. We should see something along the lines of this:</li>
+</ol>
+<p class="CDPAlignCenter CDPAlign"><img class="alignnone size-full wp-image-867 image-border" src="img/872f1f7b-a2ac-4fd4-9fd1-f40e69862d30.png" style="width:44.50em;height:10.50em;"/></p>
+<p>Debug and error log items generated by our .NET sample application</p>
+<p style="padding-left: 60px">We can clearly first see the log item with the level <kbd>DEBUG</kbd> and then the one with the level <kbd>ERROR</kbd>. The latter in the output is marked in red as <kbd>fail</kbd>.</p>
+<ol start="11">
+<li>When done, please end the application with <em>Ctrl +</em> C.</li>
+</ol>
+<p>Now that we have learned about instrumenting, we will look at Jaeger in the next section.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Using Jaeger to monitor and troubleshoot</h1>
+                
+            
+            
+                
+<p>When we want to monitor and troubleshoot transactions in a complex distributed system, we need something a bit more powerful than what we have just learned. Of course, we can and should continue to instrument our code with meaningful logging messages, yet we need something more on top of that. This <em>more</em> is the capability to trace a single request or transaction end to end, as it flows through the system consisting of many application services. Ideally, we would also want to capture other interesting metrics such as the time spent on each component versus the total time that the request took.</p>
+<p>Luckily, we do not have to reinvent the wheel. There is battle-tested open source software out there that helps us to achieve exactly the aforementioned goals. One example of such an infrastructure component or software is Jaeger (<a href="https://www.jaegertracing.io/" target="_blank">https://www.jaegertracing.io/</a>). When using Jaeger, you run a central Jaeger server component and each application component uses a Jaeger client that will forward debug and tracing information transparently to the Jaeger server component. There are Jaeger clients for all major programming languages and frameworks, such as Node.js, Python, Java, and .NET.</p>
+<p>We will not go into all the intimate details of how to use Jaeger in this book, but will give a high-level overview of how it works conceptually:</p>
+<ol>
+<li>First, we define a Jaeger <kbd>tracer</kbd> object. This object basically coordinates the whole process of tracing a request through our distributed application. We can use this <kbd>tracer</kbd> object and also create a <kbd>logger</kbd> object from it, which our application code can use to generate log items, similar to what we did in the previous Python and .NET examples.</li>
+<li>Next, we have to wrap each method in the code that we want to trace with what Jaeger calls a <kbd>span</kbd>. The <kbd>span</kbd> has a name and provides us with a <kbd>scope</kbd> object. Let's look at some C# pseudo-code that illustrates that:</li>
+</ol>
+<pre style="padding-left: 60px">public void SayHello(string helloTo) {<br/>  using(var scope = _tracer.BuildSpan("say-hello").StartActive(true)) {<br/>    // here is the actual logic of the method<br/>    ...<br/>    var helloString = FormatString(helloTo);<br/>    ...<br/>  }<br/>}</pre>
+<p>As you can see, we're instrumenting the <kbd>SayHello</kbd> method. With a <kbd>using</kbd> statement creating a span, we're wrapping the whole application code of this method. We call the span <kbd>"say-hello"</kbd>, and this will be the ID with which we can identify the method in the trace log produced by Jaeger.</p>
+<p>Note that the method calls another nested method, <kbd>FormatString</kbd>. This method will look quite similar in regard to the code needed for instrumenting it:</p>
+<pre>public void string Format(string helloTo) {<br/>   using(var scope = _tracer.BuildSpan("format-string").StartActive(true)) {<br/>       // here is the actual logic of the method<br/>       ...<br/>       _logger.LogInformation(helloTo);<br/>       return <br/>       ...<br/>   }<br/>}</pre>
+<p>The span that our <kbd>tracer</kbd> object builds in this method will be a child span of the calling method. This child span here is called <kbd>"format-string"</kbd>. Also note that we are using the <kbd>logger</kbd> object in the preceding method to explicitly generate a log item of level <kbd>INFO</kbd>.</p>
+<p>In the code included with this chapter, you can find a complete sample application written in C# consisting of a Jaeger server container and two application containers called client and library that use the Jaeger client library to instrument the code.</p>
+<ol>
+<li>Navigate to the project folder:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$</strong> <strong>cd ~/fod/ch06/jaeger-sample</strong></pre>
+<ol start="2">
+<li>Next, start the Jaeger server container:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ docker run -d --name jaeger \</strong><br/>   <strong>-e COLLECTOR_ZIPKIN_HTTP_PORT=9411 \</strong><br/>   <strong>-p 5775:5775/udp \</strong><br/>   <strong>-p 6831:6831/udp \</strong><br/>   <strong>-p 6832:6832/udp \</strong><br/>   <strong>-p 5778:5778 \</strong><br/>   <strong>-p 16686:16686 \</strong><br/>   <strong>-p 14268:14268 \</strong><br/>   <strong>-p 9411:9411 \</strong><br/>   <strong>jaegertracing/all-in-one:1.13</strong></pre>
+<ol start="3">
+<li>Next, we need to run the API, which is implemented as an ASP.NET Core 2.2 Web API component. Navigate to the <kbd>api</kbd> folder and start the component:</li>
+</ol>
+<p class="CDPAlignCenter CDPAlign"><img class="alignnone size-full wp-image-868 image-border" src="img/94b336c6-7649-43d3-8dc2-7687bf922446.png" style="width:100.83em;height:26.17em;"/></p>
+<p>Starting the API component of the Jaeger sample</p>
+<ol start="4">
+<li>Now open a new terminal window and navigate into the <kbd>client</kbd> subfolder and then run the application:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ cd ~/fod/ch06/jaeger-sample/client</strong><br/><strong> $</strong> <strong>dotnet run Gabriel Bonjour</strong></pre>
+<p style="padding-left: 60px">Please note the two parameters I am passing—<kbd>Gabriel</kbd> and <kbd>Bonjour</kbd>—which correspond with <kbd>&lt;name&gt;</kbd> and <kbd>&lt;greeting&gt;</kbd>. You should see something along the lines of this:</p>
+<p class="CDPAlignCenter CDPAlign"><img src="img/8eccae4c-eeaa-4704-9253-17e52bb39e7a.png"/></p>
+<p>Running the client component of the Jaeger sample application</p>
+<p>In the preceding output, you can see the three spans marked with red arrows, starting from the innermost to the outermost span. We can also use the graphical UI of Jaeger to see more details:</p>
+<ol>
+<li>In your browser, navigate to <kbd>http://localhost:16686</kbd> to access the Jaeger UI.</li>
+<li>In the Search panel, make sure the <kbd>hello-world</kbd> service is selected. Leave Operation as <kbd>all</kbd> and click the Find Traces button. You should see the following:</li>
+</ol>
+<p class="CDPAlignCenter CDPAlign"><img src="img/7824fa13-dd4b-4f0e-94aa-b0c6e6f15989.png"/></p>
+<p>The Search view of the Jaeger UI</p>
+<ol start="2">
+<li>Now click on the (only) entry <kbd>hello-world: say-hello</kbd> to see the details of that request:</li>
+</ol>
+<p class="CDPAlignCenter CDPAlign"><img src="img/4832a62b-7d0c-473f-b4a5-079070ae44f2.png"/></p>
+<p>Details of the request as reported by Jaeger</p>
+<p style="padding-left: 60px">In the preceding screenshot, we can see how the request starts in the <kbd>hello-world</kbd> component in the <kbd>say-hello</kbd> method, then navigates to the <kbd>format-string</kbd> method in the same component, which, in turn, calls an endpoint in <kbd>Webservice</kbd>, whose logic is implemented in the <kbd>FormatController</kbd> controller. For each and every step, we see the exact timings as well as other interesting information. You can drill down in this view to see even more details.</p>
+<p style="padding-left: 60px">Before you continue, you may want to take some time and browse through the code of the API and the <kbd>client</kbd> component that we just used for this demo.</p>
+<ol start="3">
+<li>To clean up, stop the Jaeger server container:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$</strong> <strong>docker container rm -f jaeger</strong></pre>
+<p>Also stop the API with <em>Ctrl</em> + <em>C</em>.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Summary</h1>
+                
+            
+            
+                
+<p>In this chapter, we have learned how to debug Node.js, Python, Java, and .NET code running inside a container. We first started by mounting the source code from the host into the container to avoid a rebuild of the container image each time the code changes. Then, we smoothed out the development process further by enabling automatic application restart inside the container upon code changes. Next, we learned how to configure Visual Studio Code to enable the full interactive debugging of code running inside a container. Finally, we learned how we can instrument our applications such that they generate logging information that can help us to do root cause analysis on failures or misbehaving applications or application services running in production.</p>
+<p>In the next chapter, we are going to show how using Docker containers can super-charge your automation, from running a simple automation task in a container, to using containers to build up CI/CD pipelines.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Questions</h1>
+                
+            
+            
+                
+<p>Please try to answer the following questions to assess your learning progress:</p>
+<ol>
+<li>
+<p>Name two methods that help to reduce the friction in the development process introduced by the use of containers.</p>
+</li>
+<li>
+<p>How can you achieve a live update of code inside a container?</p>
+</li>
+<li>
+<p>When and why would you use the line-by-line debugging of code running inside a container?</p>
+</li>
+<li>
+<p>Why is instrumenting code with good debugging information paramount?</p>
+</li>
+</ol>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Further reading</h1>
+                
+            
+            
+                
+<ul>
+<li>Live debugging with Docker: <a href="https://www.docker.com/blog/live-debugging-docker/" target="_blank">https://www.docker.com/blog/live-debugging-docker/</a></li>
+<li>Debug apps in a local Docker container:<em> </em><a href="https://docs.microsoft.com/en-us/visualstudio/containers/edit-and-refresh?view=vs-2019" target="_blank">https://docs.microsoft.com/en-us/visualstudio/containers/edit-and-refresh?view=vs-2019</a></li>
+<li>Debug your java applications in Docker using IntelliJ IDEA<em>: </em><a href="https://blog.jetbrains.com/idea/2019/04/debug-your-java-applications-in-docker-using-intellij-idea/" target="_blank">https://blog.jetbrains.com/idea/2019/04/debug-your-java-applications-in-docker-using-intellij-idea/</a></li>
+</ul>
+
+
+            
+
+            
+        
+    </body></html>

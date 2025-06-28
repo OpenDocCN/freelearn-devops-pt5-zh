@@ -1,0 +1,559 @@
+<html><head></head><body>
+		<div><h1 id="_idParaDest-211"><em class="italic"><a id="_idTextAnchor226"/>Chapter 10</em>: Monitoring Docker Using Prometheus, Grafana, and Jaeger</h1>
+			<p>In order to understand how an application behaves when it runs in production, developers and system operators rely on logging, monitoring, and alerting systems. These systems can both give insight into whether an application and its environment are operating normally and provide clues to follow if troubleshooting is needed. As systems become more complex, the need for deeper insights into both applications and their support software also grows. Systems that allow for deep inspection of all these concerns without having to alter the code that runs on the system can be said to have good <strong class="bold">observability</strong> characteristics. </p>
+			<p>In this chapter, you will learn how to instrument your application and its runtime environment to improve the observability of the entire system. You will learn about many aspects of logging, monitoring, and alerting. Specifically, you will learn how to view, query, and store logs from the Kubernetes cluster both within the cluster and in CloudWatch and Amazon <strong class="bold">Simple Storage Service</strong> (<strong class="bold">S3</strong>). You will learn how to implement liveness and readiness probes specific to the needs of a cloud-native application, get alerts when something goes wrong, and capture application metrics with Prometheus. You will learn how to visualize performance and availability metrics using Grafana. Finally, we will dive deep into the application-specific metrics at the code and database layer using Jaeger.</p>
+			<p>We will cover the following topics in this chapter:</p>
+			<ul>
+				<li>Docker logging and container runtime logging</li>
+				<li>Use liveness and readiness probes in Kubernetes</li>
+				<li>Gathering metrics and sending alerts with Prometheus</li>
+				<li>Visualizing operational data with Grafana</li>
+				<li>Application performance monitoring with Jaeger</li>
+			</ul>
+			<p>Next up, let's make sure that you are ready to test out these systems and learn how to use them in concert to achieve observability for your system.</p>
+			<h1 id="_idParaDest-212"><a id="_idTextAnchor227"/>Technical requirements</h1>
+			<p>This chapter focuses on the integration of Kubernetes with some AWS services, including CloudWatch, Kinesis, and S3, so you must have a working AWS account with administrator privileges. You will need to have a working Kubernetes cluster in AWS, as set up in a previous chapter with AWS <code>eksctl</code>.</p>
+			<p>You will also need to have a current version of the AWS CLI, <code>kubectl</code>, and <code>helm</code> 3.x installed on your local workstation, as described in the previous chapter. The <code>helm</code> commands in this chapter use the <code>helm</code> 3.x syntax.  The EKS cluster must have a working ALB Ingress Controller setup.</p>
+			<p>You could use Spinnaker and Jenkins, as set up in previous chapters, to deploy the applications in this chapter, but it is not required.</p>
+			<p>Check out the following video to see the Code in Action:</p>
+			<p><a href="https://bit.ly/3iIqgvM">https://bit.ly/3iIqgvM</a></p>
+			<h2 id="_idParaDest-213"><a id="_idTextAnchor228"/>Setting up a demo application – ShipIt Clicker v7</h2>
+			<p>In order to<a id="_idIndexMarker682"/> have a sample application to instrument and monitor, we will use the version of ShipIt Clicker in the <code>chapter10</code> directory in the following GitHub repository:</p>
+			<p><a href="https://github.com/PacktPublishing/Docker-for-Developers/">https://github.com/PacktPublishing/Docker-for-Developers/</a></p>
+			<p>This version of the application has some important production-readiness updates in contrast to the version in the previous chapter. Instead of being tightly coupled with a specific Redis installation, this version uses a Redis server installed separately. We will need to deploy the Redis cluster onto Kubernetes before installing the latest version of ShipIt Clicker. </p>
+			<p>To prepare our Kubernetes environments, both in the local learning environment and the AWS cloud EKS cluster, we will first need to install Redis using Helm.</p>
+			<h3>Installing Redis from the Bitnami Helm repository</h3>
+			<p>In order to deploy this version, we are going to have to deploy the Redis server independently of the <a id="_idIndexMarker683"/>ShipIt Clicker pod. This represents a more realistic scenario than the one where the <a id="_idIndexMarker684"/>ShipIt Clicker<a id="_idIndexMarker685"/> Kubernetes pod had both the Redis server and the stateless application container running in it.</p>
+			<p>We are going to use the version <a id="_idIndexMarker686"/>of Redis maintained by Bitnami (<a href="https://bitnami.com/">https://bitnami.com/</a>), which offers separate reader and writer endpoints. Deploy Redis first through Helm, both to your local Kubernetes installation and then to your cloud Kubernetes installation (replace <code>docker-desktop</code> and the AWS ARN with the context IDs for your installation when you run the following commands):</p>
+			<pre>$ helm repo add bitnami https://charts.bitnami.com/bitnami
+$ kubectl config use-context docker-desktop
+$ helm install redis bitnami/redis
+$ kubectl config use-context arn:aws:eks:us-east- 2:143970405955:cluster/EKS-8PWG76O8
+$ helm install redis bitnami/redis</pre>
+			<p>This will deploy a Redis cluster with one node that accepts read and write, and multiple nodes that are replicas<a id="_idIndexMarker687"/> that are read-only. The version of ShipIt Clicker in this chapter has been adapted to use this external Redis service, which uses a Kubernetes secret to store a password needed for authentication.</p>
+			<p class="callout-heading">Offensive terms – master and slave considered harmful</p>
+			<p class="callout">The Bitnami Redis template, and Redis itself, use <em class="italic">master</em> and <em class="italic">slave</em> terminology to describe the roles of<a id="_idIndexMarker688"/> nodes in a distributed system. Please know that while these terms are common in information technology, many people find this terminology backward and offensive. Other terms, such as primary/secondary or reader/writer, convey the same information without the negative connotations. See this article for more on this controversial issue:</p>
+			<p class="callout"><a href="mailto:https://medium.com/@zookkini/masters-and-slaves-in-the-tech-world-132ef1c87504">https://medium.com/@zookkini/masters-and-slaves-in-the-tech-world-132ef1c87504</a></p>
+			<p>Next, let's build and install ShipIt Clicker into our learning environment.</p>
+			<p>Installing the latest version of ShipIt Clicker locally</p>
+			<p>Next, we will build the <a id="_idIndexMarker689"/>ShipIt Clicker Docker container, tag it, and push it to Docker Hub, as we did in previous chapters. Issue these commands, replacing <code>dockerfordevelopers</code> with your Docker Hub username:</p>
+			<pre>$ docker build . -t dockerfordevelopers/shipitclicker:0.10.0
+$ docker push dockerfordevelopers/shipitclicker:0.10.0
+$ kubectl config use-context docker-desktop
+$ helm install --set image.repository=dockerfordevelopers/shipitclicker:0.10.0 shipit-v7 shipitclicker</pre>
+			<p>Inspect the running pods and services using <code>kubectl get all</code> to verify that the pod is running, note its name, then inspect the logs with <code>kubectl logs</code> to see the startup logs. There should be no errors in the log.</p>
+			<p>Next, let's install this version on EKS.</p>
+			<h3>Installing the latest version of ShipIt Clicker on EKS through ECR</h3>
+			<p>Now that you have built the <a id="_idIndexMarker690"/>Docker containers and installed this locally, install it to AWS EKS via <code>values.yaml</code> to give this a hostname in the Route 53 zone, such as <code>shipit-v7.eks.example.com</code> (replace the ECR<a id="_idIndexMarker691"/> reference with the one corresponding to your AWS account and<a id="_idIndexMarker692"/> region, and replace <code>example.com</code> with your domain name):</p>
+			<pre>$ docker tag dockerfordevelopers/shipitclicker:0.10.0 143970405955.dkr.ecr.us-east-2.amazonaws.com/dockerfordevelopers/shipitclicker:0.10.0
+$ aws ecr get-login-password --region us-east-2 | docker login --username AWS --password-stdin 143970405955.dkr.ecr.us-east-2.amazonaws.com
+$ docker push 143970405955.dkr.ecr.us-east-2.amazonaws.com/dockerfordevelopers/shipitclicker:0.10.0
+$ kubectl config use-context arn:aws:eks:us-east-2:143970405955:cluster/EKS-8PWG76O8
+$ kubectl config use-context arn:aws:eks:us-east-2:143970405955:cluster/EKS-8PWG76O8
+$ helm install shipit-v7 -f values.yaml --set image.repository=143970405955.dkr.ecr.us-east-2.amazonaws.com/dockerfordevelopers/shipitclicker:0.10.0 ./shipitclicker</pre>
+			<p>Inspect the Kubernetes logs to <a id="_idIndexMarker693"/>make sure the application has deployed cleanly to the cluster:</p>
+			<pre>kubectl logs services/shipit-v7-shipitclicker</pre>
+			<p>If all is well with the <a id="_idIndexMarker694"/>deployment, get the AWS ALB Ingress Controller ingress address, as described in the previous chapter, and create <a id="_idIndexMarker695"/>DNS entries in the Route 53 console for the deployed application with the ALB address. You should then be able to reach your application at a URL similar to <code>https://shipit-v7.eks.example.com/</code> (replace <code>example.com</code> with your domain name).</p>
+			<h3>Configuring Jenkins and Spinnaker for this chapter</h3>
+			<p>You might wonder whether <a id="_idIndexMarker696"/>you can use the same Jenkins and Spinnaker configuration you set up previously for this chapter. You can, by making a few simple configuration<a id="_idIndexMarker697"/> changes to the Jenkins job in the <code>Spinnaker</code> multi-branch pipeline item and the Spinnaker pipeline definitions. Start by fixing up Jenkins. Edit the configuration of the job and change the <code>chapter10/Jenkinsfile</code>, and then hit the <strong class="bold">Save</strong> button:</p>
+			<div><div><img src="img/B11641_10_001.jpg" alt=""/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 10.1 – The Jenkins Build Configuration setting for the Spinnaker multi-branch pipeline item</p>
+			<p>Jenkins will rescan the repository and use the files from <code>chapter10</code> instead of <code>chapter9</code>.</p>
+			<p>Then, go to Spinnaker and edit the pipeline for the staging environment in the configuration pipeline stage, and change all the <code>chapter9</code> references to <code>chapter10</code>.</p>
+			<p>You can then use <code>git push --force origin HEAD:staging</code> as described in the previous chapter to trigger a Kubernetes deployment from Spinnaker<a id="_idIndexMarker698"/>.</p>
+			<p>The Helm templates for ShipIt Clicker in this<a id="_idIndexMarker699"/> chapter have been packaged into an archive file, <code>chapter10/helm.tar.gz</code>, using the following commands:</p>
+			<pre>$ cd chapter10
+$ helm package shipitclicker
+Successfully packaged chart and saved it to: /Users/richard/Documents/Docker-for-Developers/chapter10/shipitclicker-0.10.0.tgz
+$ mv shipitclicker-*.tgz helm.tar.gz</pre>
+			<p>If you alter the Helm Charts and you are using Spinnaker, be sure to use the preceding commands to repackage the <code>helm.tar.gz</code> file, as Spinnaker expects the charts in that specific file.</p>
+			<p>Next, let's take a detailed look at logging for both the Docker containers and the container runtime logs, such as those for the Kubernetes control plane.</p>
+			<h1 id="_idParaDest-214"><a id="_idTextAnchor229"/>Docker logging and container runtime logging</h1>
+			<p>When you are trying to<a id="_idIndexMarker700"/> troubleshoot problems with your application, it helps to have detailed logs for both the <a id="_idIndexMarker701"/>application itself and from whatever system it runs. Every Docker container, whether it is run locally or with a cloud container runtime manager such as Kubernetes, produces its own logs that you can query.</p>
+			<p>In previous chapters, we've used both the <code>docker logs</code> command and the <code>kubectl logs</code> command in order to examine logs for the demo application when run both on a local workstation and in the cloud with Kubernetes. These commands can yield insight into events that are <a id="_idIndexMarker702"/>critical to your system, including both application logging messages and error and exception logs. They are still the bedrock tools you will<a id="_idIndexMarker703"/> reach for; but particularly when we need to scale out our application with Kubernetes, we will need a more sophisticated approach.</p>
+			<h2 id="_idParaDest-215"><a id="_idTextAnchor230"/>Understanding Kubernetes container logging </h2>
+			<p>Every Docker container running in <a id="_idIndexMarker704"/>every Kubernetes pod produces logs. The Kubernetes runtime, by default, will temporarily store the last 10 MB of logs for every running container. This makes it possible to sample the logs for every running application using only the <code>kubectl logs</code> tool. When a pod is evicted from a node, or when a container restarts, <em class="italic">Kubernetes will delete these ephemeral log files</em>; it will <em class="italic">not</em> automatically save the logs to permanent storage. This is far from ideal if you need to troubleshoot a problem, especially if the problem happened long ago enough that those logs have rolled over and the older log entries are unavailable. </p>
+			<p>You can use <code>kubectl</code> to examine multiple logs at once, as shown in the previous chapter, with respect to showing multiple Spinnaker container logs, and you can use common command-line tools, such as <code>grep</code>, <code>awk</code>, <code>jq</code>, and <code>less</code>, to carry out further basic searching and filtering on logs. However, the issue with logs rolling over will thwart some search attempts.</p>
+			<p>Given the constraints on the basic features of the Kubernetes system with respect to both log retention and searching, it would be prudent to explore how we might want to mitigate these issues. Let's talk about the characteristics we would want from a log management system next.</p>
+			<h2 id="_idParaDest-216"><a id="_idTextAnchor231"/>Ideal characteristics for a log management system</h2>
+			<p>Ideally, you would want to use<a id="_idIndexMarker705"/> a system for managing your logs that has some of the following characteristics:</p>
+			<ul>
+				<li>Having log messages be available to view in a central console</li>
+				<li>Low latency from when a log event happens to when it is available for searches</li>
+				<li>Collection of logs from multiple sources, including Kubernetes objects such as pods, nodes, deployments, and Docker containers</li>
+				<li>An easy-to-use search interface, with the ability to save and reuse ad hoc queries</li>
+				<li>A way to visualize a histogram of search results that includes the ability to zoom in on the graph by clicking and dragging over the graph (a feature known as <em class="italic">brushing</em>)</li>
+				<li>A way to send alerts based on the <a id="_idIndexMarker706"/>contents of log messages</li>
+				<li>A way to configure the retention period of the log messages</li>
+			</ul>
+			<p>Various organizations have built many excellent log storage and analysis systems over the past 20 years, including <a id="_idIndexMarker707"/>the following<a id="_idIndexMarker708"/> third-party log management <a id="_idIndexMarker709"/>systems:</p>
+			<ul>
+				<li>Splunk (<a href="https://www.splunk.com/">https://www.splunk.com/</a>)</li>
+				<li>Elasticsearch (<a href="https://www.elastic.co/">https://www.elastic.co/</a>)</li>
+				<li>Loggly (<a href="https://www.loggly.com/">https://www.loggly.com/</a>)</li>
+				<li>Papertrail (<a href="https://www.papertrail.com/">https://www.papertrail.com/</a>)</li>
+				<li>New <a id="_idIndexMarker710"/>Relic Logs (<a href="https://newrelic.com/products/logs">https://newrelic.com/products/logs</a>)</li>
+				<li>Datadog<a id="_idIndexMarker711"/> Log Management (<a href="https://docs.datadoghq.com/logs/">https://docs.datadoghq.com/logs/</a>)</li>
+			</ul>
+			<p>Cloud providers also have<a id="_idIndexMarker712"/> built excellent integrated log storage and analysis systems, including the <a id="_idIndexMarker713"/>following:</p>
+			<ul>
+				<li>AWS CloudWatch (<a href="https://aws.amazon.com/cloudwatch/">https://aws.amazon.com/cloudwatch/</a>)</li>
+				<li>Google Cloud<a id="_idIndexMarker714"/> Logging (<a href="https://cloud.google.com/logging">https://cloud.google.com/logging</a>)</li>
+				<li>Microsoft Azure Monitor Logs (<a href="https://docs.microsoft.com/en-us/azure/azure-monitor/platform/data-platform-logs">https://docs.microsoft.com/en-us/azure/azure-monitor/platform/data-platform-logs</a>)</li>
+			</ul>
+			<p>As a developer or system <a id="_idIndexMarker715"/>operator, you can use these systems to store and search log entries. However, in order to do so, you must use a <strong class="bold">log shipper</strong> to extract the logs <a id="_idIndexMarker716"/>from their origins and forward them to the log management system.</p>
+			<p>We will examine how<a id="_idIndexMarker717"/> to forward Kubernetes container logs to one of these systems shortly, but first, let's examine another critical system aspect: logging for the Kubernetes control plane that provides orchestration for nodes, pods, and the rest of the family of Kubernetes objects.</p>
+			<h2 id="_idParaDest-217"><a id="_idTextAnchor232"/>Troubleshooting Kubernetes control plane issues with logs</h2>
+			<p>If you run your own<a id="_idIndexMarker718"/> Kubernetes cluster, where you manage the control plane servers, you may have a difficult time troubleshooting<a id="_idIndexMarker719"/> system-level issues. The Kubernetes troubleshooting guide offers guidance about looking at various log files on individual machines in the control plane cluster, which could be a painful exercise:</p>
+			<p><a href="https://kubernetes.io/docs/tasks/debug-application-cluster/debug-cluster/ ">https://kubernetes.io/docs/tasks/debug-application-cluster/debug-cluster/</a></p>
+			<p>However, if you are using managed Kubernetes services, such as AWS EKS, you will not have direct access to these systems. You might ask, <em class="italic">how do I get those logs</em>? The managed Kubernetes service providers all have ways to ship those logs to another system in order to aid in troubleshooting. Fortunately, AWS EKS has an optional configuration setting that tells it to ship logs from its control plane directly to CloudWatch:</p>
+			<p><a href="https://docs.aws.amazon.com/eks/latest/userguide/control-plane-logs.html">https://docs.aws.amazon.com/eks/latest/userguide/control-plane-logs.html</a></p>
+			<p>If you used the AWS EKS Quick Start described in <a href="B11641_08_Final_AM_ePub.xhtml#_idTextAnchor157"><em class="italic">Chapter 8</em></a>, <em class="italic">Deploying Docker Apps to Kubernetes</em>, to create your EKS cluster, it sets this up for you. You can go to the CloudWatch Logs console in the <code>us-east-2</code> region to verify: <a href="https://us-east-2.console.aws.amazon.com/cloudwatch/home?region=us-east-2#logs:">https://us-east-2.console.aws.amazon.com/cloudwatch/home?region=us-east-2#logs:</a></p>
+			<p>You will see a listing of log groups similar to the following:</p>
+			<div><div><img src="img/B11641_10_002.jpg" alt=""/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 10.2 – CloudWatch log groups showing EKS control plane logs</p>
+			<p>The main Kubernetes control plan log group will be named similarly to <code>/aws/eks/EKS-8PWG76O8/cluster</code>, but with your EKS cluster name. You can navigate to this and examine the logs<a id="_idIndexMarker720"/> there in detail through the console.</p>
+			<p>If you used <code>eksctl</code> to create<a id="_idIndexMarker721"/> your EKS cluster, you may not have enabled CloudWatch logging. You can use the instructions here to add CloudWatch logging to EKS through <code>eksctl</code>: </p>
+			<p><a href="https://eksctl.io/usage/cloudwatch-cluster-logging/">https://eksctl.io/usage/cloudwatch-cluster-logging/</a></p>
+			<p>Now that you have verified that your EKS cluster control plane is logging to CloudWatch and have learned how to get a basic viewing of the logs, let's proceed to capture the rest of the Kubernetes logs in CloudWatch Logs and analyze them with CloudWatch Logs Insights.</p>
+			<h2 id="_idParaDest-218"><a id="_idTextAnchor233"/>Storing logs with CloudWatch Logs</h2>
+			<p>AWS operates a<a id="_idIndexMarker722"/> cloud-scale service to handle logging, time-series metrics, data<a id="_idIndexMarker723"/> ingestion, storage, and<a id="_idIndexMarker724"/> analysis called <strong class="bold">CloudWatch</strong>. Many AWS services, including EKS, offer logging integration through CloudWatch. As with so many AWS services, you only pay for what you use. You can learn more about the basics of CloudWatch at <a href="https://aws.amazon.com/cloudwatch/">https://aws.amazon.com/cloudwatch/</a>.</p>
+			<p>We saw in the previous section that AWS allows us to configure the EKS control plane to send logs directly to CloudWatch. This is good, but if we are going to manage our logs in a central place, we <a id="_idIndexMarker725"/>should try to store <em class="italic">all</em> of our logs there. </p>
+			<p>Next, we will look at how <a id="_idIndexMarker726"/>we can ship more logs to CloudWatch, using the <a id="_idIndexMarker727"/>solution that AWS recommends in the EKS documentation – Fluent Bit (<a href="https://fluentbit.io/">https://fluentbit.io/</a>).</p>
+			<p>AWS provides an excellent tutorial on setting up Fluent Bit with EKS at <a href="https://aws.amazon.com/blogs/containers/kubernetes-logging-powered-by-aws-for-fluent-bit/">https://aws.amazon.com/blogs/containers/kubernetes-logging-powered-by-aws-for-fluent-bit/</a>.</p>
+			<p>The scripts and configuration files described later in this chapter are inspired by and partially derived from that article. </p>
+			<p>Next, we will learn how we can use a script to install Fluent Bit and supporting AWS resources quickly and repeatably. </p>
+			<h3>Installing Fluent Bit to ship logs to CloudWatch</h3>
+			<p>While you could go<a id="_idIndexMarker728"/> through the steps in the previously referenced AWS blogs by hand, in order to streamline these <a id="_idIndexMarker729"/>operations and make them work more seamlessly with the AWS EKS Quick Start, you can use the <code>install-fluentbit-daemonset.sh</code> script in this chapter to install Fluent Bit as a DaemonSet in your EKS cluster, with a configuration that ships logs to CloudWatch Logs. Give it the name of the CloudFormation template for your EKS cluster CloudFormation template as a command-line parameter:</p>
+			<pre>chapter10/bin/install-fluentbit-daemonset.sh Amazon-EKS</pre>
+			<p>Setting up Fluent Bit to work with AWS requires a bit more work than it does with some other cloud platforms; for example, if you were using Google Cloud Platform's GKE, it would be installed automatically for you.</p>
+			<p>Once you have the logs<a id="_idIndexMarker730"/> for the containers streaming into CloudWatch, you can use the CloudWatch AWS console to view the <a id="_idIndexMarker731"/>container logs, as well as the control plane logs.</p>
+			<h3>Changing the CloudWatch log retention periods</h3>
+			<p>By default, CloudWatch<a id="_idIndexMarker732"/> will store logs indefinitely. To save on log storage fees, you should consider setting a relatively short retention period for your CloudWatch logs – such as 60 days. You can do that from the console or the command line, as follows, where this command sets the period for the <code>fluentbit-cloudwatch</code> log group created by the <code>install-fluentbit-daemonset.sh</code> script:</p>
+			<pre>aws logs put-retention-policy --log-group-name fluentbit-cloudwatch --retention-in-days 60 --region us-east-2</pre>
+			<p>You might consider doing this for each of the CloudWatch log groups, even the ones created by the AWS EKS Quick Start CloudFormation template.</p>
+			<p>Next, let's see how we can store logs in S3.</p>
+			<h2 id="_idParaDest-219"><a id="_idTextAnchor234"/>Storing logs for the long term with AWS S3</h2>
+			<p>In order to economically store log data for the long<a id="_idIndexMarker733"/> term, over a period of months or years, you can use an inexpensive cloud object storage system, such<a id="_idIndexMarker734"/> as Amazon S3 (<a href="https://aws.amazon.com/s3/">https://aws.amazon.com/s3/</a>).</p>
+			<p>If you have a serious need to<a id="_idIndexMarker735"/> retain logs for the long term – for example, if you have a sensitive financial application where regulations mandate 5 years of storage for all application logs – S3 could be a good fit. You can make long-term storage even less expensive by setting up S3 life cycle rules on the bucket to move objects to less expensive storage tiers, migrate them to <a id="_idIndexMarker736"/>Amazon Glacier (<a href="https://aws.amazon.com/glacier/">https://aws.amazon.com/glacier/</a>), or expire and delete older records.</p>
+			<p>AWS published a blog article (<a href="https://aws.amazon.com/blogs/opensource/centralized-container-logging-fluent-bit/">https://aws.amazon.com/blogs/opensource/centralized-container-logging-fluent-bit/</a>) that outlines a path that you could use to stream the logs into S3 using Kinesis Firehose as an additional Fluent Bit target. You could follow the instructions in the blog under the <em class="italic">Log analysis across clusters</em> section to get the logs streaming to S3 that way, but it will probably be challenging to do so as you would have to adapt the scripts to the EKS Quick Start in many ways, including changing the AWS region and dealing with the assumption that you used <code>eksctl</code> to set up your cluster. </p>
+			<p>A project called <code>CloudWatch2S3</code> that was inspired by that blog can help with this process by deploying one CloudFormation template. This has the advantage that it can send <em class="italic">all</em> of the CloudWatch log<a id="_idIndexMarker737"/> groups to S3, and you can install it by applying a single CloudFormation template. It can also collect CloudWatch logs from multiple AWS accounts should you choose to do that. Clone the GitHub repository at  <a href="https://github.com/CloudSnorkel/CloudWatch2S3">https://github.com/CloudSnorkel/CloudWatch2S3</a> to your workstation and follow the directions there to set up the streaming of CloudWatch logs to S3. Before you proceed, you might consider creating an Amazon <strong class="bold">Key Management Service</strong> (<strong class="bold">KMS</strong>) key to<a id="_idIndexMarker738"/> encrypt the Kinesis Firehose and S3 bucket contents. Install the CloudFormation template using the AWS console or CLI, as you prefer.</p>
+			<p>Now that we have seen how<a id="_idIndexMarker739"/> to store logs in both CloudWatch and S3, it would be nice to learn how we might query those logs.</p>
+			<p>Analyzing logs with CloudWatch Insights and Amazon Athena</p>
+			<p>Now that you have<a id="_idIndexMarker740"/> logs stored in both CloudWatch and S3, you can query them <a id="_idIndexMarker741"/>with either CloudWatch Insights or <a id="_idIndexMarker742"/>Amazon Athena.</p>
+			<h3>Analyzing logs stored in CloudWatch with CloudWatch Insights</h3>
+			<p>The easiest way to perform <a id="_idIndexMarker743"/>queries on the logs stored in AWS is with CloudWatch Insights. This web-based query interface provides an interactive query builder and a <a id="_idIndexMarker744"/>way to visualize the<a id="_idIndexMarker745"/> results in both histogram and tabular data formats. It features a saved <a id="_idIndexMarker746"/>query manager, which is a key feature because it lets you build and refine a set of queries that can span one or more log groups. The documentation for CloudWatch Insights is available at <a href="https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/AnalyzingLogData.html">https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/AnalyzingLogData.html</a>.</p>
+			<p>You can explore the sample queries in the AWS console for that service to get a better feel for what CloudWatch Insights has to offer.</p>
+			<h2 id="_idParaDest-220"><a id="_idTextAnchor235"/>Analyzing logs stored in S3 with AWS Athena</h2>
+			<p>When logs are stored in S3, you won't be able to query<a id="_idIndexMarker747"/> them in exactly the same way you would if you used CloudWatch Insights or another log management system. However, there<a id="_idIndexMarker748"/> are ways to efficiently query logs stored in S3. The most direct way is with a query tool called <a id="_idIndexMarker749"/>Amazon Athena: </p>
+			<p><a href="https://aws.amazon.com/athena/">https://aws.amazon.com/athena/</a></p>
+			<p>Athena will let you use a SQL-like query language on semi-structured data stored in S3 buckets. You pay by the query, according to how much data is scanned and how much processing time it requires. In order to get Athena to understand the structure of your S3 data, you would need to<a id="_idIndexMarker750"/> configure virtual tables using the AWS Glue catalog:</p>
+			<p><a href="https://docs.aws.amazon.com/athena/latest/ug/glue-athena.html">https://docs.aws.amazon.com/athena/latest/ug/glue-athena.html</a></p>
+			<p>Setting up the combination of AWS Glue and Athena is pretty complex and is beyond the scope of what we can show in this chapter. See the links in the <em class="italic">Further reading</em> section at the end of this chapter for more information on setting up Athena so that you can use it to query the data stored in S3.</p>
+			<p>Exercise – finding the number of ShipIt Clicker games played</p>
+			<p>The ShipIt Clicker demo <a id="_idIndexMarker751"/>application emits a log message every time a game is started of the form:</p>
+			<pre>{"level":30,"time":1591067727743,"pid":17,"hostname":"shipit-staging-shipitclicker-776c589c4f-z9tgg","name":"Shipit-Clicker -shipit-staging","msg":"Game created in Redis","key":"WWoor1SAYT_H98G4DDR-T","value":"OK","v":1}</pre>
+			<p>Create a query in CloudWatch Insights that counts the total number of games that have been created. For CloudWatch Insights, you will have to select the <code>fluentbit-cloudwatch</code> log group.</p>
+			<h3>Solution</h3>
+			<p>Refer to the following<a id="_idIndexMarker752"/> file for the solution: </p>
+			<p><a href="https://github.com/PacktPublishing/Docker-for-Developers/tree/master/chapter10/cloudwatch-insights.txt">https://github.com/PacktPublishing/Docker-for-Developers/tree/master/chapter10/cloudwatch-insights.txt</a></p>
+			<h1 id="_idParaDest-221"><a id="_idTextAnchor237"/>Using the liveness, readiness, and startup probes in Kubernetes</h1>
+			<p>Kubernetes has multiple types of health checks, called <strong class="bold">probes</strong>, to ensure that the Docker containers it runs are in<a id="_idIndexMarker753"/> shape to process traffic. You can read about them in detail at <a href="https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/">https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/</a>.</p>
+			<p>The types of probes deal with different concerns:</p>
+			<ul>
+				<li><strong class="bold">Liveness</strong>: Determines whether<a id="_idIndexMarker754"/> an application can process<a id="_idIndexMarker755"/> requests at all.</li>
+				<li><strong class="bold">Readiness</strong>: Determines whether a<a id="_idIndexMarker756"/> container is ready<a id="_idIndexMarker757"/> to receive real traffic, especially if it depends on external resources that have to be reachable or connected.</li>
+				<li><strong class="bold">Startup</strong>: Determines whether a <a id="_idIndexMarker758"/>container is ready to start taking the other two types of traffic, intended for slow-starting legacy applications<a id="_idIndexMarker759"/> to give them time to start. As these are mostly needed for legacy applications, we won't cover them in detail.</li>
+			</ul>
+			<p>You can configure probes to execute commands inside a running container, perform a TCP port check, or check an HTTP endpoint. Probes have sensible default values for timeouts and check intervals—by default, a probe will check every 10 seconds and will fail with a timeout with 1 second. By default, a probe must fail three times in a row before the probe enters the failure state, and it must succeed once before it enters a success state. You can override these values through template annotations, in <code>deployment.yaml</code> in your Helm Charts, for example.</p>
+			<p>If a liveness probe for a<a id="_idIndexMarker760"/> container fails enough times, Kubernetes will kill the container <a id="_idIndexMarker761"/>and restart it. If a readiness probe for a container in a pod is failing, Kubernetes will not direct any traffic for a service depending on that pod<a id="_idIndexMarker762"/> to the container. We are going to examine liveness and readiness probes in detail next.</p>
+			<h2 id="_idParaDest-222"><a id="_idTextAnchor238"/>Using a liveness probe to see whether a container can respond</h2>
+			<p>For a service such as <a id="_idIndexMarker763"/>ShipIt Clicker, a good liveness check would be one where the application can rely solely on internally configured resources to respond – for example, relying on containers deployed in the same pod. In previous chapters, the liveness and readiness checks for this application were set to retrieve the <code>/</code> resource via HTTP. The liveness check stays the same for this chapter, as the ability to serve a simple HTML page is a good liveness check for an Express application. Observe the following excerpt from <code>chapter10/shipitclicker/templates/deployment.yaml</code>:</p>
+			<pre>          livenessProbe:
+            httpGet:
+              path: /
+              port: http</pre>
+			<p>This makes Express serve the file in <code>chapter10/src/public/index.html</code>. This makes a decent liveness probe, but it does not mean that a pod is ready to process requests that reach out to external resources. For that, we should use a readiness check.</p>
+			<p>Using a readiness probe to ensure that a service can receive traffic</p>
+			<p>Some applications have to <a id="_idIndexMarker764"/>complete a wave of initialization where they make database calls and call on external services before they are ready to take traffic. For ShipIt Clicker, the application must be able to contact Redis before it is ready to receive traffic. Next, we are going to examine a defect in the prior versions of ShipIt Clicker and the fix that had to be made to support both liveness and readiness probes, as these changes are illustrative of the type of changes that you might have in your application. </p>
+			<h2 id="_idParaDest-223"><a id="_idTextAnchor239"/>Changing ShipIt Clicker to support separate liveness and readiness probes</h2>
+			<p>Previous versions of ShipIt Clicker <a id="_idIndexMarker765"/>would suffer a fatal exception if any connection to Redis failed. This would happen as soon as the initialization routines in <code>src/server/index.js</code> loaded, as the modules it loaded would instantiate the <code>RedisDatabase</code> class in <code>src/server/api/services/redis-service.js</code>, which would immediately connect to the Redis server. This class lacked a Redis error handler, so the error it threw was fatal and caused the process to terminate. </p>
+			<p>This failure would repeat immediately as Kubernetes tried to start another container and would trigger a series of crashes that engaged the Kubernetes crash loop detector. </p>
+			<p>The new error handler in the <code>RedisDatabase.init()</code> method in <code>chapter10/src/server/api/services/redis.service.js</code> looks like this, and will log all Redis errors to the console – and, therefore, to the Kubernetes logging system – to make it easier to troubleshoot:</p>
+			<pre>   client.on("error", err =&gt; l.error({msg: "Redis error", err:err}));</pre>
+			<p>This chapter's code also uses a lazy loading pattern to avoid having to immediately connect to Redis when the classes are instantiated. With lazy loading, you defer the creation of an object or resource until you actually need it. We achieve lazy loading by using by the <code>RedisDatabase.instance()</code> method, which uses the singleton design pattern for the Redis client connection:</p>
+			<pre>  instance() {
+    return this._client ? this._client : this._client = this.init();
+  }
+  async ping() {
+    return this.instance().pingAsync();
+  }</pre>
+			<p>Using lazy loading will allow us to defer connecting to the Redis server until a request arrives that really requires it. Recall that in this version of the application, we split the Redis server out from the ShipIt Clicker service and have it running separately. Given this, a readiness probe <a id="_idIndexMarker766"/>should reach out to the Redis server and make sure that ShipIt Clicker can indeed talk to it, before accepting traffic. This version has a new API endpoint, <code>/api/v2/games/ready</code>, which performs a Redis <code>PING</code> operation to ensure that the application is ready to take traffic:</p>
+			<pre>          readinessProbe:
+            httpGet:
+              path: /api/v2/games/ready
+              port: http</pre>
+			<p>If the Redis server is not available, this readiness probe will fail and Kubernetes will remove the container that fails the health check from the service.</p>
+			<h2 id="_idParaDest-224"><a id="_idTextAnchor240"/>Exercise – forcing ShipIt Clicker to fail the readiness check</h2>
+			<p>Next, we will run an experiment to see what happens <a id="_idIndexMarker767"/>when the liveness probe passes but the readiness check fails. Use <code>kubectl</code> to switch to your local learning environment Kubernetes context. Temporarily alter the <code>chapter10/shipitclicker/template/configmap.yaml</code> file to break the Redis installation by changing the <code>REDIS_PORT</code> value to an invalid number, such as <code>1234</code>. Then, use Helm to install the chart with the alternative <code>shipit-ready-fail</code> name. Use <code>kubectl get pods</code> to verify that the new pod is in the <code>RUNNING</code> state but has <code>0/1</code> pods that are marked <code>READY</code>. Your output should look something like this:</p>
+			<pre>$ kubectl get pods | grep -E '^NAME|fail'
+NAME                                               READY   STATUS    RESTARTS   AGE
+shipit-ready-fail-shipitclicker-57c67d76cd-qklh6   0/1     Running   0          3m20s</pre>
+			<p>The readiness checks for this installation of ShipIt Clicker will start failing immediately. If you describe the pod, you <a id="_idIndexMarker768"/>will see that it is no longer ready. When you are done, use Helm to uninstall the <code>shipit-ready-fail</code> chart and revert the value in the <code>configmap.yaml</code> file to its original value.</p>
+			<h1 id="_idParaDest-225"><a id="_idTextAnchor241"/>Gathering metrics and sending alerts with Prometheus</h1>
+			<p>Prometheus is the <a id="_idIndexMarker769"/>dominant Kubernetes-based system for collecting metrics on cluster operations. Prometheus sports a wide range of <a id="_idIndexMarker770"/>features related to handling time-series data, visualizing data, querying it, and sending alerts based on metrics data. </p>
+			<p>This metrics data might include a variety of time-series data for CPU usage, both for nodes and for pods; storage utilization; application health, as defined by readiness probes; and other application-specific metrics. Prometheus uses a pull model where it polls endpoints for numeric data. Pods, DaemonSets, and other Kubernetes resources supporting Prometheus use annotations to advertise that Kubernetes should scrape them for metrics data via HTTP, usually via a <code>/metrics</code> endpoint. This can include data from Nodes, surfaced through a DaemonSet called <code>node_exporter</code> that runs on each Node.</p>
+			<p>It stores the metrics data it receives by associating this data with a metric name and a set of labels in key-value pair format, along with a millisecond-resolution timestamp. This labeling allows both efficient storage and the querying of the metrics in a time-series database. System operators and automated systems can then query this database to investigate the system's health and performance.</p>
+			<p>It not only provides a time-series database for metrics but also an alerting subsystem so that system operators can proactively take action when applications encounter trouble.</p>
+			<p>You can read more about the overall <a id="_idIndexMarker771"/>Prometheus architecture and its feature set at <a href="https://prometheus.io/docs/introduction/overview/">https://prometheus.io/docs/introduction/overview/</a>.</p>
+			<h2 id="_idParaDest-226"><a id="_idTextAnchor242"/>Prometheus' history</h2>
+			<p>While Prometheus was originally developed by <a id="_idIndexMarker772"/>SoundCloud in 2012, it became a <strong class="bold">Cloud Native Computing Foundation</strong> (<strong class="bold">CNCF</strong>) top-level project in 2016 and it is independent of any single company, just like Kubernetes itself. Its design is inspired by Google's Borgmon system.</p>
+			<h2 id="_idParaDest-227"><a id="_idTextAnchor243"/>Exploring Prometheus through its query and graph web interface</h2>
+			<p>If you installed an EKS cluster using the AWS EKS Quick Start CloudFormation templates as described in <a href="B11641_08_Final_AM_ePub.xhtml#_idTextAnchor157"><em class="italic">Chapter 8</em></a>, <em class="italic">Deploying Docker Apps to Kubernetes</em>, you should already have a working<a id="_idIndexMarker773"/> Prometheus application. If not, you can<a id="_idIndexMarker774"/> follow the instructions here<a id="_idIndexMarker775"/> to install it using Helm: </p>
+			<p><a href="https://docs.aws.amazon.com/eks/latest/userguide/prometheus.html">https://docs.aws.amazon.com/eks/latest/userguide/prometheus.html</a></p>
+			<p>You can connect to the Prometheus service and start exploring it by using <code>kubectl</code> to create a port forwarding proxy to the Prometheus console web application. You should connect the <code>prometheus-server</code> Kubernetes service to your local workstation as follows (replace the expression after <code>use-context</code> with your AWS EKS cluster ARN):</p>
+			<pre>$ kubectl config use-context arn:aws:eks:us-east-2:143970405955:cluster/EKS-8PWG76O8
+$ kubectl port-forward -n prometheus service/prometheus-server 9090:80</pre>
+			<p>Then, open a web browser and visit <code>http://localhost:9090/</code>, and you will see the Prometheus query console.</p>
+			<p>A good starter query to use to test Prometheus is the <code>node_load1</code> term, which shows the 1-minute load averages of the underlying Kubernetes nodes. Enter that into the query field and hit the <strong class="bold">Execute</strong> button, and then activate the <strong class="bold">Graph</strong> tab. You will see a graph showing those load averages.</p>
+			<p>The <strong class="bold">Prometheus query language</strong> is called <strong class="bold">PromQL</strong> and is quite different from other time-series database <a id="_idIndexMarker776"/>query languages. You will need to learn more about PromQL to formulate your own queries. Read more about that at <a href="mailto:https://medium.com/@valyala/promql-tutorial-for-beginners-9ab455142085">https://medium.com/@valyala/promql-tutorial-for-beginners-9ab455142085</a>.</p>
+			<p>While Prometheus can graph query results on its own, Kubernetes users typically use Grafana in conjunction with Prometheus to provide more sophisticated graphs and dashboards. We will explore Grafana further later in this chapter. Next, let's examine how you might add a Prometheus metric to an application.</p>
+			<h2 id="_idParaDest-228"><a id="_idTextAnchor244"/>Adding Prometheus metrics to an application</h2>
+			<p>In order to integrate an <a id="_idIndexMarker777"/>application with Prometheus, you need to expose a specially structured HTTP API via a Prometheus client library. Prometheus offers official client libraries for several languages, and the community has created many other client libraries for different languages. You can read more about the general process in the Prometheus documentation at <a href="https://prometheus.io/docs/instrumenting/clientlibs/">https://prometheus.io/docs/instrumenting/clientlibs/</a>.</p>
+			<p>To demonstrate this integration, the version of ShipIt Clicker in this chapter exposes both a set of default metrics and a custom metric in the form of a counter, labeled <code>shipitclicker_deployments_total</code>. To do this, we integrate the Prometheus client for JavaScript applications using Node.js: </p>
+			<p><a href="https://github.com/siimon/prom-client">https://github.com/siimon/prom-client</a></p>
+			<p>To perform the integration, we installed and saved the prom-client Node module with an <code>npm install prom-client --save</code> command, and then integrated the client loosely following the provided example code at <a href="https://github.com/siimon/prom-client/blob/master/example/server.js">https://github.com/siimon/prom-client/blob/master/example/server.js</a>.</p>
+			<h3>The structure of a metrics-enabled ShipIt Clicker program </h3>
+			<p>The Prometheus metrics publishing code<a id="_idIndexMarker778"/> in ShipIt Clicker is organized conventionally for a Node application written with the Express framework, with routes for metrics added to the main router in <code>chapter10/src/server/routes.js</code> in the same modular pattern as the routes for the game API. The main route imports <code>chapter10/src/server/api/controllers/metrics/router.js</code>, which defines the HTTP routes for <code>/metrics</code> and a special route for <code>/metrics/shipitclicker_deployment_total</code>, using the controller class defined in <code>chapter10/src/server/api/controllers/metrics/controller.js</code>. This controller has methods that integrate with a Prometheus service class defined in <code>chapter10/src/server/api/services/prometheus.service.js</code>, which integrates with the <code>prom-client</code> library and exposes both the default metrics and the custom <code>shipitclicker_deployments_total</code> metric. Refer to the following code excerpt from the service to see how we encapsulate the <code>prom-client</code> library:</p>
+			<pre>import * as client from 'prom-client';
+…
+export class Prometheus {
+…
+    this.register = client.register;
+    this.deploymentCounter = new client.Counter({
+      name: 'shipitclicker_deployments_total',
+      help: 'Total of in-game deployments in this ShipIt Clicker process',
+    });
+    client.collectDefaultMetrics({
+      timeout: 10000,
+      gcDurationBuckets: [0.001, 0.01, 0.1, 1, 2, 5],
+    });
+  }
+}
+export default new Prometheus();</pre>
+			<p>The controller classes that serve up the metrics have proper exception-handling and error-logging<a id="_idIndexMarker779"/> scaffolding that the baseline example from <code>prom-client</code> lacks. If you wanted to, you could easily adapt the router, controller, and service classes to a new application with minimal effort.</p>
+			<p>In order to simplify troubleshooting, the metrics are bound to the same HTTP port as the rest of the <a id="_idIndexMarker780"/>application: port <code>3000</code>. This means that you can retrieve the metrics from any installed version of ShipIt Clicker that has this code integrated – for example, from <a href="https://shipit-v7.eks.example.com/metrics">https://shipit-v7.eks.example.com/metrics</a> (replace <code>example.com</code> with your domain name). You should see a long list of metrics, starting with the following:</p>
+			<pre># HELP shipitclicker_deployments_total Total of in-game deployments in this ShipIt Clicker process
+# TYPE shipitclicker_deployments_total counter
+shipitclicker_deployments_total 0
+# HELP process_cpu_user_seconds_total Total user CPU time spent in seconds.
+# TYPE process_cpu_user_seconds_total counter
+process_cpu_user_seconds_total 2.5176489999999996
+…</pre>
+			<p>Now that we have seen <a id="_idIndexMarker781"/>the raw metrics, let's examine how the configuration that allows Prometheus to discover the demo application works.</p>
+			<h3>Getting Prometheus to discover the ShipIt Clicker application</h3>
+			<p>The installation of Prometheus<a id="_idIndexMarker782"/> configured through the AWS EKS Quick Start CloudFormation template is configured to perform service discovery of pods that support Prometheus metrics. In order for your Kubernetes pods to be discovered, they must be annotated with Prometheus-specific metadata, including the <code>prometheus.io/scrape: "true"</code> annotation. Refer to <code>chapter10/shipitclicker/template/deployment.yaml</code> for the annotations used to expose ShipIt Clicker to Prometheus:</p>
+			<pre>  template:
+    metadata:
+      labels:
+        {{- include "shipitclicker.selectorLabels" . | nindent 8 }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3000"</pre>
+			<p>As long as these annotations are on the pod, Prometheus will know that it must scrape the pod's <code>/metrics</code> endpoint for data.</p>
+			<p>Now that we<a id="_idIndexMarker783"/> have seen how the program and its configuration templates have been extended to support Prometheus metrics, let's query Prometheus for the custom metric.</p>
+			<h2 id="_idParaDest-229"><a id="_idTextAnchor245"/>Querying Prometheus for a custom metric</h2>
+			<p>Play the game<a id="_idIndexMarker784"/> deployed at <a href="https://shipit-v7.eks.example.com/">https://shipit-v7.eks.example.com/</a> for a minute or two (replace <code>example.com</code> with your domain name). Then, connect to the Prometheus console using the port forwarding method explained earlier in this chapter, and issue a query for <code>shipitclicker_deployments_total</code>, then switch to the <code>Graph</code> tab. You should see a graph that shows an increasing number of deployments over time.</p>
+			<p>If you keep playing the game and keep re-issuing the query in the Prometheus console, you will see the number of deployments go up. The default scrape interval and targets that Prometheus uses are defined in a <code>prometheus.yml</code> file embedded in the <code>prometheus-server</code> ConfigMap in the <code>prometheus</code> namespace. By default, it is set to <code>30</code> seconds, so you will not see instantaneous changes in the query results from Prometheus.</p>
+			<p>Next, let's explore Prometheus' support for alerts.</p>
+			<h2 id="_idParaDest-230"><a id="_idTextAnchor246"/>Configuring Prometheus alerts </h2>
+			<p>Prometheus has the capability to <a id="_idIndexMarker785"/>query itself periodically in order to detect important conditions – this is the basis of the alerts system. You can apply the powerful Prometheus query language to detect when parts of your system that have Prometheus metrics are overloaded, responding too slowly, or are not available. </p>
+			<p>For most applications, the foundational alert item must answer the question <em class="italic">is the application available</em>? If the application is up, it is ready and available to serve user requests. Prometheus has a metric called <code>up</code> that can help answer that question – it will have a value of <code>1</code> if the service is up, and <code>0</code> if it is down. If you query Prometheus for <code>up</code>, you will see the basic availability status of every service it monitors. You might want to raise an alert if any service has a value other than <code>1</code> for 5 minutes or more. That is the basic example given in the <a id="_idIndexMarker786"/>Prometheus documentation for alerts (refer to <a href="https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/">https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/</a>). Next, we will show how to add the example <code>InstanceDown</code> rule from the documentation to our Prometheus service configuration. </p>
+			<p>The AWS EKS Quick Start templates have a Prometheus installation that has no alerts defined at the start, so we will have to define one or more ourselves. If you installed Prometheus on your local workstation, you would edit configuration files in the <code>/etc</code> directory to do this, and then trigger a configuration file reload. However, in a Kubernetes setup, there has to be another mechanism in place to allow the editing of these values. </p>
+			<p>The AWS EKS Quick Start <a id="_idIndexMarker787"/>Prometheus setup uses a Kubernetes ConfigMap in the <code>prometheus</code> namespace called <code>prometheus-service</code> that has multiple embedded YAML configuration files defined within it, and a container running in each Prometheus server pod (refer to <a href="https://github.com/jimmidyson/configmap-reload">https://github.com/jimmidyson/configmap-reload</a>) that monitors the ConfigMap files for changes and then sends an HTTP <code>POST</code> to the Prometheus server running in the pod to get it to reload the changes. The ConfigMap files are updated once per minute inside the pods. The editing cycle for making config changes to alerts looks like this:</p>
+			<ol>
+				<li>Edit the <code>prometheus-service</code> ConfigMap using <code>kubectl</code>.</li>
+				<li>Wait 1 minute for the ConfigMap changes to propagate to the pods.</li>
+				<li>View the alerts via the port-forwarded Prometheus console at <code>http://localhost:9090/alerts</code>.</li>
+			</ol>
+			<p>In order to add the monitoring, we run the following command to edit the ConfigMap and add the rules under the <code>alerts:</code> stanza, as follows:</p>
+			<pre>kubectl -n prometheus edit configmap/prometheus-server</pre>
+			<p>Look at the top of the file and make the <code>alerts:</code> stanza match the following text: </p>
+			<pre>apiVersion: v1
+data:
+  alerting_rules.yml: |
+    {}
+  alerts: |
+<strong class="bold">    groups:</strong>
+<strong class="bold">    - name: Kubernetes</strong>
+<strong class="bold">      rules:</strong>
+<strong class="bold">      - alert: InstanceDown</strong>
+<strong class="bold">        expr: up == 0</strong>
+<strong class="bold">        for: 5m</strong>
+<strong class="bold">        labels:</strong>
+<strong class="bold">          severity: page</strong>
+<strong class="bold">        annotations:</strong>
+<strong class="bold">          summary: "Instance {{ $labels.instance }} down"</strong>
+<strong class="bold">          description: "{{ $labels.instance }} of job {{ $labels.job }} has been down for more than 5 minutes."</strong>
+  prometheus.yml: |</pre>
+			<p>After you have edited the<a id="_idIndexMarker788"/> file, save it and it will propagate to the pods within 1 minute.</p>
+			<p class="callout-heading">Troubleshooting note – YAML format files are exacting</p>
+			<p class="callout">The capitalization and spacing in the <code>prometheus-server</code> pods) – or worse, a silent failure to add the alert you intended.</p>
+			<p>You should then be able to see the alert definition in the Prometheus console in the <strong class="bold">Alerts</strong> section; click on <strong class="bold">InstanceDown</strong> and it should show the alert definition:</p>
+			<div><div><img src="img/B11641_10_003.jpg" alt=""/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 10.3 – Prometheus alerts showing InstanceDown</p>
+			<p>Now that you have an<a id="_idIndexMarker789"/> alert defined, you can configure Prometheus to send notifications based on the alert.</p>
+			<h2 id="_idParaDest-231"><a id="_idTextAnchor247"/>Sending notifications with the Prometheus Alertmanager</h2>
+			<p>One of the most <a id="_idIndexMarker790"/>powerful aspects of Prometheus is its support for sending notifications of alerts, powered by a component called <strong class="bold">Alertmanager</strong>. This component takes the raw alert information from Prometheus, performs additional processing on it, and then sends notifications. You can find an in-depth<a id="_idIndexMarker791"/> overview of Prometheus alerting at <a href="https://prometheus.io/docs/alerting/overview/">https://prometheus.io/docs/alerting/overview/</a>.</p>
+			<p>This alerting system supports multiple channels, including email, PagerDuty, Pushover, Slack, and more through webhooks. We are going to configure a Slack integration to demonstrate sending an alert. In order to do this, we are going to alter the Alertmanager configuration, which is stored in a Kubernetes ConfigMap called <code>prometheus-alertmanager</code>.</p>
+			<p>To add the Slack integration, make sure you have a Slack account that is signed in via a web browser, then go to <a href="https://api.slack.com/">https://api.slack.com/</a> and build a <a id="_idIndexMarker792"/>new app for Slack. In the <strong class="bold">Features</strong> configuration screen, configure a new incoming webhook and select a channel in Slack to receive the notifications. Then, copy the URL of the incoming hook to the clipboard and store it in a local text file. You will need that when you configure Alertmanager. Configure any other settings that you feel are relevant, including an icon for the Slack integration. Then, edit the ConfigMap for the Alertmanager using the following command:</p>
+			<pre>kubectl -n prometheus edit configmap/prometheus-alertmanager</pre>
+			<p>The ConfigMap will have an empty <code>{}</code> clause for the <code>global:</code> section, which we will remove, and then we add <code>slack_api_url</code> and the <code>slack_configs</code> section, as follows (replace the value in single quotes for the Slack API URL with your incoming webhook URL from the<a id="_idIndexMarker793"/> Slack application, and replace the channel with the hashtag name of your Slack channel where alerts should appear):</p>
+			<pre>apiVersion: v1
+data:
+  alertmanager.yml: |
+    global:
+<strong class="bold">      slack_api_url: 'https://hooks.slack.com/services/A/B/C'</strong>
+    receivers:
+    - name: default-receiver
+<strong class="bold">      slack_configs:</strong>
+<strong class="bold">      - channel: '#docker-book-notices'</strong>
+    route: </pre>
+			<p>This will give you a very basic alerting setup that you can expand on in order to get notified of downtime. You can test that the Alertmanager is hooked up by sending a test alert via the Prometheus Alertmanager API. First, port-forward the Alertmanager service to your local machine:</p>
+			<pre>kubectl -n prometheus port-forward service/prometheus-alertmanager 9093:80</pre>
+			<p>In a different console window, issue the following command:</p>
+			<pre>curl  -d '[{"status": "firing", "labels":{"alertname":"Hello World"}}]' -H "Content-Type: application/json" http://localhost:9093/api/v1/alerts</pre>
+			<p>You should get a <code>{"status":"success"}</code> response from that <code>curl</code> command, and then you should <a id="_idIndexMarker794"/>see the <code>Hello World</code> alert in your Slack:</p>
+			<div><div><img src="img/B11641_10_004.jpg" alt=""/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 10.4 – Prometheus alert in Slack</p>
+			<p class="callout-heading">Exercise – deploy a broken ShipIt Clicker, expect an AlertManager notification</p>
+			<p class="callout">Edit the <code>chapter10/shipitclicker/templates/deployment.yaml</code>file to redirect Prometheus probes to port <code>3001</code> and deploy this broken ShipIt Clicker application using Helm to see the alerting in action. Call the application <code>shipit-broken</code>. Check the Prometheus console to verify that the alert enters the pending state. This should happen in less than 1 minute. Within 10 minutes, you should see an alert in Slack of the <code>[FIRING:1] (InstanceDown shipit-broken shipitclicker 10.0.87.39:3000 kubernetes-pods default shipit-broken-shipitclicker-6658f47599-pkxwk 6658f47599 page)</code> form. Once you get the alert, uninstall the<code>shipit-broken</code> Helm Chart, revert the change to <code>deployment.yaml</code>, and you should stop getting notifications about that specific issue.</p>
+			<p>Once you get the alert, uninstall the <code>shipit-broken</code> Helm Chart and you should stop getting notifications<a id="_idIndexMarker795"/> about that specific issue.</p>
+			<h2 id="_idParaDest-232"><a id="_idTextAnchor248"/>Exploring Prometheus queries and external monitoring in-depth</h2>
+			<p>The topics about how to build <a id="_idIndexMarker796"/>Prometheus queries and how to extend Prometheus to monitor external systems are quite deep and beyond the scope of this chapter. Please consult the Prometheus documentation and the links in the <em class="italic">Further reading</em> section at the <a id="_idIndexMarker797"/>end of this chapter to learn more about creating Prometheus queries and configuring it to use additional metrics data sources.</p>
+			<p>Next, let's examine how we can use Grafana to visualize the data that Prometheus gathers.</p>
+			<h1 id="_idParaDest-233"><a id="_idTextAnchor249"/>Visualizing operational data with Grafana</h1>
+			<p>Prometheus is often deployed <a id="_idIndexMarker798"/>with Grafana (<a href="https://grafana.com/">https://grafana.com/</a>) to provide sophisticated dashboards and a more sophisticated UI for monitoring. The installation of Kubernetes <a id="_idIndexMarker799"/>from the AWS EKS Quick Start includes Grafana, configured with a few dashboards. Let's explore the Grafana installation and see how it integrates with Prometheus. </p>
+			<h2 id="_idParaDest-234"><a id="_idTextAnchor250"/>Gaining access to Grafana</h2>
+			<p>The <a id="_idIndexMarker800"/>Grafana installation is exposed by default over a Kubernetes LoadBalancer, which in EKS creates an AWS EC2-Classic <code>EXTERNAL-IP</code> field for the actual DNS name of the ELB:</p>
+			<pre>$ kubectl -n grafana get service
+NAME      TYPE           CLUSTER-IP    EXTERNAL-IP                                                               PORT(S)        AGE
+grafana   LoadBalancer   172.20.5.46   aaa-bbb.us-east-2.elb.amazonaws.com   80:30669/TCP   39d</pre>
+			<p>Put that DNS address into your web browser, prefixed with <code>http://</code>, and you will get the Grafana login screen. You will need to retrieve the administrative username and password from the Kubernetes secret to login:</p>
+			<pre>$ kubectl -n grafana get secrets/grafana --template='{{index .data "admin-user"}}' | base64 -D
+[username redacted]
+$ kubectl -n grafana get secrets/grafana --template='{{index .data "admin-password"}}' | base64 -D [password redacted]</pre>
+			<p>Use these values to log in to the Grafana console. You can then explore the UI, including the dashboards and the Prometheus query explorer. Some of the dashboards might not have values fully populated, such as the <strong class="bold">Kubernetes All Nodes</strong> dashboard, but don't fret too much about it, as it is possible to add community-provided dashboards that are extremely detailed and fully populated with cluster-wide statistics. Look at the <strong class="bold">Kubernetes Pods</strong> dashboard and select different pods, including the Redis pods and the ShipIt Clicker pod, to get a feel for <a id="_idIndexMarker801"/>how to use the dashboards. Change the time window with the widget in the upper-right corner to show data for a day or a week, and then click and drag over an interesting area to zoom in.</p>
+			<p>Next, let's add a couple of community-provided dashboards to get a flavor for the full power that this system can deliver.</p>
+			<h2 id="_idParaDest-235"><a id="_idTextAnchor251"/>Adding a community-provided dashboard</h2>
+			<p>Grafana provides a repository of both official and <a id="_idIndexMarker802"/>community-provided dashboards at <a href="https://grafana.com/grafana/dashboards">https://grafana.com/grafana/dashboards</a>.</p>
+			<p>These include a bewildering variety of dashboards. You should explore this in detail with your own needs in mind.</p>
+			<p>When you add a dashboard, one of the options presented is <strong class="bold">Import</strong>. Choose this and it will ask you for a dashboard ID or URL from the community site. </p>
+			<p>Here are four general-purpose dashboards that are worth adding to your installation:</p>
+			<ul>
+				<li><strong class="bold">Cluster Monitoring for Kubernetes</strong>: This compact dashboard from Pivotal Observatory lets you see what pods are consuming the most CPU, memory, and network resources at a glance – <a href="https://grafana.com/grafana/dashboards/10000">https://grafana.com/grafana/dashboards/10000</a>.</li>
+				<li><strong class="bold">Kubernetes Cluster (Prometheus)</strong>: A concise dashboard showing critical cluster-wide metrics – <a href="https://grafana.com/grafana/dashboards/6417">https://grafana.com/grafana/dashboards/6417</a>.</li>
+				<li><strong class="bold">1 Node Exporter for Prometheus Dashboard EN v20191102</strong>: A cluster-wide complex dashboard that exposes many CPU, disk, and network metrics – <a href="https://grafana.com/grafana/dashboards/11074">https://grafana.com/grafana/dashboards/11074</a>.</li>
+				<li><strong class="bold">Node Exporter Full</strong>: This exposes every possible metric from the <strong class="bold">Prometheus Node Exporter</strong>, a very <a id="_idIndexMarker803"/>popular dashboard on the site with over two million downloads – <a href="https://grafana.com/grafana/dashboards/1860">https://grafana.com/grafana/dashboards/1860</a>.</li>
+			</ul>
+			<h2 id="_idParaDest-236"><a id="_idTextAnchor252"/>Adding a new dashboard with a custom query</h2>
+			<p>The steps to add a <a id="_idIndexMarker804"/>new dashboard with a custom query are as follows:</p>
+			<ol>
+				<li value="1">In the left menu, click on the <strong class="bold">+</strong> sign to add a new dashboard. Then, in the <strong class="bold">New Panel</strong> area, click <strong class="bold">Add Query</strong>. Add the following query to the field next to <strong class="bold">Metrics</strong>:<pre>shipitclicker_deployments_total</pre><p>It should look something like this: </p><div><img src="img/B11641_10_005.jpg" alt=""/></div><p class="figure-caption">Figure 10.5 – Grafana custom dashboard item definition</p></li>
+				<li>Then, in the <code>ShipIt Clicker Deployments</code>, and then click on the left-pointing arrow in the top-left corner of the screen to return to defining the widget.</li>
+				<li>In the top menu, click on the graph with the plus sign to add another widget:<div><img src="img/B11641_10_006.jpg" alt=""/></div><p class="figure-caption">Figure 10.6 – The Grafana add widget</p></li>
+				<li>Add another <a id="_idIndexMarker805"/>similar panel with the following query with the title <code>ShipIt Clicker Deployments Rate</code>:<pre>rate(shipitclicker_deployments_total[2m])</pre></li>
+				<li>Then, click on the gear icon in the top menu and change the name of the dashboard to <code>ShipIt Clicker Dashboard</code>, and then save the dashboard.</li>
+				<li>Next, take a break and play the ShipIt Clicker game for a few minutes. This will generate traffic that you will be able to see on the graph. A few minutes after you stop playing, your dashboard might look like this:</li>
+			</ol>
+			<p class="figure-caption"> </p>
+			<div><div><img src="img/B11641_10_007.jpg" alt=""/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 10.7 – The ShipIt Clicker custom dashboard in Grafana</p>
+			<p class="callout-heading">Understanding rates and counters</p>
+			<p class="callout">Note that the rate dashboard drops back down to 0 after you stopped playing, but the one that counts only the total increases and stays as it is. Choosing a rate query for a variable ending in <code>total</code> in Prometheus is usually what you want to measure throughput.</p>
+			<p>Now that we have seen how to graph application metrics and build dashboard<a id="_idTextAnchor253"/>s with Grafana, let's explore <a id="_idIndexMarker806"/>another topic: application performance monitoring and distributed tracing with Jaeger.</p>
+			<h1 id="_idParaDest-237"><a id="_idTextAnchor254"/>Application performance monitoring with Jaeger</h1>
+			<p>We are now going to take a<a id="_idIndexMarker807"/> brief tour of Jaeger to see how it can be used for performance monitoring in a microservices architecture. One of the key problems faced when implementing performance and error tracking in a microservice architecture versus a monolithic application is that a microservices architecture is inherently a distributed environment.</p>
+			<p>Early attempts at solving this problem, such <a id="_idIndexMarker808"/>as OpenCensus (<a href="https://opencensus.io/tracing/">https://opencensus.io/tracing/</a>), suffered from disparate terminology and approaches and incompatible systems. To solve this problem, the performance monitoring community created the OpenTracing API.</p>
+			<h2 id="_idParaDest-238"><a id="_idTextAnchor255"/>Understanding the OpenTracing API</h2>
+			<p>The <strong class="bold">OpenTracing</strong> project (<a href="https://opentracing.io/">https://opentracing.io/</a>) is designed to allow engineers to add performance-monitoring features to their projects using a common API specification that is non-vendor <a id="_idIndexMarker809"/>specific. </p>
+			<p>Some of the key features<a id="_idIndexMarker810"/> of OpenTracing that realize this goal are as follows:</p>
+			<ul>
+				<li>The API specification itself (<a href="https://github.com/opentracing/specification">https://github.com/opentracing/specification</a>)</li>
+				<li>Frameworks and libraries that implement the API specification </li>
+				<li>Comprehensive documentation (<a href="https://opentracing.io/docs/">https://opentracing.io/docs/</a>)</li>
+			</ul>
+			<p>Let's now look at the two most important core concepts of the specification: spans and tracing.</p>
+			<h3>Spans</h3>
+			<p>A span represents a unit of work and is<a id="_idIndexMarker811"/> the basic building block of this type of tracing system. Each span contains an operation name, the start and finish time, a <strong class="bold">SpanContext</strong>, and <a id="_idIndexMarker812"/>finally, <strong class="bold">tags</strong> and <strong class="bold">logs</strong> key-value pairs. </p>
+			<p>Your tag key-value pairs apply to the whole span <a id="_idIndexMarker813"/>and include information such as <code>db.type</code> and <code>http.url</code>. A list of conventional tags can be<a id="_idIndexMarker814"/> found on GitHub at <a href="https://github.com/opentracing/specification/blob/master/semantic_conventions.md">https://github.com/opentracing/specification/blob/master/semantic_conventions.md</a>. </p>
+			<p>The logs key-value pair is used to define logging messages that refer to a specific incident or event, rather than the span as a whole. For example, you could use this collection of key-value pairs to record debugging information.</p>
+			<p>The final concept in a span is the SpanContext, which is used to carry data across process boundaries. Its two key components are the state that denotes a specific span within a trace and a <a id="_idIndexMarker815"/>concept known as <strong class="bold">baggage items</strong>. These are essentially key-value pairs that cross a process boundary.</p>
+			<p>You can read more about spans at the OpenTracing<a id="_idIndexMarker816"/> website's documentation at <a href="https://opentracing.io/docs/overview/spans/">https://opentracing.io/docs/overview/spans/</a>.</p>
+			<h3>Traces and tracers</h3>
+			<p>The next concept we will look at is traces and tracers.</p>
+			<p>A trace is a way of grouping one or more spans under a single identifier known as the <strong class="bold">trace identifier</strong>. This can be <a id="_idIndexMarker817"/>used to understand <a id="_idIndexMarker818"/>a workflow through a<a id="_idIndexMarker819"/> distributed system, such as a microservices architecture. </p>
+			<p>The tracer is the actual implementation of the OpenTracing API specification that collects spans and publishes them. Examples of tracers that implement OpenTracing include Datadog (which we will explore in <a href="B11641_14_Final_NM_ePub.xhtml#_idTextAnchor316"><em class="italic">Chapter 14</em></a>, <em class="italic">Advanced Docker Security – Secrets, Secret Commands, Tagging, and Labels</em>), Instana, Lightstep, and Jaeger. </p>
+			<p>If you want to<a id="_idIndexMarker820"/> read more around tracers<a id="_idIndexMarker821"/> and traces, you can find the official documentation at <a href="https://opentracing.io/docs/overview/tracers/">https://opentracing.io/docs/overview/tracers/</a>.</p>
+			<p>Let's explore a tool that implements the OpenTracing API – Jaeger. </p>
+			<h2 id="_idParaDest-239"><a id="_idTextAnchor256"/>Introduction to Jaeger</h2>
+			<p>Jaeger is an open source application-tracing framework that allows developers and system operators to gather information <a id="_idIndexMarker822"/>from a running application and determine both how the <a id="_idIndexMarker823"/>application spends its time and how it interacts with other distributed system components, using the OpenTracing API. The Jaeger website is <a href="https://www.jaegertracing.io/">https://www.jaegertracing.io/</a>.</p>
+			<h3>Jaeger's history</h3>
+			<p>Jaeger, named after the German<a id="_idIndexMarker824"/> word for hunter, originally came from the transportation company Uber. Engineers there, led by Yuri Shkuro, built this distributed tracing framework. Inspired by the Google paper on their tracing framework, Dapper (<a href="https://research.google/pubs/pub36356/">https://research.google/pubs/pub36356/</a>), and<a id="_idIndexMarker825"/> the Zipkin tracing framework (<a href="https://zipkin.io/">https://zipkin.io/</a>), they created <a id="_idIndexMarker826"/>Jaeger as a cloud-native tracing framework. Uber has been using Jaeger since 2015 and contributed it to the CNCF in 2017; the CNCF promoted it to a top-level project in 2019. You can read more about the history of Jaeger on the Uber engineering blog at <a href="https://eng.uber.com/distributed-tracing/">https://eng.uber.com/distributed-tracing/</a>.</p>
+			<h3>Jaeger's components</h3>
+			<p>Some of the important components<a id="_idIndexMarker827"/> that make up the Jaeger ecosystem include the following:</p>
+			<ul>
+				<li>The client libraries available as packages or directly from GitHub</li>
+				<li>Jaeger agents used to listen for spans </li>
+				<li>The collector, responsible for aggregating data sent from agents</li>
+				<li>Jaeger query, for analyzing data via a UI</li>
+				<li>The Ingester, which allows us to gather data from Kafka topics and then write the data to services such as AWS Elasticsearch </li>
+			</ul>
+			<p>Let's test Jaeger and see how it works in practice.</p>
+			<h3>Exploring the Jaeger UI</h3>
+			<p>To explore Jaeger, we can run the all-in-one <a id="_idIndexMarker828"/>latest image using Docker:</p>
+			<pre>$ docker run --rm -i -p6831:6831/udp -p16686:16686 jaegertracing/all-in-one:latest</pre>
+			<p>Then, we can open a web browser and visit <code>http://localhost:16686/</code> to see the UI. The Jaeger search interface itself is instrumented to send traces to the collector, so once you see the UI, reload the page once to make some more traces, and populate the <strong class="bold">Service</strong> drop-down box. Then, press<a id="_idIndexMarker829"/> the <strong class="bold">Find Traces</strong> button. It should look something like this:</p>
+			<div><div><img src="img/B11641_10_008.jpg" alt=""/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 10.8 – The Jaeger UI search interface</p>
+			<p>When you are done exploring, stop the running Docker container by pressing <em class="italic">Ctrl</em> + <em class="italic">C</em>. Next, lets explore how you might instrument an application by seeing how ShipIt Clicker is integrated with OpenTracing and Jaeger.</p>
+			<h2 id="_idParaDest-240"><a id="_idTextAnchor257"/>Exploring the Jaeger client with ShipIt Clicker</h2>
+			<p>The Jaeger client is <a id="_idIndexMarker830"/>available in a number of languages. Our <a id="_idIndexMarker831"/>example will use Node.js, but there is also support for Go, Java, and Python, among others. You can check the official client documentation at the following URL to learn more:</p>
+			<p><a href="https://www.jaegertracing.io/docs/1.18/client-libraries/">https://www.jaegertracing.io/docs/1.18/client-libraries/</a></p>
+			<p>ShipIt Clicker v7 already has a Jaeger client, a piece of OpenTracing JavaScript Express middleware, and the OpenTracing API client installed:</p>
+			<ul>
+				<li>The Jaeger client: <a href="https://github.com/jaegertracing/jaeger-client-node">https://github.com/jaegertracing/jaeger-client-node</a></li>
+				<li>Express middleware: <a href="https://github.com/opentracing-contrib/javascript-express">https://github.com/opentracing-contrib/javascript-express</a></li>
+				<li>The OpenTracing client:<a href=" https://github.com/opentracing/opentracing-javascript"> https://github.com/opentracing/opentracing-javascript</a></li>
+			</ul>
+			<p>If you have an Express application that you want to use with Jaeger, you would issue the following command to install the same combination of libraries:</p>
+			<pre>$ npm install --save jaeger-client express-opentracing opentracing</pre>
+			<p>In the GitHub repository (<a href="https://github.com/PacktPublishing/Docker-for-Developers">https://github.com/PacktPublishing/Docker-for-Developers</a>), the Jaeger client configuration in <code>chapter10/src/server/common/jaeger.js</code> has an example of how to configure the Jaeger client using a mixture of environment variables and default values. Both the <code>docker-compose</code> configuration files and the Helm templates for ShipIt Clicker have been updated to use some <a id="_idIndexMarker832"/>environment variables to configure<a id="_idIndexMarker833"/> Jaeger, to give <code>jaeger.js</code> the right context for those environments; this file imports the <code>jaeger-client</code> module, configures it, and exports a <code>tracer</code> object. We use the <code>tracer</code> object from the <code>express-opentracing</code> middleware in the <code>chaper10/src/server/common/server.js</code> file:</p>
+			<pre>import tracer from './jaeger';
+import middleware from 'express-opentracing';
+…
+export default class ExpressServer {
+  constructor() {
+…
+    app.use(middleware({ tracer: tracer }));
+  }</pre>
+			<p>Using middleware or other software that can hook into common libraries processes provides us with lift and lets us avoid writing boilerplate code. The <code>express-opentracing</code> middleware object decorates the Express <code>res</code> response object with a <code>span</code> attribute, which lets us <a id="_idIndexMarker834"/>use an OpenTracing span from within our controllers and request handlers. </p>
+			<p>We can use a more explicit style also, where we create the spans and log entries programmatically:</p>
+			<ol>
+				<li value="1">To see this in action, inspect<a id="_idIndexMarker835"/> the ShipItClicker's API controller at <code>chapter10/src/server/api/controllers/games/controller.js</code>:<pre>  async incrementGameItem(req, res) {
+    const key = `${req.body.id}/${req.body.element}`;
+    const value = req.body.value;
+    const span = tracer.startSpan('redis', {
+      childOf: req.span,</pre></li>
+				<li>The next stanza shows how to create a tag in the span that holds more detailed tracing information:<pre>      tags: {
+        [opentracing.Tags.SPAN_KIND]: opentracing.Tags.SPAN_KIND_RPC_CLIENT,
+        'span.kind': 'client',
+        'db.type': 'redis',
+        'db.statement': `INCRBY ${key} ${value}`,
+      },
+    });</pre></li>
+				<li>The preceding code initializes a child span for Redis, using the main span through <code>req.span</code>. Then, we immediately call Redis, log the results, and finish the span: <pre>    try {
+      var redis = await RedisService.incrby(key, value);
+      span.log({ result: redis }).finish();</pre></li>
+				<li>Next, we log a message in<a id="_idIndexMarker836"/> the span associated with the parent span:<pre>      const msg = {
+        msg: 'Game item Redis INCRBY complete',
+        key: key,
+        value: redis,
+      };
+      req.span.log(msg);</pre></li>
+				<li>Now, we log the message <a id="_idIndexMarker837"/>using the regular logging mechanism and update the Prometheus custom metric if this request increments the <code>deploys</code> element:<pre>      l.info(msg);
+      if (req.body.element === 'deploys') {
+        const incr = parseInt(req.body.value, 10);
+        PrometheusService.deploymentCounter.inc(incr);
+      }</pre></li>
+				<li>If we get this far, the Redis request has been successful, and we can return a JSON response to the client:<pre>      return res.json({
+        id: req.params.id,
+        element: req.params.element,
+        value: redis,
+      });</pre></li>
+				<li>If the request fails – for example, if Redis is unavailable – we must carry out error processing. First, we<a id="_idIndexMarker838"/> construct a message that has the detailed error in it:<pre>    } catch (err) {
+      const msg = {
+        key: req.body.id,
+        element: req.body.element,
+        message: err.message,
+        stack: err.stack,
+      };</pre></li>
+				<li>Then, we log the error to <a id="_idIndexMarker839"/>both the OpenTracing span and our regular error log, and return a 404 Not Found HTTP response to the client:<pre>      span.log(msg).finish();      l.warn(msg);
+      return res.status(404).json({
+        status: 404,
+        msg: 'Not Found',
+      });
+    }
+  }</pre><p>The preceding code shows how you can use the tracer object to initiate a child span of the main span in <code>req.span</code>, and has logging elements that annotate both spans with the results of the Redis operation.</p></li>
+			</ol>
+			<p>In order to make it<a id="_idIndexMarker840"/> easy to demonstrate the Jaeger integration, this chapter has a Docker Compose file, <code>chapter10/docker-compose.yml</code>, that integrates the ShipIt Clicker container, Redis, and Jaeger. You can run all of them by issuing the following commands from the <code>chapter10</code> directory:</p>
+			<pre>docker-compose build &amp;&amp; docker-compose up -d</pre>
+			<p>You can then visit <code>http://localhost:3010/</code> to play the ShipIt Clicker game for a minute to generate some traces, then visit <code>http://localhost:16686/</code> to see the Jaeger query interface<a id="_idIndexMarker841"/> in action. Query the <code>shipitclicker-v7</code> service, click on one of the traces in the graph, and then expand the two spans and the logs revealed within and you should see something like this:</p>
+			<div><div><img src="img/B11641_10_009.jpg" alt=""/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 10.9 – Jaeger trace showing the ShipIt Clicker HTTP transaction and Redis spans</p>
+			<p>In contrast to the <code>docker-compose.yml</code> file presented in <a href="B11641_06_Final_NM_ePub.xhtml#_idTextAnchor102"><em class="italic">Chapter 6</em></a>, <em class="italic">Deploying Applications with Docker Compose</em>, the one in this chapter is deliberately set up for development, not as a production-hardened configuration. It exposes both the Redis and Jaeger ports for convenience, so it is not suitable for production use without additional hardening. However, this makes it very <a id="_idIndexMarker842"/>convenient for debugging and developing the application. You can even run the ShipIt Clicker application code on your local workstation by running <code>npm run dev</code> and have it connect to the Docker-hosted Redis and Jaeger services – which is probably the fastest way to try out changes.</p>
+			<p>You could also install Jaeger in Kubernetes, both to your local learning environment and to the AWS EKS Kubernetes cluster. To do that, we will use the Jaeger Operator.</p>
+			<h2 id="_idParaDest-241"><a id="_idTextAnchor258"/>Installing the Jaeger Operator</h2>
+			<p>We've seen how we can use Jaeger<a id="_idIndexMarker843"/> locally through both a raw <code>docker</code> command and through <code>docker-compose</code>. Next, we will learn how to deploy Jaeger to Kubernetes. The Helm Charts for Jaeger (<a href="https://github.com/jaegertracing/helm-charts">https://github.com/jaegertracing/helm-charts</a>) are not fully supported, and they may have issues with Helm 3. The Jaeger team is actively investing in Jaeger Operator as the primary method to install and maintain this system. A <a id="_idIndexMarker844"/>Kubernetes <strong class="bold">Operator</strong> is a special type of resource that orchestrates the installation and maintenance of a whole set of related objects and configurations, often comprising a complex distributed system.</p>
+			<p>To deploy to a Kubernetes environment, we can use the following GitHub repository as a guide:</p>
+			<p><a href="https://github.com/jaegertracing/jaeger-operator">https://github.com/jaegertracing/jaeger-operator</a></p>
+			<p>Use the set of <code>kubectl</code> commands listed there to install the operator namespace and the related Kubernetes objects for the Jaeger operator. Run not only the main <code>kubectl</code> commands but also the set of <code>kubectl</code> commands to give the operator cluster-wide permissions through a role binding. To get Jaeger to work smoothly with all the namespaces, edit the deployment and remove the value from the <code>WATCH_NAMESPACE</code> variable:</p>
+			<pre>kubectl -n observability edit deployment/jaeger-operator</pre>
+			<p>The part of the file with <code>WATCH_NAMESPACE</code> should then look as follows:</p>
+			<pre>    spec:
+      containers:
+      - args:
+        - start
+        env:
+<strong class="bold">        - name: WATCH_NAMESPACE</strong>
+        - name: POD_NAME</pre>
+			<p>Now that you have done this, you can install a Jaeger Operator instance that will itself spin up the services, pods, and DaemonSets for Jaeger. An example Operator definition suitable for development or lightweight production use that deploys Jaeger using a DaemonSet on all nodes using only memory for trace storage is in <code>chapter10/jaeger.yaml</code>. Install it with <code>kubectl</code>:</p>
+			<pre>kubectl apply -n observability -f chapter10/jaeger.yaml</pre>
+			<p>This will install all the required components, including a <code>jaeger-query</code> Ingress Controller that does not have any annotations, so the EKS cluster will not connect it to anything. See the <code>chapter10/jaeger-ingress.yaml</code> file for a version that has annotations to connect it to the internet with the ALB Ingress Controller. You can use the same basic procedures you used with other Kubernetes services and Route 53 to expose the Jaeger console from Kubernetes; or, you can leave it alone and connect to the Jaeger console only when you need to via port forwarding. </p>
+			<p>If you are installing this on your local<a id="_idIndexMarker845"/> Kubernetes learning environment, you could alternatively add NGINX Ingress Controller annotations to the Ingress Controller.</p>
+			<p>To further extend Jaeger, you might consider adding one of the storage backends, such as Cassandra or Elasticsearch, so that traces will persist beyond the lifetime of the Jaeger pod. We're going to leave it there with Jaeger, but feel free to explore it in more detail.</p>
+			<p>Next, we will review what we have learned in this chapter.</p>
+			<h1 id="_idParaDest-242"><a id="_idTextAnchor259"/>Summary</h1>
+			<p>In this chapter, you have learned all about observability – how to perform logging and monitoring for Docker applications using both Kubernetes cloud-native approaches and using AWS services. </p>
+			<p>You learned about decoupling applications from common services (such as Redis) to increase production-readiness. In order to aid troubleshooting and the analysis of application and system problems, you learned how to extend logging beyond the running containers in a Kubernetes cluster into AWS CloudWatch and S3, as well as how to query those log storage systems using both CloudWatch Insights and AWS Athena. You saw how you might add more sophisticated Kubernetes liveness and readiness probes to an application, and how to make error handling more robust. </p>
+			<p>Then, you learned how to collect detailed metrics from both the application and the supporting systems using Prometheus, how to query those metrics, and how to set up alerts with the Prometheus Alertmanager. Prometheus and Grafana go hand in hand; you discovered how to configure Grafana dashboards provided by the community and how to add a custom dashboard that shows application-specific metrics. Finally, you learned how to use Jaeger and the OpenTracing API to instrument an application with traces that give deep insight into the performance of an application by using both open source middleware and explicitly annotating the application.</p>
+			<p>In the next chapter, we will explore how we can scale out the application using autoscaling, protect it from overloading using Envoy and the circuit breaker pattern, and perform load testing using k6.</p>
+			<h1 id="_idParaDest-243"><a id="_idTextAnchor260"/>Further reading</h1>
+			<p>You can explore the following resources to expand your knowledge of observability, Kubernetes logging, Prometheus monitoring, Grafana, Jaeger, and managing Kubernetes clusters:</p>
+			<ul>
+				<li>Introduction to observability: <a href="https://docs.honeycomb.io/learning-about-observability/intro-to-observability/">https://docs.honeycomb.io/learning-about-observability/intro-to-observability/</a>.</li>
+				<li>Manage your Kubernetes clusters in style with k9s – a quick and easy terminal interface similar to Midnight Commander that is an alternative to using <code>kubectl</code> to query and control a Kubernetes cluster: <a href="https://k9scli.io/">https://k9scli.io/</a>.</li>
+				<li>Kail – Kubernetes' log tail utility: <a href="https://github.com/boz/kail">https://github.com/boz/kail</a>.</li>
+				<li>Getting started with Athena: <a href="https://docs.aws.amazon.com/athena/latest/ug/getting-started.html">https://docs.aws.amazon.com/athena/latest/ug/getting-started.html</a>.</li>
+				<li>Query data from S3 files using AWS Athena: <a href="https://towardsdatascience.com/query-data-from-s3-files-using-aws-athena-686a5b28e943">https://towardsdatascience.com/query-data-from-s3-files-using-aws-athena-686a5b28e943</a>.</li>
+				<li>Getting started with Kubernetes – Observability: Are Your Applications Healthy?  Liveness and Readiness Probes: <a href="https://www.alibabacloud.com/blog/getting-started-with-kubernetes-%7C-observability-are-your-applications-healthy_596077">https://www.alibabacloud.com/blog/getting-started-with-kubernetes-%7C-observability-are-your-applications-healthy_596077</a>.</li>
+				<li><em class="italic">Kubernetes Liveness and Readiness Probes: How to Avoid Shooting Yourself in the Foot</em>: <a href="https://blog.colinbreck.com/kubernetes-liveness-and-readiness-probes-how-to-avoid-shooting-yourself-in-the-foot/">https://blog.colinbreck.com/kubernetes-liveness-and-readiness-probes-how-to-avoid-shooting-yourself-in-the-foot/</a></li>
+				<li>Awesome Prometheus alerts – the mother lode of rules for not only Kubernetes but also other systems that Prometheus can monitor, available under a Creative Commons Attribution license: <a href="https://awesome-prometheus-alerts.grep.to/rules">https://awesome-prometheus-alerts.grep.to/rules</a>.</li>
+				<li>Configuring Prometheus Operator Helm Chart with AWS EKS has good examples of more detailed Alertmanager configurations: <a href="https://medium.com/zolo-engineering/configuring-prometheus-operator-helm-chart-with-aws-eks-c12fac3b671a">https://medium.com/zolo-engineering/configuring-prometheus-operator-helm-chart-with-aws-eks-c12fac3b671a</a>.</li>
+				<li>Monitoring Distributed Systems – from the Google SRE book – pay special attention to the <strong class="bold">four Golden Signals</strong>: <a href="https://landing.google.com/sre/sre-book/chapters/monitoring-distributed-systems/">https://landing.google.com/sre/sre-book/chapters/monitoring-distributed-systems/</a>.</li>
+				<li>How to monitor Golden Signals in Kubernetes: <a href="https://sysdig.com/blog/golden-signals-kubernetes/">https://sysdig.com/blog/golden-signals-kubernetes/</a>.</li>
+				<li>PromQL tutorial for beginners and humans: <a href="mailto:https://medium.com/@valyala/promql-tutorial-for-beginners-9ab455142085">https://medium.com/@valyala/promql-tutorial-for-beginners-9ab455142085</a>.</li>
+				<li>Understanding delays on Prometheus alerting: <a href="https://pracucci.com/prometheus-understanding-the-delays-on-alerting.html">https://pracucci.com/prometheus-understanding-the-delays-on-alerting.html</a>.</li>
+				<li>Kubernetes in Production – the Ultimate Guide to Monitoring Resource Metrics with Prometheus: <a href="https://www.replex.io/blog/kubernetes-in-production-the-ultimate-guide-to-monitoring-resource-metrics">https://www.replex.io/blog/kubernetes-in-production-the-ultimate-guide-to-monitoring-resource-metrics</a>.</li>
+				<li>Kubernetes Monitoring with Prometheus – the ultimate guide (part 1) – yes, it's funny that multiple articles claim to be the ultimate guide, but this one has really detailed information and a part 2 that also covers Grafana: <a href="https://sysdig.com/blog/kubernetes-monitoring-prometheus/">https://sysdig.com/blog/kubernetes-monitoring-prometheus/</a>.</li>
+				<li>Kubernetes: Monitoring with Prometheus — exporters, Service Discovery, and its roles. Has a section on setting up a Redis exporter that you could use to explore ShipIt Clicker's operation better: <a href="https://itnext.io/kubernetes-monitoring-with-prometheus-exporters-a-service-discovery-and-its-roles-ce63752e5a1">https://itnext.io/kubernetes-monitoring-with-prometheus-exporters-a-service-discovery-and-its-roles-ce63752e5a1</a>.</li>
+				<li>Taking Advantage of Deadman's Switch in Prometheus: <a href="https://jpweber.io/blog/taking-advantage-of-deadmans-switch-in-prometheus/">https://jpweber.io/blog/taking-advantage-of-deadmans-switch-in-prometheus/</a> (combine with <a href="https://deadmanssnitch.com/">https://deadmanssnitch.com/</a> for a complete Deadman's Switch alerting system).</li>
+				<li>Using Prometheus Metrics in Amazon CloudWatch: <a href="https://aws.amazon.com/blogs/containers/using-prometheus-metrics-in-amazon-cloudwatch/">https://aws.amazon.com/blogs/containers/using-prometheus-metrics-in-amazon-cloudwatch/</a>.</li>
+				<li>An alternative solution to the periodic export of CloudWatch logs to S3 via a scheduled Lambda function: <a href="https://medium.com/searce/exporting-cloudwatch-logs-to-s3-through-lambda-before-retention-period-f425df06d25f">https://medium.com/searce/exporting-cloudwatch-logs-to-s3-through-lambda-before-retention-period-f425df06d25f</a>.</li>
+			</ul>
+		</div>
+	</body></html>

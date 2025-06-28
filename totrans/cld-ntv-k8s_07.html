@@ -1,0 +1,382 @@
+<html><head></head><body>
+		<div><h1 id="_idParaDest-125"><em class="italic"><a id="_idTextAnchor127"/>Chapter 5</em>: Services and Ingress – Communicating with the Outside World</h1>
+			<p>This chapter contains a comprehensive discussion of the methods that Kubernetes provides to allow applications to communicate with each other, and with resources outside the cluster. You'll learn about the Kubernetes Service resource and all its possible types – ClusterIP, NodePort, LoadBalancer, and ExternalName – as well as how to implement them. Finally, you'll learn how to use Kubernetes Ingress.</p>
+			<p>In this chapter, we will cover the following topics:</p>
+			<ul>
+				<li>Understanding Services and cluster DNS</li>
+				<li>Implementing ClusterIP</li>
+				<li>Using NodePort</li>
+				<li>Setting up a LoadBalancer Service</li>
+				<li>Creating an ExternalName Service</li>
+				<li>Configuring Ingress</li>
+			</ul>
+			<h1 id="_idParaDest-126"><a id="_idTextAnchor128"/>Technical requirement</h1>
+			<p>In order to run the commands detailed in this chapter, you will need a computer that supports the <code>kubectl</code> command-line tool along with a working Kubernetes cluster. Review <a href="B14790_01_Final_PG_ePub.xhtml#_idTextAnchor016"><em class="italic">Chapter 1</em></a>, <em class="italic">Communicating with Kubernetes</em>, to see several methods for getting up and running with Kubernetes quickly, and for instructions on how to install the <code>kubectl</code> tool.</p>
+			<p>The code used in this chapter can be found in the book's GitHub repository at <a href="https://github.com/PacktPublishing/Cloud-Native-with-Kubernetes/tree/master/Chapter5">https://github.com/PacktPublishing/Cloud-Native-with-Kubernetes/tree/master/Chapter5</a>.</p>
+			<h1 id="_idParaDest-127"><a id="_idTextAnchor129"/>Understanding Services and cluster DNS</h1>
+			<p>In the last few chapters, we've talked about how to run applications effectively on Kubernetes using resources <a id="_idIndexMarker240"/>including Pods, Deployments, and StatefulSets. However, many applications, such as <a id="_idIndexMarker241"/>web servers, need to be able to accept network requests from outside their containers. These requests could come either from other applications or from devices accessing the public internet.</p>
+			<p>Kubernetes provides several types of resources to handle various scenarios when it comes to allowing resources outside and inside the cluster to access applications running on Pods, Deployments, and more.</p>
+			<p>These fall into two major resource types, Services and Ingress:</p>
+			<ul>
+				<li><strong class="bold">Services</strong> have <a id="_idIndexMarker242"/>several subtypes – ClusterIP, NodePort, and LoadBalancer – and are generally used to provide simple access to a single application from inside or outside the cluster.</li>
+				<li><strong class="bold">Ingress</strong> is a more <a id="_idIndexMarker243"/>advanced resource that creates a controller that takes care of pathname- and hostname-based routing to various resources running inside the cluster. Ingress works by using rules to forward traffic to Services. You need to use Services to use Ingress.</li>
+			</ul>
+			<p>Before we get started with our first type of Service resource, let's review how Kubernetes handles DNS inside the cluster.</p>
+			<h2 id="_idParaDest-128"><a id="_idTextAnchor130"/>Cluster DNS</h2>
+			<p>Let's start <a id="_idIndexMarker244"/>by discussing which resources in Kubernetes get their own DNS names by default. DNS names in Kubernetes are restricted to Pods and Services. Pod DNS names contain several parts structured as subdomains. </p>
+			<p>A typical <strong class="bold">Fully Qualified Domain Name</strong> (<strong class="bold">FQDN</strong>) for a Pod running in Kubernetes looks like this:</p>
+			<pre>my-hostname.my-subdomain.my-namespace.svc.my-cluster-domain.example</pre>
+			<p>Let's <a id="_idIndexMarker245"/>break it down, starting from the rightmost side:</p>
+			<ul>
+				<li><code>my-cluster-domain.example</code> corresponds to the configured DNS name for the Cluster API itself. Depending on the tool used to set up the cluster, and the environment that it runs in, this can be an external domain name or an internal DNS name.</li>
+				<li><code>svc</code> is a section that will occur even in a Pod DNS name – so we can just assume it will be there. However, as you will see shortly, you won't generally be accessing Pods or Services through their FQDNs.</li>
+				<li><code>my-namespace</code> is pretty self-explanatory. This section of the DNS name will be whatever namespace your Pod is operating in.</li>
+				<li><code>my-subdomain</code> corresponds to the <code>subdomain</code> field in the Pod spec. This field is completely optional.</li>
+				<li>Finally, <code>my-hostname</code> will be set to whatever the name of the Pod is in the Pod metadata.</li>
+			</ul>
+			<p>Together, this DNS <a id="_idIndexMarker246"/>name allows other resources in the cluster to access a particular Pod. This generally isn't very helpful by itself, especially if you're using Deployments and StatefulSets that generally have multiple Pods. This is where Services come in.</p>
+			<p>Let's take a look at the A record DNS name for a Service:</p>
+			<pre>my-svc.my-namespace.svc.cluster-domain.example</pre>
+			<p>As you can see, it's very similar to the Pod DNS name, with the difference that we only have one value to the left of our namespace – which is the Service name (again, as with Pods, this is generated based on the metadata name).</p>
+			<p>One result of how these DNS names are handled is that within a namespace, you can access a Service or Pod via just its Service (or Pod) name, and the subdomain.</p>
+			<p>For instance, take our previous Service DNS name. From within the <code>my-namespace</code> namespace, the Service can be accessed simply by the DNS name <code>my-svc</code>. From <a id="_idIndexMarker247"/>outside the <code>my-namespace</code> namespace, you can access the Service via <code>my-svc.my-namespace</code>. </p>
+			<p>Now that we've learned how in-cluster DNS works, we can discuss how that translates to the Service proxy. </p>
+			<h2 id="_idParaDest-129"><a id="_idTextAnchor131"/>Service proxy types</h2>
+			<p>Services, explained as simply as possible, provide an abstraction to forward requests to one or more Pods that <a id="_idIndexMarker248"/>are running an application.</p>
+			<p>When creating a Service, we define a selector that tells the Service which Pods to forward requests to. Through functionality in the <code>kube-proxy</code> component, when requests hit a Service, they will be forwarded to the various Pods that match the Service's selector.</p>
+			<p>There are three possible proxy modes that you can use in Kubernetes:</p>
+			<ul>
+				<li><strong class="bold">Userspace proxy mode</strong>: The oldest proxy mode, available since Kubernetes version 1.0. This <a id="_idIndexMarker249"/>proxy mode will forward requests to the matched <a id="_idIndexMarker250"/>Pods in a round-robin fashion.</li>
+				<li><strong class="bold">Iptables proxy mode</strong>: Available <a id="_idIndexMarker251"/>since 1.1, and the <a id="_idIndexMarker252"/>default since 1.2. This offers a lower overhead than userspace mode and can use round robin or random selection.</li>
+				<li><strong class="bold">IPVS proxy mode</strong>: The <a id="_idIndexMarker253"/>newest option, available since 1.8. This <a id="_idIndexMarker254"/>proxy mode allows other load balancing options (not just Round Robin):<p>a. Round Robin</p><p>b. Least Connection (the least number of open connections)</p><p>c. Source Hashing</p><p>d. Destination Hashing</p><p>e. Shortest Expected Delay</p><p>f. Never Queue</p></li>
+			</ul>
+			<p>Relevant to this list is a discussion of what round-robin load balancing is, for those not familiar.</p>
+			<p>Round-robin load balancing involves looping through the potential list of Service endpoints from beginning to end, per network request. The following diagram shows a simplified view of this process it pertains to Kubernetes Pods behind a Service:</p>
+			<div><div><img src="img/B14790_05_001.jpg" alt="Figure 5.1 – A Service load-balancing to Pods"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 5.1 – A Service load-balancing to Pods</p>
+			<p>As you can see, the Service alternates which Pod it sends requests to. The first request goes to Pod A, the second <a id="_idIndexMarker255"/>goes to Pod B, the third goes to Pod C, and then it loops around. Now that we know how Services actually handle requests, let's review the major types of Services, starting with ClusterIP.</p>
+			<h1 id="_idParaDest-130"><a id="_idTextAnchor132"/>Implementing ClusterIP</h1>
+			<p>ClusterIP is a <a id="_idIndexMarker256"/>simple type of Service exposed on an internal IP inside the cluster. This type of Service is not reachable from outside of the cluster. Let's take a look at the YAML file for our Service:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">clusterip-service.yaml</p>
+			<pre>apiVersion: v1
+kind: Service
+metadata:
+  name: my-svc
+Spec:
+  type: ClusterIP
+  selector:
+    app: web-application
+    environment: staging
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 8080</pre>
+			<p>As with other Kubernetes resources, we have our metadata block with our <code>name</code> value. As you can recall from our discussion on DNS, this <code>name</code> value is how you can access your Service from elsewhere in the cluster. For this reason, ClusterIP is a great option for Services that only need to be accessed by other Pods within a cluster.</p>
+			<p>Next, we have our <code>Spec</code>, which consists of three major pieces:</p>
+			<ul>
+				<li>First, we have our <code>type</code>, which corresponds to the type of our Service. Since the default type is <code>ClusterIP</code>, you don't actually need to specify a type if you want a ClusterIP Service.</li>
+				<li>Next, we have our <code>selector</code>. Our <code>selector</code> consists of key-value pairs that must match labels in the metadata of the Pods in question. In this case, our Service will look for Pods with <code>app=web-application</code> and <code>environment=staging</code> to forward traffic to.</li>
+				<li>Finally, we <a id="_idIndexMarker257"/>have our <code>ports</code> block, where we can map ports on our Service to <code>targetPort</code> numbers on our Pods. In this case, port <code>80</code> (the HTTP port) on our Service will map to port <code>8080</code> on our application Pod. More than one port can be opened on our Service, but the <code>name</code> field is required when opening multiple ports.</li>
+			</ul>
+			<p>Next, let's review the <code>protocol</code> options in depth, since these are important to our discussion of Service ports.</p>
+			<h2 id="_idParaDest-131"><a id="_idTextAnchor133"/>Protocol</h2>
+			<p>In the case of our <a id="_idIndexMarker258"/>previous ClusterIP Service, we chose <code>TCP</code> as our protocol. Kubernetes <a id="_idIndexMarker259"/>currently (as of version 1.19) supports several protocols:</p>
+			<ul>
+				<li><strong class="bold">TCP</strong></li>
+				<li><strong class="bold">UDP</strong></li>
+				<li><strong class="bold">HTTP</strong></li>
+				<li><strong class="bold">PROXY</strong></li>
+				<li><strong class="bold">SCTP</strong></li>
+			</ul>
+			<p>This is an area where new features are likely coming, especially where HTTP (L7) services are concerned. Currently, there is not full support of all of these protocols across environments or cloud providers. </p>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">For <a id="_idIndexMarker260"/>more information, you can check the main Kubernetes documentation (<a href="https://kubernetes.io/docs/concepts/services-networking/service/">https://kubernetes.io/docs/concepts/services-networking/service/</a>) for the current state of Service protocols.</p>
+			<p>Now that we've discussed the specifics of Service YAMLs with Cluster IP, we can move on to the next type of Service – NodePort.</p>
+			<h1 id="_idParaDest-132"><a id="_idTextAnchor134"/>Using NodePort</h1>
+			<p>NodePort is an external-facing Service type, which means that it can actually be accessed from outside the Cluster. When creating a NodePort Service, a ClusterIP Service of the same name will automatically <a id="_idIndexMarker261"/>be created and routed to by the NodePort, so you will still be able to access the Service from inside the cluster. This makes NodePort a good option for external access to applications when a LoadBalancer Service is not feasible or possible.</p>
+			<p>NodePort sounds like what it is – this type of Service opens a port on every Node in the cluster on which the Service can be accessed. This port will be in a range that is by default between <code>30000</code>-<code>32767</code> and will be linked automatically on Service creation.</p>
+			<p>Here's what our NodePort Service YAML looks like:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">nodeport-service.yaml</p>
+			<pre>apiVersion: v1
+kind: Service
+metadata:
+  name: my-svc
+Spec:
+  type: NodePort
+  selector:
+    app: web-application
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 8080</pre>
+			<p>As you can tell, the only difference from the ClusterIP Service is the Service type – however, it is important to note that our intended port <code>80</code> in the <code>ports</code> section will only be used when <a id="_idIndexMarker262"/>accessing the automatically created ClusterIP version of the Service. From outside the cluster, we'll need to see what the generated port link is to access the Service on our Node IP.</p>
+			<p>To do this, we can create our Service with the following command:</p>
+			<pre>kubectl apply -f svc.yaml </pre>
+			<p>And then run this command:</p>
+			<pre>kubectl describe service my-svc</pre>
+			<p>The result of the preceding command will be the following output:</p>
+			<pre>Name:                   my-svc
+Namespace:              default
+Labels:                 app=web-application
+Annotations:            &lt;none&gt;
+Selector:               app=web-application
+Type:                   NodePort
+IP:                     10.32.0.8
+Port:                   &lt;unset&gt; 8080/TCP
+TargetPort:             8080/TCP
+NodePort:               &lt;unset&gt; 31598/TCP
+Endpoints:              10.200.1.3:8080,10.200.1.5:8080
+Session Affinity:       None
+Events:                 &lt;none&gt;</pre>
+			<p>From this <a id="_idIndexMarker263"/>output, we look to the <code>NodePort</code> line to see that our assigned port for this Service is <code>31598</code>. Thus, this Service can be accessed on any node at <code>[NODE_IP]:[ASSIGNED_PORT]</code>.</p>
+			<p>Alternatively, we can manually assign a NodePort IP to the Service. The YAML for a manually assigned NodePort is as follows:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">manual-nodeport-service.yaml</p>
+			<pre>apiVersion: v1
+kind: Service
+metadata:
+  name: my-svc
+Spec:
+  type: NodePort
+  selector:
+    app: web-application
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 8080
+      nodePort: 31233</pre>
+			<p>As you can see, we have chosen a <code>nodePort</code> in the range <code>30000</code>-<code>32767</code>, in this case, <code>31233</code>. To see exactly how this NodePort Service works across Nodes, take a look at the following diagram: </p>
+			<div><div><img src="img/B14790_05_002.jpg" alt="Figure 5.2 – NodePort Service"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 5.2 – NodePort Service</p>
+			<p>As you can see, though the Service is accessible at every Node in the cluster (Node A, Node B, and Node C), network <a id="_idIndexMarker264"/>requests are still load-balanced across the Pods in all Nodes (Pod A, Pod B, and Pod C), not just the Node that is accessed. This is an effective way to ensure that the application can be accessed from any Node. When using cloud services, however, you already have a range of tools to spread requests between servers. The next type of Service, LoadBalancer, lets us use those tools in the context of Kubernetes.</p>
+			<h1 id="_idParaDest-133"><a id="_idTextAnchor135"/>Setting up a LoadBalancer Service</h1>
+			<p>LoadBalancer is <a id="_idIndexMarker265"/>a special Service type in Kubernetes that provisions a load balancer based on where your cluster is running. For instance, in AWS, Kubernetes will provision an Elastic Load Balancer. </p>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">For a full list of LoadBalancer services and configurations, check the documentation for Kubernetes Services at <a href="https://kubernetes.io/docs/concepts/services-networking/service/#loadbalancer">https://kubernetes.io/docs/concepts/services-networking/service/#loadbalancer</a>.</p>
+			<p>Unlike with <code>ClusterIP</code> or NodePort, we can amend the functionality of a LoadBalancer Service in cloud-specific ways. Generally, this is done using an annotations block in the Service YAML file – which, as we've discussed before, is just a set of keys and values. To see how this is done for AWS, let's review the spec for a LoadBalancer Service:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">loadbalancer-service.yaml</p>
+			<pre>apiVersion: v1
+kind: Service
+metadata:
+  name: my-svc
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-ssl-cert: arn:aws.. 
+spec:
+  type: LoadBalancer
+  selector:
+    app: web-application
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 8080</pre>
+			<p>Though we can create a LoadBalancer without any annotations, the supported AWS-specific annotations <a id="_idIndexMarker266"/>give us the ability (as seen in the preceding YAML code) to specify which TLS certificate (via its ARN in Amazon Certificate Manager) we want to be attached to our load balancer. AWS annotations also allow configuring logs for load balancers, and more. </p>
+			<p>Here are a few key annotations supported by the AWS Cloud Provider as of the writing of this book:</p>
+			<ul>
+				<li><code>service.beta.kubernetes.io/aws-load-balancer-ssl-cert</code></li>
+				<li><code>service.beta.kubernetes.io/aws-load-balancer-proxy-protocol</code></li>
+				<li><code>service.beta.kubernetes.io/aws-load-balancer-ssl-ports</code><p class="callout-heading">Important note</p><p class="callout">A full list of annotations and explanations for all providers can be found on the <strong class="bold">Cloud Providers</strong> page in the official Kubernetes documentation, at <a href="https://kubernetes.io/docs/tasks/administer-cluster/running-cloud-controller/">https://kubernetes.io/docs/tasks/administer-cluster/running-cloud-controller/</a>.</p></li>
+			</ul>
+			<p>Finally, with LoadBalancer Services, we've covered the Service types you will likely use the most. However, for special cases where the Service itself runs outside of Kubernetes, we can use another Service type: ExternalName.</p>
+			<h1 id="_idParaDest-134"><a id="_idTextAnchor136"/>Creating an ExternalName Service</h1>
+			<p>Services of type ExternalName can be used to proxify applications that are not actually running on your cluster, while still keeping the Service as a layer of abstraction that can be updated at any time.</p>
+			<p>Let's set <a id="_idIndexMarker267"/>the scene: you have a legacy production application running on Azure that you want to access from within your cluster. You can access this legacy application at <code>myoldapp.mydomain.com</code>. However, your team is currently working on containerizing this application and running it on Kubernetes, and that new version is currently working in your <code>dev</code> namespace environment on your cluster.</p>
+			<p>Instead of asking your other applications to talk to different places depending on the environment, you can always point to a Service called <code>my-svc</code> in both your production (<code>prod</code>) and development (<code>dev</code>) namespaces.</p>
+			<p>In <code>dev</code>, this <a id="_idIndexMarker268"/>Service could be a <code>ClusterIP</code> Service that leads to your newly containerized application on Pods. The following YAML shows how the in-development, containerized Service should work:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">clusterip-for-external-service.yaml</p>
+			<pre>apiVersion: v1
+kind: Service
+metadata:
+  name: my-svc
+  namespace: dev
+Spec:
+  type: ClusterIP
+  selector:
+    app: newly-containerized-app
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 8080</pre>
+			<p>In the <code>prod</code> namespace, this Service would instead be an <code>ExternalName</code> Service:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">externalname-service.yaml</p>
+			<pre>apiVersion: v1
+kind: Service
+metadata:
+  name: my-svc
+  namespace: prod
+spec:
+  type: ExternalName
+  externalName: myoldapp.mydomain.com</pre>
+			<p>Since our <code>ExternalName</code> Service is not actually forwarding requests to Pods, we don't need a selector. Instead, we specify an <code>ExternalName</code>, which is the DNS name we want the Service to direct to.</p>
+			<p>The following <a id="_idIndexMarker269"/>diagram shows how an <code>ExternalName</code> Service could be used in this pattern:</p>
+			<div><div><img src="img/B14790_05_003.jpg" alt="Figure 5.3 – ExternalName Service configuration"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 5.3 – ExternalName Service configuration</p>
+			<p>In the preceding diagram, our <strong class="bold">EC2 Running Legacy Application</strong> is an AWS VM, external to the cluster. Our <strong class="bold">Service B</strong> of type <strong class="bold">ExternalName</strong> will route requests out to the VM. That way, our <strong class="bold">Pod C</strong> (or any other Pod in the cluster) can access our external <a id="_idIndexMarker270"/>legacy application simply through the ExternalName services' Kubernetes DNS name.</p>
+			<p>With <code>ExternalName</code>, we've finished our review of all the Kubernetes Service types. Let's move on to a more complex method of exposing applications – the Kubernetes Ingress resource.</p>
+			<h1 id="_idParaDest-135"><a id="_idTextAnchor137"/>Configuring Ingress</h1>
+			<p>As mentioned <a id="_idIndexMarker271"/>at the beginning of the chapter, Ingress provides a granular mechanism for routing requests into a cluster. Ingress does not replace Services but augments them with capabilities such as path-based routing. Why is this necessary? There are plenty of reasons, including cost. An Ingress with 10 paths to <code>ClusterIP</code> Services is a lot cheaper than creating a new LoadBalancer Service for each path – plus it keeps things simple and easy to understand.</p>
+			<p>Ingresses do not work like other Services in Kubernetes. Just creating the Ingress itself will do nothing. You need two additional components:</p>
+			<ul>
+				<li>An Ingress controller: you can choose from many implementations, built on tools such as Nginx or HAProxy.</li>
+				<li>ClusterIP or NodePort Services for the intended routes.</li>
+			</ul>
+			<p>First, let's discuss how to configure the Ingress controller.</p>
+			<h2 id="_idParaDest-136"><a id="_idTextAnchor138"/>Ingress controllers</h2>
+			<p>Generally, clusters will <a id="_idIndexMarker272"/>not come configured with any pre-existing Ingress controllers. You'll need to select and deploy one to your cluster. <code>ingress-nginx</code> is likely the most <a id="_idIndexMarker273"/>popular choice, but there are several others – see <a href="https://kubernetes.io/docs/concepts/services-networking/ingress-controllers/">https://kubernetes.io/docs/concepts/services-networking/ingress-controllers/</a> for a full list. </p>
+			<p>Let's learn how to deploy an Ingress controller - for the purposes of this book, we'll stick with the Nginx Ingress controller created by the Kubernetes community, <code>ingress-nginx</code>. </p>
+			<p>Installation may differ from controller to controller, but for <code>ingress-nginx</code> there are two main parts. First, to deploy the main controller itself, run the following command, which may change depending on the target environment and newest Nginx Ingress version:</p>
+			<pre>kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v0.41.2/deploy/static/provider/cloud/deploy.yaml</pre>
+			<p>Secondly, we may need to configure our Ingress depending on which environment we're running in. For a cluster running on AWS, we can configure the Ingress entry point to use an Elastic Load Balancer that we create in AWS.</p>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">To <a id="_idIndexMarker274"/>see all environment-specific setup instructions, see the <code>ingress-nginx</code> docs at <a href="https://kubernetes.github.io/ingress-nginx/deploy/">https://kubernetes.github.io/ingress-nginx/deploy/</a>.</p>
+			<p>The Nginx <a id="_idIndexMarker275"/>ingress controller is a set of Pods that will auto-update the Nginx configuration whenever a new Ingress resource (a custom Kubernetes resource) is created. In addition to the Ingress controller, we will need a way to route requests to the Ingress controller – known as the entry point.</p>
+			<h3>Ingress entry point</h3>
+			<p>The default <code>nginx-ingress</code> install will also create a singular Service that serves requests to the Nginx layer, at which <a id="_idIndexMarker276"/>point the Ingress rules take over. Depending on how you configure your Ingress, this can be a LoadBalancer or NodePort Service. In a cloud environment, you will likely use a cloud LoadBalancer Service as the entry point to the cluster Ingress.</p>
+			<h3>Ingress rules and YAML</h3>
+			<p>Now that <a id="_idIndexMarker277"/>we have our Ingress controller up and running, we can start configuring our Ingress rules.</p>
+			<p>Let's start <a id="_idIndexMarker278"/>with a simple example. We have two Services, <code>service-a</code> and <code>service-b</code>, that we want to expose on different paths via our Ingress. Once your Ingress controller and any associated Elastic Load Balancers are created (assuming we're running on AWS), let's first create our Services by working through the following steps:</p>
+			<ol>
+				<li>First, let's look at how to create Service A in YAML. Let's call the file <code>service-a.yaml</code>:<pre>apiVersion: v1
+kind: Service
+metadata:
+  name: service-a
+Spec:
+  type: ClusterIP
+  selector:
+    app: application-a
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 8080</pre></li>
+				<li>You can <a id="_idIndexMarker279"/>create our Service A by running the following command:<pre><strong class="bold">kubectl apply -f service-a.yaml</strong></pre></li>
+				<li>Next, let's <a id="_idIndexMarker280"/>create our Service B, for which the YAML code looks very similar:<pre>apiVersion: v1
+kind: Service
+metadata:
+  name: service-b
+Spec:
+  type: ClusterIP
+  selector:
+    app: application-b
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 8000</pre></li>
+				<li>Create our Service B by running the following command:<pre><strong class="bold">kubectl apply -f service-b.yaml</strong></pre></li>
+				<li>Finally, we <a id="_idIndexMarker281"/>can create our Ingress with rules for each path. Here is <a id="_idIndexMarker282"/>the YAML code for our Ingress that will split requests as necessary based on path-based routing rules:</li>
+			</ol>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">         ingress.yaml</p>
+			<pre>apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: my-first-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  rules:
+  - host: my.application.com
+    http:
+      paths:
+      - path: /a
+        backend:
+          serviceName: service-a
+          servicePort: 80
+      - path: /b
+        backend:
+          serviceName: service-b
+          servicePort: 80</pre>
+			<p>In our preceding YAML, the ingress has a singular <code>host</code> value, which would correspond to the <a id="_idIndexMarker283"/>host request header for traffic coming through the Ingress. Then, we <a id="_idIndexMarker284"/>have two paths, <code>/a</code> and <code>/b</code>, which lead to our two previously created <code>ClusterIP</code> Services. To put this configuration in a graphical format, let's take a look at the following diagram: </p>
+			<div><div><img src="img/B14790_05_004.jpg" alt="Figure 5.4 – Kubernetes Ingress example"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 5.4 – Kubernetes Ingress example</p>
+			<p>As you can see, our simple path-based rules result in network requests getting routed directly to the proper Pods. This is because <code>nginx-ingress</code> uses the Service selector to get a list of Pod IPs, but does not directly <a id="_idIndexMarker285"/>use the Service to communicate with the Pods. Rather, the Nginx (in this case) config is automati<a id="_idTextAnchor139"/>cally updated as new Pod IPs come online.</p>
+			<p>The <code>host</code> value <a id="_idIndexMarker286"/>isn't actually required. If you leave it out, any traffic that comes through the Ingress, regardless of the host header (unless it matches a different rule that specifies a host) will be routed according to the rule. The following YAML shows this:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">ingress-no-host.yaml</p>
+			<pre>apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: my-first-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  rules:
+   - http:
+      paths:
+      - path: /a
+        backend:
+          serviceName: service-a
+          servicePort: 80
+      - path: /b
+        backend:
+          serviceName: service-b
+          servicePort: 80</pre>
+			<p>This previous <a id="_idIndexMarker287"/>Ingress definition will flow traffic to the path-based routing rules even if there is no host header value.</p>
+			<p>Similarly, it is <a id="_idIndexMarker288"/>possible to split traffic into multiple separate branching paths based on the host header, like this:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">ingress-branching.yaml</p>
+			<pre>apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: multiple-branches-ingress
+spec:
+  rules:
+  - host: my.application.com
+    http:
+      paths:
+      - backend:
+          serviceName: service-a
+          servicePort: 80
+  - host: my.otherapplication.com
+    http:
+      paths:
+      - backend:
+          serviceName: service-b
+          servicePort: 80</pre>
+			<p>Finally, you can also secure your Ingress with TLS in many cases, though this functionality differs on a per Ingress controller basis. For Nginx, this can be done by using a Kubernetes Secret. We'll get to this functionality in the next chapter but for now, check <a id="_idIndexMarker289"/>out the configuration on the Ingress side:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">ingress-secure.yaml</p>
+			<pre>apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: secured-ingress
+spec:
+  tls:
+  - hosts:
+    - my.application.com
+    secretName: my-tls-secret
+  rules:
+    - host: my.application.com
+      http:
+        paths:
+        - path: /
+          backend:
+            serviceName: service-a
+            servicePort: 8080</pre>
+			<p>This configuration <a id="_idIndexMarker290"/>will look for a Kubernetes Secret named <code>my-tls-secret</code> in the default namespace to attach to the Ingress for TLS.</p>
+			<p>That ends <a id="_idIndexMarker291"/>our discussion of Ingress. A lot of Ingress functionality <a id="_idIndexMarker292"/>can be specific to which Ingress controller you decide to use, so check out the documentation for your chosen implementation.</p>
+			<h1 id="_idParaDest-137"><a id="_idTextAnchor140"/>Summary</h1>
+			<p>In this chapter, we reviewed the various methods that Kubernetes provides in order to expose applications running on the cluster to the outside world. The major methods are Services and Ingress. Within Services, you can use ClusterIP Services for in-cluster routing and NodePort for access to a Service directly via ports on Nodes. LoadBalancer Services let you use existing cloud load-balancing systems, and ExternalName Services let you route requests out of the cluster to external resources.</p>
+			<p>Finally, Ingress provides a powerful tool to route requests in the cluster by path. To implement Ingress you need to install a third-party or open source Ingress controller on your cluster.</p>
+			<p>In the next chapter, we'll talk about how to inject configuration information into your applications running on Kubernetes using two resource types: ConfigMap and Secret.</p>
+			<h1 id="_idParaDest-138"><a id="_idTextAnchor141"/>Questions</h1>
+			<ol>
+				<li value="1">What type of Service would you use for applications that are only accessed internally in a cluster?</li>
+				<li>How can you tell which port a NodePort Service is active on?</li>
+				<li>Why can Ingress be more cost-effective than purely Services?</li>
+				<li>Other than supporting legacy applications, how might ExternalName Services be useful on a cloud platform?</li>
+			</ol>
+			<h1 id="_idParaDest-139"><a id="_idTextAnchor142"/>Further reading</h1>
+			<ul>
+				<li>Information on cloud providers, from the Kubernetes documentation: <a href="https://kubernetes.io/docs/tasks/administer-cluster/running-cloud-controller/">https://kubernetes.io/docs/tasks/administer-cluster/running-cloud-controller/</a></li>
+			</ul>
+		</div>
+	</body></html>

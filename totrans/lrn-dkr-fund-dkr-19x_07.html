@@ -1,0 +1,726 @@
+<html><head></head><body>
+        
+
+                            
+                    <h1 class="header-title">Data Volumes and Configuration</h1>
+                
+            
+            
+                
+<p>In the last chapter, we learned how to build and share our own container images. Particular focus was placed on how to build images that are as small as possible by only containing artifacts that are really needed by the containerized application.</p>
+<p>In this chapter, we are going to learn how we can work with stateful containers—that is, containers that consume and produce data. We will also learn how to configure our containers at runtime and at image build time, using environment variables and config files.</p>
+<p>Here is a list of the topics we're going to discuss:</p>
+<ul>
+<li>Creating and mounting data volumes</li>
+<li>Sharing data between containers</li>
+<li>Using host volumes</li>
+<li>Defining volumes in images</li>
+<li>Configuring containers</li>
+</ul>
+<p>After working through this chapter, you will be able to do the following:</p>
+<ul>
+<li>Create, delete, and list data volumes.</li>
+<li>Mount an existing data volume into a container.</li>
+<li>Create durable data from within a container using a data volume.</li>
+<li>Share data between multiple containers using data volumes.</li>
+<li>Mount any host folder into a container using data volumes.</li>
+<li>Define the access mode (read/write or read-only) for a container when accessing data in a data volume.</li>
+<li>Configure environment variables for applications running in a container.</li>
+<li>Parametrize a <kbd>Dockerfile</kbd> by using build arguments.</li>
+</ul>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Technical requirements</h1>
+                
+            
+            
+                
+<p>For this chapter, you need either Docker Toolbox installed on your machine or access to a Linux <strong>virtual machine</strong> (<strong>VM</strong>) running Docker on your laptop or in the cloud. Furthermore, it is advantageous to have Docker for Desktop installed on your machine. There is no code accompanying this chapter.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Creating and mounting data volumes</h1>
+                
+            
+            
+                
+<p>All meaningful applications consume or produce data. Yet containers are, preferably, meant to be stateless. How are we going to deal with this? One way is to use Docker volumes. Volumes allow containers to consume, produce, and modify a state. Volumes have a life cycle that goes beyond the life cycle of containers. When a container that uses a volume dies, the volume continues to exist. This is great for the durability of the state.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Modifying the container layer</h1>
+                
+            
+            
+                
+<p>Before we dive into volumes, let's first discuss what happens if an application in a container changes something in the filesystem of the container. In this case, the changes are all happening in the writable container layer that we introduced in <a href="d9bb597d-2b32-4144-b068-564d85bcdf68.xhtml" target="_blank">Chapter 3</a>, <em>Mastering Containers</em>. Let's quickly demonstrate this by running a container, and execute a script in it that is creating a new file, like this:</p>
+<pre><strong>$ docker container run --name demo \</strong><br/><strong>    alpine /bin/sh -c 'echo "This is a test" &gt; sample.txt'</strong></pre>
+<p>The preceding command creates a container named <kbd>demo</kbd>, and, inside this container, creates a file called <kbd>sample.txt</kbd> with the content <kbd>This is a test</kbd>. The container exits after running the <kbd>echo</kbd> command but remains in memory, available for us to do our investigations. Let's use the <kbd>diff</kbd> command to find out what has changed in the container's filesystem in relation to the filesystem of the original image, as follows:</p>
+<pre><strong>$ docker container diff demo</strong></pre>
+<p>The output should look like this:</p>
+<pre><strong>A /sample.txt</strong></pre>
+<p>Evidently, a new file, as indicated by the <kbd>A</kbd>, has been added to the filesystem of the container, as expected. Since all layers that stem from the underlying image (<kbd>alpine</kbd>, in this case) are immutable, the change could only happen in the writeable container layer.</p>
+<p>Files that have changed compared to the original image will be marked with a <kbd>C</kbd>, and those that have been deleted, with a <kbd>D</kbd>.</p>
+<p>If we now remove the container from memory, its container layer will also be removed, and with it, all the changes will be irreversibly deleted. If we need our changes to persist even beyond the lifetime of the container, this is not a solution. Luckily, we have better options, in the form of Docker volumes. Let's get to know them.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Creating volumes</h1>
+                
+            
+            
+                
+<p>Since at this time, when using Docker for Desktop on a macOS or Windows computer, containers are not running natively on macOS or Windows but rather in a (hidden) VM created by Docker for Desktop, for illustrative purposes it is best we use <kbd>docker-machine</kbd> to create and use an explicit VM running Docker. At this point, we assume that you have Docker Toolbox installed on your system. If not, then please go back to <a href="99a92fe1-4652-4934-9c33-f3e19483afcd.xhtml" target="_blank"/><a href="99a92fe1-4652-4934-9c33-f3e19483afcd.xhtml" target="_blank">Chapter 2</a>, <em>Setting up a Working Environment,</em> where we provide detailed instructions on how to install Toolbox:</p>
+<ol>
+<li>Use <kbd>docker-machine</kbd> to list all VMs currently running in VirtualBox, as follows:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ docker-machine ls</strong> </pre>
+<ol start="2">
+<li>If you do not have a VM called <kbd>node-1</kbd> listed, then please create one with the following command:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ docker-machine create --driver virtualbox node-1</strong> </pre>
+<p>Refer back to <a href="99a92fe1-4652-4934-9c33-f3e19483afcd.xhtml" target="_blank">Chapter 2</a>, <em>Setting up a Working Environment</em>, on how to create a Hyper-V-based VM with <kbd>docker-machine</kbd> if you are running on Windows with Hyper-V enabled.</p>
+<ol start="3">
+<li>If, on the other hand, you have a VM called <kbd>node-1</kbd> but it is not running, then please start it, as follows:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ docker-machine start node-1</strong></pre>
+<ol start="4">
+<li>Now that everything is ready, use <kbd>docker-machine</kbd> to SSH into this VM, like this:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ docker-machine ssh node-1</strong></pre>
+<ol start="5">
+<li class="CDPAlignLeft CDPAlign">You should be greeted by this welcome image:</li>
+</ol>
+<p class="CDPAlignCenter CDPAlign"><img class="alignnone size-full wp-image-860 image-border" src="img/223cb246-5c36-42aa-8905-22913d6642ba.png" style="width:112.25em;height:23.00em;"/></p>
+<p>docker-machine VM welcome message</p>
+<ol start="6">
+<li>To create a new data volume, we can use the <kbd>docker volume create</kbd> command. This will create a named volume that can then be mounted into a container and used for persistent data access or storage. The following command creates a volume called <kbd>sample</kbd>, using the default volume driver:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ </strong><strong>docker volume create sample</strong> </pre>
+<p style="padding-left: 60px">The default volume driver is the so-called local driver, which stores the data locally in the host filesystem.</p>
+<ol start="7">
+<li>The easiest way to find out where the data is stored on the host is by using the <kbd>docker volume inspect</kbd> command on the volume we just created. The actual location can differ from system to system, and so, this is the safest way to find the target folder. You can see this command in the following code block:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ docker volume inspect sample 
+</strong>[ 
+    { 
+        "CreatedAt": "2019-08-02T06:59:13Z",<br/>        "Driver": "local",<br/>        "Labels": {},<br/>        "Mountpoint": "/mnt/sda1/var/lib/docker/volumes/sample/_data",<br/>        "Name": "my-data",<br/>        "Options": {},<br/>        "Scope": "local"<br/>    } 
+] </pre>
+<p style="padding-left: 60px">The host folder can be found in the output under <kbd>Mountpoint</kbd>. In our case, when using <kbd>docker-machine</kbd> with a LinuxKit-based VM running in VirtualBox, the folder is <kbd>/mnt/sda1/var/lib/docker/volumes/sample/_data</kbd>.</p>
+<p style="padding-left: 60px">The target folder is often a protected folder, and we thus might need to use <kbd>sudo</kbd> to navigate to this folder and execute any operations in it.</p>
+<p style="padding-left: 60px">On our LinuxKit-based VM in Docker Toolbox, access is also denied, yet we don't have <kbd>sudo</kbd> available either. Is that the end of our exploration?</p>
+<p style="padding-left: 60px">Luckily not; I have prepared a <kbd>fundamentalsofdocker/nsenter</kbd> utility container that allows us to access the backing folder of our <kbd>sample</kbd> volume we created earlier.</p>
+<ol start="8">
+<li>We need to run this container in <kbd>privileged</kbd> mode to get access to this protected part of the filesystem, like this:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ docker run -it --rm --privileged --pid=host \</strong><br/><strong>    fundamentalsofdocker/nsenter<br/></strong>/ #</pre>
+<p>We are running the container with the <kbd>--privileged</kbd> flag. This means that any app running in the container gets access to the devices of the host. The <kbd>--pid=host</kbd> flag signifies that the container is allowed to access the process tree of the host (the hidden VM in which the Docker daemon is running). Now, the preceding container runs the Linux <kbd>nsenter</kbd> tool to enter the Linux namespace of the host and then runs a shell within there. From this shell, we are thus granted access to all resources managed by the host.<br/>
+<br/>
+When running the container, we basically execute the following command inside the container:<br/>
+<kbd>nsenter -t 1 -m -u -n -i sh</kbd><br/>
+<br/>
+If that sounds complicated to you, don't worry; you will understand more as we proceed through this book. If there is one takeaway for you out of this, then it is to realize how powerful the right use of containers can be.</p>
+<ol start="9">
+<li>From within this container, we can now navigate to the folder representing the mount point of the volume, and then list its content, as follows:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>/ # cd /mnt/sda1/var/lib/docker/volumes/sample/_data<br/>/ # ls -l<br/></strong>total 0</pre>
+<p style="padding-left: 60px">The folder is currently empty since we have not yet stored any data in the volume.</p>
+<ol start="10">
+<li>Exit the tool container by pressing <em>Ctrl</em> + <em>D</em>.</li>
+</ol>
+<p>There are other volume drivers available from third parties, in the form of plugins. We can use the <kbd>--driver</kbd> parameter in the <kbd>create</kbd> command to select a different volume driver. Other volume drivers use different types of storage systems to back a volume, such as cloud storage, <strong>Network File System</strong> (<strong>NFS</strong>) drives, software-defined storage, and more. The discussion of the correct usage of other volume drivers is beyond the scope of this book, though.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Mounting a volume</h1>
+                
+            
+            
+                
+<p>Once we have created a named volume, we can mount it into a container by following these steps:</p>
+<ol>
+<li>For this, we can use the <kbd>-v</kbd> parameter in the <kbd>docker container run</kbd> command, like this:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ docker container run --name test -it \</strong><br/><strong>    -v sample:/data \<br/>    alpine /bin/sh<br/><br/></strong>Unable to find image 'alpine:latest' locally<br/>latest: Pulling from library/alpine<br/>050382585609: Pull complete<br/>Digest: sha256:6a92cd1fcdc8d8cdec60f33dda4db2cb1fcdcacf3410a8e05b3741f44a9b5998<br/>Status: Downloaded newer image for alpine:latest<br/>/ #<strong><br/></strong></pre>
+<p style="padding-left: 60px">The preceding command mounts the <kbd>sample</kbd> volume to the <kbd>/data</kbd> folder inside the container.</p>
+<ol start="2">
+<li>Inside the container, we can now create files in the <kbd>/data</kbd> folder and then exit, as follows:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>/ # cd /data / # echo "Some data" &gt; data.txt 
+/ # echo "Some more data" &gt; data2.txt 
+/ # exit</strong></pre>
+<ol start="3">
+<li class="mce-root">If we navigate to the host folder that contains the data of the volume and list its content, we should see the two files we just created inside the container (remember: we need to use the <kbd>fundamentalsofdocker/nsenter</kbd> tool container to do so), as follows:</li>
+</ol>
+<pre style="padding-left: 60px" class="mce-root"><strong>$ docker run -it --rm --privileged --pid=host \<br/> fundamentalsofdocker/nsenter<br/>/ # cd /mnt/sda1/var/lib/docker/volumes/sample/_data<br/>/ # ls -l </strong><strong> </strong><br/>total 8 <br/>-rw-r--r-- 1 root root 10 Jan 28 22:23 data.txt<br/>-rw-r--r-- 1 root root 15 Jan 28 22:23 data2.txt</pre>
+<ol start="4">
+<li>We can even try to output the content of, say, the second file, like this:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>/ # cat data2.txt</strong></pre>
+<ol start="5">
+<li>Let's try to create a file in this folder from the host, and then use the volume with another container, like this:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>/ # echo "This file we create on the host" &gt; host-data.txt</strong> </pre>
+<ol start="6">
+<li>Exit the tool container by pressing <em>Ctrl</em> + <em>D</em>.</li>
+<li>Now, let's delete the <kbd>test</kbd> container, and run another one based on CentOS. This time, we are even mounting our volume to a different container folder, <kbd>/app/data</kbd>, like this:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ docker container rm test</strong><br/><strong>$ docker container run --name test2 -it \</strong><br/><strong>    -v my-data:/app/data \</strong><br/><strong>    centos:7 /bin/bash<br/><br/></strong>Unable to find image 'centos:7' locally<br/>7: Pulling from library/centos<br/>8ba884070f61: Pull complete<br/>Digest: sha256:a799dd8a2ded4a83484bbae769d97655392b3f86533ceb7dd96bbac929809f3c<br/>Status: Downloaded newer image for centos:7<br/>[root@275c1fe31ec0 /]#</pre>
+<ol start="8">
+<li>Once inside the <kbd>centos</kbd> container, we can navigate to the <kbd>/app/data</kbd> folder to which we have mounted the volume, and list its content, as follows:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>[root@275c1fe31ec0 /]# cd /app/data 
+[root@275c1fe31ec0 /]# ls -l</strong> </pre>
+<p style="padding-left: 60px">As expected, we should see these three files:</p>
+<pre style="padding-left: 60px">-rw-r--r-- 1 root root 10 Aug 2 22:23 data.txt<br/>-rw-r--r-- 1 root root 15 Aug 2 22:23 data2.txt<br/>-rw-r--r-- 1 root root 32 Aug 2 22:31 host-data.txt</pre>
+<p style="padding-left: 60px">This is the definitive proof that data in a Docker volume persists beyond the lifetime of a container, and also, that volumes can be reused by other, even different, containers from the one that used it first.</p>
+<p style="padding-left: 60px">It is important to note that the folder inside the container to which we mount a Docker volume is excluded from the Union filesystem. That is, each change inside this folder and any of its subfolders will not be part of the container layer, but will be persisted in the backing storage provided by the volume driver. This fact is really important since the container layer is deleted when the corresponding container is stopped and removed from the system.</p>
+<ol start="9">
+<li>Exit the <kbd>centos</kbd> container with <em>Ctrl</em> + <em>D</em>. Now, exit the <kbd>node-1</kbd> VM by pressing <em>Ctrl</em> + <em>D</em> again. </li>
+</ol>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Removing volumes</h1>
+                
+            
+            
+                
+<p>Volumes can be removed using the <kbd>docker volume rm</kbd> command. It is important to remember that removing a volume destroys the containing data irreversibly, and thus is to be considered a dangerous command. Docker helps us a bit in this regard, as it does not allow us to delete a volume that is still in use by a container. Always make sure before you remove or delete a volume that you either have a backup of its data or you really don't need this data anymore. Let's see how to remove volumes by following these steps:</p>
+<ol>
+<li>The following command deletes our <kbd>sample</kbd> volume that we created earlier:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ docker volume rm sample</strong> </pre>
+<ol start="2">
+<li>After executing the preceding command, double-check that the folder on the host has been deleted.</li>
+</ol>
+<ol start="3">
+<li>To remove all running containers in order to clean up the system, run the following command:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ docker container rm -f $(docker container ls -aq) </strong> </pre>
+<p>Note that by using the <kbd>-v</kbd> or <kbd>--volume</kbd> flag in the command you use to remove a container, you can ask the system to also remove any volume associated with that particular container. Of course, that will only work if the particular volume is only used by this container.</p>
+<p>In the next section, we will show how we can access the backing folder of a volume when working with Docker for Desktop.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Accessing volumes created with Docker for Desktop</h1>
+                
+            
+            
+                
+<p>Follow these steps:</p>
+<ol>
+<li>Let's create a <kbd>sample</kbd> volume and inspect it using Docker for Desktop on our macOS or Windows machine, like this:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ docker volume create sample</strong><br/><strong>$ docker volume inspect sample</strong><br/><strong>[</strong><br/><strong>    {</strong><br/><strong>        "CreatedAt": "2019-08-02T07:44:08Z",</strong><br/><strong>        "Driver": "local",</strong><br/><strong>        "Labels": {},</strong><br/><strong>        "Mountpoint": "/var/lib/docker/volumes/sample/_data",</strong><br/><strong>        "Name": "sample",</strong><br/><strong>        "Options": {},</strong><br/><strong>        "Scope": "local"</strong><br/><strong>    }</strong><br/><strong>]</strong></pre>
+<p style="padding-left: 60px">The <kbd>Mountpoint</kbd> is shown as <kbd>/var/lib/docker/volumes/sample/_data</kbd>, but you will discover that there is no such folder on your macOS or Windows machine. The reason is that the path shown is in relation to the hidden VM that Docker for Windows uses to run containers. At this time, Linux containers cannot run natively on macOS, nor on Windows.</p>
+<ol start="2">
+<li>Next, let's generate two files with data in the volume from within an <kbd>alpine</kbd> container. To run the container and mount the sample <kbd>volume</kbd> to the <kbd>/data</kbd> folder of the container, use the following code:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ docker container run --rm -it -v sample:/data alpine /bin/sh</strong></pre>
+<ol start="3">
+<li>Generate two files in the <kbd>/data</kbd> folder inside the container, like this:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>/ # echo "Hello world" &gt; /data/sample.txt</strong><br/><strong>/ # echo "Other message" &gt; /data/other.txt</strong></pre>
+<ol start="4">
+<li>Exit the <kbd>alpine</kbd> container by pressing <em>Ctrl + D</em>.</li>
+</ol>
+<p style="padding-left: 60px">As mentioned earlier, we cannot directly access the backing folder of the <kbd>sample</kbd> volume from our macOS or from Windows. This is because the volume is in the hidden VM running on macOS or Windows that is used to run the Linux container in Docker for Desktop.</p>
+<p style="padding-left: 60px">To access that hidden VM from our macOS, we have two options. We can either use a special container and run it in privileged mode, or we can use the <kbd>screen</kbd> utility to screen into the Docker driver. The first method is also applicable to Docker for Windows.</p>
+<ol start="5">
+<li>Let's start with the first method mentioned, by running a container from the <kbd>fundamentalsofdocker/nsenter</kbd> image. We have been using this container already in the previous section. Run the following code:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ docker run -it --rm --privileged --pid=host fundamentalsofdocker/nsenter<br/></strong>/ #</pre>
+<ol start="6">
+<li>We can now navigate to the folder backing our <kbd>sample</kbd> volume, like this:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>/ # cd /var/lib/docker/volumes/sample/_data</strong></pre>
+<p style="padding-left: 60px">Let's see what is in this folder by running this code:</p>
+<pre style="padding-left: 60px"><strong>/ # ls -l </strong><br/>total 8<br/>-rw-r--r-- 1 root root 14 Aug 2 08:07 other.txt<br/>-rw-r--r-- 1 root root 12 Aug 2 08:07 sample.txt</pre>
+<ol start="7">
+<li>Let's try to create a file from within this special container, and then list the content of the folder, as follows:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>/ # echo "I love Docker" &gt; docker.txt<br/>/ # ls -l<br/></strong>total 12<br/>-rw-r--r-- 1 root root 14 Aug 2 08:08 docker.txt<br/>-rw-r--r-- 1 root root 14 Aug 2 08:07 other.txt<br/>-rw-r--r-- 1 root root 12 Aug 2 08:07 sample.txt<strong><br/></strong></pre>
+<p style="padding-left: 60px">And now, we have the files in the backing folder of the <kbd>sample</kbd> volume.</p>
+<ol start="8">
+<li>To exit our special privileged container, we can just press <em>Ctrl</em> + <em>D</em>.</li>
+<li>Now that we have explored the first option, and if you're using macOS, let's try the <kbd>screen</kbd> tool, as follows:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ screen ~/Library/Containers/com.docker.docker/Data/com.docker.driver.amd64-linux/tty</strong></pre>
+<ol start="10">
+<li>By doing so, we will be greeted by an empty screen. Hit <em>Enter</em>, and a <kbd>docker-desktop:~#</kbd> command-line prompt will be displayed. We can now navigate to the volume folder, like this:</li>
+</ol>
+<pre style="padding-left: 60px">docker-desktop:~# <strong>cd /var/lib/docker/volumes/sample/_data</strong></pre>
+<ol start="11">
+<li>Let's create another file with some data in it, and then list the content of the folder, as follows:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>docker-desktop:~# echo "Some other test" &gt; test.txt <br/>docker-desktop:~# ls -l<br/>total 16<br/></strong>-rw-r--r-- 1 root root 14 Aug 2 08:08 docker.txt<br/>-rw-r--r-- 1 root root 14 Aug 2 08:07 other.txt<br/>-rw-r--r-- 1 root root 12 Aug 2 08:07 sample.txt<br/>-rw-r--r-- 1 root root 16 Aug 2 08:10 test.txt</pre>
+<ol start="12">
+<li>To exit this session with the Docker VM, press <em>Ctrl</em> + <em>A</em> + <em>K</em>.</li>
+</ol>
+<p style="padding-left: 60px">We have now created data using three different methods, as follows: </p>
+<ul>
+<li style="list-style-type: none">
+<ul>
+<li>From within a container that has a <kbd>sample</kbd> volume mounted.</li>
+<li>Using a special privileged folder to access the hidden VM used by Docker for Desktop, and directly writing into the backing folder of the <kbd>sample</kbd> volume. </li>
+<li>Only on macOS, using the <kbd>screen</kbd> utility to enter into the hidden VM, and also directly writing into the backing folder of the <kbd>sample</kbd> volume. </li>
+</ul>
+</li>
+</ul>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Sharing data between containers</h1>
+                
+            
+            
+                
+<p>Containers are like sandboxes for the applications running inside them. This is mostly beneficial and wanted, in order to protect applications running in different containers from each other. It also means that the whole filesystem visible to an application running inside a container is private to this application, and no other application running in a different container can interfere with it.</p>
+<p>At times, though, we want to share data between containers. Say an application running in container A produces some data that will be consumed by another application running in container B. <em>How can we achieve this?</em> Well, I'm sure you've already guessed it—we can use Docker volumes for this purpose. We can create a volume and mount it to container A, as well as to container B. In this way, both applications A and B have access to the same data.</p>
+<p>Now, as always when multiple applications or processes concurrently access data, we have to be very careful to avoid inconsistencies. To avoid concurrency problems such as race conditions, we ideally have only one application or process that is creating or modifying data, while all other processes concurrently accessing this data only read it. We can enforce a process running in a container to only be able to read the data in a volume by mounting this volume as read-only. Have a look at the following command:</p>
+<pre><strong>$ docker container run -it --name writer \</strong><br/><strong>    -v shared-data:/data \</strong><br/><strong>    alpine /bin/sh</strong></pre>
+<p>Here, we create a container called <kbd>writer</kbd> that has a volume, <kbd>shared-data</kbd>, mounted in default read/write mode:</p>
+<ol>
+<li>Try to create a file inside this container, like this:</li>
+</ol>
+<pre style="padding-left: 60px"><strong># / echo "I can create a file" &gt; /data/sample.txt </strong></pre>
+<p style="padding-left: 60px">It should succeed.</p>
+<ol start="2">
+<li>Exit this container, and then execute the following command:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ docker container run -it --name reader \</strong><br/><strong>    -v shared-data:/app/data:ro \</strong><br/><strong>    ubuntu:19.04 /bin/bash</strong></pre>
+<p style="padding-left: 60px">And we have a container called <kbd>reader</kbd> that has the same volume mounted as <strong>read-only</strong> (<kbd>ro</kbd>).</p>
+<ol start="3">
+<li>Firstly, make sure you can see the file created in the first container, like this:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ ls -l /app/data</strong> <br/>total 4<br/>-rw-r--r-- 1 root root 20 Jan 28 22:55 sample.txt</pre>
+<ol start="4">
+<li>Then, try to create a file, like this:</li>
+</ol>
+<pre style="padding-left: 60px"><strong># / echo "Try to break read/only" &gt; /app/data/data.txt</strong></pre>
+<p style="padding-left: 60px">It will fail with the following message:</p>
+<pre style="padding-left: 60px">bash: /app/data/data.txt: Read-only file system</pre>
+<ol start="5">
+<li>Let's exit the container by typing <kbd>exit</kbd> at the Command Prompt. Back on the host, let's clean up all containers and volumes, as follows:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ docker container rm -f $(docker container ls -aq) 
+$ docker volume rm $(docker volume ls -q) </strong></pre>
+<ol start="6">
+<li>Once this is done, exit the <kbd>docker-machine</kbd> VM by also typing <kbd>exit</kbd> at the Command Prompt. You should be back on your Docker for Desktop. Use <kbd>docker-machine</kbd> to stop the VM, like this:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ docker-machine stop node-1</strong> </pre>
+<p>Next, we will show how to mount arbitrary folders from the Docker host into a container.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Using host volumes</h1>
+                
+            
+            
+                
+<p>In certain scenarios, such as when developing new containerized applications or when a containerized application needs to consume data from a certain folder produced—say—by a legacy application, it is very useful to use volumes that mount a specific host folder. Let's look at the following example:</p>
+<pre><strong>$ docker container run --rm -it \</strong><br/><strong>    -v $(pwd)/src:/app/src \</strong><br/><strong>    alpine:latest /bin/sh</strong></pre>
+<p>The preceding expression interactively starts an <kbd>alpine</kbd> container with a shell and mounts the <kbd>src</kbd> subfolder of the current directory into the container at <kbd>/app/src</kbd>. We need to use <kbd>$(pwd)</kbd> (or <kbd>`pwd`</kbd>, for that matter), which is the current directory, as when working with volumes, we always need to use absolute paths.</p>
+<p>Developers use these techniques all the time when they are working on their application that runs in a container, and want to make sure that the container always contains the latest changes they make to the code, without the need to rebuild the image and rerun the container after each change.</p>
+<p>Let's make a sample to demonstrate how that works. Let's say we want to create a simple static website using nginx as our web server as follows:</p>
+<ol>
+<li>First, let's create a new folder on the host, where we will put our web assets—such as HTML, CSS, and JavaScript files—and navigate to it, like this:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ mkdir ~/my-web 
+$ cd ~/my-web</strong> </pre>
+<ol start="2">
+<li>Then, we create a simple web page, like this:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ echo "&lt;h1&gt;Personal Website&lt;/h1&gt;" &gt; index.html  </strong></pre>
+<ol start="3">
+<li>Now, we add a <kbd>Dockerfile</kbd> that will contain instructions on how to build the image containing our sample website.</li>
+<li>Add a file called <kbd>Dockerfile</kbd> to the folder, with this content:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>FROM nginx:alpine</strong><br/><strong>COPY . /usr/share/nginx/html</strong></pre>
+<p style="padding-left: 60px">The <kbd>Dockerfile</kbd> starts with the latest Alpine version of nginx, and then copies all files from the current host directory into the <kbd>/usr/share/nginx/html</kbd> containers folder. This is where nginx expects web assets to be located.</p>
+<ol start="5">
+<li>Now, let's build the image with the following command:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ docker image build -t my-website:1.0 . </strong></pre>
+<ol start="6">
+<li>And finally, we run a container from this image. We will run the container in detached mode, like this:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ docker container run -d \</strong><br/><strong>   --name my-site \</strong><br/><strong>   -p 8080:80 \</strong><br/><strong>   my-website:1.0</strong></pre>
+<p style="padding-left: 60px">Note the <kbd>-p 8080:80</kbd> parameter. We haven't discussed this yet, but we will do it in detail in <a href="f3b1e24a-2ac4-473a-b9c8-270b97df6a8a.xhtml" target="_blank">Chapter 10</a>, <em>Single-Host Networking</em>. At the moment, just know that this maps the container port <kbd>80</kbd> on which nginx is listening for incoming requests to port <kbd>8080</kbd> of your laptop, where you can then access the application.</p>
+<ol start="7">
+<li>Now, open a browser tab and navigate to <kbd>http://localhost:8080/index.html</kbd>, and you should see your website, which currently consists only of a title, <kbd>Personal Website</kbd>.</li>
+<li>Now, edit the <kbd>index.html</kbd> file in your favorite editor, to look like this:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>&lt;h1&gt;Personal Website&lt;/h1&gt; 
+&lt;p&gt;This is some text&lt;/p&gt;</strong> </pre>
+<ol start="9">
+<li>Now, save it, and then refresh the browser. Oh! That didn't work. The browser still displays the previous version of the <kbd>index.html</kbd> file, which consists only of the title. So, let's stop and remove the current container, then rebuild the image, and rerun the container, as follows:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ docker container rm -f my-site</strong><br/><strong>$ docker image build -t my-website:1.0 .</strong><br/><strong>$ docker container run -d \</strong><br/><strong>   --name my-site \<br/>   -p 8080:80 \</strong><br/><strong>   my-website:1.0</strong></pre>
+<p style="padding-left: 60px">This time, when you refresh the browser, the new content should be shown. Well, it worked, but there is way too much friction involved. Imagine you have to do this each and every time that you make a simple change to your website. That's not sustainable.</p>
+<ol start="10">
+<li>Now is the time to use host-mounted volumes. Once again, remove the current container and rerun it with the volume mount, like this:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ docker container rm -f my-site</strong><br/><strong>$ docker container run -d \</strong><br/><strong>   --name my-site \<br/>   -v $(pwd):/usr/share/nginx/html \</strong><br/><strong>   -p 8080:80 \</strong><br/><strong>   my-website:1.0</strong></pre>
+<ol start="11">
+<li>Now, append some more content to the <kbd>index.html</kbd> file, and save it. Then, refresh your browser. You should see the changes. And this is exactly what we wanted to achieve; we also call this an <em>edit-and-continue</em> experience. You can make as many changes in your web files and always immediately see the result in the browser, without having to rebuild the image and restart the container containing your website.</li>
+</ol>
+<p style="padding-left: 60px">It is important to note that the updates are now propagated bi-directionally. If you make changes on the host, they will be propagated to the container, and vice versa. Also important is the fact that when you mount the current folder into the container target folder, <kbd>/usr/share/nginx/html</kbd>, the content that is already there is replaced by the content of the host folder.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Defining volumes in images</h1>
+                
+            
+            
+                
+<p>If we go for a moment back to what we have learned about containers in <a href="d9bb597d-2b32-4144-b068-564d85bcdf68.xhtml" target="_blank">Chapter 3</a>, <em>Mastering Containers,</em> then we have this: the filesystem of each container, when started, is made up of the immutable layers of the underlying image, plus a writable container layer specific to this very container. All changes that the processes running inside the container make to the filesystem will be persisted in this container layer. Once the container is stopped and removed from the system, the corresponding container layer is deleted from the system and irreversibly lost.</p>
+<p>Some applications, such as databases running in containers, need to persist their data beyond the lifetime of the container. In this case, they can use volumes. To make things a bit more explicit, let's look at a concrete example. MongoDB is a popular open source document database. Many developers use MongoDB as a storage service for their applications. The maintainers of MongoDB have created an image and published it on Docker Hub, which can be used to run an instance of the database in a container. This database will be producing data that needs to be persisted long term, but the MongoDB maintainers do not know who uses this image and how it is used. So, they have no influence over the <kbd>docker container run</kbd> command with which the users of the database will start this container. <em>How can they now define volumes?</em></p>
+<p>Luckily, there is a way of defining volumes in the <kbd>Dockerfile</kbd>. The keyword to do so is <kbd>VOLUME</kbd>, and we can either add the absolute path to a single folder or a comma-separated list of paths. These paths represent folders of the container's filesystem. Let's look at a few samples of such volume definitions, as follows:</p>
+<pre><strong>VOLUME /app/data 
+VOLUME /app/data, /app/profiles, /app/config 
+VOLUME ["/app/data", "/app/profiles", "/app/config"]</strong> </pre>
+<p>The first line in the preceding snippet defines a single volume to be mounted at <kbd>/app/data</kbd>. The second line defines three volumes as a comma-separated list. The last one defines the same as the second line, but this time, the value is formatted as a JSON array.</p>
+<p>When a container is started, Docker automatically creates a volume and mounts it to the corresponding target folder of the container for each path defined in the <kbd>Dockerfile</kbd>. Since each volume is created automatically by Docker, it will have an SHA-256 as its ID.</p>
+<p>At container runtime, the folders defined as volumes in the <kbd>Dockerfile</kbd> are excluded from the Union filesystem, and thus any changes in those folders do not change the container layer but are persisted to the respective volume. It is now the responsibility of the operations engineers to make sure that the backing storage of the volumes is properly backed up.</p>
+<p>We can use the <kbd>docker image inspect</kbd> command to get information about the volumes defined in the <kbd>Dockerfile</kbd>. Let's see what MongoDB gives us by following these steps:</p>
+<ol>
+<li>First, we pull the image with the following command:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ docker image pull mongo:3.7</strong></pre>
+<ol start="2">
+<li>Then, we inspect this image, and use the <kbd>--format</kbd> parameter to only extract the essential part from the massive amount of data, as follows:</li>
+</ol>
+<pre style="padding-left: 60px"><strong> $ docker image inspect \<br/>    --format='{{json .ContainerConfig.Volumes}}' \<br/>    mongo:3.7 | jq .<br/></strong></pre>
+<p>Note the <kbd>| jq .</kbd> at the end of the command. We are piping the output of <kbd>docker image inspect</kbd> into the <kbd>jq</kbd> tool, which nicely formats the output. If you haven't installed <kbd>jq</kbd> yet on your system, you can do so with <kbd>brew install jq</kbd> on your macOS, or with <kbd>choco install jq</kbd> on Windows.</p>
+<p style="padding-left: 60px">The preceding command will return the following result:</p>
+<pre style="padding-left: 60px"><strong>{</strong><br/><strong>    "/data/configdb": {},</strong><br/><strong>    "/data/db": {}</strong><br/><strong>}</strong></pre>
+<p style="padding-left: 60px">Evidently, the <kbd>Dockerfile</kbd> for MongoDB defines two volumes at <kbd>/data/configdb</kbd> and <kbd>/data/db</kbd>.</p>
+<ol start="3">
+<li>Now, let's run an instance of MongoDB in the background as a daemon, as follows:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ docker run --name my-mongo -d mongo:3.7</strong></pre>
+<ol start="4">
+<li>We can now use the <kbd>docker container inspect</kbd> command to get information about the volumes that have been created, among other things.</li>
+</ol>
+<p style="padding-left: 60px">Use this command to just get the volume information:</p>
+<pre style="padding-left: 60px"><strong>$ docker inspect --format '{{json .Mounts}}' my-mongo | jq .</strong></pre>
+<p style="padding-left: 60px">The preceding command should output something like this (shortened):</p>
+<pre style="padding-left: 60px">[<br/>  {<br/>    "Type": "volume",<br/>    "Name": "b9ea0158b5...",<br/>    "Source": "/var/lib/docker/volumes/b9ea0158b.../_data",<br/>    "Destination": "/data/configdb",<br/>    "Driver": "local",<br/>    ...<br/>  },<br/>  {<br/>    "Type": "volume",<br/>    "Name": "5becf84b1e...",<br/>    "Source": "/var/lib/docker/volumes/5becf84b1.../_data",<br/>    "Destination": "/data/db",<br/>    ...<br/>  }<br/>]</pre>
+<p style="padding-left: 60px">Note that the values of the <kbd>Name</kbd> and <kbd>Source</kbd> fields have been trimmed for readability. The <kbd>Source</kbd> field gives us the path to the host directory, where the data produced by the MongoDB inside the container will be stored.</p>
+<p>That's it for the moment about volumes. In the next section, we will explore how we can configure applications running in containers, and the container image build process itself.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Configuring containers</h1>
+                
+            
+            
+                
+<p>More often than not, we need to provide some configuration to the application running inside a container. The configuration is often used to allow one and the same container to run in very different environments, such as in development, test, staging, or production environments. </p>
+<p>In Linux, configuration values are often provided via environment variables. </p>
+<p>We have learned that an application running inside a container is completely shielded from its host environment. Thus, the environment variables that we see on the host are different from the ones that we see from within a container.</p>
+<p>Let's prove that by first looking at what is defined on our host:</p>
+<ol>
+<li>Use this command:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ export</strong></pre>
+<p style="padding-left: 60px">On my macOS, I see something like this (shortened):</p>
+<pre style="padding-left: 60px">...<br/>COLORFGBG '7;0'<br/>COLORTERM truecolor<br/>HOME /Users/gabriel<br/>ITERM_PROFILE Default<br/>ITERM_SESSION_ID w0t1p0:47EFAEFE-BA29-4CC0-B2E7-8C5C2EA619A8<br/>LC_CTYPE UTF-8<br/>LOGNAME gabriel<br/>...</pre>
+<ol start="2">
+<li>Next, let's run a shell inside an <kbd>alpine</kbd> container, and list the environment variables we see there, as follows:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ docker container run --rm -it alpine /bin/sh</strong><br/><strong>/ # export<br/></strong><br/>export HOME='/root'<br/>export HOSTNAME='91250b722bc3'<br/>export PATH='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'<br/>export PWD='/'<br/>export SHLVL='1'<br/>export TERM='xterm'</pre>
+<p style="padding-left: 60px">The preceding output we see from the <kbd>export</kbd> command is evidently totally different than what we saw directly on the host.</p>
+<ol start="3">
+<li>Hit <em>Ctrl</em> + <em>D</em> to leave the <kbd>alpine</kbd> container.</li>
+</ol>
+<p>Next, let's define environment variables for containers. </p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Defining environment variables for containers</h1>
+                
+            
+            
+                
+<p>Now, the good thing is that we can actually pass some configuration values into the container at start time. We can use the <kbd>--env</kbd> (or the short form, <kbd>-e</kbd>) parameter in the form <kbd>--env &lt;key&gt;=&lt;value&gt;</kbd> to do so, where <kbd>&lt;key&gt;</kbd> is the name of the environment variable and <kbd>&lt;value&gt;</kbd> represents the value to be associated with that variable. Let's assume we want the app that is to be run in our container to have access to an environment variable called <kbd>LOG_DIR</kbd>, with the value <kbd>/var/log/my-log</kbd>. We can do so with this command:</p>
+<pre><strong>$ docker container run --rm -it \</strong><br/><strong>    --env LOG_DIR=/var/log/my-log \</strong><br/><strong>    alpine /bin/sh</strong><br/><strong>/ #</strong></pre>
+<p>The preceding code starts a shell in an <kbd>alpine</kbd> container and defines the requested environment inside the running container. To prove that this is true, we can execute this command inside the <kbd>alpine</kbd> container:</p>
+<pre><strong>/ # export | grep LOG_DIR<br/></strong><br/>export LOG_DIR='/var/log/my-log'</pre>
+<p>The output looks as expected. We now indeed have the requested environment variable with the correct value available inside the container.</p>
+<p>We can, of course, define more than just one environment variable when we run a container. We just need to repeat the <kbd>--env</kbd> (or <kbd>-e</kbd>) parameter. Have a look at this sample:</p>
+<pre><strong>$ docker container run --rm -it \</strong><br/><strong>    --env LOG_DIR=/var/log/my-log \<br/></strong>    <strong>--env MAX_LOG_FILES=5 \</strong><br/><strong>    --env MAX_LOG_SIZE=1G \</strong><br/><strong> alpine /bin/sh</strong><br/><strong>/ #</strong></pre>
+<p>If we do a list of the environment variables now, we see the following:</p>
+<pre><strong>/ # export | grep LOG<br/></strong><br/>export LOG_DIR='/var/log/my-log'<br/>export MAX_LOG_FILES='5'<br/>export MAX_LOG_SIZE='1G'</pre>
+<p>Let's now look at situations where we have many environment variables to configure.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Using configuration files</h1>
+                
+            
+            
+                
+<p>Complex applications can have many environment variables to configure, and thus our command to run the corresponding container can quickly become unwieldy. For this purpose, Docker allows us to pass a collection of environment variable definitions as a file, and we have the <kbd>--env-file</kbd> parameter in the <kbd>docker container run</kbd> command. </p>
+<p>Let's try this out, as follows:</p>
+<ol>
+<li>Create a <kbd>fod/05</kbd> folder and navigate to it, like this:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ mkdir -p ~/fod/05 &amp;&amp; cd ~/fod/05</strong></pre>
+<ol start="2">
+<li>Use your favorite editor to create a file called <kbd>development.config</kbd> in this folder. Add the following content to the file, and save it, as follows:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>LOG_DIR=/var/log/my-log</strong><br/><strong>MAX_LOG_FILES=5</strong><br/><strong>MAX_LOG_SIZE=1G</strong></pre>
+<p style="padding-left: 60px">Notice how we have the definition of a single environment variable per line in the format <kbd>&lt;key&gt;=&lt;value&gt;</kbd>, where, once again, <kbd>&lt;key&gt;</kbd> is the name of the environment variable, and <kbd>&lt;value&gt;</kbd> represents the value to be associated with that variable.</p>
+<ol start="3">
+<li>Now, from within the <kbd>fod/05</kbd> folder, let's run an <kbd>alpine</kbd> container, pass the file as an environment file, and run the <kbd>export</kbd> command inside the container to verify that the variables listed inside the file have indeed been created as environment variables inside the container, like this:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ docker container run --rm -it \</strong><br/><strong>    --env-file ./development.config \</strong><br/><strong>    alpine sh -c "export"</strong></pre>
+<p style="padding-left: 60px">And indeed, the variables are defined, as we can see in the output generated:</p>
+<pre style="padding-left: 60px">export HOME='/root'<br/>export HOSTNAME='30ad92415f87'<br/>export LOG_DIR='/var/log/my-log'<br/>export MAX_LOG_FILES='5'<br/>export MAX_LOG_SIZE='1G'<br/>export PATH='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'<br/>export PWD='/'<br/>export SHLVL='1'<br/>export TERM='xterm'<strong><br/></strong></pre>
+<p>Next, let's look at how to define default values for environment variables that are valid for all container instances of a given Docker image.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Defining environment variables in container images</h1>
+                
+            
+            
+                
+<p>Sometimes, we want to define some default value for an environment variable that must be present in each container instance of a given container image. We can do so in the <kbd>Dockerfile</kbd> that is used to create that image by following these steps:</p>
+<ol>
+<li>Use your favorite editor to create a file called <kbd>Dockerfile</kbd> in the <kbd>~/fod/05</kbd> folder. Add the following content to the file, and save it:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>FROM alpine:latest</strong><br/><strong>ENV LOG_DIR=/var/log/my-log</strong><br/><strong>ENV  MAX_LOG_FILES=5</strong><br/><strong>ENV MAX_LOG_SIZE=1G</strong></pre>
+<ol start="2">
+<li>Create a container image called <kbd>my-alpine</kbd> using the preceding <kbd>Dockerfile</kbd>, as follows:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ docker image build -t my-alpine .</strong></pre>
+<p style="padding-left: 60px">Run a container instance from this image that outputs the environment variables defined inside the container, like this:</p>
+<pre style="padding-left: 60px"><strong>$ docker container run --rm -it \<br/>    my-alpine sh -c "export | grep LOG"<br/></strong><br/>export LOG_DIR='/var/log/my-log'<br/>export MAX_LOG_FILES='5'<br/>export MAX_LOG_SIZE='1G'</pre>
+<p style="padding-left: 60px">This is exactly what we would have expected. </p>
+<p style="padding-left: 60px">The good thing, though, is that we are not stuck with those variable values at all. We can override one or many of them, using the <kbd>--env</kbd> parameter in the <kbd>docker container run</kbd> command. Have a look at the following command and its output:</p>
+<pre style="padding-left: 60px"><strong>$ docker container run --rm -it \<br/>    --env MAX_LOG_SIZE=2G \<br/>    --env MAX_LOG_FILES=10 \<br/>    my-alpine sh -c "export | grep LOG"<br/></strong><br/>export LOG_DIR='/var/log/my-log'<br/>export MAX_LOG_FILES='10'<br/>export MAX_LOG_SIZE='2G'</pre>
+<p style="padding-left: 60px">We can also override default values, using environment files together with the <kbd>--env-file</kbd> parameter in the <kbd>docker container run</kbd> command. Please try it out for yourself.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Environment variables at build time</h1>
+                
+            
+            
+                
+<p>Sometimes, we would want to have the possibility to define some environment variables that are valid at the time when we build a container image. Imagine that you want to define a <kbd>BASE_IMAGE_VERSION</kbd> environment variable that shall then be used as a parameter in your <kbd>Dockerfile</kbd>. Imagine the following <kbd>Dockerfile</kbd>:</p>
+<pre><strong>ARG BASE_IMAGE_VERSION=12.7-stretch</strong><br/>FROM node:<strong>${BASE_IMAGE_VERSION}</strong><br/>WORKDIR /app<br/>COPY packages.json .<br/>RUN npm install<br/>COPY . .<br/>CMD npm start</pre>
+<p>We are using the <kbd>ARG</kbd> keyword to define a default value that is used each time we build an image from the preceding <kbd>Dockerfile</kbd>. In this case, that means that our image uses the <kbd>node:12.7-stretch</kbd> base image.</p>
+<p>Now, if we want to create a special image for—say—testing purposes, we can override this variable at image build time using the <kbd>--build-arg</kbd> parameter, as follows:</p>
+<pre><strong>$ docker image build \</strong><br/><strong>    --build-arg BASE_IMAGE_VERSION=12.7-alpine \</strong><br/><strong>    -t my-node-app-test .</strong></pre>
+<p>In this case, the resulting <kbd>my-node-test:latest</kbd> image will be built from the <kbd>node:12.7-alpine</kbd> base image and not from the <kbd>node:12.7-stretch</kbd> default image.</p>
+<p>To summarize, environment variables defined via <kbd>--env</kbd> or <kbd>--env-file</kbd> are valid at container runtime. Variables defined with <kbd>ARG</kbd> in the <kbd>Dockerfile</kbd> or <kbd>--build-arg</kbd> in the <kbd>docker container build</kbd> command are valid at container image build time. The former are used to configure an application running inside a container, while the latter are used to parametrize the container image build process.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Summary</h1>
+                
+            
+            
+                
+<p>In this chapter, we have introduced Docker volumes that can be used to persist states produced by containers and make them durable. We can also use volumes to provide containers with data originating from various sources. We have learned how to create, mount, and use volumes. We have learned various techniques of defining volumes such as by name, by mounting a host directory, or by defining volumes in a container image.</p>
+<p>In this chapter, we have also discussed how we can configure environment variables that can be used by applications running inside a container. We have shown how to define those variables in the <kbd>docker container run</kbd> command, either explicitly, one by one, or as a collection in a configuration file. We have also shown how to parametrize the build process of container images by using build arguments.</p>
+<p>In the next chapter, we are going to introduce techniques commonly used to allow a developer to evolve, modify, debug, and test their code while running in a container. </p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Questions</h1>
+                
+            
+            
+                
+<p>Please try to answer the following questions to assess your learning progress:</p>
+<ol>
+<li>How would you create a named data volume with a name—for example, <kbd>my-products</kbd>—using the default driver?</li>
+<li>How would you run a container using the <kbd>alpine</kbd> image and mount the <kbd>my-products</kbd> volume in read-only mode into the <kbd>/data</kbd> container folder?</li>
+<li>How would you locate the folder that is associated with the <kbd>my-products</kbd> volume and navigate to it? Also, how will you create a file, <kbd>sample.txt</kbd>, with some content?</li>
+<li>How would you run another <kbd>alpine</kbd> container in to which you mount the <kbd>my-products</kbd> volume to the <kbd>/app-data</kbd> folder, in read/write mode? Inside this container, navigate to the <kbd>/app-data</kbd> folder and create a <kbd>hello.txt</kbd> file with some content.</li>
+<li>How would you mount a host volume—for example, <kbd>~/my-project</kbd>—into a container?</li>
+</ol>
+<ol start="6">
+<li>How would you remove all unused volumes from your system?</li>
+<li>The list of environment variables that an application running in a container sees is the same as if the application were to run directly on the host.</li>
+</ol>
+<p style="padding-left: 60px">A. True<br/>
+B. False</p>
+<ol start="8">
+<li>Your application that shall run in a container needs a huge list of environment variables for configuration. What is the simplest method to run a container with your application and provide all this information to it?</li>
+</ol>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Further reading</h1>
+                
+            
+            
+                
+<p>The following articles provide more in-depth information:</p>
+<ul>
+<li>Use volumes, at <a href="http://dockr.ly/2EUjTml" target="_blank">http://dockr.ly/2EUjTml</a></li>
+<li>Manage data in Docker, at <a href="http://dockr.ly/2EhBpzD" target="_blank">http://dockr.ly/2EhBpzD</a></li>
+<li>Docker volumes on <strong>Play with Docker</strong> (<strong>PWD</strong>), at <a href="http://bit.ly/2sjIfDj" target="_blank">http://bit.ly/2sjIfDj</a></li>
+<li><kbd>nsenter</kbd> —Linux man page, at <a href="https://bit.ly/2MEPG0n" target="_blank">https://bit.ly/2MEPG0n</a></li>
+<li>Set environment variables, at <a href="https://dockr.ly/2HxMCjS" target="_blank">https://dockr.ly/2HxMCjS</a></li>
+<li>Understanding how <kbd>ARG</kbd> and <kbd>FROM</kbd> interact, at <a href="https://dockr.ly/2OrhZgx" target="_blank">https://dockr.ly/2OrhZgx</a></li>
+</ul>
+
+
+            
+
+            
+        
+    </body></html>

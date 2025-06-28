@@ -1,0 +1,474 @@
+<html><head></head><body>
+        
+
+                            
+                    <h1 class="header-title">OpenFaaS on Docker</h1>
+                
+            
+            
+                
+<p>This chapter will introduce OpenFaaS, a serverless framework that uses a software container as a unit of deployment. OpenFaaS has been designed to run and utilize the orchestration engine in Docker Swarm mode.</p>
+<p>The chapter will start by introducing OpenFaaS and explaining its architecture. Then we will go on to discuss how to use OpenFaaS to prepare and deploy functions. Finally, this chapter will end with how to install a Grafana/Prometheus dashboard for OpenFaaS.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">What is OpenFaaS?</h1>
+                
+            
+            
+                
+<p>OpenFaaS is a framework and infrastructure preparation system for building serverless applications. It originated from the serverless framework in the Docker Swarm and now supports other kinds of infrastructure backends, such as Kubernetes or Hyper.sh. Functions in OpenFaaS are containers. Any program written in any language can be packed as a function by leveraging the container technologies of Docker. This enables us to fully reuse the existing code to consume a wide range of web service events without rewriting the code. OpenFaaS is a great tool for modernizing old systems to run on a cloud-based infrastructure.</p>
+<p>There are several serverless frameworks out there in the cloud-native landscape. However, some problems need to be addressed by Alex Ellis, the original author of OpenFaaS. The driving factor behind the making of the framework is shaping the following, compelling features:</p>
+<ul>
+<li><strong>Ease of use</strong>: Basically, many serverless frameworks are complex to deploy by nature, as they are built by big companies and are serverless services. OpenFaaS, on the other hand, aims to be a serverless stack that is easy enough for developers and small companies to deploy and use on their own hardware. OpenFaaS also comes with a ready-to-use UI portal, which allows us to try out function invocation in the browser. OpenFaaS has autoscaling capability built in. It measures the load of function invocation automatically and scales instances up or down on demand.</li>
+<li><strong>Portable</strong>: There are several orchestration engines in the container ecosystem, notably Docker Swarm and Google's Kubernetes. OpenFaaS was first designed to work on Swarm and later on Kubernetes. Its functions are portable across these orchestration engines. Not only portable in a runtime sense, an OpenFaaS function is just a plain Docker container. This means that every kind of workload can be repacked as a function container and simply deployed on an OpenFaaS cluster. OpenFaaS runs on any infrastructure, including on-premises hardware, private clouds, and public clouds.</li>
+<li><strong>Simplicity in architecture and design</strong>: The architecture of OpenFaaS is simple. It consists of the API gateway for accepting requests. The API gateway then passes the requests to containers, functions with <em>watchdogs</em>, inside the cluster. Watchdog is a component of OpenFaaS which will be discussed shortly, in the next section. The gateway also keeps track of the number of function invocations. When the volume of requests is going to be large, the gateway will trigger the orchestration engine to scale replicas of functions on demand.</li>
+<li><strong>Open and extensible platform</strong>: OpenFaaS is designed to be open and extensible. With this openness and extensibility, the number of FaaS backends supported by OpenFaaS has been increasing over time, as anyone can contribute a new backend for OpenFaaS. For example, if we want to run functions directly in a container runtime, such as containers, for performance reasons, we can extend OpenFaaS by writing a new containerd backend for it.</li>
+<li><strong>Language agnostic</strong>: We can write OpenFaaS functions in any language supported by Linux or Windows, then pack them as Docker or OCI container images.</li>
+</ul>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Architecture</h1>
+                
+            
+            
+                
+<p>We used to build our systems in the <strong>monolithic</strong> style. Now we use microservices. A microservice is definitely decomposable into smaller functions. Obviously, a function is the next step in architectural evolution. </p>
+<p>Monolithic is a software architecture that contains distinguishable software concerns. Every service is built into a single deployment module.</p>
+<p>The microservice architecture, in contrast, separates coherent services inside a single monolithic module to be externally, loosely coupled services.</p>
+<p><strong>Function as a Service</strong> or <strong>FaaS</strong> is another level of separation. In this architecture, a microservice is split into more fine-grained units, <em>functions</em>:</p>
+<div><img src="img/16d65833-acfd-420e-be4f-240a0c9d9aaf.png" style="width:44.17em;height:18.50em;"/></div>
+<p>Figure 4.1: Monolithic, microservice, and function architectures</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">OpenFaaS components</h1>
+                
+            
+            
+                
+<p>This section explains the components of OpenFaaS. The components are the API gateway, the function watchdog, and an instance of Prometheus. All are running on top of Docker Swarm or Kubernetes orchestration engines. The API gateway and the instance of Prometheus run as services, while the function watchdog runs as the part of function containers. The container runtime can be any modern version of Docker or containerd:</p>
+<div><img src="img/92b4f5eb-d334-46b7-92a5-61cc13a83fd7.png" style="width:37.92em;height:22.83em;"/></div>
+<p>Figure 4.2: An overview of the OpenFaaS architecture</p>
+<p>The client could be <kbd>curl</kbd>, <kbd>faas-cli</kbd>, or any HTTP-based client that is able to connect to the API gateway in order to invoke a function. A function container, having a function watchdog as its sidecar (an implementation pattern that lets another sidecar process run alongside the main process in the same container), lives in the cluster behind the API gateway. Each service is communicating via the main overlay network, <kbd>func_functions</kbd> by default:</p>
+<div><img src="img/051f63a6-752b-4c3f-8f7a-5e0ae2e49a5d.png" style="width:41.92em;height:30.33em;"/></div>
+<p>Figure 4.3: The internal infrastructure of OpenFaaS running on Docker Swarm</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Function watchdog</h1>
+                
+            
+            
+                
+<p>The function watchdog is an OpenFaaS component. It is responsible for wrapping the real working code around a function program. The function program's requirement is only to accept input via the <strong>standard input</strong> (<strong>stdin</strong>) and print out the result, of course, to the <strong>standard output</strong> (<strong>stdout</strong>).</p>
+<p class="mce-root CDPAlignLeft CDPAlign">The API gateway (<kbd>gateway</kbd>) connects to function containers through an overlay network. Each function container contains the following:</p>
+<ul>
+<li class="mce-root">Function watchdog, <kbd>fwatchdog</kbd></li>
+<li class="mce-root">A certain function program written in any language</li>
+</ul>
+<p>The Dockerfile describing a function container must have the <kbd>fprocess</kbd> environment variable pointing to the function program name and arguments:</p>
+<div><img src="img/8d243f05-d120-44d8-82f3-194adfe910ac.png"/></div>
+<p>Figure 4.4: Interaction between function watchdog and the function program in the container</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Command-line interface</h1>
+                
+            
+            
+                
+<p>The OpenFaaS command-line interface is just another way to use OpenFaaS. The latest version of the CLI can be obtained directly from the installation script at <a href="https://cli.openfaas.com">https://cli.openfaas.com</a>. For both Linux and macOS, the CLI can be installed using the following command:</p>
+<pre><strong>$ curl -sL https://cli.openfaas.com | sudo sh</strong></pre>
+<p>Currently, the installation script supports macOS and Linux running on ARM, ARM64, and x64 chips. The CLI has been designed to manage the life cycle of OpenFaaS functions. We can build, deploy, and invoke functions using sub-commands provided by the CLI.</p>
+<p>The CLI actually controls OpenFaaS via a set of control plane APIs exposed by its API gateway.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">API gateway</h1>
+                
+            
+            
+                
+<p>The OpenFaaS API gateway provides routing mechanisms to expose your functions to the external world.</p>
+<p>When a function is invoked by an external request, the function metric will be collected and put into a Prometheus instance. The API gateway keeps monitoring a number of requests for each function, and scales it on demand by increasing the service replica via the Docker Swarm API. Basically, OpenFaaS fully utilizes the scheduling mechanism of Docker Swarm for its autoscaling. The API gateway also comes with a built-in user interface, called the <strong>UI portal</strong>. The UI allows us to define and invoke functions with a browser.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Installing OpenFaaS</h1>
+                
+            
+            
+                
+<p class="mce-root">It is extremely simple to install OpenFaaS locally on a development machine. Make sure you have Docker 17.05 or later installed and you will be ready to go.</p>
+<p class="mce-root">First, we need to initialize a Swarm cluster. A single node Swarm is enough to be used in the development environment:</p>
+<pre><strong>$ docker swarm init</strong></pre>
+<p>If the Swarm cannot be initialized because the machine has <em>multiple network interfaces</em>, we have to specify an IP address or an interface name for the argument, <kbd>--advertise-addr</kbd>.</p>
+<p>OpenFaaS can be up and running directly from its source by cloning the repository from GitHub. Then, check out the OpenFaaS version you want and run the <kbd>deploy_stack.sh</kbd> script. The following example is to start version 0.6.5 of OpenFaaS. Please note that there is <kbd>docker-compose.yml</kbd> in this directory, which will be used by the <kbd>docker_stack.sh</kbd> to deploy the OpenFaaS Docker stack:</p>
+<pre><strong>$ git clone https://github.com/openfaas/faas \</strong><br/><strong>  cd faas \</strong><br/><strong>  git checkout 0.6.5 \</strong><br/><strong>  ./deploy_stack.sh</strong><br/><strong>Cloning into 'faas'...</strong><br/><strong>remote: Counting objects: 11513, done.</strong><br/><strong>remote: Compressing objects: 100% (21/21), done.</strong><br/><strong>remote: Total 11513 (delta 16), reused 19 (delta 8), pack-reused 11484</strong><br/><strong>Receiving objects: 100% (11513/11513), 16.64 MiB | 938.00 KiB/s, done.</strong><br/><strong>Resolving deltas: 100% (3303/3303), done.</strong><br/><strong>Note: checking out '0.6.5'.</strong><br/><strong>HEAD is now at 5a58db2...</strong><br/><br/><strong>Deploying stack</strong><br/><strong>Creating network func_functions</strong><br/><strong>Creating service func_gateway</strong><br/><strong>Creating service func_alertmanager</strong><br/><strong>Creating service func_echoit</strong><br/><strong>Creating service func_nodeinfo</strong><br/><strong>Creating service func_wordcount</strong><br/><strong>Creating service func_webhookstash</strong><br/><strong>Creating service func_decodebase64</strong><br/><strong>Creating service func_markdown</strong><br/><strong>Creating service func_base64</strong><br/><strong>Creating service func_hubstats</strong><br/><strong>Creating service func_prometheus</strong></pre>
+<p>We now see that a number of services are deployed to the Docker Swarm cluster. It is actually done by running <kbd>docker stack deploy</kbd> behind the scenes inside the bash script. The Docker stack's name used by OpenFaaS is <kbd>func</kbd>. </p>
+<p>To check whether services are deployed properly in the <kbd>func</kbd> stack, we use <kbd>docker stack ls</kbd> to list stacks and their running services:</p>
+<pre><strong>$ docker stack ls</strong><br/><strong>NAME   SERVICES</strong><br/><strong>func   11</strong></pre>
+<p>Now we know that there is a stack of 11 services named <kbd>func</kbd>. Let's check their details with <kbd>docker stack services func</kbd>. We use the format argument to let the <kbd>docker stack services func</kbd> command show each service's name and port. You can leave out the <kbd>--format</kbd> to see all information about each service:</p>
+<pre>$ docker stack services func --format "table {{.Name}}\t{{.Ports}}"<br/>NAME                PORTS<br/>func_hubstats <br/>func_markdown <br/>func_echoit <br/>func_webhookstash <br/>func_prometheus     *:9090-&gt;9090/tcp<br/>func_gateway        *:8080-&gt;8080/tcp<br/>func_decodebase64 <br/>func_base64 <br/>func_wordcount <br/>func_alertmanager   *:9093-&gt;9093/tcp<br/>func_nodeinfo</pre>
+<p class="mce-root">After everything is up and running, the OpenFaaS portal can be opened via <kbd>http://127.0.0.1:8080</kbd>. The following screenshot shows the browser running OpenFaaS Portal. All available functions are listed in the left panel. When clicking a function name, the main panel will show the function's details. We can play around with each function by clicking the INVOKE button on the main panel:</p>
+<div><img src="img/f55c2446-4521-4dd1-8ca0-ae9918413d81.png"/></div>
+<p>Figure 4.5: The OpenFaaS UI invoking an example function</p>
+<p>We will learn how to prepare a function to run on the OpenFaaS platform in the next section.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Preparing a function</h1>
+                
+            
+            
+                
+<p>Before a function can be deployed and invoked, we need to prepare a binary program and pack it as a function container.</p>
+<p>Here are the steps to package your program into a function container:</p>
+<ol>
+<li>Create a Dockerfile containing the <kbd>FROM</kbd> instruction to derive it from a base image. You can even use the Alpine base image.</li>
+<li>Add the function watchdog binary to the image using the <kbd>ADD</kbd> instruction. The function watchdog's name is <kbd>fwatchdog</kbd> and can be found on the OpenFaaS release page.</li>
+<li>Add the function program to the image. We usually use the <kbd>COPY</kbd> instruction to do so.</li>
+<li>Define the environment variable named <kbd>fprocess</kbd> with the <kbd>ENV</kbd> instruction to point to our function program.</li>
+<li>Expose port <kbd>8080</kbd> for this container image using the <kbd>EXPOSE</kbd> instruction with, of course, port number <kbd>8080</kbd>.</li>
+<li>Define an entry point of this container image. We use <kbd>ENTRYPOINT</kbd> to point to <kbd>fwatchdog</kbd>.</li>
+</ol>
+<p>We will do something a bit unusual, but in the proper way, to prepare a function container. We use a Docker feature called <strong>multi-stage builds</strong> to both compile the program and pack the function container using a single Dockerfile. </p>
+<p>What is multi-stage build? The multi-stage build feature allows a single Dockerfile to have several build stages chaining along the build process.</p>
+<p>With this technique, we can build a very tiny Docker image by discarding large image layers from the previous build stages. This feature requires Docker 17.05 or greater.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Packing a C program</h1>
+                
+            
+            
+                
+<p>Here's an unusual, but simple, example of a function. In this example, we'll try to compile, pack, and deploy a C program as a function. Why a C program? Basically, if we know that we can pack a C program, then any traditional program could be compiled and packed in a similar way.</p>
+<p>We know that when we design a function, it receives an input from <kbd>stdin</kbd> and sends an output to <kbd>stdout</kbd>. A C program will then send a simple sentence out to <kbd>stdout</kbd>, of course with <kbd>printf()</kbd>:</p>
+<pre>#include &lt;stdio.h&gt;<br/><br/>int main() {<br/>  printf("%s\n", "hello function");<br/>  return 0;<br/>}</pre>
+<p>Normally, this C program can be compiled using <kbd>gcc</kbd> before copying and packing it as a container. But to make a Dockerfile self-contained, the multi-stage build technique will be used to compile and pack it as a function using a single <kbd>docker build</kbd> command.</p>
+<p>The following multi-stage Dockerfile consists of two stages. <kbd>State 0</kbd> starts with the Alpine 3.6 image, then installs <kbd>gcc</kbd> and <kbd>musl-dev</kbd> for compiling a C program. There is a command to build the C program statically, <kbd>gcc -static</kbd>, so that it does not require any shared object libraries:</p>
+<div><pre>###############<br/># State 0<br/>###############<br/>FROM alpine:3.6<br/><br/>RUN apk update apk add gcc musl-dev<br/><br/>COPY main.c /root/<br/>WORKDIR /root/<br/><br/>RUN gcc -static -o main main.c<br/><br/>###############<br/># State 1<br/>###############<br/>FROM alpine:3.6<br/>ADD https://github.com/openfaas/faas/releases/download/0.6.5/fwatchdog /usr/bin/<br/><br/>RUN chmod +x /usr/bin/fwatchdog<br/>EXPOSE 8080<br/><br/>COPY --from=0 /root/main /usr/bin/func_c<br/>ENV fprocess="/usr/bin/func_c"<br/><br/>ENTRYPOINT ["/usr/bin/fwatchdog"]</pre></div>
+<p><strong>Stage 1</strong> also starts with the Alpine 3.6 base image. It adds the <kbd>fwatchdog</kbd> binary directly from the OpenFaaS GitHub release page and changes its mode to be executable (<kbd>chmod +x</kbd>). The most important part of this Dockerfile is when it copies the main binary from the previous state, <strong>Stage 0</strong>. This can be done using the <kbd>COPY</kbd> instruction with the <kbd>--from</kbd> argument. The build process of the <kbd>func_c</kbd> container image is illustrated here:</p>
+<div><img src="img/c3a2af04-0e0d-4ee6-8980-c9cac686a42e.png"/></div>
+<p>Figure 4.6: Illustration of multi-stage build workflow from the example</p>
+<p>The following line from the previous Dockerfile shows how to use the  <kbd>COPY</kbd> instruction to copy a file between stages. In <strong>Stage 1</strong>, the <kbd>COPY --from=0</kbd> means that the command will copy a file or a set of files from <strong>Stage 0</strong> to <strong>Stage 1</strong>. In the previous example, it will change the <kbd>/root/main</kbd> file from <strong>Stage 0</strong> to be <kbd>/usr/bin/func_c</kbd> in <strong>Stage 1</strong>:</p>
+<pre><strong>COPY --from=0 /root/main /usr/bin/func_c</strong></pre>
+<p>As the multi-stage Dockerfile is ready, the next step is to <kbd>docker build</kbd> with that Dockerfile.</p>
+<p>Before doing this, an environment variable, <kbd>DOCKER_ID</kbd>, will be set to be your Docker ID. If you do not have one, please visit <a href="https://hub.docker.com">https://hub.docker.com</a> and sign up there. The use of this <kbd>DOCKER_ID</kbd> variable will allow you to follow the commands without changing my Docker ID to yours for every code snippet:</p>
+<pre><strong>$ export DOCKER_ID="chanwit"           # replace this to yours Docker ID.</strong><br/><strong>$ docker build -t $DOCKER_ID/func_c .  # &lt;- please note that there's a dot here.</strong></pre>
+<p>The running state of the function container will look like the image stack illustrated in <em>Figure 4.7</em>. The lowest level is the root filesystem on top of the operating system's kernel. The next levels are the base image and the image layers mounted on top of each other, using the capability of a union filesystem. The top-most layer is a writable file system for each running container that represents an OpenFaaS function:</p>
+<div><img src="img/8380331d-9016-4e54-9865-fae896372dc2.png" style="width:38.42em;height:19.50em;"/></div>
+<p>Figure 4.7: A function as a running container with a writable file system layer on top</p>
+<p>With multi-stage builds, we can create a very small image containing only the binary files needed to be a function. By discarding the whole of <strong>Stage 0</strong>'s image layers, consisting of all compiler and dependency stuff, the final image size is reduced to be just around 11 MB in total. It can be checked by running <kbd>docker image ls $DOCKER_ID/func_c</kbd>:</p>
+<pre><strong>$ docker image ls $DOCKER_ID/func_c</strong><br/><strong>REPOSITORY      TAG     IMAGE ID      CREATED         SIZE</strong><br/><strong>chanwit/func_c  latest  b673f7f37036  35 minutes ago  11.6MB</strong></pre>
+<p>Please note that the OpenFaaS mechanism will look for an image from the repository first. So, before using the container image as a function, it would be safe to push the image to Docker Hub, or your repository. This can simply be done using the <kbd>docker image push</kbd> command. Please note that you may require <kbd>docker login</kbd> to authenticate with Docker Hub before pushing the image:</p>
+<pre><strong>$ docker image push $DOCKER_ID/func_c</strong></pre>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Defining and invoking a function with the UI</h1>
+                
+            
+            
+                
+<p>It is really simple to define and invoke a function on OpenFaaS. After pushing the image, a function can be defined via the OpenFaaS UI Portal. First, open <kbd>http://127.0.0.1:8080/ui</kbd>. Then, you will see a clickable label, CREATE NEW FUNCTION, in the left panel. After clicking it, dialog for defining a function will pop up. It requires the Docker image name for this function; in this case, the image name will be <kbd>chanwit/func_c</kbd>. Again, please do not forget to change my Docker ID to yours. Second, the definition requires a function name. Just name it <kbd>func_c</kbd>. Third, we need to define the value for the <kbd>fprocess</kbd> field pointing to the command line to invoke the binary program. In this example, the command line will simply be <kbd>/usr/bin/func_c</kbd> inside the container. If the function program requires some parameters, also include them there. Finally, the function definition requires the name of a Docker overlay network to allow the API gateway to connect to the function containers. Just include the default one, <kbd>func_functions</kbd>, there. It is really important to note that if an OpenFaaS stack is deployed to another environment, and has a different overlay network name, you must not forget to specify the correct one:</p>
+<div><img src="img/b66e0be3-f89f-4e51-a30b-5c7d78100a85.png" style="width:37.42em;height:27.75em;"/></div>
+<p>Figure 4.8: Defining an OpenFaaS function via the UI</p>
+<p>If everything looks fine, click CREATE to define the function. After creation, the <kbd>func_c</kbd> function will be listed in the left panel. Clicking on the function's name will show the main panel for function invocation, as follows:</p>
+<div><img src="img/34e7ba20-5f07-4f95-a1aa-ca2441561a88.png" style="width:42.75em;height:41.83em;"/> </div>
+<p>Figure 4.9: Invocation of the func_c function with its response body</p>
+<p>If a function requires any input, the input data in the form of text or JSON can be placed as the Request body. However, the <kbd>func_c</kbd> function does not accept any input, so just press the INVOKE button and the function will be called. In the example, the invocation process is completed and its status is OK: <kbd>200</kbd>. The API gateway gets the STDOUT from the function's binary, <kbd>/usr/bin/func_c</kbd>, and shows it here as the Response body in text format.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Using the OpenFaaS CLI</h1>
+                
+            
+            
+                
+<p>The OpenFaaS CLI, <kbd>faas-cli</kbd>, is a command-line tool to help manage, prepare, and invoke functions. On Linux, the OpenFaaS CLI can be installed using the following command:</p>
+<pre class="mce-root"><strong>$ curl -sSL https://cli.openfaas.com | sudo sh</strong></pre>
+<p>On macOS, it can be installed via <kbd>brew</kbd> with the following command:</p>
+<pre><strong>$ brew install faas-cli</strong></pre>
+<p>Alternatively, on Windows, <kbd>faas-cli.exe</kbd> can be downloaded directly from the OpenFaaS GitHub repository and run manually.</p>
+<p>However, we assume that every example is running on Linux. In the following example, the <kbd>hello</kbd> function will be created using OpenFaaS's template for the Go language, which can be found at <kbd>openfaas/fass-cli</kbd> in GitHub in the <kbd>template/go</kbd> directory.</p>
+<p>Locally, all templates will be stored in the <kbd>template/</kbd> directory of the working directory. If the template directory does not exist, all templates will be fetched from GitHub's, <kbd>openfaas/faas-cli</kbd>. As of OpenFaaS 0.6, there are 10 available templates for five different programming languages there.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Defining a new function</h1>
+                
+            
+            
+                
+<p>To create a function written in the Go language, we use the <kbd>faas-cli new --lang=go hello</kbd> command:</p>
+<pre><strong>$ faas-cli new --lang=go hello</strong><br/><br/><strong>2017/11/15 18:42:28 No templates found in current directory.</strong><br/><strong>2017/11/15 18:42:28 HTTP GET https://github.com/openfaas/faas-cli/archive/master.zip</strong><br/><strong>2017/11/15 18:42:38 Writing 287Kb to master.zip</strong><br/><br/><strong>2017/11/15 18:42:38 Attempting to expand templates from master.zip</strong><br/><strong>2017/11/15 18:42:38 Fetched 10 template(s) : [csharp go-armhf go node-arm64 node-armhf node python-armhf python python3 ruby] from https://github.com/openfaas/faas-cli</strong><br/><strong>2017/11/15 18:42:38 Cleaning up zip file...</strong><br/><strong>Folder: hello created.</strong><br/><strong>  ___                   _____           ____</strong><br/><strong> / _ \ _ __   ___ _ __ |  ___|_ _  __ _/ ___|</strong><br/><strong>| | | | '_ \ / _ \ '_ \| |_ / _` |/ _` \___ \</strong><br/><strong>| |_| | |_) |  __/ | | |  _| (_| | (_| |___) |</strong><br/><strong> \___/| .__/ \___|_| |_|_|  \__,_|\__,_|____/</strong><br/><strong>      |_|</strong><br/><br/><br/><strong>Function created in folder: hello</strong><br/><strong>Stack file written: hello.yml</strong></pre>
+<p>After the function is created, we can check the structure of the function directory by running the <kbd>tree -L 2 .</kbd> command. It shows the directory at two levels of depth, as follows:</p>
+<pre><strong>$ tree -L 2 .</strong><br/><strong>.</strong><br/><strong>├── hello</strong><br/><strong>│   └── handler.go</strong><br/><strong>├── hello.yml</strong><br/><strong>└── template</strong><br/><strong>    ├── csharp</strong><br/><strong>    ├── go</strong><br/><strong>    ├── go-armhf</strong><br/><strong>    ├── node</strong><br/><strong>    ├── node-arm64</strong><br/><strong>    ├── node-armhf</strong><br/><strong>    ├── python</strong><br/><strong>    ├── python3</strong><br/><strong>    ├── python-armhf</strong><br/><strong>    └── ruby</strong></pre>
+<p>First, we will look at the function definition in the <kbd>hello.yml</kbd> file. From <kbd>hello.yml</kbd> , there are two top-levels,  <kbd>provider</kbd> and <kbd>functions</kbd>.</p>
+<p>The <kbd>provider</kbd> block tells us that its provider's name is <kbd>faas</kbd>, the default OpenFaaS implementation in Docker Swarm. Also, it tells us that the gateway endpoint is at <kbd>http://localhost:8080</kbd>, where an instance of the API gateway is running. In a production environment, this URL could be changed to point to the real IP address.  </p>
+<p>The <kbd>functions</kbd> block lists all defined functions. In the example, there is only the <kbd>hello</kbd> function there. This block tells us this function is written in the Go programming language (<kbd>lang: go</kbd>). The function's handler specified by <kbd>handler: ./hello</kbd> points to the directory containing the source file of the real working function (<kbd>./hello/handler.go</kbd>). In the example, the output image's name is specified by <kbd>image: hello</kbd>. Before building the function, we would change the image name to <kbd>&lt;your Docker ID&gt;/hello:v1</kbd> as it is a best practice to not use the <kbd>:latest</kbd> tag:</p>
+<pre>############<br/># hello.yml <br/>############<br/>provider:<br/>  name: faas<br/>  gateway: http://localhost:8080<br/><br/>functions:<br/>  hello:<br/>    lang: go<br/>    handler: ./hello<br/>    image: hello  # change this line to &lt;your Docker ID&gt;/hello:v1</pre>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Building and pushing</h1>
+                
+            
+            
+                
+<p>We will edit the last line to be <kbd>image: chanwit/hello:v1</kbd>. Again, do not forget to replace my Docker ID with yours. We then build with the <kbd>faas-cli build</kbd> command. We use <kbd>-f</kbd> to specify a function definition file for the CLI. Please note that there will be two stages and 17 steps to build this Dockerfile:</p>
+<pre><strong>$ faas-cli build -f ./hello.yml</strong><br/><strong>[0] &gt; Building: hello.</strong><br/><strong>Clearing temporary build folder: ./build/hello/</strong><br/><strong>Preparing ./hello/ ./build/hello/function</strong><br/><strong>Building: chanwit/hello:v1 with go template. Please wait..</strong><br/><br/><strong>Sending build context to Docker daemon  6.144kB</strong><br/><strong>Step 1/17 : FROM golang:1.8.3-alpine3.6</strong><br/><strong> ---&gt; fd1ada53b403</strong><br/><br/><strong>...</strong><br/><br/><strong>Step 17/17 : CMD ./fwatchdog</strong><br/><strong> ---&gt; Running in a904f6659c33</strong><br/><strong> ---&gt; f3b8ec154ee9</strong><br/><strong>Removing intermediate container a904f6659c33</strong><br/><strong>Successfully built f3b8ec154ee9</strong><br/><strong>Successfully tagged chanwit/hello:v1</strong><br/><strong>Image: chanwit/hello:v1 built.</strong><br/><strong>[0] &lt; Builder done.</strong></pre>
+<p>The Go function template will be copied from the <kbd>template/go</kbd> directory to the <kbd>build/hello</kbd> directory.  Then the handler file, <kbd>hello/handler.go</kbd>, will be copied to <kbd>build/hello/function/handler.go</kbd>. The program's entry point is defined in <kbd>build/hello/main.go</kbd>, which in turn calls the handler function. During the build process, the <kbd>docker build</kbd> command will be executed internally by <kbd>faas-cli</kbd>. Steps defined inside the Dockerfile will be used to compile and pack the function.</p>
+<p>The following figure explains how the Dockerfile, the source files, and the template are related to each other:</p>
+<div><img src="img/4fe6a32f-8abf-4365-b68c-b4d3ee99e5c6.png"/></div>
+<p>Figure 4.10: OpenFaaS template and its related components for the Go language</p>
+<p>After the build is completed, we check the directory's structure again. This time, run  <kbd>tree -L 3 .</kbd> to show the directory for three levels of depth because we want to inspect the contents of the <kbd>build</kbd> directory, which is created by the <kbd>faas-cli build</kbd> command:</p>
+<pre><strong>$ tree -L 3 .</strong><br/><strong>.</strong><br/><strong>├── build</strong><br/><strong>│   └── hello</strong><br/><strong>│       ├── Dockerfile</strong><br/><strong>│       ├── function</strong><br/><strong>│       ├── main.go</strong><br/><strong>│       └── template.yml</strong><br/><strong>├── hello</strong><br/><strong>│   └── handler.go</strong><br/><strong>├── hello.yml</strong><br/><strong>└── template</strong></pre>
+<p>We can push the built image to a Docker repository directly, also with the <kbd>faas-cli push</kbd> command. Use <kbd>-f</kbd> to specify the specification file. The value of <kbd>functions.image</kbd> for the specification will be used for pushing:</p>
+<pre><strong>$ faas-cli push -f hello.yml </strong><br/><strong>[0] &gt; Pushing: hello.</strong><br/><strong>The push refers to a repository [docker.io/chanwit/hello]</strong><br/><strong>8170484ad942: Pushed </strong><br/><strong>071849fe2878: Pushed </strong><br/><strong>a2e6c9f93e16: Pushed </strong><br/><strong>76eeaa2cc808: Pushed </strong><br/><strong>3fb66f713c9f: Pushed </strong><br/><strong>v1: digest: sha256:fbf493a6bb36ef92f14578508f345f055f346d0aecc431aa3f84a4f0db04e7cb size: 1367</strong><br/><strong>[0] &lt; Pushing done.</strong></pre>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Deploying and invoking</h1>
+                
+            
+            
+                
+<p>To deploy the newly built function, we use the <kbd>faas-cli deploy</kbd> command. It reads the function specification with <kbd>-f</kbd>, similar to other sub-commands. In this example, it uses the value of the provider's gateway to deploy the function. If there's already a previous function running as a service on Docker Swarm, the old one will be deleted before deploying the new one. After deployment, the URL for manually invoking the function, such as via <kbd>curl</kbd>, will be shown:</p>
+<pre><strong>$ faas-cli deploy -f hello.yml </strong><br/><strong>Deploying: hello.</strong><br/><strong>Removing old function.</strong><br/><strong>Deployed.</strong><br/><strong>URL: http://localhost:8080/function/hello</strong><br/><br/><strong>200 OK</strong></pre>
+<p>To obtain all running functions on the cluster, we can run the <kbd>faas-cli list</kbd> command. The command also shows the number of invocations done on each function, and the number of replicas for function instances. The replicas will be increased automatically when the invocation rate gets high enough. All of this information is stored inside the instance of Prometheus. We will see it in a better way, with a Grafana dashboard, in the next section:</p>
+<pre><strong>$ faas-cli list</strong><br/><strong>Function                          Invocations        Replicas</strong><br/><strong>func_echoit                       0                  1    </strong><br/><strong>func_wordcount                    0                  1    </strong><br/><strong>func_webhookstash                 0                  1    </strong><br/><strong>func_markdown                     0                  1    </strong><br/><strong>func_hubstats                     0                  1    </strong><br/><strong>func_decodebase64                 0                  1    </strong><br/><strong>hello                             0                  1    </strong><br/><strong>func_base64                       0                  1    </strong><br/><strong>func_nodeinfo                     0                  1</strong> </pre>
+<p>The <kbd>hello</kbd> function accepts input via <kbd>stdin</kbd> and output via <kbd>stdout</kbd>. To test invocation of the function, a sentence is echoed and piped to the <kbd>stdin</kbd> of the command <kbd>faas-cli invoke</kbd>. This invocation is processed via the OpenFaaS framework, and all invocation stats are recorded on a Prometheus instance in the cluster:</p>
+<pre><strong>$ echo "How are you?" | faas-cli invoke hello</strong><br/><strong>Hello, Go. You said: How are you?</strong></pre>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Templates</h1>
+                
+            
+            
+                
+<p>The predefined templates may be good enough for strings and developing simple functions, but when things get complex, it is great to know how to tweak OpenFaaS templates by ourselves.</p>
+<p>In this section, the Go template will be tweaked to simply reduce the number of build steps as an example. The following Dockerfile of the Go template can be found at <kbd>template/go/Dockerfile</kbd>. This Dockerfile already uses the multi-stage build technique:</p>
+<pre>###################<br/># State 0<br/>###################<br/>FROM golang:1.8.3-alpine3.6<br/><br/># ... lines removed for brevity<br/><br/>###################<br/># State 1<br/>###################<br/>FROM alpine:3.6<br/>RUN apk --no-cache add ca-certificates<br/><br/># Add non root user<br/>RUN addgroup -S app adduser -S -g app app \<br/>    mkdir -p /home/app \<br/>    chown app /home/app<br/><br/>WORKDIR /home/app<br/>COPY --from=0 /go/src/handler/handler    .<br/>COPY --from=0 /usr/bin/fwatchdog         .<br/><br/>USER app<br/>ENV fprocess="./handler"<br/>CMD ["./fwatchdog"]</pre>
+<p>Templates can be hosted on a custom Git repository. Here's the structure of a template repository, which can be fetched by the <kbd>template</kbd> sub-command. The first level must be a directory named <kbd>template/</kbd>. Inside the <kbd>template</kbd> directory, there may be a number of directories, for example, <kbd>go/</kbd> in the following structure:</p>
+<pre><strong>$ tree .</strong><br/><strong>.</strong><br/><strong>├── README.md</strong><br/><strong>└── template</strong><br/><strong>    └── go</strong><br/><strong>        ├── Dockerfile</strong><br/><strong>        ├── function</strong><br/><strong>        │   └── handler.go</strong><br/><strong>        ├── main.go</strong><br/><strong>        ├── README.md</strong><br/><strong>        └── template.yml</strong></pre>
+<p>After storing the whole template source in a GitHub repository, it can be pulled for building and tweaking later with <kbd>faas-cli template pull</kbd>:</p>
+<pre><strong>$ faas-cli template pull https://github.com/chanwit/faas-templates</strong><br/><strong>Fetch templates from repository: https://github.com/chanwit/faas-templates</strong><br/><strong>2017/11/16 15:44:46 HTTP GET https://github.com/chanwit/faas-templates/archive/master.zip</strong><br/><strong>2017/11/16 15:44:48 Writing 2Kb to master.zip</strong><br/><br/><strong>2017/11/16 15:44:48 Attempting to expand templates from master.zip</strong><br/><strong>2017/11/16 15:44:48 Fetched 1 template(s) : [go] from https://github.com/chanwit/faas-templates</strong><br/><strong>2017/11/16 15:44:48 Cleaning up zip file...</strong></pre>
+<p>After pulling the tweaked template, the image can be rebuilt and the number of build steps is reduced to <em>15</em>:</p>
+<pre><strong>$ faas-cli build -f hello.yml </strong><br/><strong>[0] &gt; Building: hello.</strong><br/><strong>Clearing temporary build folder: ./build/hello/</strong><br/><strong>Preparing ./hello/ ./build/hello/function</strong><br/><strong>Building: chanwit/hello:v1 with go template. Please wait..</strong><br/><strong>Sending build context to Docker daemon   7.68kB</strong><br/><strong>Step 1/15 : FROM golang:1.8.3-alpine3.6</strong><br/><strong> ---&gt; fd1ada53b403</strong><br/><br/><strong>...</strong><br/><br/><strong>Step 15/15 : CMD ./fwatchdog</strong><br/><strong> ---&gt; Using cache</strong><br/><strong> ---&gt; 23dfcc80a031</strong><br/><strong>Successfully built 23dfcc80a031</strong><br/><strong>Successfully tagged chanwit/hello:v1</strong><br/><strong>Image: chanwit/hello:v1 built.</strong><br/><strong>[0] &lt; Builder done.</strong></pre>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">The OpenFaaS dashboard</h1>
+                
+            
+            
+                
+<p>A good OpenFaaS dashboard is available on the Grafana platform. To make Grafana work with OpenFaaS, the Grafana server must be on the same network. We can use the following command to run a Grafana server via <kbd>docker service create</kbd> outside the OpenFaaS stack. It links to the OpenFaaS stack via the <kbd>--network=func_functions</kbd> argument:</p>
+<pre><strong>$ docker service create --name=grafana \</strong><br/><strong>    --network=func_functions \</strong><br/><strong>    -p 3000:3000 grafana/grafana</strong></pre>
+<p>Alternatively, open the dashboard at <kbd>http://localhost:3000</kbd>. Log in using the username <kbd>admin</kbd> and password <kbd>admin</kbd>:</p>
+<div><img src="img/8d321df6-d5ca-474c-990b-2dd4bb165233.png" style="width:43.75em;height:31.17em;"/></div>
+<p>Figure 4.11: Grafana home dashboard </p>
+<p>A data source has to be created and pointed to the Prometheus server before using it as the source of a dashboard. Firstly, the data source name must be <kbd>prometheus</kbd>. Secondly, the URL needs to point to <kbd>http://prometheus:9090</kbd>. After that, we can click the Save and Test buttons. A green popup will be displayed if the data source setting is correct:</p>
+<div><img src="img/6e189bc6-e859-4c1c-b972-e11975a503cc.png" style="width:38.92em;height:30.92em;"/></div>
+<p>Figure 4.12: Defining a new Prometheus data source in Grafana</p>
+<p>Next, an OpenFaaS dashboard can be imported using the dashboard's ID. We will use dashboard number <kbd>3434</kbd>, then click on Load to prepare to import the dashboard:</p>
+<div><img src="img/0033754c-0749-4a47-8f23-618dbbaf6b38.png" style="width:43.42em;height:28.83em;"/></div>
+<p>Figure 4.13: The dashboard importing screen in Grafana</p>
+<p>Next, the dialog will be changed to Importing Dashboard from Grafana.com. Here, it will ask us to include the dashboard name. We can leave it as the default name. It will also ask which data source we would like to use. Choose the Prometheus data source, which s already defined in the previous steps. After that, click the Import button to finish the importing process:</p>
+<div><img src="img/b107a45e-9197-485d-9b06-9bd03fa48f29.png" style="width:43.83em;height:25.58em;"/></div>
+<p>Figure 4.14: Setting the dashboard's name and selecting the Prometheus data source for it</p>
+<p>Here's what the dashboard looks like. It displays the gateway's health status in a box and the number of gateway services as a gauge. The total function invocation stat is displayed as a line chart with numbers. The <kbd>hello</kbd> function written in Go is linearly invoked more than 20,000 times. During the test, the number of function replicas is scaled up, from five to 20. However, it is tested on a single machine, so the invocation rate does not change significantly:</p>
+<div><img src="img/45bc094a-3745-433e-b3e0-d176cb9aa4c9.png"/></div>
+<p>Figure 4.15: The OpenFaaS dashboard in action</p>
+<p>Here's the mechanism to allow OpenFaaS to auto-scale function replicas. First, when a client requests function invocation through the API gateway, the invocation will be stored in Prometheus. Inside Prometheus, there is an <strong>Alert Manager</strong>, which is responsible for firing events when a predefined rule is matched. OpenFaaS defines a rule for the <strong>Alert Manager</strong> to scale the number of replicas up by hooking the event with its <strong>Alert Handler</strong> URL, <kbd>http://gateway:8080/system/alert</kbd>. This <strong>Alert Handler</strong> will take care of calculating the number of replicas, checking the max replicas limit, and scaling the replicas of a certain function by sending the <kbd>scale</kbd> command to the cluster via the Swarm client API. The following diagram illustrates the steps behind this autoscaling mechanism:</p>
+<div><img src="img/bf021a9b-d815-426c-87a8-31ee37c2076d.png"/></div>
+<p>Figure 4.16: The alerting mechanism of OpenFaaS to auto-scale the replicas of function services in the Docker Swarm</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Exercises</h1>
+                
+            
+            
+                
+<p>Here's a list of questions to you help review all of the topics you should remember and understand from this chapter:</p>
+<ol>
+<li>What are the advantages of using OpenFaaS?</li>
+<li>Please describe the OpenFaaS architecture. How does each component talk to another?</li>
+<li>How do we deploy an OpenFaaS stack on the Docker Swarm?</li>
+<li>Why does OpenFaaS use a multi-stage build?</li>
+<li>How do we create a new OpenFaaS function for Node.js?</li>
+<li>How do we build and pack an OpenFaaS function?</li>
+<li>What is the default name of the overlay network used by OpenFaaS?</li>
+<li>What is the function template? What is it for?</li>
+<li>Describe the steps to prepare a custom template and host it on GitHub.</li>
+<li>How do we define a Grafana dashboard for OpenFaaS?</li>
+</ol>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Summary</h1>
+                
+            
+            
+                
+<p>This chapter discussed OpenFaaS, its architecture, and how we can use it as a serverless framework to deploy functions in Docker Swarm. OpenFaaS has several compelling features, especially its ease of use. This chapter showed that deploying an OpenFaaS stack is quite simple in Docker Swarm infrastructure. Then, this chapter continued to discuss how to define, build, pack, and deploy functions in OpenFaaS. It also discussed an advanced topic of how to tweak and prepare custom templates.</p>
+<p>Monitoring OpenFaaS is quite simple, as it comes with Prometheus built in. We only need to install a Grafana dashboard and connect it to the Prometheus data source and we will have a ready-to-use dashboard, helping us to operate an OpenFaaS cluster.</p>
+<p>The next chapter will introduce the Fn Project, which allows us to deploy an FaaS platform on a plain Docker infrastructure.</p>
+
+
+            
+
+            
+        
+    </body></html>

@@ -1,0 +1,528 @@
+<html><head></head><body>
+<div><div><h1 class="chapter-number" id="_idParaDest-251"><a id="_idTextAnchor251"/>12</h1>
+<h1 id="_idParaDest-252"><a id="_idTextAnchor252"/>Shipping Logs and Monitoring Containers</h1>
+<p>In the previous chapter, we introduced the Docker Compose tool. We learned that this tool is mostly used to run and scale multi-service applications on a single Docker host. Typically, developers and CI servers work with single hosts and they are the main users of Docker Compose. We saw that the tool uses YAML files as input, which contain the description of the application in a declarative way. We investigated many useful tasks the tool can be used for, such as building and pushing images, to just name the most important ones.</p>
+<p>This chapter discusses why logging and monitoring are so important and shows how container logs can be collected and shipped to a central location where the aggregated log can then be parsed for useful information.</p>
+<p>You will also learn how to instrument an application so that it exposes metrics and how those metrics can be scraped and shipped again to a central location. Finally, you will learn how to convert those collected metrics into graphical dashboards that can be used to monitor a containerized application.</p>
+<p>We will be using Filebeat as an example to collect logs from a default location where Docker directs the logs at <code>/var/lib/docker/containers</code>. This is straightforward on Linux. Luckily, on a production or production-like system, we mostly find Linux as the OS of choice.</p>
+<p>Collecting metrics on a Windows or Mac machine, on the other hand, is a bit more involved than on a Linux machine. Thus, we will generate a special Docker Compose stack, including Filebeat, that can run on a Mac or Windows computer by using the workaround of redirecting the standard log output to a file whose parent folder is mapped to a Docker volume. This volume is then mounted to Filebeat, which, in turn, forwards the logs to Elasticsearch.</p>
+<p>This chapter covers the following topics:</p>
+<ul>
+<li>Why is logging and monitoring important?</li>
+<li>Shipping container and Docker daemon logs</li>
+<li>Querying a centralized log</li>
+<li>Collecting and scraping metrics</li>
+<li>Monitoring a containerized application</li>
+</ul>
+<p>After reading this chapter, you should be able to do the following:</p>
+<ul>
+<li>Define a log driver for your containers</li>
+<li>Install an agent to collect and ship your container and Docker daemon logs</li>
+<li>Execute simple queries in the aggregate log to pinpoint interesting information</li>
+<li>Instrument your application services so that they expose infrastructure and business metrics</li>
+<li>Convert the collected metrics into dashboards to monitor your containers</li>
+</ul>
+<h1 id="_idParaDest-253"><a id="_idTextAnchor253"/>Technical requirements</h1>
+<p>The code accompanying this chapter can be found at <a href="https://github.com/PacktPublishing/The-Ultimate-Docker-Container-Book/tree/main/sample-solutions/ch12">https://github.com/PacktPublishing/The-Ultimate-Docker-Container-Book/tree/main/sample-solutions/ch12</a>.</p>
+<p>Before we start, let’s make sure you have a folder ready for the code you are going to implement in this chapter.</p>
+<p>Navigate to the folder where you cloned the code repository that accompanies this book. Normally, this is the <code>The-Ultimate-Docker-Container-Book</code> folder in your <code>home</code> folder:</p>
+<pre class="source-code">
+$ cd ~/The-Ultimate-Docker-Container-Book</pre> <p>Create a subfolder called <code>ch12</code> and navigate to it:</p>
+<pre class="source-code">
+$ mkdir ch12 &amp;&amp; cd ch12</pre> <p>Without further ado, let’s dive into the first topic of shipping containers and daemon logs.</p>
+<h1 id="_idParaDest-254"><a id="_idTextAnchor254"/>Why is logging and monitoring important?</h1>
+<p>When working with<a id="_idIndexMarker979"/> a distributed mission-critical application in production or any production-like environment, it is of utmost importance to gain as much insight as possible into the inner workings of those applications. Have you ever had a chance to investigate the cockpit of an airplane or the command center of a nuclear power plant? Both, an airplane and a power plant are examples of highly complex systems that deliver mission-critical services. If a plane crashes or a power plant shuts down unexpectedly, a lot of people are negatively affected, to say the least. Thus, the cockpit and the command center are full of instruments showing the current or past state of some parts of the system. What you see there is the visual representation of some sensors that are placed in strategic parts of the system and constantly collect data such as the temperature or the flow rate.</p>
+<p>Similar to an airplane or a power plant, our application needs to be instrumented with “sensors” that can feel the “temperature” of our application services or the infrastructure they run on. I put the word temperature in double quotes since it is only a placeholder for things that matter in an application, such as the number of requests per second on a given RESTful endpoint, or the average latency of requests to the same endpoint.</p>
+<p>The resulting values or readings that we collect, such as the average latency of requests, are often<a id="_idIndexMarker980"/> called <strong class="bold">metrics</strong>. It should be our goal to expose as many meaningful metrics as possible of the application services we build. Metrics can be both functional and non-functional. Functional metrics are values that say something business-relevant about the application service, such as how many checkouts are performed per minute if the service is part of an e-commerce application, or what are the 5 most popular songs over the last 24 hours if we are talking about a streaming application.</p>
+<p>Non-functional metrics are important values that are not specific to the kind of business the application is used for, such as the average latency of a particular web request, how many 4xx status codes are returned per minute by another endpoint, or how much RAM or how many CPU cycles a given service is consuming.</p>
+<p>In a distributed system where each part is exposing metrics, some overarching service should be collecting and aggregating the values periodically from each component. Alternatively, each component should forward its metrics to a central metrics server. Only if the metrics for all components of our highly distributed system are available for inspection in a central location are they of any value. Otherwise, monitoring the system becomes impossible. That’s why pilots of an airplane never have to go and inspect individual and critical parts of the airplane in person during a flight; all necessary readings are collected and displayed in the cockpit.</p>
+<p>Today, one of the most popular services that is used to expose, collect, and store metrics is <strong class="bold">Prometheus</strong>. It is an <a id="_idIndexMarker981"/>open source project and has been donated<a id="_idIndexMarker982"/> to the <strong class="bold">Cloud Native Computing Foundation</strong> (<strong class="bold">CNCF</strong>). Prometheus has first-class integration with Docker containers, Kubernetes, and many other systems and programming platforms. In this chapter, we will use Prometheus to demonstrate how to instrument a <a id="_idIndexMarker983"/>simple service that exposes important metrics.</p>
+<p>In the next section, we are going to show you how to ship containers and Docker daemon logs to a central location.</p>
+<h1 id="_idParaDest-255"><a id="_idTextAnchor255"/>Shipping containers and Docker daemon logs</h1>
+<p>In the world <a id="_idIndexMarker984"/>of containerization, understanding <a id="_idIndexMarker985"/>the logs generated by your Docker environment is crucial for maintaining a healthy and well-functioning system. This section will provide an overview of two key types of logs you will encounter: shipping<strong class="bold"> container logs</strong> and <strong class="bold">Docker </strong><strong class="bold">daemon logs</strong>.</p>
+<h2 id="_idParaDest-256"><a id="_idTextAnchor256"/>Shipping container logs</h2>
+<p>As applications <a id="_idIndexMarker986"/>run within containers, they generate log messages that provide valuable insights into their performance and any potential problems.</p>
+<p>Container logs can be accessed using the <code>docker logs</code> command, followed by the container’s ID or name. These logs can help developers and system administrators diagnose issues, monitor container activities, and ensure the smooth operation of deployed applications. Centralizing and analyzing container logs is essential for optimizing resource usage, identifying performance bottlenecks, and troubleshooting application issues.</p>
+<p>Some best practices for managing shipping container logs include the following:</p>
+<ul>
+<li>Configuring log rotation and retention policies to prevent excessive disk space usage</li>
+<li>Using a log management system to centralize logs from multiple containers</li>
+<li>Setting up log filtering and alerting mechanisms to identify critical events and anomalies</li>
+</ul>
+<p>Let’s look at these <a id="_idIndexMarker987"/>recommendations in detail, starting with log rotation and retention policies.</p>
+<h3>Configuring log rotation and retention policies</h3>
+<p>Configuring log<a id="_idIndexMarker988"/> rotation and retention policies for container logs is essential for preventing excessive disk space usage and maintaining optimal performance. Here’s a step-by-step guide on how to set up these policies for Docker container logs.</p>
+<h4>Configuring the logging driver</h4>
+<p>Docker supports<a id="_idIndexMarker989"/> various logging drivers, such as <code>json-file</code>, <code>syslog</code>, <code>journald</code>, and more. To configure the logging driver, you can either set it up globally for the entire Docker daemon or individually for each container. For this example, we’ll use the <code>json-file</code> logging driver, which is the default driver for Docker.</p>
+<h4>Globally setting the log driver</h4>
+<p>To set the<a id="_idIndexMarker990"/> logging driver globally, edit the <code>/etc/docker/daemon.json</code> configuration file (create it if it doesn’t exist) and do the following:</p>
+<ol>
+<li>Open the dashboard of Docker Desktop and navigate to <strong class="bold">Settings</strong>, then <strong class="bold">Docker Engine</strong>. You should see something similar to this:</li>
+</ol>
+<div><div><img alt="Figure 12.1 – Configuration of the Docker daemon" height="624" src="img/B19199_12_01.jpg" width="965"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 12.1 – Configuration of the Docker daemon</p>
+<ol>
+<li value="2">Analyze the <a id="_idIndexMarker991"/>existing configuration and add the following key-value pair to it, if not present already:<pre class="source-code">
+"log-driver": "json-file"</pre></li> </ol>
+<p>Here, the (shortened) result will look like this:</p>
+<pre class="source-code">
+{  ...
+  "experimental": true,
+  "features": {
+    "buildkit": true
+  },
+  "metrics-addr": "127.0.0.1:9323",
+  "log-driver": "json-file"
+}</pre>
+<ol>
+<li value="3">Restart <a id="_idIndexMarker992"/>the Docker daemon to apply the changes.</li>
+</ol>
+<h4>Locally setting the log driver</h4>
+<p>If you prefer to set the<a id="_idIndexMarker993"/> logging driver for an individual container instead of globally, then use the <code>--log-driver</code> option when starting the container:</p>
+<pre class="source-code">
+docker run --log-driver=json-file &lt;image_name&gt;</pre> <p>Now, let’s learn how to specify log rotation and retention policies.</p>
+<h4>Setting log rotation and retention policies</h4>
+<p>We can configure<a id="_idIndexMarker994"/> log rotation and retention policies by specifying the <code>max-size</code> and <code>max-file</code> options for the logging driver:</p>
+<ul>
+<li><code>max-size</code>: This option limits the size of each log file. When a log file reaches the specified size, Docker creates a new file and starts logging into it. For example, to limit each log file to 10 MB, set <code>max-size=10m</code>.</li>
+<li><code>max-file</code>: This option limits the number of log files to keep. When the limit is reached, Docker removes the oldest log file. For example, to keep only the last five log files, set <code>max-file=5</code>.</li>
+</ul>
+<p>To set these options globally, add them to the <code>/etc/docker/daemon.json</code> configuration file. We can add the <code>log-opts</code> section to the daemon configuration right after the <code>log-driver</code> node that we added earlier:</p>
+<pre class="source-code">
+{  ...
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "10m",
+    "max-file": "5"
+  }
+}</pre>
+<p>We suggest that you modify the daemon configuration once again via the dashboard of Docker Desktop. Once you have modified the configuration, restart the Docker daemon to apply the changes.</p>
+<p>To set these options for an individual container, use the <code>--log-opt</code> option when starting the container:</p>
+<pre class="source-code">
+docker run --log-driver=json-file \    --log-opt max-size=10m \
+    --log-opt max-file=5 \
+    &lt;image_name&gt;</pre>
+<p>By configuring log rotation and retention policies, you can prevent excessive disk space usage and <a id="_idIndexMarker995"/>maintain a well-functioning Docker environment. Remember to choose appropriate values for <code>max-size</code> and <code>max-file</code> based on your specific use case and storage capacity.</p>
+<h3>Using a log management system</h3>
+<p>Using a log<a id="_idIndexMarker996"/> management system to centralize logs from multiple containers is essential for efficient monitoring and troubleshooting in a Docker environment. This allows you to aggregate logs from all containers, analyze them in one place, and identify patterns or issues. In this chapter, we’ll use the <strong class="bold">Elasticsearch, Logstash, and Kibana</strong> (<strong class="bold">ELK</strong>) Stack as an example log management system.</p>
+<p class="callout-heading">The ELK Stack</p>
+<p class="callout">The ELK Stack, also <a id="_idIndexMarker997"/>known as the Elastic Stack, is a collection of open source software products that facilitate the ingestion, storage, processing, searching, and visualization of large volumes of data.</p>
+<p class="callout">ELK is an acronym that stands for Elasticsearch, Logstash, and Kibana, which are the main components of the stack.</p>
+<p class="callout"><strong class="bold">Elasticsearch</strong>: Elasticsearch is a <a id="_idIndexMarker998"/>distributed, RESTful search and analytics engine built on top of Apache Lucene. It provides a scalable and near real-time search platform with powerful full-text search capabilities, as well as support for aggregations and analytics. Elasticsearch is commonly used for log and event data analysis, application search, and various other use cases that require high-performance searching and indexing capabilities.</p>
+<p class="callout"><strong class="bold">Logstash</strong>: Logstash is a <a id="_idIndexMarker999"/>flexible, server-side data processing pipeline that ingests, processes, and forwards data to various outputs, including Elasticsearch. Logstash supports multiple input sources, such as log files, databases, and message queues, and can transform and enrich data using filters before forwarding it. Logstash is often used to collect and normalize logs and events from various sources, making it easier to analyze and visualize the data in Elasticsearch.</p>
+<p class="callout"><strong class="bold">Kibana</strong>: Kibana is a<a id="_idIndexMarker1000"/> web-based data visualization and exploration tool that provides a user interface for interacting with Elasticsearch data. Kibana offers various visualization types, such as bar charts, line charts, pie charts, and maps, as well as support for creating custom dashboards to display and analyze data. Kibana also includes features such as Dev Tools for Elasticsearch query testing, monitoring, and alerting capabilities, and machine learning integration.</p>
+<p>Note that the<a id="_idIndexMarker1001"/> following description applies to a Linux system. If you happen to be one of the lucky people running Linux natively on your developer machine, then go for it and start right away with <em class="italic">Step 1 – setting up the ELK Stack </em><em class="italic">on Linux</em>.</p>
+<p>If, on the other hand, you are using a Mac or Windows machine for work, then we have created some step-by-step instructions on how to test the setup. Of special notice is <em class="italic">Step 2 – installing and configuring Filebeat</em>. See the part that matches your setup and give it a try.</p>
+<h4>Step 1 – setting up the ELK Stack on Linux</h4>
+<p>Deploy<a id="_idIndexMarker1002"/> ELK<a id="_idIndexMarker1003"/> using Docker containers or install them directly on your system. For detailed instructions, refer to the official ELK Stack documentation: <a href="https://www.elastic.co/guide/index.xhtml">https://www.elastic.co/guide/index.xhtml</a>.</p>
+<p>Ensure that Elasticsearch and Kibana are properly configured and running. Verify this by accessing the Kibana dashboard through a web browser.</p>
+<h4>Step 2 – installing and configuring Filebeat</h4>
+<p>Filebeat is a lightweight<a id="_idIndexMarker1004"/> log shipper<a id="_idIndexMarker1005"/> that forwards logs from your Docker containers to the ELK Stack. Install Filebeat on the Docker host machine and configure it to collect container logs:</p>
+<ol>
+<li>Install Filebeat using the official installation guide for your specific operating system. You can find the docs here: <a href="https://www.elastic.co/guide/en/beats/filebeat/current/filebeat-installation-configuration.xhtml">https://www.elastic.co/guide/en/beats/filebeat/current/filebeat-installation-configuration.xhtml</a>.</li>
+<li>Configure Filebeat by editing the <code>filebeat.yml</code> configuration file (usually located in <code>/etc/filebeat</code> on Linux systems). Add the following configuration to collect Docker container logs:<pre class="source-code">
+filebeat.inputs:- type: container  paths:    - '/var/lib/docker/containers/*/*.log'</pre></li> <li>Set up the output to forward logs to Elasticsearch. Replace <code>&lt;elasticsearch_host&gt;</code> and <code>&lt;elasticsearch_port&gt;</code> with the appropriate values:<pre class="source-code">
+output.elasticsearch:  hosts: ["&lt;elasticsearch_host&gt;:&lt;elasticsearch_port&gt;"]</pre></li> <li>Save the configuration file and start Filebeat:<pre class="source-code">
+$  sudo systemctl enable filebeat$  sudo systemctl start filebeat</pre></li> </ol>
+<p>Note that this setup<a id="_idIndexMarker1006"/> is strictly <a id="_idIndexMarker1007"/>for Linux systems. On Mac or Windows, the situation is slightly more complicated given the fact that Docker runs in a VM on both systems and, as such, accessing the Docker logs that live inside this VM is slightly more involved. Please consult the documentation if you want to install Filebeat natively on your Mac or Windows machine as this is outside the scope of this book.</p>
+<p>Alternatively, we can run Filebeat in a container, side by side with the ELK Stack.</p>
+<p>Here is a complete Docker Compose file that will run the ELK Stack and Filebeat on a Linux computer:</p>
+<div><div><img alt="Figure 12.2 – Docker Compose file for the ELK Stack and Filebeat" height="1395" src="img/B19199_12_02.jpg" width="821"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 12.2 – Docker Compose file for the ELK Stack and Filebeat</p>
+<p>Now that we have learned how to run Filebeat on a Linux computer or server, we want to show how Filebeat can be used on<a id="_idIndexMarker1008"/> a Mac or Windows computer, which is important during <a id="_idIndexMarker1009"/>development.</p>
+<h4>Running the sample on a Mac or Windows computer</h4>
+<p>The preceding<a id="_idIndexMarker1010"/> example <a id="_idIndexMarker1011"/>will not run on a Mac or Windows computer since Docker is transparently running inside a VM and thus the Docker log files will not be found at <code>/var/lib/docker/containers</code>.</p>
+<p>We can navigate around this problem by using a workaround: we can configure all our containers to write their respective logs into a file that is part of a Docker volume. Then, we can mount that volume into the Filebeat container instead of what we did on line 44 of the preceding Docker Compose file.</p>
+<p>Here is a sample that uses a simple Node.js/Express.js application to demonstrate this. Please follow these steps:</p>
+<ol>
+<li>Create a folder called <code>mac-or-windows</code> in your <code>ch12</code> chapter folder.</li>
+<li>Inside this folder, create a subfolder called <code>app</code> and navigate to it.</li>
+<li>Inside the <code>app</code> folder, initialize the Node.js application with the following command:<pre class="source-code">
+$ npm init</pre></li> </ol>
+<p>Accept all the defaults.</p>
+<ol>
+<li value="4">Install Express.js with the following command:<pre class="source-code">
+$ npm install --save express</pre></li> <li>Modify the <code>package.json</code> file and add a script called <code>start</code> with its value set to <code>node index.js</code>.</li>
+<li>Add a file called <code>index.js</code> to the folder with the following content:</li>
+</ol>
+<div><div><img alt="Figure 12.3 – The index.js application file" height="715" src="img/B19199_12_03.jpg" width="954"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 12.3 – The index.js application file</p>
+<p>This simple<a id="_idIndexMarker1012"/> Express.js application has two routes, <code>/</code> and <code>/test</code>. It also has middleware to log incoming requests and logs when handling specific routes or a <code>404 Not </code><code>Found</code> error.</p>
+<ol>
+<li value="7">Add a script file called <code>entrypoint.sh</code> to the folder with this content:</li>
+</ol>
+<div><div><img alt="Figure 12.4 – The entrypoint.sh file for the sample application" height="465" src="img/B19199_12_04.jpg" width="747"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 12.4 – The entrypoint.sh file for the sample application</p>
+<p>This script <a id="_idIndexMarker1013"/>will<a id="_idIndexMarker1014"/> be used to run our sample application and redirect its logs to the specified <code>LOGGING_FILE</code>.</p>
+<p>Make the preceding file executable with the following command:</p>
+<pre class="source-code">
+$ chmod +x ./entrypoint.sh</pre> <ol>
+<li value="8">Add a Dockerfile to the folder with this content:</li>
+</ol>
+<div><div><img alt="Figure 12.5 – The Dockerfile for the sample application" height="321" src="img/B19199_12_05.jpg" width="523"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 12.5 – The Dockerfile for the sample application</p>
+<ol>
+<li value="9">Add a<a id="_idIndexMarker1015"/> file<a id="_idIndexMarker1016"/> called <code>docker-compose.yml</code> to the <code>mac-or-windows</code> folder with this content:</li>
+</ol>
+<div><div><img alt="Figure 12.6 – Docker Compose file for the Mac or Windows use case" height="947" src="img/B19199_12_06.jpg" width="739"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 12.6 – Docker Compose file for the Mac or Windows use case</p>
+<p>Note the<a id="_idIndexMarker1017"/> environment<a id="_idIndexMarker1018"/> variable on line 9, which defines the name and location of the log file generated by the Node.js/Express.js application. Also, note the volume mapping on line 11, which will make sure the log file is funneled to the Docker <code>app_logs</code> volume. This volume is then mounted to the <code>filebeat</code> container on line 25. This way, we make sure Filebeat can collect the logs and forward them to Kibana.</p>
+<ol>
+<li value="10">Also, add a file called <code>filebeat.yml</code> to the <code>mac-or-windows</code> folder that contains the following configuration for Filebeat:</li>
+</ol>
+<div><div><img alt="Figure 12.7 – Configuration for Filebeat on Mac or Windows" height="358" src="img/B19199_12_07.jpg" width="518"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 12.7 – Configuration for Filebeat on Mac or Windows</p>
+<ol>
+<li value="11">From <a id="_idIndexMarker1019"/>within <a id="_idIndexMarker1020"/>the folder where the <code>docker-compose.yml</code> file is located, build the Node.js application image with the following command:<pre class="source-code">
+$ docker compose build app</pre></li> <li>Now, you are ready to run the stack, like so:<pre class="source-code">
+$ docker compose up --detach</pre></li> <li>Use a REST client to access the <code>http://localhost:3000</code> and <code>http://localhost:3000/test</code> endpoints a few times to have the application generate a few log outputs.</li>
+</ol>
+<p>Now, we are<a id="_idIndexMarker1021"/> ready<a id="_idIndexMarker1022"/> to explore the collected logs centrally in Kibana.</p>
+<h4>Step 3 – visualizing logs in Kibana</h4>
+<p>Access the Kibana <a id="_idIndexMarker1023"/>dashboard <a id="_idIndexMarker1024"/>through a web browser at <code>http://localhost:5601</code>.</p>
+<p>For more details, refer to the <em class="italic">Querying a centralized log</em> section later in this chapter. Here is a quick rundown.</p>
+<p>Go to the <code>filebeat-*</code>) to start analyzing the collected logs.</p>
+<p>Navigate to the <strong class="bold">Discover</strong> section to search, filter, and visualize the logs from your Docker containers.</p>
+<p>Once you have configured your Kibana dashboard, you should see something like this:</p>
+<div><div><img alt="Figure 12.8 – Application logs in Kibana provided by Filebeat" height="725" src="img/B19199_12_08.jpg" width="1096"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 12.8 – Application logs in Kibana provided by Filebeat</p>
+<p>By following these steps, you’ll have a centralized log management system that aggregates logs from multiple Docker containers, allowing you to analyze and monitor your containerized applications efficiently. Note that there are other log management systems and log shippers available, such as Splunk, Graylog, and Fluentd. The process of setting up<a id="_idIndexMarker1025"/> these<a id="_idIndexMarker1026"/> systems will be similar but may require different configuration steps.</p>
+<h3>Setting up log filtering and alerting mechanisms</h3>
+<p>Setting up log<a id="_idIndexMarker1027"/> filtering and alerting mechanisms helps you focus on important log messages, minimize noise, and respond to potential issues proactively. Here, we will use the ELK Stack along with the ElastAlert plugin to demonstrate log filtering and alerting.</p>
+<h4>Step 1 – setting up the Elastic Stack</h4>
+<p>First, follow <a id="_idIndexMarker1028"/>the instructions provided in the <em class="italic">Setting up the ELK Stack</em> section to set up the Elastic Stack for centralized logging. This includes running Elasticsearch, Logstash, and Kibana in Docker containers.</p>
+<h4>Step 2 – setting up log filtering with Logstash</h4>
+<p>Configure Logstash<a id="_idIndexMarker1029"/> to filter logs based on specific conditions, such as log levels, keywords, or patterns. Update your <code>logstash.conf</code> file with appropriate filters in the <code>filter</code> section. For example, to filter logs based on log level, you can use the following configuration:</p>
+<pre class="source-code">
+filter {  if [loglevel] == "ERROR" {
+    mutate {
+      add_tag =&gt; ["error"]
+    }
+  }
+}</pre>
+<p>This configuration checks whether the log level is <code>ERROR</code> and adds a tag of <code>error</code> to the log event. Restart the Logstash container to apply the new configuration:</p>
+<pre class="source-code">
+docker restart logstash</pre> <h4>Step 3 – setting up ElastAlert for alerting</h4>
+<p>ElastAlert is a <a id="_idIndexMarker1030"/>simple framework for alerting anomalies, spikes, or other patterns of interest found in data stored in Elasticsearch. Let’s set it up:</p>
+<ol>
+<li>Clone the ElastAlert repository and navigate to the ElastAlert directory:<pre class="source-code">
+git clone https://github.com/Yelp/elastalert.gitcd elastalert</pre></li> <li>Install ElastAlert:<pre class="source-code">
+pip install elastalert</pre></li> <li>Create a configuration file for ElastAlert, <code>config.yaml</code>, and update it with the following contents:<pre class="source-code">
+es_host: host.docker.internales_port: 9200rules_folder: rulesrun_every:  minutes: 1buffer_time:  minutes: 15alert_time_limit:  days: 2</pre></li> <li>Create a <code>rules</code> directory<a id="_idIndexMarker1031"/> and define your alerting rules. For example, to create an alert for logs with the <code>error</code> tag, create a file called <code>error_logs.yaml</code> in the <code>rules</code> directory with the following contents:<pre class="source-code">
+name: Error Logsindex: logstash-*type: frequencynum_events: 1timeframe:  minutes: 1filter:- term:    tags: "error"alert:- "email"email:- "you@example.com"</pre></li> </ol>
+<p>This rule triggers an email alert if there is at least one log event with the <code>error</code> tag within a 1-minute timeframe.</p>
+<ol>
+<li value="5">Start ElastAlert:<pre class="source-code">
+elastalert --config config.yaml --verbose</pre></li> </ol>
+<p>Now, ElastAlert <a id="_idIndexMarker1032"/>will monitor the Elasticsearch data based on your defined rules and send alerts when the conditions are met.</p>
+<h4>Step 4 – monitoring and responding to alerts</h4>
+<p>With log filtering<a id="_idIndexMarker1033"/> and alerting mechanisms in place, you can focus on critical log messages and respond to potential issues proactively. Monitor your email or other configured notification channels for alerts and investigate the root causes to improve your application’s reliability and performance.</p>
+<p>Keep refining your Logstash filters and ElastAlert rules to minimize noise, detect important log patterns, and respond to potential issues more effectively.</p>
+<p>In the next section, we will discuss how to ship Docker daemon logs.</p>
+<h2 id="_idParaDest-257"><a id="_idTextAnchor257"/>Shipping Docker daemon logs</h2>
+<p>Docker daemon<a id="_idIndexMarker1034"/> logs pertain to the overall functioning of the Docker platform. The Docker daemon is responsible for managing all Docker containers, and its logs record system-wide events and messages. These logs help in identifying issues related to the Docker daemon itself, such as networking problems, resource allocation errors, and container orchestration challenges.</p>
+<p>Depending on the operating system, the location and configuration of Docker daemon logs may differ. For instance, on a Linux system, daemon logs are usually found in <code>/var/log/docker.log</code>, while on Windows, they are located in <code>%programdata%\docker\logs\daemon.log</code>.</p>
+<p class="callout-heading">Note</p>
+<p class="callout">Daemon logs on Mac will be covered in the next section.</p>
+<p>To effectively manage Docker daemon logs, consider the following best practices:</p>
+<ul>
+<li>Regularly review daemon logs to identify potential issues and anomalies</li>
+<li>Set up log rotation and retention policies to manage disk space usage</li>
+<li>Use a log management system to centralize and analyze logs for better visibility into the overall Docker environment</li>
+</ul>
+<p>In conclusion, both shipping containers and Docker daemon logs play vital roles in monitoring and maintaining a healthy Docker environment. By effectively managing these logs, system administrators and developers can ensure optimal performance, minimize downtime, and resolve issues promptly.</p>
+<h3>Docker daemon logs on Mac</h3>
+<p>On a Mac<a id="_idIndexMarker1035"/> with Docker<a id="_idIndexMarker1036"/> Desktop installed, you can view the Docker daemon logs using the <code>log stream</code> command provided by the macOS log utility. Follow these steps:</p>
+<ol>
+<li>Open the Terminal application.</li>
+<li>Run the following command:<pre class="source-code">
+log stream --predicate 'senderImagePath CONTAINS "Docker"'</pre></li> </ol>
+<p>This command will display a real-time stream of logs related to Docker Desktop, including the Docker daemon logs. You can stop the stream by pressing <em class="italic">Ctrl</em> + <em class="italic">C</em>.</p>
+<ol>
+<li value="3">Alternatively, you can use the following command to view the Docker daemon logs in a file format:<pre class="source-code">
+log show --predicate 'senderImagePath CONTAINS "Docker"' \    --style syslog --info \    --last 1d &gt; docker_daemon_logs.log</pre></li> </ol>
+<p>This command will create a file named <code>docker_daemon_logs.log</code> in the current directory, containing the Docker daemon logs from the last 1 day. You can change the <code>--last 1d</code> option to specify a different time range (for example, <code>--last 2h</code> for the last 2 hours). Open the <code>docker_daemon_logs.log</code> file with any text editor to view the logs.</p>
+<p>Please note <a id="_idIndexMarker1037"/>that <a id="_idIndexMarker1038"/>you may need administrator privileges to execute these commands. If you encounter permission issues, prepend the commands with <code>sudo</code>.</p>
+<h3>Docker daemon logs on a Windows computer</h3>
+<p>On a <a id="_idIndexMarker1039"/>Windows 11 machine with Docker Desktop <a id="_idIndexMarker1040"/>installed, the Docker daemon logs are stored as text files. You can access these logs by following these steps:</p>
+<ol>
+<li>Open File Explorer.</li>
+<li>Navigate to the following directory:<pre class="source-code">
+C:\ProgramData\DockerDesktop\service</pre></li> </ol>
+<p>In this directory, you’ll find the <code>DockerDesktopVM.log</code> file, which contains the Docker daemon logs.</p>
+<ol>
+<li value="3">Open the <code>DockerDesktopVM.log</code> file with any text editor to view the logs.</li>
+</ol>
+<p>Please note that the <code>C:\ProgramData</code> folder might be hidden by default. To display hidden folders in File Explorer, click on the <strong class="bold">View</strong> tab and check the <strong class="bold">Hidden </strong><strong class="bold">items</strong> checkbox.</p>
+<p>Alternatively, you can use PowerShell to read the logs:</p>
+<ol>
+<li>Open PowerShell.</li>
+<li>Execute the following command:<pre class="source-code">
+Get-Content -Path "C:\ProgramData\DockerDesktop\service\DockerDesktopVM.log" -Tail 50</pre></li> </ol>
+<p>This command will display the last 50 lines of the Docker daemon log file. You can change the<a id="_idIndexMarker1041"/> number after <code>-Tail</code> to display<a id="_idIndexMarker1042"/> a different number of lines.</p>
+<p>Next, we are going to learn how to query a centralized log.</p>
+<h1 id="_idParaDest-258"><a id="_idTextAnchor258"/>Querying a centralized log</h1>
+<p>Once your containerized<a id="_idIndexMarker1043"/> application logs have been collected and stored in the ELK Stack, you can query the centralized logs using Elasticsearch's <a id="_idIndexMarker1044"/>Query <strong class="bold">Domain Specific Language</strong> (<strong class="bold">DSL</strong>) and <a id="_idIndexMarker1045"/>visualize the results in Kibana.</p>
+<h2 id="_idParaDest-259"><a id="_idTextAnchor259"/>Step 1 – accessing Kibana</h2>
+<p>Kibana<a id="_idIndexMarker1046"/> provides <a id="_idIndexMarker1047"/>a user-friendly interface for querying and visualizing Elasticsearch data. In the provided <code>docker-compose.yml</code> file, Kibana can be accessed on port <code>5601</code>. Open your browser and navigate to <code>http://localhost:5601</code>.</p>
+<h2 id="_idParaDest-260"><a id="_idTextAnchor260"/>Step 2 – setting up an index pattern</h2>
+<p>Before you<a id="_idIndexMarker1048"/> can query the logs, you need to create an index <a id="_idIndexMarker1049"/>pattern in Kibana to identify the Elasticsearch indices containing the log data. Follow these steps to create an index pattern:</p>
+<ol>
+<li>The first time you access Kibana, you will be asked to add integrations. You can safely ignore this as we are using Filebeat to ship the logs.</li>
+<li>Instead, locate the “hamburger menu” in the top left of the view and click it.</li>
+<li>Locate the <strong class="bold">Management</strong> tab in the left-hand navigation menu and select <strong class="bold">Stack Management</strong>:</li>
+</ol>
+<div><div><img alt="Figure 12.9 – The Management tab in Kibana" height="1094" src="img/B19199_12_09.jpg" width="355"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 12.9 – The Management tab in Kibana</p>
+<ol>
+<li value="4">Under <a id="_idIndexMarker1050"/>the <strong class="bold">Kibana</strong> <a id="_idIndexMarker1051"/>section, click <strong class="bold">Index Patterns</strong>:</li>
+</ol>
+<div><div><img alt="Figure 12.10 – The Index Patterns entry of Kibana" height="1016" src="img/B19199_12_10.jpg" width="489"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 12.10 – The Index Patterns entry of Kibana</p>
+<ol>
+<li value="5">Click<a id="_idIndexMarker1052"/> the <strong class="bold">Create index </strong><strong class="bold">pattern</strong> button.</li>
+<li>Enter the<a id="_idIndexMarker1053"/> index pattern that matches your Logstash indices. For example, if your Logstash configuration uses the <code>logstash-%{+YYYY.MM.dd}</code> index pattern, enter <code>logstash-*</code> in the <strong class="bold">Name</strong> field.</li>
+<li>In the <code>@</code><code>timestamp</code> field.</li>
+<li>Click <strong class="bold">Create </strong><strong class="bold">index pattern</strong>.</li>
+</ol>
+<p>Now, we <a id="_idIndexMarker1054"/>are<a id="_idIndexMarker1055"/> ready to query our container logs.</p>
+<h2 id="_idParaDest-261"><a id="_idTextAnchor261"/>Step 3 – querying the logs in Kibana</h2>
+<p>Now, you’re<a id="_idIndexMarker1056"/> ready <a id="_idIndexMarker1057"/>to query the logs using Kibana’s <strong class="bold">Discover</strong> feature. Follow these steps:</p>
+<ol>
+<li>Once again, locate the “hamburger menu” in the top left of the view and click it.</li>
+<li>Locate the <strong class="bold">Analytics</strong> tab and select <strong class="bold">Discover</strong>.</li>
+<li>Select the index pattern you created earlier from the drop-down menu in the top-left corner.</li>
+<li>Use the time filter in the top-right corner to choose a specific time range for your query.</li>
+<li>To search for specific log entries, enter your query in the search bar and press <em class="italic">Enter</em>. Kibana uses the Elasticsearch Query DSL to perform searches.</li>
+</ol>
+<p>Here are some example queries:</p>
+<ul>
+<li>To find logs containing the word “error”: <code>error</code></li>
+<li>To find logs with a specific field value: <code>container.name: "my-container"</code></li>
+<li>To use a wildcard search (for example, logs with a <code>container.name</code> starting with “<code>app</code>”): <code>container.name: "app*"</code></li>
+<li>To use Boolean operators for more complex queries: <code>error</code> AND <code>container.name: "my-container"</code></li>
+</ul>
+<h2 id="_idParaDest-262"><a id="_idTextAnchor262"/>Step 4 – visualizing the logs</h2>
+<p>You can create <a id="_idIndexMarker1058"/>visualizations and dashboards in Kibana to analyze the logs more effectively. To create a visualization, follow these steps:</p>
+<ol>
+<li>Click on the <strong class="bold">Visualize</strong> tab in the left-hand navigation menu.</li>
+<li>Click the <strong class="bold">Create </strong><strong class="bold">visualization</strong> button.</li>
+<li>Choose a visualization type (for example, pie chart, bar chart, line chart, and so on).</li>
+<li>Select the index pattern you created earlier.</li>
+<li>Configure the visualization by selecting the fields and aggregation types.</li>
+<li>Click <strong class="bold">Save</strong> to save your visualization.</li>
+</ol>
+<p>You can create multiple visualizations and add them to a dashboard for a comprehensive view of your log data. To create a dashboard, do the following:</p>
+<ol>
+<li>Click on the <strong class="bold">Dashboard</strong> tab in the left-hand navigation menu.</li>
+<li>Click the <strong class="bold">Create </strong><strong class="bold">dashboard</strong> button.</li>
+<li>Click <strong class="bold">Add</strong> to add visualizations to the dashboard.</li>
+<li>Resize and rearrange the visualizations as needed.</li>
+<li>Click <strong class="bold">Save</strong> to save your dashboard.</li>
+</ol>
+<p>Now, you have a centralized view of your containerized application logs and you can query, analyze, and<a id="_idIndexMarker1059"/> visualize the logs using Kibana.</p>
+<p>In the following section, we will learn how to collect and scrape metrics exposed by Docker and your application.</p>
+<h1 id="_idParaDest-263"><a id="_idTextAnchor263"/>Collecting and scraping metrics</h1>
+<p>To collect and <a id="_idIndexMarker1060"/>scrape metrics from containers running on a system with Docker Desktop installed, you can use Prometheus <a id="_idIndexMarker1061"/>and <strong class="bold">Container Advisor</strong> (<strong class="bold">cAdvisor</strong>). Prometheus is a powerful open source monitoring and alerting toolkit, while cAdvisor provides container users with an understanding of the resource usage and performance characteristics of their running containers.</p>
+<p>In this section, we’ll provide a step-by-step guide to setting up Prometheus and cAdvisor to collect and <a id="_idIndexMarker1062"/>scrape metrics from containers running on Docker Desktop.</p>
+<h2 id="_idParaDest-264"><a id="_idTextAnchor264"/>Step 1 – running cAdvisor in a Docker container</h2>
+<p>cAdvisor is a<a id="_idIndexMarker1063"/> Google-developed tool that collects, processes, and<a id="_idIndexMarker1064"/> exports container metrics. Let’s take a look:</p>
+<ol>
+<li>In the chapter folder, <code>ch12</code>, create a new subfolder called <code>metrics</code>:<pre class="source-code">
+mkdir metrics</pre></li> <li>In this folder, create a file called <code>docker-compose.yml</code> and add the following snippet to it:<pre class="source-code">
+version: '3.8'services:  cadvisor:    image: gcr.io/cadvisor/cadvisor:v0.45.0    container_name: cadvisor    restart: always    ports:    - 8080:8080    volumes:    - /:/rootfs:ro    - /var/run:/var/run:rw    - /sys:/sys:ro    - /var/lib/docker/:/var/lib/docker:ro</pre></li> <li>Run cAdvisor in a Docker container using the following command:<pre class="source-code">
+docker compose up cadvisor --detach</pre></li> </ol>
+<p>Replace <code>v0.45.0</code> with the latest cAdvisor version available on the cAdvisor repository.</p>
+<p>This command mounts the necessary directories from the host system and exposes cAdvisor’s web interface on port <code>8080</code>.</p>
+<p class="callout-heading">Attention</p>
+<p class="callout">A version lower than the one shown here will not run, for example, on a Mac with an M1 or M2 processor.</p>
+<ol>
+<li value="4">You can <a id="_idIndexMarker1065"/>access<a id="_idIndexMarker1066"/> the cAdvisor web interface by navigating to <code>http://localhost:8080</code> in your browser.</li>
+</ol>
+<h2 id="_idParaDest-265"><a id="_idTextAnchor265"/>Step 2 – setting up and running Prometheus</h2>
+<p>Next, let’s set up <a id="_idIndexMarker1067"/>Prometheus <a id="_idIndexMarker1068"/>using the following step-by-step instructions:</p>
+<ol>
+<li>Create a subfolder called <code>prometheus</code> in the <code>metrics</code> folder.</li>
+<li>In this new folder, create a <code>prometheus.yml</code> configuration file with the following contents:<pre class="source-code">
+global:  scrape_interval: 15sscrape_configs:  - job_name: 'prometheus'    static_configs:      - targets: ['localhost:9090']  - job_name: 'cadvisor'    static_configs:      - targets: ['host.docker.internal:8080']</pre></li> </ol>
+<p>This configuration specifies the global scrape interval and two scrape jobs: one for Prometheus itself and another for cAdvisor running on port <code>8080</code>.</p>
+<ol>
+<li value="3">Add the following snippet to the end of the <code>docker-compose.yml</code> file:<pre class="source-code">
+prometheus:  image: prom/prometheus:latest  container_name: prometheus  restart: always  ports:    - 9090:9090  volumes:    - ./prometheus:/etc/prometheus    - prometheus_data:/prometheus</pre></li> </ol>
+<p>This<a id="_idIndexMarker1069"/> instruction<a id="_idIndexMarker1070"/> mounts the <code>prometheus.yml</code> configuration file and exposes Prometheus on port <code>9090</code>.</p>
+<ol>
+<li value="4">The preceding <code>prometheus</code> service uses a volume called <code>prometheus_data</code>. To define this, please add the following two lines to the end of the <code>docker-compose.yml</code> file:<pre class="source-code">
+volumes:  prometheus_data:</pre></li> <li>You can access the Prometheus web interface by navigating to <code>http://localhost:9090</code> in your browser.</li>
+</ol>
+<p>Once Prometheus is up and running, you can verify that it’s successfully scraping metrics from cAdvisor:</p>
+<ol>
+<li>Open the Prometheus web interface at <code>http://localhost:9090</code>.</li>
+<li>Click on <strong class="bold">Status</strong> in the top navigation bar, then select <strong class="bold">Targets</strong>.</li>
+<li>Ensure that both the <code>prometheus</code> and <code>cadvisor</code> targets are listed with <code>UP</code>.</li>
+</ol>
+<p>Now, Prometheus can collect and store metrics from the containers running on your Docker Desktop system. You can use Prometheus’ built-in expression browser to query metrics or set up Grafana for advanced visualization and dashboarding:</p>
+<ol>
+<li>In the <code>query text</code> field, enter something like <code>container_start_time_seconds</code> to get the value for the startup time of all containers.</li>
+<li>To refine the query and only get the value for the cAdvisor container, enter <code>container_start_time_seconds{job="cadvisor"}</code>.</li>
+</ol>
+<p>Note that in the <code>query text</code> field, you get IntelliSense, which is convenient when you do not remember all the details of a command and its parameters.</p>
+<p>Before you continue, stop <a id="_idIndexMarker1071"/>cAdvisor <a id="_idIndexMarker1072"/>and Prometheus with the following command:</p>
+<pre class="source-code">
+docker compose down -v</pre> <p>In the last section of this chapter, you will learn how to monitor a containerized application using a tool such as Grafana.</p>
+<h1 id="_idParaDest-266"><a id="_idTextAnchor266"/>Monitoring a containerized application</h1>
+<p>Monitoring a containerized<a id="_idIndexMarker1073"/> application is crucial for understanding the application’s performance, resource usage, and potential bottlenecks. This section will detail a step-by-step process for monitoring a containerized application using Prometheus, Grafana, and cAdvisor.</p>
+<h2 id="_idParaDest-267"><a id="_idTextAnchor267"/>Step 1 – setting up Prometheus</h2>
+<p>Follow the <a id="_idIndexMarker1074"/>instructions from the previous <a id="_idIndexMarker1075"/>section to set up Prometheus and cAdvisor to collect and scrape metrics from containers running on Docker Desktop.</p>
+<h2 id="_idParaDest-268"><a id="_idTextAnchor268"/>Step 2 – instrumenting your application with Prometheus metrics</h2>
+<p>To monitor a <a id="_idIndexMarker1076"/>containerized <a id="_idIndexMarker1077"/>application, you need to instrument the application with Prometheus metrics. This involves adding Prometheus client libraries to your application code and exposing metrics on an HTTP endpoint, usually <code>/metrics</code>.</p>
+<p>Choose the appropriate Prometheus client library for your application’s programming language from the official list: <a href="https://prometheus.io/docs/instrumenting/clientlibs/">https://prometheus.io/docs/instrumenting/clientlibs/</a>.</p>
+<p>Add the library to your application while following the library’s documentation and examples.</p>
+<p>Expose the <code>/metrics</code> endpoint, which will be scraped by Prometheus.</p>
+<h3>Example using Kotlin and Spring Boot</h3>
+<p>To expose <a id="_idIndexMarker1078"/>Prometheus metrics from a Kotlin and Spring Boot API, you need to follow these steps:</p>
+<ol>
+<li>Create a new Kotlin Spring Boot project.</li>
+<li>Add the necessary dependencies.</li>
+<li>Implement the API and expose Prometheus metrics.</li>
+<li>Expose the actuator endpoints.</li>
+<li>Create a Dockerfile.</li>
+<li>Integrate with the Docker Compose file.</li>
+</ol>
+<h4>Step 1 – creating a new Kotlin Spring Boot project</h4>
+<p>You can use Spring<a id="_idIndexMarker1079"/> Initializr (<a href="https://start.spring.io/">https://start.spring.io/</a>) to create a new Kotlin Spring Boot project. Name the artifact <code>kotlin-api</code>. Then, select Kotlin as the language, choose the packaging type (JAR or WAR), and add the necessary dependencies. For this example, select <strong class="bold">Web</strong>, <strong class="bold">Actuator</strong>, and <strong class="bold">Prometheus</strong> under the <strong class="bold">Dependencies</strong> section.</p>
+<p>Download the generated project and extract it.</p>
+<h4>Step 2 – verifying the necessary dependencies</h4>
+<p>In your <code>build.gradle.kts</code> file, assert <a id="_idIndexMarker1080"/>that the following dependencies are included:</p>
+<pre class="source-code">
+implementation("org.springframework.boot:spring-boot-starter-web")implementation("org.springframework.boot:spring-boot-starter-actuator")
+implementation("io.micrometer:micrometer-registry-prometheus")</pre>
+<h4>Step 3 – implementing the API and exposing Prometheus metrics</h4>
+<p>Locate <a id="_idIndexMarker1081"/>the Kotlin <code>KotlinApiApplication.kt</code> file in the <code>src/main/kotlin/com/example/kotlinapi/</code> subfolder and replace its existing content <a id="_idIndexMarker1082"/>with the following:</p>
+<div><div><img alt="Figure 12.11 – Code in the KotlinApiApplication.kt file" height="703" src="img/B19199_12_11.jpg" width="961"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 12.11 – Code in the KotlinApiApplication.kt file</p>
+<p>You can also find this code in the <code>sample-solutions/ch12/kotlin-api</code> subfolder if you prefer not to type the example yourself.</p>
+<p>In this example, a simple REST API with a single endpoint, <code>/</code>, was implemented. The endpoint increments a counter and exposes the count as a Prometheus metric named <code>api_requests_total</code>.</p>
+<p>Add the following line to the <code>application.properties</code> file to use a different port than the default port, <code>8080</code>, which is already taken by cAdvisor in our stack. In our example, the<a id="_idIndexMarker1083"/> port is <code>7000</code>:</p>
+<pre class="source-code">
+server.port=7000</pre> <h4>Step 4 – exposing metrics</h4>
+<p>Add the following line to the <code>application.properties</code> file:</p>
+<pre class="source-code">
+management.endpoints.web.exposure.include=health,info,metrics,prometheus</pre> <p class="callout-heading">Note</p>
+<p class="callout">The above configuration should be all on a single line. It is shown on two lines here due to space limitations.</p>
+<p>This will expose the respective metrics on the <code>/actuator/health</code>, <code>/actuator/info</code>, <code>/actuator/metrics</code>, and <code>/</code><code>actuator/prometheus</code> endpoints.</p>
+<h4>Step 5 – creating a Dockerfile</h4>
+<p>Create a <a id="_idIndexMarker1084"/><code>multistage</code> Dockerfile in the project’s root directory with the following content:</p>
+<div><div><img alt="Figure 12.12 – Dockerfile for the Kotlin API" height="391" src="img/B19199_12_12.jpg" width="916"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 12.12 – Dockerfile for the Kotlin API</p>
+<p>In this <code>multistage</code> Dockerfile, we have two stages:</p>
+<ul>
+<li><code>gradle:jdk17</code> base image to build the Kotlin Spring Boot application. It sets the working directory, copies the source code, and runs the Gradle <code>build</code> command. This stage is named <code>build</code> using the <code>AS</code> keyword.</li>
+<li><code>openjdk:17-oracle</code> base image for the runtime environment, which is a smaller image without the JDK. It copies the built JAR file from the build stage and sets the entry point to run the Spring Boot application.</li>
+</ul>
+<p>This multi-stage <a id="_idIndexMarker1086"/>Dockerfile allows<a id="_idIndexMarker1087"/> you to build the Kotlin Spring Boot application and create the final runtime image in one go. It also helps reduce the final image size by excluding unnecessary build tools and artifacts.</p>
+<h4>Step 6 – integrating with the Docker Compose file</h4>
+<p>Update your <a id="_idIndexMarker1088"/>existing <code>docker-compose.yml</code> file so that it includes the Kotlin Spring Boot API service, which resides in the <code>kotlin-api</code> subfolder:</p>
+<pre class="source-code">
+version: '3.8'services:
+  # ... other services (Elasticsearch, Logstash, Kibana, etc.) ...
+  kotlin-spring-boot-api:
+    build: ./kotlin-api
+    container_name: kotlin-spring-boot-api
+    ports:
+      - 7000:7000</pre>
+<p>Now, you can run <code>docker compose up -d</code> to build and start the Kotlin Spring Boot API service, along with the other services. The API will be accessible on port <code>8080</code>, and the Prometheus <a id="_idIndexMarker1089"/>metrics can<a id="_idIndexMarker1090"/> be collected.</p>
+<p>Next, we will configure Prometheus to scrape all the metrics from our setup, including the Kotlin API we just created.</p>
+<h2 id="_idParaDest-269"><a id="_idTextAnchor269"/>Step 3 – configuring Prometheus to scrape your application metrics</h2>
+<p>Update<a id="_idIndexMarker1091"/> your <code>prometheus.yml</code> configuration<a id="_idIndexMarker1092"/> file from the previous section so that it includes a new scrape job for your application. For example, since our Kotlin API sample application is running in a Docker container and exposing metrics on port <code>7000</code>, we will add the following to the <code>scrape_configs</code> section:</p>
+<pre class="source-code">
+- job_name: 'kotlin-api'  static_configs:
+    - targets: ['host.docker.internal:7000']
+  metrics_path: /actuator/prometheus</pre>
+<h2 id="_idParaDest-270"><a id="_idTextAnchor270"/>Step 4 – setting up Grafana for visualization</h2>
+<p>Grafana is<a id="_idIndexMarker1093"/> a <a id="_idIndexMarker1094"/>popular open source visualization and analytics tool that can integrate with Prometheus to create interactive dashboards for your containerized application:</p>
+<ol>
+<li>To the <code>docker-compose.yml</code> from the previous section, add this snippet to define a service for Grafana:<pre class="source-code">
+grafana:  image: grafana/grafana:latest  container_name: grafana  restart: always  ports:    - 3000:3000  volumes:    - grafana_data:/var/lib/grafana</pre></li> <li>In the <code>volumes:</code> section, add a volume called <code>grafana_data</code>.</li>
+<li>Run cAdvisor, Prometheus, and Grafana with this command:<pre class="source-code">
+docker compose up --detach</pre></li> <li>Access Grafana by navigating to <code>http://localhost:3000</code> in your browser. The default username is <code>admin</code> and the default password is also <code>admin</code>.</li>
+<li>Add <strong class="bold">Prometheus</strong> as a data source.</li>
+<li>Click on the gear icon (<strong class="bold">Configuration</strong>) in the left sidebar.</li>
+<li>Select <strong class="bold">Data Sources</strong> and then click <strong class="bold">Add </strong><strong class="bold">data source</strong>.</li>
+<li>Choose <code>http://host.docker.internal:9090</code> as the URL.</li>
+<li>Click <strong class="bold">Save &amp; Test</strong> to verify the connection.</li>
+<li>Create a dashboard and panels to visualize your application metrics.</li>
+<li>Click on the <strong class="bold">+</strong> icon (<strong class="bold">Create</strong>) in the left sidebar and choose <strong class="bold">Dashboard</strong>.</li>
+<li>Click <strong class="bold">Add new panel</strong> to start creating panels for your metrics.</li>
+<li>Use the query editor to build queries based on your application metrics, and customize the visualization type, appearance, and other settings.</li>
+<li>Save the dashboard by clicking the disk icon in the top-right corner.</li>
+</ol>
+<p>With Grafana, you <a id="_idIndexMarker1095"/>can create<a id="_idIndexMarker1096"/> interactive dashboards that provide real-time insights into your containerized application’s performance, resource usage, and other critical metrics.</p>
+<h2 id="_idParaDest-271"><a id="_idTextAnchor271"/>Step 5 – setting up alerting (optional)</h2>
+<p>Grafana and Prometheus<a id="_idIndexMarker1097"/> can be used to set up alerts based on your application metrics. This can help you proactively address issues before they impact your users:</p>
+<ol>
+<li>In Grafana, create a new panel or edit an existing one.</li>
+<li>Switch to the <strong class="bold">Alert</strong> tab in the panel editor.</li>
+<li>Click <strong class="bold">Create Alert</strong> and configure the alerting rules, conditions, and notification settings.</li>
+<li>Save the panel and dashboard.</li>
+</ol>
+<p>You may also need to configure Grafana’s notification channels to send alerts via email, Slack, PagerDuty, or other supported services. To do this, follow these steps:</p>
+<ol>
+<li>In Grafana, click on the bell icon (<strong class="bold">Alerting</strong>) in the left sidebar.</li>
+<li>Choose <strong class="bold">Notification channels</strong> and click <strong class="bold">Add channel</strong>.</li>
+<li>Fill in the required information for your preferred notification service and click <strong class="bold">Save</strong>.</li>
+</ol>
+<p>Now, when the alerting conditions specified in your panel are met, Grafana will send notifications through the configured channel.</p>
+<h2 id="_idParaDest-272"><a id="_idTextAnchor272"/>Step 6 – monitoring your containerized application</h2>
+<p>With Prometheus, Grafana, and <a id="_idIndexMarker1098"/>cAdvisor set up, you can now effectively monitor your containerized application. Keep an eye on your Grafana dashboards, set up appropriate alerting rules, and use the collected data to identify performance bottlenecks, optimize resource usage, and improve the overall health of your application.</p>
+<p>Remember to continuously iterate and improve your monitoring setup by refining your application’s instrumentation, adjusting alerting rules, and adding new visualizations to your dashboards as your application evolves and grows.</p>
+<h1 id="_idParaDest-273"><a id="_idTextAnchor273"/>Summary</h1>
+<p>In this chapter, we learned why logging and shipping the log to a central location is important. We then showed you how to set up an ELK Stack locally on our computer that can serve as a hub for logs. We generated a special version of this stack, including Filebeat, which can run on a Mac or Windows computer using the workaround of redirecting the standard log output to a file whose parent folder is mapped to a Docker volume. This volume is then mounted to Filebeat, which, in turn, forwards the logs to ElasticSearch. On a production or production-like system, the applications run on Linux servers or VMs and thus Filebeat can directly collect the logs from the default location, where Docker directs the logs at <code>/var/lib/docker/containers</code>.</p>
+<p>We also learned how to use Prometheus and Grafana to scrape, collect, and display the metrics of your applications centrally on a dashboard. We used a simple Kotlin application that exposed a counter to demonstrate this.</p>
+<p>Lastly, we briefly mentioned how to define alerts based on the values of collected metrics.</p>
+<p>In the next chapter, we will introduce the concept of container orchestrators. It will teach us why orchestrators are needed, and how they work conceptually. The chapter will also provide an overview of the most popular orchestrators and list a few of their pros and cons.</p>
+<h1 id="_idParaDest-274"><a id="_idTextAnchor274"/>Questions</h1>
+<p>Here are a few questions that you should try to answer to self-assess your learning progress:</p>
+<ol>
+<li>What are Docker container logs, and why are they important?</li>
+<li>What is a daemon log in Docker, and how is it different from a container log?</li>
+<li>How can you monitor Docker containers?</li>
+<li>How can you view the logs of a running Docker container?</li>
+<li>What are some best practices for logging and monitoring Docker containers?</li>
+<li>How can you collect logs from multiple Docker containers?</li>
+</ol>
+<h1 id="_idParaDest-275"><a id="_idTextAnchor275"/>Answers</h1>
+<p>Here are some sample answers to the questions for this chapter:</p>
+<ol>
+<li>Docker container logs are records of the events and messages generated by the applications running within a container. They are essential for monitoring performance, troubleshooting issues, and ensuring the smooth operation of the applications deployed in Docker containers.</li>
+<li>A daemon log in Docker refers to the log files generated by the Docker daemon, which manages Docker containers. These logs record system-wide events and messages related to the overall functioning of the Docker platform. In contrast, container logs are specific to individual containers and their applications.</li>
+<li>Monitoring Docker containers can be done using various methods, including command-line tools such as docker stats, third-party monitoring solutions such as Prometheus, and Docker’s built-in APIs. These tools help track resource usage, performance metrics, and the health status of containers.</li>
+<li>You can view the logs of a running Docker container using the <code>docker logs</code> command, followed by the container’s ID or name. This command retrieves the log messages generated by the container, which can help diagnose issues or monitor the container’s activities.</li>
+<li>Some best practices for logging and monitoring Docker containers include the following:<ul><li>Centralize logs using a log management system</li><li>Configure log rotation and retention policies</li><li>Set up log filtering and alerting mechanisms</li><li>Monitor containers using a combination of built-in and third-party tools</li><li>Regularly review logs and metrics for anomalies</li></ul></li>
+<li>To collect logs from multiple Docker containers, you can use a log management system such as the ELK Stack or Splunk. You can also use tools such as Fluentd or Logspout to aggregate and forward logs from all containers to a centralized log management system for analysis and visualization.</li>
+</ol>
+</div>
+</div></body></html>

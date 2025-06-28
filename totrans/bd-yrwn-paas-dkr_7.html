@@ -1,0 +1,214 @@
+<html><head></head><body><div><div><div><div><h1 class="title"><a id="ch07"/>Chapter 7. Deployment on Our PaaS</h1></div></div></div><p>In the previous chapters, we went from setting up our PaaS in a very hands-on manner to a "hacked-together-automated" way by combining tools such as Crane and nginx-proxy. One part is still missing—how to deploy your code.</p><p>In this chapter we will go through the following topics:</p><div><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">The problem with our current setup</li><li class="listitem" style="list-style-type: disc">The tools/services available</li><li class="listitem" style="list-style-type: disc">Dokku— mini-Heroku</li><li class="listitem" style="list-style-type: disc">Setting up a WordPress app with Dokku</li></ul></div><div><div><div><div><h1 class="title"><a id="ch07lvl1sec44"/>The problem with our current setup</h1></div></div></div><p>Our current setup consists of three containers: a WordPress container, a MySQL container<a class="indexterm" id="id303"/> and a data volume container, tied together with Crane.</p><p>The main problem with our current setup using a <code class="literal">VOLUME</code> container as file storage is that we need a way into the volume to edit files. As of now, the only way to get into it is by mounting it on another container.</p><p>Another problem is that we don't version control our source code. We have just downloaded WordPress and some plugins and left it there. What if we update WordPress or make some other changes? We surely want to have that under version control.</p><p>If we want to keep the application architecture as it is, there are two options:</p><div><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">Create a new container that mounts our data volume container, install it, and get access to it with SSH</li><li class="listitem" style="list-style-type: disc">Install and open access to SSH in our WordPress container</li></ul></div><p>With SSH installed, we can access the containers shell from a remote machine, and so, we can install Git to version control to our files. In this way, we can connect and push new code into the data volume container when we need to.</p><p>When <a class="indexterm" id="id304"/>connecting with SSH, you can go straight into the container without needing to connect to the Docker hosts shell.</p><p>If you are okay with connecting to the Docker host, and from there, if you open a new shell to get into your data volume container, a third option would be to SSH into your Docker hosts and then access the container with <code class="literal">docker exec –it container_name /bin/sh</code>.</p><p>While this certainly works, there are easier ways to do it.</p></div></div>
+<div><div><div><div><h1 class="title"><a id="ch07lvl1sec45"/>The tools/services available</h1></div></div></div><p>When<a class="indexterm" id="id305"/> we look at hosted PaaS providers available today, two<a class="indexterm" id="id306"/> of them come to mind—OpenShift and Heroku. Many<a class="indexterm" id="id307"/> developers love Heroku because of its ease of use. Their philosophy<a class="indexterm" id="id308"/> gives a hint why:</p><div><blockquote class="blockquote"><p><em>"Developer Productivity:</em></p><p><em>Developer productivity is our battle cry, at the core of everything we do. Why require three steps when one will do? Why require any action at all when zero steps will do?"</em></p></blockquote></div><p>Developers usually want to spend time on their code, not managing servers, deployment, and so on.</p><div><img alt="The tools/services available" src="img/3946OT_07_01.jpg"/></div><p>On Heroku, you get a remote Git repository into which you can push code. Your app's language and dependencies are identified by special files, depending on the language you use. Environment variables are used for configuration, and you instruct Heroku what to execute by specifying commands in a <a class="indexterm" id="id309"/>special file, called <strong>Procfile</strong>, that you include in your source code.</p><p>Whenever your push code into your remote Heroku Git repository, the app rebuilds and you have it online right away. If you have special build requirements, Heroku lets you create your own buildpacks where you can specify exactly what's to be done.</p><p>Basically, if<a class="indexterm" id="id310"/> you want to set up a WordPress blog on Heroku, you<a class="indexterm" id="id311"/> need to go through these steps:</p><div><ol class="orderedlist arabic"><li class="listitem">Locally <a class="indexterm" id="id312"/>download the latest version of WordPress.</li><li class="listitem">Create a<a class="indexterm" id="id313"/> Procfile and define what to execute (a buildpack that runs PHP and Apache2 in this case).</li><li class="listitem">Create a <code class="literal">composer.json</code> file that specifies that PHP is a dependency.</li><li class="listitem">Make some changes to the WordPress config files.</li><li class="listitem">Create the Heroku app, add add-ons (such as a database), and define environment variables on Heroku.</li><li class="listitem">Push your local code into Heroku.</li></ol></div><p>When you make a change to the code, you just Git push to Heroku to deploy the new code. You cannot edit code directly on Heroku's servers, nor can you install themes or plugins (you have to do that locally and push the new code).</p><div><img alt="The tools/services available" src="img/3946OT_07_02.jpg"/></div><p>If you chose a provider such as OpenShift instead, you will have a bit more control over your PaaS, You can connect to it with SSH and also store static files downloaded by apps.</p><p>It is something like this we are looking for; it's just that we want to host our own platform and have Docker containers used in the background.</p></div>
+<div><div><div><div><h1 class="title"><a id="ch07lvl1sec46"/>Dokku – Docker-powered mini-Heroku</h1></div></div></div><p>Dokku can <a class="indexterm" id="id314"/>be <a class="indexterm" id="id315"/>found at <a class="ulink" href="https://github.com/progrium/dokku">https://github.com/progrium/dokku</a>. It is a project that is described by its authors as follows:</p><div><blockquote class="blockquote"><p><em>"Docker powered mini-Heroku in around 100 lines of Bash."</em></p></blockquote></div><p>Feature wise, Dokku carries out deployment in the same way as Heroku does. Let's install Dokku and <a class="indexterm" id="id316"/>see what it can do for our PaaS.</p><div><div><div><div><h2 class="title"><a id="ch07lvl2sec36"/>Installation</h2></div></div></div><p>Dokku<a class="indexterm" id="id317"/> requires Ubuntu 14.04 to run, and we start by creating a new EC2 instance<a class="indexterm" id="id318"/> running that.</p><p>Here is a screenshot of what we see:</p><div><img alt="Installation" src="img/3946OT_07_03.jpg"/></div><p>When we have created an instance and have it up and running, we can start by installing Docker itself:</p><div><pre class="programlisting">
+<strong>sudo apt-get install docker.io</strong>
+</pre></div><p>When that is done, we go ahead and install Dokku.</p><p>The recommended bootstrap bash installation didn't work for me, so I cloned the repo instead:</p><div><pre class="programlisting">
+<strong>cd /tmp</strong>
+<strong>git clone https://github.com/progrium/dokku.git</strong>
+<strong>cd dokku</strong>
+<strong>sudo make install</strong>
+<strong>dokku version</strong>
+</pre></div><div><div><h3 class="title"><a id="note17"/>Note</h3><p>You can<a class="indexterm" id="id319"/> read about the installation process on the official installation page at <a class="ulink" href="http://progrium.viewdocs.io/dokku/installation">http://progrium.viewdocs.io/dokku/installation</a>.</p></div></div><p>The installation part will take a while, but it should succeed.</p><p>According to the document through the preceding link, we should edit the <code class="literal">/home/dokku/VHOST</code> file to hold the content of a domain name we plan to use. We skip this for now because it includes setting some DNS records. When we leave that file empty, we will be reaching our PaaS in the form of <code class="literal">http://ip:port</code>. We will come back to this step at a later point.</p><p>The only step left now is to create an <code class="literal">ssh</code> key pair on our local machine and add the public part in the server user Dokku's <code class="literal">authorized_keys</code> file so that we can connect with Git in a very secure way without using a password.</p><p>On your<a class="indexterm" id="id320"/> local <a class="indexterm" id="id321"/>machine, use these commands:</p><div><pre class="programlisting">
+<strong>cd ~/.ssh</strong>
+<strong>ssh-keygen –t rsa</strong>
+<strong>#I named my key pair id_rsa</strong>
+<strong>cat id_rsa.pub</strong>
+<strong>#copy the output so you have it in your clipboard</strong>
+</pre></div><p>On the server, use the following:</p><div><pre class="programlisting">
+<strong>#As your ubuntu user</strong>
+<strong>#Replace &lt;publickey&gt; with the key you just copied</strong>
+<strong>#&lt;remoteuser&gt; can be replaced with anything, like "remoteuser".</strong>
+<strong>echo "&lt;publickey&gt;" | sudo sshcommand acl-add dokku &lt;remoteuser&gt;</strong>
+</pre></div><p>If you name your <code class="literal">ssh-key</code> something other than <code class="literal">id_rsa</code>, you will have to edit your local <code class="literal">.ssh/config</code> file to get it to work.</p><p>Now the Dokku configuration is done and we should be able to start using it.</p></div><div><div><div><div><h2 class="title"><a id="ch07lvl2sec37"/>Creating a sample Dokku app</h2></div></div></div><p>It is time <a class="indexterm" id="id322"/>for us to set up a demo app just so that you can learn the process. In this case, let's take Heroku's <code class="literal">Node.js</code> sample app.</p><p>We start off by cloning Heroku's <code class="literal">node-js-sample</code> GitHub repository to get the app's content. The following tasks are all supposed to be done on your local machine, and when I enter <strong>server.com</strong>, you should enter the URL or the IP address of your server. If you use a domain, make sure that you've set up DNS records for it or entered a record in your local <code class="literal">/etc/hosts</code> file:</p><div><pre class="programlisting">
+<strong>#Clone the repo</strong>
+<strong>git clone git@github.com:heroku/node-js-sample.git</strong>
+<strong>cd node-js-sample</strong>
+<strong>#Add a Dokku git remote</strong>
+<strong>git remote add dokku dokku@server.com:first-app</strong>
+
+<strong>#Push to Dokku</strong>
+<strong>git push dokku master</strong>
+</pre></div><p>When we push to a non-existing branch or app name in Dokku, Dokku will create a new app and deploy it. When the push is done, you should see something like this at the bottom of the output:</p><div><pre class="programlisting">
+<strong>=====&gt; Application deployed:</strong>
+<strong>       http://54.191.69.5:49154</strong>
+</pre></div><p>Of course, the IP address and port will not be the same for you.</p><p>The<a class="indexterm" id="id323"/> output is displayed, as follows:</p><div><img alt="Creating a sample Dokku app" src="img/3946OT_07_04.jpg"/></div><p>Enter the <code class="literal">ip:port</code> in your web browser to find yourself a page saying <strong>Hello World</strong>. We've just deployed our first app on Dokku!</p><p>To modify and redeploy the site, we can create a file named <code class="literal">index.html</code> inside <code class="literal">public/ folder</code> in our <code class="literal">node-js-sample</code> project. This node app will always look for files in the public folder. If the requested file isn't found, the app falls back to just printing <strong>Hello World</strong>. So, if we create a file and request it, the node server will serve it to us.</p><p>Paste this as the content of the <code class="literal">index.html</code> file:</p><div><pre class="programlisting">&lt;!DOCTYPE html&gt;
+&lt;html lang="en"&gt;
+  &lt;head&gt;
+    &lt;meta charset="utf-8"&gt;
+    &lt;title&gt;Hello&lt;/title&gt;   &lt;/head&gt;
+  &lt;body&gt;
+    &lt;h1&gt;First edit!&lt;/h1&gt;
+  &lt;/body&gt;
+&lt;/html&gt;</pre></div><p>It's a simple HTML page.</p><p>Let's go<a class="indexterm" id="id324"/> ahead and create the file and push it, as shown in the following code:</p><div><pre class="programlisting">
+<strong>nano public/index.html</strong>
+<strong>#paste the HTML</strong>
+<strong>#save the file</strong>
+
+<strong>#commit your changes</strong>
+<strong>git add public/index.html</strong>
+<strong>git commit –m "Added first HTML page."</strong>
+
+<strong>#push to dokku</strong>
+<strong>git push dokku master</strong>
+</pre></div><div><div><h3 class="title"><a id="note18"/>Note</h3><p>Note from the output that the port will change every time you deploy, since a new container is created and your old container is shut down.</p></div></div><p>Later, when we add a domain name to deploy on, the URL will, of course, be the same. The Nginx config file is updated upon deployment. Point your browser to the new <code class="literal">ip:port</code>, and you should see a huge headline saying <strong>First edit!</strong>.</p><p>Whenever you make edits, just push them. Dokku will take care of the rest.</p></div><div><div><div><div><h2 class="title"><a id="ch07lvl2sec38"/>How Dokku works</h2></div></div></div><p>As I described the basic step of Heroku earlier, you might recognize the steps when deploying<a class="indexterm" id="id325"/> on Dokku, and that is also Dokku's goal. They want people like us to feel comfortable with the deployment process.</p><p>Dokku can be seen as the glue between the following tools: Docker, Buildstep, ssh-command, pluginhook, ssh, git, and nginx. The source code is just about 100 lines long, and it ships with a few plugins that together contain about 500 lines of code. This is the power of Dokku—anyone can write plugins to extend the functionality of Dokku.</p><p>We have not yet installed any plugins, and a clean installation like ours can do only basic stuff such as deploy, see an app's logs, delete an app, and run a command in the app's container. There<a class="indexterm" id="id326"/> are quite a lot of plugins; they are all listed at <a class="ulink" href="http://progrium.viewdocs.io/dokku/plugins">http://progrium.viewdocs.io/dokku/plugins</a>.</p><div><div><div><div><h3 class="title"><a id="ch07lvl3sec12"/>The receive process</h3></div></div></div><p>If we<a class="indexterm" id="id327"/> take a look at the main Dokku file (named <code class="literal">dokku</code> in the projects root), we notice that whenever a <code class="literal">receive</code> action is triggered (which happens when we <a class="indexterm" id="id328"/>push to the master branch), we see this code:</p><div><pre class="programlisting">case "$1" in
+  receive)
+    APP="$2"; IMAGE="dokku/$APP"
+    echo "-----&gt; Cleaning up ..."
+    dokku cleanup
+    echo "-----&gt; Building $APP ..."
+    cat | dokku build $APP
+    echo "-----&gt; Releasing $APP ..."
+    dokku release $APP
+    echo "-----&gt; Deploying $APP ..."
+    dokku deploy $APP
+    echo "=====&gt; Application deployed:"
+         dokku urls $APP | sed "s/^/       /"
+    echo
+    ;;</pre></div><p>Through this output we can recognize when we have pushed to the master.</p><p>If we follow the plugin chain when <code class="literal">deploy</code> is called, we end up with a plugin hook named <code class="literal">post-deploy</code> being called. A standard plugin, named <code class="literal">nginx-vhosts</code>, is triggered, and this in turn calls a function inside that plugin named <code class="literal">nginx:build-config</code>.</p><p>A code snippet from that preceding file looks like this:</p><div><pre class="programlisting">case "$1" in
+  nginx:build-config)
+    APP="$2"; DOKKU_APP_LISTEN_PORT="$3"; DOKKU_APP_LISTEN_IP="${4}"
+    VHOST_PATH="$DOKKU_ROOT/$APP/VHOST"
+    WILDCARD_SSL="$DOKKU_ROOT/tls"
+    SSL="$DOKKU_ROOT/$APP/tls"
+
+    if [[ -z "$DOKKU_APP_LISTEN_PORT" ]] &amp;&amp; [[ -f "$DOKKU_ROOT/$APP/PORT" ]]; then
+      DOKKU_APP_LISTEN_PORT=$(&lt; "$DOKKU_ROOT/$APP/PORT")
+    fi
+    if [[ -z "$DOKKU_APP_LISTEN_IP" ]] &amp;&amp; [[ -f "$DOKKU_ROOT/$APP/IP" ]]; then
+      DOKKU_APP_LISTEN_IP=$(&lt; "$DOKKU_ROOT/$APP/IP")
+    fi
+
+    [[ -f "$DOKKU_ROOT/$APP/ENV" ]] &amp;&amp; source $DOKKU_ROOT/$APP/ENV
+
+    if [[ ! -n "$NO_VHOST" ]] &amp;&amp; [[ -f "$DOKKU_ROOT/$APP/VHOST" ]]; then
+      ...
+      NGINX_CONF="$PLUGIN_PATH/nginx-vhosts/templates/nginx.conf"
+      SCHEME="http"
+      ...
+      APP_NGINX_TEMPLATE="$DOKKU_ROOT/$APP/nginx.conf.template"
+      if [[ -f $APP_NGINX_TEMPLATE ]]; then
+        echo "-----&gt; Overriding default nginx.conf with detected nginx.conf.template"
+        NGINX_CONF=$APP_NGINX_TEMPLATE
+      fi
+
+      xargs -i echo "-----&gt; Configuring {}..." &lt; $VHOST_PATH
+      # Include SSL_VHOSTS so we can redirect http to https on that hostname as well
+      NOSSL_SERVER_NAME=$(echo $NONSSL_VHOSTS $SSL_VHOSTS| tr '\n' ' ')
+
+      if [[ -n "$DOKKU_APP_LISTEN_PORT" ]] &amp;&amp; [[ -n "$DOKKU_APP_LISTEN_IP" ]]; then
+        echo "-----&gt; Creating $SCHEME nginx.conf"
+        echo "upstream $APP { server $DOKKU_APP_LISTEN_IP:$DOKKU_APP_LISTEN_PORT; }" &gt; $DOKKU_ROOT/$APP/nginx.conf
+        eval "cat &lt;&lt;&lt; \"$(&lt; $NGINX_CONF)\" &gt;&gt; $DOKKU_ROOT/$APP/nginx.conf"
+
+        echo "-----&gt; Running nginx-pre-reload"
+        pluginhook nginx-pre-reload $APP $DOKKU_APP_LISTEN_PORT $DOKKU_APP_LISTEN_IP
+
+        echo "       Reloading nginx"
+        restart_nginx
+      fi
+    else
+      if [[ -f "$DOKKU_ROOT/$APP/VHOST" ]]; then
+        echo "-----&gt; VHOST support disabled, deleting $APP/VHOST"
+        rm "$DOKKU_ROOT/$APP/VHOST"
+      fi
+      if [[ -f "$DOKKU_ROOT/$APP/nginx.conf" ]]; then
+        echo "-----&gt; VHOST support disabled, deleting nginx.conf"
+        rm "$DOKKU_ROOT/$APP/nginx.conf"
+
+        echo "-----&gt; VHOST support disabled, reloading nginx after nginx.conf deletion"
+        restart_nginx
+      fi
+    fi
+    ;;</pre></div><p>If we<a class="indexterm" id="id329"/> look through that code, we can see that it looks for a domain<a class="indexterm" id="id330"/> name in the <code class="literal">$DOKKU_ROOT/$APP/VHOST</code> file, and if that is found, sets some config variables and inserts them into a copy of the <code class="literal">templates/nginx.conf</code> file.</p><p>That file has these contents:</p><div><pre class="programlisting">server {
+  listen      [::]:80;
+  listen      80;
+  server_name $NOSSL_SERVER_NAME;
+  location    / {
+    proxy_pass  http://$APP;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade \$http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host \$http_host;
+    proxy_set_header X-Forwarded-Proto \$scheme;
+    proxy_set_header X-Forwarded-For \$remote_addr;
+    proxy_set_header X-Forwarded-Port \$server_port;
+    proxy_set_header X-Request-Start \$msec;
+  }
+  include $DOKKU_ROOT/$APP/nginx.conf.d/*.conf;
+}</pre></div><p>Now that looks very much like the nginx config we created in the last chapter, right? The post-deploy part of Dokku is basically Jason Wilder's <code class="literal">nginx-proxy</code>. They accomplish the same result, but they get there in very different ways.</p></div></div><div><div><div><div><h2 class="title"><a id="ch07lvl2sec39"/>Dokku plugins</h2></div></div></div><p>Add-ons in <a class="indexterm" id="id331"/>Heroku are called plugins in Dokku. Since we cannot specify <code class="literal">docker </code><a class="indexterm" id="id332"/>
+<code class="literal">run</code> command parameters directly from Dokku, we need plugins to connect containers and add data volume containers.</p><p>Here's a list of a few usable Dokku plugins that we'll soon use.</p><div><div><div><div><h3 class="title"><a id="ch07lvl3sec13"/>Dokku domains plugin</h3></div></div></div><p>Dokku <a class="indexterm" id="id333"/>domain plugin enables you to specify <a class="indexterm" id="id334"/>multiple domains in one app. By default, only one URL<a class="indexterm" id="id335"/> can be mapped to an app:</p><div><pre class="programlisting">
+<strong>dokku domains:set myawesomeapp.com www.myawesomeapp.com</strong>
+</pre></div><p>URL: <a class="ulink" href="https://github.com/wmluke/dokku-domains-plugin">https://github.com/wmluke/dokku-domains-plugin</a>
+</p></div><div><div><div><div><h3 class="title"><a id="ch07lvl3sec14"/>Dokku-docker-options</h3></div></div></div><p>With this <a class="indexterm" id="id336"/>plugin, you can pass any options to<a class="indexterm" id="id337"/> the Docker daemon when <code class="literal">docker run</code> command is executed. It<a class="indexterm" id="id338"/> can be used to mount volumes, link containers, and so on:</p><div><pre class="programlisting">dokku docker-options:add myapp "-v /host/path:/container/path"
+dokku docker-options:add myapp "-link container_name:alias"</pre></div><p>URL: <a class="ulink" href="https://github.com/dyson/dokku-docker-options">https://github.com/dyson/dokku-docker-options</a>
+</p></div><div><div><div><div><h3 class="title"><a id="ch07lvl3sec15"/>Volume plugin for Dokku</h3></div></div></div><p>Here's a <a class="indexterm" id="id339"/>plugin that enables you to mount volumes on<a class="indexterm" id="id340"/> your service containers. It also has commands to dump (export) and<a class="indexterm" id="id341"/> restore the data:</p><div><pre class="programlisting">
+<strong>dokku volume:add foo /path/in/container</strong>
+<strong>dokku volume:dump foo /path/in/container &gt; foo.tar.gz</strong>
+</pre></div><p>URL: <a class="ulink" href="https://github.com/ohardy/dokku-volume">https://github.com/ohardy/dokku-volume</a>
+</p></div><div><div><div><div><h3 class="title"><a id="ch07lvl3sec16"/>Dokku-link</h3></div></div></div><p>You <a class="indexterm" id="id342"/>can <a class="indexterm" id="id343"/>link containers <a class="indexterm" id="id344"/>with this plugin:</p><div><pre class="programlisting">
+<strong>dokku link:create &lt;app&gt; NAME [ALIAS]</strong>
+<strong>dokku link:delete &lt;app&gt; NAME [ALIAS]</strong>
+</pre></div><p>URL: <a class="ulink" href="https://github.com/rlaneve/dokku-link">https://github.com/rlaneve/dokku-link</a>
+</p></div><div><div><div><div><h3 class="title"><a id="ch07lvl3sec17"/>MariaDB plugin for Dokku</h3></div></div></div><p>This <a class="indexterm" id="id345"/>plugin enables you to create and use MariaDB<a class="indexterm" id="id346"/> containers. MariaDB can be used as a replacement for MySQL and is generally faster:</p><div><pre class="programlisting">
+<strong>dokku mariadb:create &lt;app&gt;</strong>
+<strong>dokku mariadb:link &lt;app&gt; &lt;db&gt;</strong>
+<strong>dokku mariadb:dumpraw &lt;app&gt;</strong>
+</pre></div><p>URL: <a class="ulink" href="https://github.com/Kloadut/dokku-md-plugin">https://github.com/Kloadut/dokku-md-plugin</a>
+</p><p>MySQL<a class="indexterm" id="id347"/> plugin: <a class="ulink" href="https://github.com/hughfletcher/dokku-mysql-plugin">https://github.com/hughfletcher/dokku-mysql-plugin</a>
+</p></div></div></div>
+<div><div><div><div><h1 class="title"><a id="ch07lvl1sec47"/>Setting up a WordPress app with Dokku</h1></div></div></div><p>Now that we have played around with Dokku for a while, exploring how it works and what <a class="indexterm" id="id348"/>plugins are available, it's time to set up a WordPress site. After all, that's why we were exploring it in the first place.</p><p>This is <a class="indexterm" id="id349"/>what we are going to do:</p><div><ol class="orderedlist arabic"><li class="listitem">Create a new local Git repository and download WordPress on it.</li><li class="listitem">Install the MariaDB plugin, create a database, and link it to our app.</li><li class="listitem">Configure WordPress to connect to our linked database.</li></ol></div><p>On your local computer, download and unpack the latest version of WordPress and create a new Git repository. Create a <code class="literal">composer.json</code> file to tell Dokku that this is a PHP app we are creating.</p><div><div><h3 class="title"><a id="note19"/>Note</h3><p>You can read more about how to hint Dokku on what type of app you are creating at <a class="ulink" href="https://devcenter.heroku.com/articles/buildpacks">https://devcenter.heroku.com/articles/buildpacks</a> (yes, Dokku uses Heroku buildpacks) and looks to detect functions. Dokku uses a library called Buildstep<a class="indexterm" id="id350"/> to make application builds using Docker <a class="indexterm" id="id351"/>and Buildpacks.</p></div></div><p>Let's go ahead and get started now.</p><p>I used a server on my domain, <a class="ulink" href="http://ohdokku.com">ohdokku.com</a>, for this app:</p><div><pre class="programlisting">
+<strong>#Download Wordpress</strong>
+<strong>curl -O https://wordpress.org/latest.zip</strong>
+<strong>unzip latest.zip</strong>
+<strong>mv wordpress wp1</strong>
+<strong>cd wp1</strong>
+
+<strong>#Create a new Git repo</strong>
+<strong>git init</strong>
+<strong>git add .</strong>
+<strong>git commit –m "Initial commit."</strong>
+
+<strong>#Create a composer.json file to tell Dokku we are using php</strong>
+<strong>echo '{}' &gt; composer.json</strong>
+<strong>git add .</strong>
+<strong>git commit -am "Add composer.json for PHP app detection."</strong>
+
+<strong>#Add a remote so we can push to Dokku</strong>
+<strong>git remote add dokku dokku@ohdokku.com:wp1</strong>
+</pre></div><p>On the server we have to install the MariaDB or MySQL plugin:</p><div><pre class="programlisting">
+<strong>cd /var/lib/dokku/plugins</strong>
+<strong>sudo git clone --recursive https://github.com/Kloadut/dokku-md-plugin mariadb</strong>
+<strong>cd mariadb/dockerfiles/</strong>
+<strong>git checkout master</strong>
+<strong>cd ../../</strong>
+<strong>sudo dokku plugins-install</strong>
+</pre></div><p>Back to<a class="indexterm" id="id352"/> the client side (you can do this on the <a class="indexterm" id="id353"/>server as well, but the whole point of this type of PaaS is being able to do all of this repetitive stuff on the client).</p><p>The result is as follows:</p><div><img alt="Setting up a WordPress app with Dokku" src="img/3946OT_07_05.jpg"/></div><p>As you can see, the output from the create command will show our database credentials.</p><p>Now that the database is set up, we can go ahead and push our app for the first time:</p><div><pre class="programlisting">
+<strong>git push dokku master</strong>
+</pre></div><p>You should notice that Dokku detects that you are pushing a PHP app. Since we haven't specified anything at all in our <code class="literal">composer.json</code> file, a default package of PHP and Apache2 will fire up.</p><p>Create a MariaDB database called wp1_db:</p><div><pre class="programlisting">
+<strong>ssh dokku@ohdokku.com mariadb:create wp1_db</strong>
+<strong>ssh dokku@ohdokku.com mariadb:link wp1 wp1_db</strong>
+</pre></div><p>If we<a class="indexterm" id="id354"/> enter <code class="literal">ip:port</code> in a browser, a known <a class="indexterm" id="id355"/>page welcomes us—the WordPress installation page. When we click on the <strong>Continue</strong> button, we see that we can't continue before we create a <code class="literal">wp-config.php</code> file.</p><p>We have just created the link between the MariaDB container and the WP container, but we haven't made the link in code yet. WordPress has no idea how to connect to the database.</p><p>We start off by renaming the <code class="literal">wp-config-sample.php</code> file to <code class="literal">wp-config.php</code> and opening the file in an editor:</p><div><pre class="programlisting">// ** MySQL settings - You can get this info from your web host ** //
+/** The name of the database for Wordpress */
+define('DB_NAME', getenv('DB_NAME'));
+
+/** MySQL database username */
+define('DB_USER', 'root');
+
+/** MySQL database password */
+define('DB_PASSWORD', getenv('DB_PASSWORD'));
+
+/** MySQL hostname */
+define('DB_HOST', getenv('DB_HOST').":".getenv('DB_PORT'));</pre></div><p>Edit the credentials as you just saw to make WordPress look for environment variables that our linked MariaDB gives us:</p><div><pre class="programlisting">
+<strong>git add –A .</strong>
+<strong>git commit –m "Add wp-config.php and add credentials."</strong>
+<strong>git push dokku master</strong>
+</pre></div><p>Wait until you get a new <code class="literal">ip:port</code> that our app is deployed to, and then enter the info in your web browser.</p><p>Now you should be able to install WordPress.</p><p>The output is as follows:</p><div><img alt="Setting up a WordPress app with Dokku" src="img/3946OT_07_06.jpg"/></div><div><div><div><div><h2 class="title"><a id="ch07lvl2sec40"/>Starting multiple apps</h2></div></div></div><p>To start<a class="indexterm" id="id356"/> multiple apps with Dokku, just repeat the<a class="indexterm" id="id357"/> simple process, as follows:</p><div><ol class="orderedlist arabic"><li class="listitem">Create a local Git repository with WordPress in it, and create a remote Git repository.</li><li class="listitem">Create and link a database with the MariaDB plugin.<p>Edit your <code class="literal">wp-config.php</code> file.</p></li><li class="listitem">Push to deploy.</li></ol></div><p>The name you set on your app when adding the <code class="literal">remote</code> from Git command:</p><div><pre class="programlisting">
+<strong>git remote add dokku dokku@ohdokku.com:wp1</strong>
+</pre></div><p>This command will create the URL to the WordPress site (<a class="ulink" href="http://wp1.ohdokku.com">wp1.ohdokku.com</a>). You can set a complete custom domain as the name like: <code class="literal">git remote add dokku dokku@ohdokku.com:wp1.oskarhane.com</code> that will work if I point <a class="ulink" href="http://wp1.oskarhane.com">wp1.oskarhane.com</a> to my server.</p></div><div><div><div><div><h2 class="title"><a id="ch07lvl2sec41"/>Adding a domain to Dokku</h2></div></div></div><p>I waited with setting up domains to Dokku, since it involves logging in to a DNS provider<a class="indexterm" id="id358"/> and setting up DNS records to point the <a class="indexterm" id="id359"/>domain to our server. We set up DNS records to<a class="indexterm" id="id360"/> point our domain name to our server's IP address so that our server can be reached by entering our domain name in the web browser's location bar.</p><p>I usually use Amazon Route 53 to handle DNS for domains, since they're very stable and easy to use. It costs about a dollar a month for low-traffic sites. The setup is the same for any DNS provider. You have to add two records, one for <code class="literal">yourdomain.com</code> and one for <code class="literal">*.yourdomain.com</code>.</p><p>The records we are going to enter are A-records, which means that we point the domain names to <a class="indexterm" id="id361"/>a specific IPv4 address. The <strong>Time To Live</strong> (<strong>TTL</strong>) value is not important right now, but it means TTL and tells all other DNS servers that get requests for this domain how long they can cache the current value.</p><p>The output is as follows:</p><div><img alt="Adding a domain to Dokku" src="img/3946OT_07_07.jpg"/></div><p>You<a class="indexterm" id="id362"/> should, of course, change the IP to the public IP <a class="indexterm" id="id363"/>your server has. When setting the A-record for the <a class="indexterm" id="id364"/>wildcard subdomains, just enter <em>*</em> in the input field at the top.</p><p>To see whether your DNS provider can resolve your domain name, execute <code class="literal">ping yourdomain.com</code> in a terminal. You'll see the resolved IP right there. If you've just bought the domain, you should be able to see the result right away, but if you've used the domain for a while, the old TTL value might delay the effect a bit.</p><p>If you want to wait for the setting of DNS records (which is common during development), you can set local records on your computer by editing the <code class="literal">/etc/hosts</code> file, as shown in the following command snippet:</p><div><pre class="programlisting">
+<strong>sudo nano /etc/hosts</strong>
+
+<strong>#Add this line to the file</strong>
+<strong>54.191.69.5 ohdokku.com</strong>
+<strong>#Save and exit</strong>
+</pre></div><p>One<a class="indexterm" id="id365"/> thing to remember here is that you can't <a class="indexterm" id="id366"/>enter records for wildcard subdomains. If you plan to develop <a class="indexterm" id="id367"/>multiple apps on subdomains, you have to enter one record for each of them. Also, don't forget to remove these records when you're done; it can get quite confusing (and interesting) when you forget you have records for the domains you used.</p><p>On the Dokku server, create a file named <code class="literal">/home/dokku/VHOST</code> and enter <code class="literal">yourdomain.com</code> in it.</p><p>All apps being created from now on will be subdomains of this domain, unless you give the apps complete domain names.</p></div><div><div><div><div><h2 class="title"><a id="ch07lvl2sec42"/>More notes on Dokku</h2></div></div></div><p>Just like<a class="indexterm" id="id368"/> Heroku, Dokku makes it easy for developers to<a class="indexterm" id="id369"/> deploy and push code. If you download a WordPress plugin straight from your Dokku app, it will be gone when you restart your Dokku app. It is advisable to keep a local copy that can easily be started or a dev, test, and staging server that you can download new plugins on and push to your Dokku app from to ensure they are persistent.</p><div><div><h3 class="title"><a id="tip02"/>Tip</h3><p>Images and videos should be uploaded to something such as Amazon via a plugin when using this kind of infrastructure.</p></div></div><p>You must also have your WordPress site send e-mails from an external e-mail provider, such as Mandrill. A plugin like WP Mail SMTP will solve that for you.</p><p>We still have a few manual steps (for example, downloading WordPress and editing <code class="literal">wp-config.php</code>) to do when deploying a WordPress app on Dokku, but the task of creating a custom Buildstep to remove the manual parts is beyond the scope of this book.</p><p>Another option is to have Composer handle the installation of WordPress with the <code class="literal">composer.json</code> file, but WordPress does not officially support this and it requires a few hacks, so<a class="indexterm" id="id370"/> I'll leave that up to you.</p><div><div><h3 class="title"><a id="note20"/>Note</h3><p>If you<a class="indexterm" id="id371"/> want to learn more about composer, you<a class="indexterm" id="id372"/> can go to the provided link <a class="ulink" href="http://wpackagist.org">http://wpackagist.org</a>.</p></div></div></div></div>
+<div><div><div><div><h1 class="title"><a id="ch07lvl1sec48"/>Summary</h1></div></div></div><p>In this chapter, we went all the way to create our own PaaS by adding deployment to the process. What we looked into up to this chapter was all about organizing containers and direct incoming traffic so that visitors can reach the correct container.</p><p>With Dokku, we don't have to worry about that; all we have to care about is our code. As soon as we push our code, Dokku takes over and does the right things. Dokku makes it look really easy and that is why, I started from manually creating and linking containers and configuring reverse proxies—so that you would understand what Dokku does.</p><p>The next chapter takes us to the bleeding edge: what's being developed right now that can take private PaaS with Docker one step further?</p></div></body></html>

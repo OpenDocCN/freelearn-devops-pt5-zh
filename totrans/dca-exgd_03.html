@@ -1,0 +1,597 @@
+<html><head></head><body>
+        
+
+                            
+                    Building Docker Images
+                
+            
+            
+                
+<p class="mce-root">Building images is the first step in deploying your own container-based applications. It is a simple process and anyone can build images from scratch, but it is not easy to create images with sufficient quality and security for production. In this chapter, we will learn all the basics and tips and tricks for creating good, production-ready images. We will review the requirements for saving and distributing our work, as well as how to improve these processes to get better performance when the number of images and releases is substantial in enterprise environments.</p>
+<p>In this chapter, we will cover the following topics:</p>
+<ul>
+<li>Building Docker images</li>
+<li>Understanding copy-on-write filesystems</li>
+<li>Building images with a Dockerfile reference</li>
+<li>Image tagging and meta-information</li>
+<li>Docker registries and repositories</li>
+<li>Securing images</li>
+<li>Managing images and other related objects</li>
+<li>Multistage building and image caches</li>
+<li>Templating images</li>
+<li>Image releases and updates</li>
+</ul>
+<p>Let's get started!</p>
+<h1 id="uuid-83104522-241a-4161-b8d2-5f53d09fcd73">Technical requirements</h1>
+<p>In this chapter, we will learn about Docker image building concepts. We'll provide some labs at the end of this chapter that will help you understand and learn about the concepts explained here. These labs can be run on your laptop or PC using the provided Vagrant standalone environment or any already deployed Docker host of your own. You can find additional information in this book's GitHub repository at <a href="https://github.com/PacktPublishing/Docker-Certified-Associate-DCA-Exam-Guide.git">https://github.com/PacktPublishing/Docker-Certified-Associate-DCA-Exam-Guide.git</a>.</p>
+<p>Check out the following video to see the Code in Action: </p>
+<p>"<a href="https://bit.ly/31v3AJq" target="_blank">https://bit.ly/31v3AJq</a>"</p>
+<h1 id="uuid-422d60e4-011c-4e8a-879d-bbd510d9659d">Building Docker images</h1>
+<p class="mce-root">Developers create their own images, along with their own code and runtime components, to run their application components. However, the building process usually starts with a previous image. All image build processes will start with a <kbd>FROM</kbd> statement. This indicates that the previous image (compound on layers) will be used to add new components, binaries, configurations, or actions for building our new image.</p>
+<p class="mce-root">You may be asking yourself, <em>who is responsible for image creation?</em> Developers will probably create application images if they are not automatically generated using Continuous Integration platforms, but there will be teams who create images to be used by other users as base images. For example, database administrators would create database base images because they know what components should be included and how to ensure their security. Developers will take those base images for their components. In a big organization, there will be many teams creating images, or at least defining what components must be included, which users to use, ports to expose, and so on.</p>
+<p class="mce-root">There is something else, however. Many applications these days come prepared for container environments, and software manufacturers will provide you with images to deploy their software. Enterprises will look for homogenization and architecture, while DevOps teams will provide their colleagues with standard base images. The container's infrastructure runtime would be common to all of them and monitoring applications, middleware, databases, and so on would be running on this environment alongside developed business application components.</p>
+<p>There are three methods for creating images:</p>
+<ul>
+<li>Using a file with all the instructions to create this image (Dockerfile)</li>
+<li>Interacting with files in different container layers, executing one container, modifying its content, and then storing the changes made (commit)</li>
+<li>Using an empty layer and adding components by hand, file by file, also known as creating an image from scratch</li>
+</ul>
+<p>Now, we will review each one, along with their pros and cons and use cases.</p>
+<h2 id="uuid-d0bbdbde-17a5-4d13-9191-55b129cb5867">Creating images with Dockerfiles</h2>
+<p>A Dockerfile is a script file that describes all the steps required to create a new image. Each step will be interpreted and, in many cases, create a container to execute declared changes against previous layers. On this Dockerfile, we will have a guide to creating this image. This guide creates a reproducible process. We will ensure that every time we use this script, we will get the same results. Of course, this can depend on some variables, but with some key mechanisms, we can ensure the same results. In this chapter, we will cover the main primitives available for creating image Dockerfiles.</p>
+<p>A Dockerfile looks similar to the following:</p>
+<pre>FROM ubuntu:18.04<br/>RUN apt-get update -qq &amp;&amp; apt-get install -qq package1 package2<br/>COPY . /myapp<br/>RUN make /myapp<br/>CMD python /myapp/app.py</pre>
+<p>In this simple example, and as we mentioned previously, we have a <kbd>FROM</kbd> sentence at the beginning:</p>
+<ol>
+<li>First, we used Ubuntu 18.04 as the base image. To use this image, we need it in our building environment. Therefore, if the image is not present in our environment, Docker daemon will download its layers for us to make it available locally for the next steps. This will happen automatically; Docker daemon will do this for us.</li>
+<li>Using the downloaded Ubuntu 18.04 layers, Docker will automatically run a container using this image and execute the declared commands since we used the <kbd>RUN</kbd> primitive. In this simple case, the shell (because it is the default command on the Ubuntu 18.04 image) will execute <kbd>apt-get update</kbd> to update the container package cache. If everything goes well with this command, it will execute the installation of <kbd>package1</kbd> and <kbd>package2</kbd> using <kbd>apt-get install</kbd>.</li>
+</ol>
+<ol start="3">
+<li>After software installation, Docker will execute a <kbd>Docker container commit</kbd> command internally to persist these changes on a new layer in order to use them as a base for the next step. The third line will copy our current directory content into the application code directory on a new running container.</li>
+<li>The next line will execute <kbd>make</kbd> (this is just an example; we haven't said anything about the programming language used for my application and so on). This line will run this action in a new container. As a result, a new image will be created automatically when the action has finished.</li>
+<li>We learned that a container is always created using an image as a template. The last line of code defines the command line to be run each time we create a container using this image.</li>
+</ol>
+<p>In summary, Dockerfiles provide a guide of all the steps required to create an image so that we can run our application. It is a reproducible process and therefore, every time we create a new image using this file, we should obtain the same results (for example, in this case, we have updated the package cache and installed the required software; perhaps these packages changed since last time we did a build, but if not, we will have the same image).</p>
+<p>The built image has a unique identification in the <kbd>algorithm:hexadecimal_code_using_algorithm</kbd> format. This means that every time we build this image, we will get the same image identification unless there is some kind of change that's made during the process. This image ID, or digest ID, is calculated using an algorithm in relation to a layer's content, so we will get a new one with any layer change. This identification allows Docker Engine to verify whether the image described is the correct one to use. A Docker image contains information about all of its layers and informs Docker Engine of the layers' content that is required for the new container.</p>
+<p>When we inspect the image information, we will get all the necessary layers to create this image, <kbd>RootFS</kbd>. Here is an example:</p>
+<pre>"RootFS": {<br/> "Type": "layers",<br/> "Layers": [<br/> "sha256:f1b5933fe4b5f49bbe8258745cf396afe07e625bdab3168e364daf7c956b6b81",<br/> "sha256:402522b96a27c1af04af5650819febc11f71db14152b1db8e5eab1ae581fdb2e",<br/> "sha256:cf2850b10a1aba79774a291266262f1af49fac3db11341a5ca1a396430f17507",<br/> "sha256:c1912ec50df66e3e013851f6deb80f41810b284509eebc909811115a97a1fe01"<br/> ]<br/> }</pre>
+<p>This output shows different layers being created using defined code in the Dockerfile. These layers will be interchangeable between images wherever possible. If we create an image using Dockerfile's first two lines, the layers that are created by those commands will be shared with the previous image. This ensures minimum disk space usage.</p>
+<h2 id="uuid-83458c6c-adee-4860-8193-84b5e6120da0">Creating images interactively </h2>
+<p>Images can be created interactively by running a container and making changes on the fly to <kbd>rootfs</kbd>. This is very useful when an application's installation cannot be automated but lacks reproducibility. Let's look at this process in action using an example:</p>
+<ol>
+<li>Start an interactive container:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ docker container run -ti debian</strong><br/><strong> Unable to find image 'debian:latest' locally</strong><br/><strong> latest: Pulling from library/debian</strong><br/><strong> 4a56a430b2ba: Pull complete</strong><br/><strong> Digest: sha256:e25b64a9cf82c72080074d6b1bba7329cdd752d51574971fd37731ed164f3345</strong><br/><strong> Status: Downloaded newer image for debian:latest</strong><br/><strong> root@60265b7c8a61:/#</strong></pre>
+<ol start="2">
+<li>Once started, we will receive a command prompt because we launched the container by allocating a pseudo-terminal and did so interactively. We need to update the package's database and then install, for example, the <kbd>postfix</kbd> package, which needs some interactive configurations (please note that some of the output will be truncated and omitted):</li>
+</ol>
+<pre style="padding-left: 60px"><strong>root@60265b7c8a61:/# apt-get update -qq</strong><br/><strong> root@60265b7c8a61:/# apt-get install postfix</strong><br/><strong> Reading package lists... Done</strong><br/><strong> Building dependency tree</strong><br/><strong> Reading state information... Done</strong><br/><strong> The following additional packages will be installed:</strong><br/><strong> bzip2 cpio file libexpat1 libicu63 .....</strong><br/><strong> Suggested packages:</strong><br/><strong> bzip2-doc libarchive1 libsasl2-modules-gssapi-mit | libsasl2-modules-gssapi-heimdal  .....</strong><br/><strong> The following NEW packages will be installed:</strong><br/><strong> bzip2 cpio file libexpat1 libicu63 libmagic-mgc libmagic1 l ....</strong><br/><strong> 0 upgraded, 29 newly installed, 0 to remove and 5 not upgraded.</strong><br/><strong> Need to get 19.0 MB of archives.</strong><br/><strong> After this operation, 76.4 MB of additional disk space will be used.</strong><br/><strong> Do you want to continue? [Y/n] y</strong><br/><strong> Get:1 http://cdn-fastly.deb.debian.org/debian buster/main amd64 libpython3.7-minimal amd64 3.7.3-2 [588 kB]</strong><br/><strong> .....</strong><br/><strong> .....</strong><br/><strong> debconf: falling back to frontend: Teletype</strong><br/><strong> Postfix Configuration</strong><br/><strong> ---------------------</strong><br/><strong>Please select the mail server configuration type that best meets your needs.</strong><br/><strong>No configuration:</strong><br/><strong> Should be chosen to leave the current configuration unchanged.</strong><br/><strong> Internet site:</strong><br/><strong> Mail is sent and received directly using SMTP.</strong><br/><strong> Internet with smarthost:</strong><br/><strong> Mail is received directly using SMTP or by running a utility such</strong><br/><strong> as fetchmail. Outgoing mail is sent using a smarthost.</strong><br/><strong> Satellite system:</strong><br/><strong> All mail is sent to another machine, called a 'smarthost', for delivery.</strong><br/><strong> Local only:</strong><br/><strong> The only delivered mail is the mail for local users. There is no network.</strong><br/><br/><strong>1. No configuration 2. Internet Site 3. Internet with smarthost 4. Satellite system 5. Local only</strong><br/><strong> General type of mail configuration: 1</strong><br/><strong>Unpacking postfix (3.4.5-1) ...</strong><br/><strong> ......</strong><br/><strong> ......</strong><br/><strong> Adding group `postfix' (GID 102) ...</strong><br/><strong> Done.</strong><br/><strong> Adding system user `postfix' (UID 101) ...</strong><br/><strong> Adding new user `postfix' (UID 101) with group `postfix' ...</strong><br/><strong> Not creating home directory `/var/spool/postfix'.</strong><br/><strong> Creating /etc/postfix/dynamicmaps.cf</strong><br/><strong> Adding group `postdrop' (GID 103) ...</strong><br/><strong> Done.</strong><br/><strong> /etc/aliases does not exist, creating it.</strong><br/><strong>Postfix (main.cf) was not set up. Start with</strong><br/><strong> cp /usr/share/postfix/main.cf.debian /etc/postfix/main.cf</strong><br/><strong> . If you need to make changes, edit /etc/postfix/main.cf (and others) as</strong><br/><strong> needed. To view Postfix configuration values, see postconf(1).</strong><br/><strong>After modifying main.cf, be sure to run 'service postfix reload'.</strong><br/><strong>invoke-rc.d: could not determine current runlevel</strong><br/><strong> invoke-rc.d: policy-rc.d denied execution of start.</strong><br/><strong> Setting up libpython3-stdlib:amd64 (3.7.3-1) ...</strong><br/><strong> Setting up python3.7 (3.7.3-2) ...</strong><br/><strong> Setting up python3 (3.7.3-1) ...</strong><br/><strong>......</strong><br/><strong>......</strong><br/><strong> Processing triggers for libc-bin (2.28-10) ...</strong></pre>
+<ol start="3">
+<li>The software was installed, and you were asked to confirm the installation of the <kbd>postfix</kbd> package and some default configuration. Now, we can exit the current container:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>root@60265b7c8a61:/# exit</strong></pre>
+<ol start="4">
+<li>What we have done here is exit the current main process (which is a shell in a Debian image) and, as a result, returned to our host. We will look for the last container that was executed on our host and then save the container layer as a new image layer (which means that we have created a new image with a name or identification if we omit it):</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ docker container ls -l</strong><br/><strong>CONTAINER ID IMAGE COMMAND LABELS</strong><br/><strong>f11f8ad3b336 debian "bash"</strong><br/><br/><strong>$ docker container commit f11f8ad3b336 debian-with-postfix</strong><br/><strong>sha256:a852d20d57c95bba38dc0bea942ccbe2c409d48685d8fc115827c1dcd5010aa6</strong></pre>
+<ol start="5">
+<li>Finally, we review the newly created image on our host system (the IDs may change in your environment):</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ docker image ls</strong><br/><strong>IMAGE ID REPOSITORY TAG CREATED AT</strong><br/><strong>a852d20d57c9 debian-with-postfix latest 2019-10-05 13:18:45 +0200 CEST</strong><br/><strong>c2c03a296d23 debian latest 2019-09-12 01:21:51 +0200 CEST</strong><br/></pre>
+<p>Using this method, we have created a new image interactively using a previously running Debian Docker container. As we can see, the new image has a different digest. If we inspect its meta-information, we can identify its preceding image layers:</p>
+<pre>        "RootFS": { <br/>          "Type": "layers", <br/>          "Layers": [ <br/>             "sha256:78c1b9419976227e05be9d243b7fa583bea44a5258e52018b2af4cdfe23d148d", <br/>             "sha256:998e883275f6192039dd6eff96ece024e259cf74dd362c44c5eb9db9f3830aa0" <br/>           ]<br/>        }<br/></pre>
+<p>One key concept of images that are created using a Docker container commit is that they are not reproducible; you really don't know how they were created, so the necessary steps should be documented in relation to updates and management. </p>
+<p>There is an image action that provides a detailed review of the steps to create an image. <kbd>docker image history</kbd> will provide a historic view of the steps that were taken to create that image. However, it will not work on images that are created using committed containers. We will just have a line with a bash, for example, indicating that all the actions that were taken were made on an active container and therefore, no additional information can be extracted. For example, using the previously created image, executing <kbd>docker image history debian-with-postfix</kbd> will provide the following output:<br/>
+<br/>
+<img src="img/e4207a0e-d19a-4867-98c6-eb8f8080ffdc.jpg" style="width:56.67em;height:6.00em;"/><br/>
+<br/></p>
+<h2 id="uuid-3a50a1ca-8b8d-47bc-ad8c-20d29c3c7015">Creating images from scratch</h2>
+<p>Creating images from scratch is the most effective method. In this case, we will use a Dockerfile, as described in the first method, but the initial base image will be an empty reserved one known literally as <kbd>scratch</kbd>. A simple example definition will look as follows:</p>
+<pre>FROM scratch<br/>ADD hello /<br/>CMD ["/hello"]</pre>
+<p>The main difference in the Dockerfile definition is the <kbd>FROM</kbd> line because we use a defined empty image named <kbd>scratch</kbd>. <kbd>scratch</kbd> is not a real image; it only contains the root filesystem structure and its meta-information. Images built using this method must contain all binaries, libraries, and files required by our process (as should always be the case). However, we are not using a predefined image and its content; it will be empty and we have to add each required file. This procedure is not easy and requires much more practice, but images are way better because they will only contain the pieces required for our application. We will see a complete lab at the end of this chapter. </p>
+<h1 id="uuid-3ad3c80c-afc8-41bb-b316-348cd3f7b5ea">Understanding copy-on-write filesystems</h1>
+<p>In the previous chapter, we learned what a container is. The isolated process or processes running inside a container will have their own root filesystem among other namespaces. The container adds a thin layer on top of image layers and every change made during the execution of its processes will be stored only on this layer. In order to manage these changes, the Docker storage driver will use stackable layers and <strong>copy-on-write</strong> (sometimes referenced as <strong>CoW</strong>).</p>
+<p>When a process inside a container needs to modify a file, the Docker daemon storage filesystem mechanism will make a copy of that file from the underlying layers to the top one. These are only available for container usage. The same happens when a new file is created; it will only be written to the top container storage layer. All the other processes running on other containers will manage their own version of the file. In fact, this will be the original file from the other layers if no changes were made. Each container uses its own top layer to write file changes.</p>
+<p>We have seen how the image building process works using containers for each layer's creation. We learned that we can commit a container's layers to obtain a new image. The creation of images using Dockerfiles will run intermediate containers using previous images that will be committed in order to obtain an intermediate image with all file changes between their layers. This process will run sequentially, following the order defined in the Dockerfile's code. As a result, an image will be created that's a compendium of thin layers with the changes or differences between them.</p>
+<p class="CDPAlignLeft CDPAlign">Docker copy-on-write reduces the space needed to run containers and the time required to launch them because it is only required for the creation of this writable layer for each container:</p>
+<div><img src="img/bd2f1683-477f-4674-9674-c80b5074e3a2.jpg" style=""/></div>
+<p>This image represents an NGINX process running as a container. The base image was created from a fresh <kbd>alpine</kbd> 3.5 image. We added some packages, performed some configurations, and copied our own <kbd>nginx.conf</kbd> file. Finally, we added some meta-information to be able to create containers using this image, declared which port we will use to expose NGINX, and declared the command line that will be used to run a container by default, starting NGINX in the foreground.</p>
+<p>There are three strategies for CoW logic:</p>
+<ul>
+<li>On AUFS and overlay-based drivers, Docker uses union filesystems</li>
+<li>On BTFS and ZFS drivers, Docker uses filesystem snapshots</li>
+<li>On device-mapper (available on a Red Hat-like OS), Docker uses an LVM snapshot for blocks</li>
+</ul>
+<p>Nowadays, almost all Docker host OSes use overlay-based drivers by default whenever possible. There are some old implementations that use block devices instead, but today, these are deprecated. Overhead added by the CoW process depends on the driver used. </p>
+<p>We can review how much space a container is using. Docker provides the <kbd>docker container ls -s/--size</kbd> option for this. It will return the current thin layer's used space and the read-only data used from the original image, defined as <strong>virtual</strong>. To understand how much space containers are really consuming, we will need to combine both sizes for each container to obtain the total amount of data used by all containers in our environment. This will not include volumes or a container's log files, among other small pieces that contribute to real used space. </p>
+<p>CoW was prepared for maximum disk space efficiency, but it depends on how many layers are shared in your local images and how many containers will run using the same images. As you can imagine, containers that write a lot of data to their writable layer consume much more space than other containers.</p>
+<p>CoW is a very fast process, but for heavy-write operations on containers, it is not enough. If we have a process that requires the creation of many small files, a very deep directory structure, or just very big files, we need to bypass CoW operations because performance will be impacted. This will lead us to using volumes to mitigate such situations. We will learn about volumes, which are the objects used for container persistent storage, in <a href="e7804d8c-ed8c-4013-8449-b746ee654210.xhtml">Chapter 4</a>, <em>Container Persistency and Networking</em>.</p>
+<h1 id="uuid-32e4b537-eddc-4eef-a75f-d5436c20939a">Building images with a Dockerfile reference</h1>
+<p>As we mentioned previously, building images is easy, but building good images is not. This section will guide you through the basics and provide you with tips and tricks that you can use to improve the image building process using Dockerfiles.</p>
+<h2 id="uuid-2e5b0dfc-ee07-4ebe-99bf-577fc47634a5">Dockerfile quick reference</h2>
+<p>We have already learned which methods are available for building images. For production, it is recommended to use Dockerfiles because this method provides reproducibility and we can use a code versioning methodology. We will introduce the main Dockerfile instructions in their standard order of usage:</p>
+<table style="border-collapse: collapse;width: 100%" border="1">
+<tbody>
+<tr>
+<td style="width: 13.94%" class="CDPAlignCenter CDPAlign"><strong>Instruction</strong></td>
+<td style="width: 85.4792%" class="CDPAlignCenter CDPAlign"><strong>Description and usage</strong></td>
+</tr>
+<tr>
+<td style="width: 13.94%" class="CDPAlignCenter CDPAlign"><kbd>FROM</kbd></td>
+<td style="width: 85.4792%">
+<p class="mce-root">This instruction sets the base image and initializes a new build (we will review this concept in the <em>Multistage building and image caches</em> section, later in this chapter). It is the only mandatory instruction that all Dockerfiles should start with. We can use any valid image as the base image for building or the reserved <kbd>scratch</kbd> word to start with an empty root filesystem, as we learned in the previous section.</p>
+<p>We can define a name for the build stage initialized using <kbd>AS name</kbd> in the same <kbd>FROM</kbd> instruction. We will use it in the <em>Multistage building</em> section at the end of this chapter.</p>
+<p>The base image can be defined using either its image name (repository) and a specific tag (version of that image) or its digest; for example, <kbd>FROM &lt;image&gt;[:tag] or FROM &lt;image&gt;[@digest]</kbd>.</p>
+</td>
+</tr>
+<tr>
+<td style="width: 13.94%" class="CDPAlignCenter CDPAlign"><kbd>ARG</kbd></td>
+<td style="width: 85.4792%">
+<p class="mce-root">The <kbd>ARG</kbd> instruction defines a variable that will be set to the value provided when building, passing its value as an argument using <kbd>--build-arg &lt;variable&gt;=&lt;value&gt;</kbd>. To avoid problems when building with missing values, we can use <kbd>ARG</kbd> to define a default value for a variable that will be overwritten if an argument is passed.</p>
+<p class="mce-root"><kbd>ARG</kbd> will take the value every time it is invoked. This is very important when creating Dockerfiles.</p>
+<p><kbd>ARG</kbd> can be used, preceding the <kbd>FROM</kbd> instruction, to specify different base images using arguments.</p>
+</td>
+</tr>
+<tr>
+<td style="width: 13.94%" class="CDPAlignCenter CDPAlign"><kbd>LABEL</kbd></td>
+<td style="width: 85.4792%">
+<p class="mce-root">With <kbd>LABEL</kbd>, we can add meta-information to the image. This information should be in the key-value format and we can include many keys and values in the same <kbd>LABEL</kbd> sentence. Here, you have a number of brief examples:</p>
+<pre>LABEL version="1.0"<br/>LABEL description="This image has these \<br/>and these properties...."
+LABEL maintainer="Javier Ramirez" team="Docker Infrastructures"  environment="preproduction"</pre></td>
+</tr>
+<tr>
+<td style="width: 13.94%" class="CDPAlignCenter CDPAlign"><kbd>ENV</kbd></td>
+<td style="width: 85.4792%">
+<p class="mce-root">With the <kbd>ENV</kbd> instruction, we can set an environment variable for the next step and all subsequent steps thereafter. We can add more than one environment variable in the same sentence and values will be overwritten if we specify new values during Docker container creation:</p>
+<pre>ENV DATABASE_NAME=TEST</pre></td>
+</tr>
+<tr>
+<td style="width: 13.94%" class="CDPAlignCenter CDPAlign"><kbd>WORKDIR</kbd></td>
+<td style="width: 85.4792%">
+<p class="mce-root"><kbd>WORKDIR</kbd> sets the working directory for the next sentences and subsequent ones thereafter. We can specify full paths or relative ones:</p>
+<pre>WORKDIR /myappcode</pre></td>
+</tr>
+<tr>
+<td style="width: 13.94%" class="CDPAlignCenter CDPAlign"><kbd>RUN</kbd></td>
+<td style="width: 85.4792%">
+<p class="mce-root"><kbd>RUN</kbd> will probably be one of the most frequently used sentences in your Dockerfiles. It will execute all commands in the line in a new layer and will commit the results on a new one (as we described in the previous chapter). This new layer will be used in the next sentence as a base layer, with the changes made by the <kbd>RUN</kbd> sentence. This means that every <kbd>RUN</kbd> sentence will create a new layer. Therefore, <kbd>RUN</kbd> directly affects the resulting number of layers in our image. To avoid using more layers than needed, we usually add more than one command per <kbd>RUN</kbd> sentence:</p>
+<pre>RUN apt-get update -qq \<br/>​&amp;&amp; apt-get install curl</pre></td>
+</tr>
+<tr>
+<td style="width: 13.94%" class="CDPAlignCenter CDPAlign"><kbd>COPY</kbd></td>
+<td style="width: 85.4792%">
+<p class="mce-root">The <kbd>COPY</kbd> instruction copies new files and directories from the build context (set during build execution) into the specified directory of the container filesystem (remember that building images is based on execution on containers and committing results in images for subsequent stages). <kbd>COPY</kbd> admits the <kbd>--chown=&lt;user&gt;:&lt;group&gt;</kbd> argument for providing file ownership on Linux containers. The owner will be <kbd>root:root</kbd> if it is not used.</p>
+<p><kbd>COPY</kbd> accepts <kbd>--from=&lt;name or index&gt;</kbd> in order to copy files or directories from other build stages (this is key when employing multistage building, as we will learn later in this chapter):</p>
+<pre>COPY mycode/* /myapp</pre></td>
+</tr>
+<tr>
+<td style="width: 13.94%" class="CDPAlignCenter CDPAlign"><kbd>ADD</kbd></td>
+<td style="width: 85.4792%">
+<p class="mce-root"><kbd>ADD</kbd> is similar to <kbd>COPY</kbd>, but can be used with URLs and TAR package files as well. It accepts the same ownership arguments for changing destination files and directory permissions:</p>
+<pre>ADD http://example.com/bigpackagefile.tar.gz /myapp</pre></td>
+</tr>
+<tr>
+<td style="width: 13.94%" class="CDPAlignCenter CDPAlign"><kbd>USER</kbd></td>
+<td style="width: 85.4792%">
+<p class="mce-root">The <kbd>USER</kbd> instruction is used to specify the user, along with the group to use in the following sentences. It is very important to understand the required permissions of our process and specify a user and its group with <kbd>USER</kbd>. If it is not present, the steps will use <kbd>root:root</kbd> and the process inside the container will run as root. It should be mandatory in production to use a specific non-root user for container processes and, if root is required, we should use user mappings (as described in the previous chapter):</p>
+<pre>USER www-data:www-data</pre></td>
+</tr>
+<tr>
+<td style="width: 13.94%" class="CDPAlignCenter CDPAlign"><kbd>VOLUME</kbd></td>
+<td style="width: 85.4792%">
+<p class="mce-root">The <kbd>VOLUME</kbd> definition will create a mount point to bypass the CoW system. This means that this set directory's content will be out of the container's life cycle. As it is outside the container, any change in subsequent sentences affecting that directory will be discarded, so if we want to provide certain files during volume initialization, the <kbd>VOLUME</kbd> sentence should be after we've provisioned files inside the directory:</p>
+<pre class="mce-root">VOLUME /mydata  </pre></td>
+</tr>
+<tr>
+<td style="width: 13.94%" class="CDPAlignCenter CDPAlign"><kbd>EXPOSE</kbd></td>
+<td style="width: 85.4792%">
+<p class="mce-root"><kbd>EXPOSE</kbd> is used to inform Docker daemon about listening ports for containers created using this image. This does not mean that the defined ports listen at the Docker host level. They will just listen internally, inside the container's network. We can define which transport protocol to use – UDP or TCP (by default):</p>
+<pre class="mce-root">EXPOSE 80/tcp </pre></td>
+</tr>
+<tr>
+<td style="width: 13.94%" class="CDPAlignCenter CDPAlign"><kbd>CMD</kbd></td>
+<td style="width: 85.4792%">
+<p>The <kbd>CMD</kbd> instruction defines the default process or argument when executing a container based on this image. This behavior will be applied irrespective of whether the <kbd>ENTRYPOINT</kbd> instruction is defined. By default, and depending on the format used, <kbd>CMD</kbd> will provide the default arguments for a shell, which is the default entry point (the main executor for processes inside a container):</p>
+<pre>CMD ["/usr/bin/curl","--help"]<br/>CMD /usr/bin/curl -I https://www.packtpub.com</pre></td>
+</tr>
+<tr>
+<td style="width: 13.94%" class="CDPAlignCenter CDPAlign"><kbd>ENTRYPOINT</kbd></td>
+<td style="width: 85.4792%">
+<p class="mce-root">The <kbd>ENTRYPOINT</kbd> directive will set which command container will run as an executable. As we learned previously, <kbd>CMD</kbd> will be the argument for this command. </p>
+<p>The interaction between <kbd>CMD</kbd> and <kbd>ENTRYPOINT</kbd> defines the command that will be executed when running a container. They are not required, but it is a good practice to define at least <kbd>CMD</kbd> so as to have a default process to launch on execution.</p>
+</td>
+</tr>
+<tr>
+<td style="width: 13.94%" class="CDPAlignCenter CDPAlign"><kbd>HEALTHCHECK</kbd></td>
+<td style="width: 85.4792%">
+<p class="mce-root"><kbd>HEALTHCHECK</kbd> defines a command line that will run inside the container to verify the health of the process or processes. Without <kbd>HEALTHCHECK</kbd>, Docker daemon will only verify if the main process is alive, and if it isn't, the container will be exited. The <kbd>HEALTHCHECK</kbd> instruction allows us to improve the health of the application by defining a better script or binary-based process status monitoring.</p>
+<p class="mce-root">We can adjust the interval between checks, timeout, and the number of retries in case of failure before declaring a non-healthy state. And, if we have a process that takes time to start, we can set when to start monitoring the container processes' health:</p>
+<pre class="mce-root">HEALTHCHECK \<br/>--interval=DURATION (default: 30s) \<br/>--timeout=DURATION (default: 30s) \<br/>--start-period=DURATION (default: 0s) \<br/>--retries=N (default: 3) \<br/>CMD /bin/myverificationscript </pre>
+<p class="mce-root">It is very important to understand that, by default, the main process running inside a container that is not working as expected (the process is alive but the health check is failing) will not be set as unhealthy until there are three failed verifications, with 30 seconds between them by default. This means that, by default, a process could be failing for 90 seconds before the container is marked as unhealthy. This is too much in many cases, and you should take action to change this behavior.</p>
+<p>We can use our own scripts inside containers and we just have to manage two different exit statuses for the output (<kbd>0</kbd> – verification is OK; <kbd>1</kbd> – verification is wrong).</p>
+</td>
+</tr>
+</tbody>
+</table>
+<p>Be careful if you defined a primitive key multiple times in a Dockerfile. These files are read top to bottom and definition precedence matters because instruction values will be overwritten in some cases (<kbd>ARG</kbd>, <kbd>ENV</kbd>, <kbd>CMD</kbd>, <kbd>ENTRYPOINT</kbd>, <kbd>LABEL</kbd>, <kbd>USER</kbd>, <kbd>WORKDIR</kbd>, <kbd>HEALTHCHECK</kbd>, and so on) or added in others (<kbd>VOLUME</kbd>, <kbd>EXPOSE</kbd>, and so on).</p>
+<p>There are some instructions that admit two different formats, <kbd>shell</kbd> and <kbd>exec</kbd>, that have different behaviors in each case:</p>
+<ul>
+<li><kbd>RUN</kbd>:<strong> </strong>When using the <kbd>shell</kbd> form, all commands will be launched in a shell, as if we were using <kbd>/bin/sh -c</kbd> (on Linux by default) or <kbd>cmd /S</kbd> or <kbd>cmd /C</kbd> (on Windows by default). We can change which shell to use in this format by means of the <kbd>SHELL</kbd> directive:</li>
+</ul>
+<pre style="padding-left: 60px">RUN &lt;command&gt; &lt;argument1&gt; &lt;argument2&gt; <strong>&lt;-- shell form</strong><br/>RUN ["executable", "argument1", "argument2"]<strong> &lt;-- exec JSON form</strong></pre>
+<p style="padding-left: 90px">We will need to use the <kbd>exec</kbd> format in Windows containers. This format is required in this case because the defined values for some keys, such as directory paths, will contain slashes (<kbd>\</kbd>) and must be avoided.</p>
+<ul>
+<li><kbd>CMD</kbd>: This key will be used to define the command or arguments to pass to the main container process:<strong><br/></strong></li>
+</ul>
+<pre style="padding-left: 60px">CMD &lt;command&gt; &lt;argument1&gt; &lt;argument2&gt; <strong>&lt;-- shell form</strong><br/>CMD ["executable or argument0", "argument1", "argument2"]<strong> &lt;-- exec JSON form</strong></pre>
+<p style="padding-left: 60px">As we learned previously, the shell form uses a shell to execute commands (this can be changed by setting a different shell using the <kbd>SHELL</kbd> key).</p>
+<p style="padding-left: 60px">In order to execute CMD commands without a shell, we must use the <kbd>exec</kbd> form. If we want to use CMD values as arguments for a defined entrypoint, we will use the <kbd>exec</kbd> form too, but this must be used on both <kbd>ENTRYPOINT</kbd> and CMD definitions.</p>
+<ul>
+<li><kbd>ENTRYPOINT</kbd>: This key will be used to define the main process to be executed inside the created container:<strong><br/></strong></li>
+</ul>
+<pre style="padding-left: 60px">ENTRYPOINT &lt;command&gt; &lt;argument1&gt; &lt;argument2&gt; <strong>&lt;-- shell form</strong><br/>ENTRYPOINT ["executable", "argument1", "argument2"]<strong> &lt;-- exec JSON form</strong></pre>
+<p style="padding-left: 60px">The same behavior is expected here in shell form, but in this case, using this form will not allow the use of CMD values as arguments. Using the shell form for <kbd>ENTRYPOINT</kbd> is not recommended because it uses <kbd>/bin/sh -c</kbd> to launch the main process and, in this case, it will not have PID 1 and will not receive Unix signals directly (we will review how Unix signals interact with container processes in <a href="c2dd78c4-066f-40b4-94e7-a7e2904d7ec2.xhtml">Chapter 3</a>, <em>Running Docker Containers</em>.</p>
+<p>Remember, in order to use CMD values as <kbd>ENTRYPOINT</kbd> arguments, <kbd>ENTRYPOINT</kbd> must be defined in <kbd>exec</kbd> form.</p>
+<p>When we use a base image to create new ones, the base image's defined values are inherited by new images. This means that CMD and <kbd>ENTRYPOINT</kbd> definitions will be used unless we overwrite them, thereby setting new values on our image. However, there is an exception; if we set a new <kbd>ENTRYPOINT</kbd> on our new image, CMD will be reset to an empty value.</p>
+<h2 id="uuid-2a0a93b7-7984-40e0-acfb-3d243e1499da">Building process actions</h2>
+<p>The Docker command line provides management actions for Docker objects, as we learned in the previous chapter. Images are Docker objects and the command line will provide tools for building and manipulating them.</p>
+<p class="mce-root">I encourage the use of <kbd>docker image build</kbd> instead of the frequently used <kbd>docker build</kbd>. As you may have noticed, <kbd>docker image build</kbd> follows the <kbd>object action</kbd> schema, which is easier to remember.</p>
+<p>We can review Docker image actions in different categories:</p>
+<ul>
+<li class="mce-root"><strong>For management</strong>: <kbd>ls</kbd>, <kbd>prune</kbd>, <kbd>rm</kbd>, and <kbd>tag</kbd>. These actions allow us to list, remove, and set identifications for images.</li>
+<li><strong>To get information</strong>: <kbd>history</kbd> and <kbd>inspect</kbd>. These actions provide information about the steps that need to be followed to create that image and all its properties.</li>
+<li><strong>To share images between hosts:</strong> <kbd>pull</kbd>, <kbd>push</kbd>, <kbd>load</kbd>, <kbd>import</kbd>, and <kbd>save</kbd>. These actions allow us to interact with the registry to download and upload image layers, and different ways to import and export images to and from different Docker hosts.</li>
+<li><strong>To create new images</strong>: <kbd>build</kbd>. Using the <kbd>build</kbd> action, we will be able to create new images, using base images or starting from an empty root filesystem.<br/>
+Therefore, we will use the Docker image build to create new images. There are a few very important options that change the building behavior, and these must be reviewed for the Docker Certified Associate exam.</li>
+</ul>
+<p>We will use <kbd>docker image build [options] &lt;context&gt;</kbd> with some additional options:</p>
+<ul>
+<li><kbd>--add-host</kbd>: This option allows us to include host-to-IP entries with an image. It is very useful for adding non-DNS entries or for masking external resources, for example.</li>
+<li><kbd>--build-arg</kbd>: Using arguments during the construction of new images is standard in Continuous Integration pipelines combined with templated Dockerfiles.</li>
+</ul>
+<p>In cluster environments, we will need to specify which nodes should build the required image. To ensure that images are built on specific nodes, we will specify some of their labels as constraints by using them as arguments; for example, using <kbd>--build-arg constraint:ostype==linux</kbd> on a cluster with both Windows and Linux nodes will send the building process just to Linux ones.</p>
+<ul>
+<li><kbd>--file</kbd> or <kbd>-f</kbd>: We can define which Dockerfile to use. We can have different files for each environment, architecture, and so on, but nowadays, there are other features, such as "target definition," that allow us to use a unique Dockerfile for different purposes and build each one as required. </li>
+<li><kbd>--force-rm</kbd>: This option will keep your environment clean as it will remove all intermediate containers. By default, intermediate containers are only removed after a successful build. </li>
+<li><kbd>--isolation</kbd>: This option is mandatory when building Windows images as we will choose which isolation to use.</li>
+<li><kbd>--label</kbd>: This option allows us to add meta-information in key-value pairs format.</li>
+<li><kbd>--no-cache</kbd>: By default, Docker daemon will use host cached layers when building a new image. There are some circumstances when we need to create a new fresh image, including, for example, new package updates. In these cases, we will avoid using previously built layers with this option. Take care of time and overheads when using this option since disabling caching will increase build times and we need to execute all the steps to produce a new image. </li>
+<li><kbd>--tag</kbd> or <kbd>-t</kbd>: Tagging an image should be mandatory. By default, Docker will not "name" your images and we will just be able to reference the image using its <kbd>IMAGE</kbd> ID (we learned about this earlier in this chapter). It is very important to specify a repository name (we will learn what a repository is in the forthcoming sections; for now, just understand this concept as a simple name) and its version to help us with image management. We can apply more than one tag at build time using multiple <kbd>--tag</kbd> or <kbd>-t</kbd> arguments with image names and tags. We will learn that image names are also known as repository names and that we have to add our own registry (with a non-standard port), username, and team or organization that we belong to as a prefix when not using Docker Hub. </li>
+</ul>
+<div><kbd>IMAGE</kbd> IDs are unique. Each created image will have a unique ID that identifies this compound of layers on all systems. But we can add tags to this <kbd>IMAGE</kbd> ID for ease of management. An image will have just one unique identifier but can have many names and versions. This concept is very important and is key to ensuring the correct image is executed in production.</div>
+<ul>
+<li><kbd>--target</kbd>: We can have multiple build stage definitions on the same Dockerfile. These definitions allow us to execute multistage builds using compiled binaries between different resulting images, for example, but they also allow us to have multiple architectures or environment definitions and choose which one to build, instead of using different Dockerfile files.</li>
+</ul>
+<p>We can limit the resources used when building using options such as <kbd>--cpu-quota</kbd>, <kbd>--cpu-shares</kbd>, and <kbd>--memory</kbd>, which will limit the number of resources available on each container's execution during the build process.</p>
+<p>The build context is a set of files located in a directory or URL (a Git URL or a tarball file) and we use it to refer to its files when building. These files are sent to Docker daemon, to either use them or not during the image build. Therefore, it's very important to know which files in the context directory, Git repository, or tarball are actually needed during compilation. If we have many small files inside our build context or very big files, Docker daemon will retrieve those files and will either incorporate them or not in the image, depending on the Dockerfile instruction. Therefore, the context directory should only contain those files required for the image. Files that should not be managed by Docker during image building should not be in the context path.</p>
+<p>Irrespective of whether you use Git URLs or tarball files, the behavior will be similar. Docker daemon will retrieve the repository or <kbd>.tar</kbd> file and will unpackage or uncompress data to be able to treat the temporary directory as a build context. </p>
+<p>We usually store Dockerfiles with our application code and, as a result, the build context is the location where the Dockerfile is located. Due to this, we use <kbd>.</kbd> to indicate the current directory if we launch the build from the same directory.</p>
+<p>A simple command-line example of image building with a number of options is as follows:</p>
+<pre><strong>$ docker image build [-t  </strong><strong>MY_TAG] [--label MY_LABEL=VALUE] [--file MY_DOCKERFILE] [BUILD_CONTEXT]</strong><br/></pre>
+<p>Docker daemon will try to find any file named Dockerfile to script the build. If you are not using this standard name, use <kbd>--file</kbd> or <kbd>-f</kbd>, along with the file location (we can use the full or relative path for Dockerfile, but take care of the build context location relative to it).</p>
+<p>And, having substituted some real values, we will have something along the lines of the following (this line has been taken from one of the labs at the end of this chapter):</p>
+<pre><strong>$ docker build --file Dockerfile.application -t templated:production --build-arg ENVIRONMENT=production .</strong><br/></pre>
+<p>Here, we are using a non-standard Dockerfile name, creating an image named <kbd>templated:production</kbd> using the <kbd>ENVIRONMENT</kbd> variable with a <kbd>production</kbd> value inside the building process, and using the current location as the build context. Notice the <kbd>.</kbd> at the end of the command. This means that we are using the current directory as the build context to create the image. If we run this command from the previous directory, we will use the directory containing the required Dockerfile as the build context.<br/></p>
+<p>Using the same Git repository philosophy, if there are some files that we want to be stored within our Docker build context (for example, files that come with our Git repository data), but that we do not want to be processed during the build, we can use the <kbd>.dockerignore</kbd> file to avoid them. Just write down unwanted filenames in <kbd>.gitignore</kbd> and Docker daemon will not treat them during the image build.</p>
+<h1 id="uuid-7e10e0a0-9ef5-4717-9d89-69d66e2dc4b5">Image tagging and meta-information</h1>
+<p class="mce-root">Usually, you won't manage just a few images but probably hundreds or thousands, so having as much information as possible about them is very important.</p>
+<p>Using labels, we will be able to search for specific images by environment, as follows:</p>
+<pre><strong>$ docker image ls --filter label=environment<br/> REPOSITORY   TAG       IMAGE ID         CREATED             SIZE<br/> myapp        1.0      7dad160a2b02    4 seconds ago        5.6MB<br/> myapp       latest    285c3d16e672    7 minutes ago        5.6MB<br/><br/>$ docker image ls --filter label=environment=test              <br/> REPOSITORY      TAG       IMAGE ID       CREATED         SIZE<br/> myapp          latest    285c3d16e672   7 minutes ago    5.6MB<br/><br/>$ docker image ls --filter label=environment=production<br/> REPOSITORY      TAG        IMAGE ID      CREATED         SIZE<br/> myapp           1.0      7dad160a2b02  18 seconds ago    5.6MB<br/><br/>$ docker image inspect myapp:1.0 --format "{{ index .Config.Labels }}"<br/> map[environment:production]</strong></pre>
+<p>Remember that an image can have multiple names and tags, but its digest is unique. Using different tags and names is very useful for interacting with different CI/CD workflow stages, using the same image content. For example, developers will create many images during development and testing, but only a few will make it to the quality and assurance or certification stages. We can automate these processes based on image names and tags on Docker Enterprise, as we will learn in <a href="108b5948-15a9-40fb-b8dd-5a44c54efd7d.xhtml">Chapter 13</a>, <em>Implementing an Enterprise-Grade Registry with DTR</em>. </p>
+<p>We've already learned that we can have many names for the same image, so removing one image by its name will not really delete its content if it is still in use by other names. If we use its image ID to remove <kbd>docker image rm &lt;imageid&gt;</kbd>, Docker daemon will inform us about multiple images with different names using the same layers and will not delete the image unless we use <kbd>--force</kbd>, in which case it will remove that image, along with all its layers and referenced names.</p>
+<p>We can use <kbd>docker rmi</kbd> as a command alias for <kbd>docker image rm</kbd>. On the other hand, <kbd>docker image prune</kbd> will be used to remove dangling images.</p>
+<p>There are special <strong>untagged images</strong> that will appear in our Docker build hosts as we create new images. These images are the result of making changes between different compilations. They are unreferenced and unused. In your host, when used as their layers, they are not used by any other image and therefore can be removed from our system (in fact, you should remove them because they are using precious disk space). These images are usually known as <strong>dangling</strong> images, and we will learn how to purge them later in this chapter.</p>
+<p>To add a new tag to an image, we will use the Docker image tag, <kbd>SOURCE_IMAGE[:TAG] TARGET_IMAGE[:TAG]</kbd>. By default, if we omit tags, we are using the <kbd>latest</kbd> tag. Avoid using the <kbd>latest</kbd> tag for your images as this doesn't really indicate that this was the latest image built. The only way to ensure when the image was built is by reviewing its date of creation.</p>
+<h1 id="uuid-33bb2082-9842-45b0-b293-d571605bda8b">Docker registries and repositories</h1>
+<p>Images must be stored somewhere. Locally, each Docker host stores its own data under <kbd>/var/lib/docker/image</kbd> in Linux and <kbd>c:\programdata\docker\image</kbd> in Windows, by default. But these directories will work locally only, and we usually need to use images to build new ones and share them across multiple nodes.</p>
+<p>We can use the Docker command line to export and import image layers on different hosts, but this is hard to maintain and this method does not scale. Docker Registry is a server application that will store and let us download and upload images as required. It provides an API for sharing information and image layers using a Docker client. As a result, we can define a registry as a store and content delivery system for container images. Images will be stored locally using the settings defined at the Docker daemon level. To use remote registries, we will set up different storage backends that can handle S3, Microsoft Azure, OpenStack Swift for cloud environments, and NFS for your local data center.</p>
+<p>At the end of this chapter, we will have a lab in which we will create a local registry. Docker Registry is an open source solution and can be configured using the <kbd>/etc/docker/registry/config.yml</kbd> configuration file to change storage backends, ports, and other advanced settings.</p>
+<p>Docker Hub is the cloud-based registry provided by Docker. We can use it to store public or private images and, as a software as a service solution, there are some features that require a paid subscription.</p>
+<p>Docker Registry will not provide any authentication method, nor TLS, to allow Docker clients to use encrypted connectivity. These security enhancements are only available in Docker Hub (Docker public/private image registry as a service) and Docker Trusted Registry (Registry deployed on the Docker Enterprise platform).</p>
+<p>We usually describe three different image namespaces or naming conventions:</p>
+<ul>
+<li><strong>Root (docker.io hosted images)</strong>: We reference these images using their names and tags; for example, <kbd>nginx:alpine</kbd> and <kbd>postgres:12.0</kbd>. They are public.</li>
+<li><strong>User or organization images under root (docker.io hosted images)</strong>: In this case, images could be private or public, depending on user licensing. Image names will contain the username or an organization, where users are allowed to pull or push their images, for example, <kbd>frjaraur/simplest-demo:simplestapp</kbd> or <kbd>codegazers/colors:1.13</kbd><em><em>.</em></em></li>
+<li><strong>Full registry format (used for private registries on the cloud or on your own data center)</strong>: We will use usernames, teams, or organizations, but we will need to use the fully qualified name of the registry; for example, <kbd>dtr.myorganization.com[:my_registry_port][/myteam or /myoraganization][/myusername]/&lt;repository&gt;[:tag]</kbd>.</li>
+</ul>
+<p>In fact, root registries and repository names can be completed using the full registry format; for example, we can pull the <kbd>docker.io/codegazers/colors:1.13</kbd> image using this full name convention.<br/>
+<br/></p>
+<p>You should have noticed that in this case, we added <kbd>my_registry_port</kbd> and <kbd>repository</kbd>. We added the first because, by default, Docker Hub and Docker Trusted Registry use HTTPS, and therefore the port is <kbd>443</kbd>, but we can deploy our own registries using custom ports. <kbd>repository</kbd> is a reference to a compound of same-named images, each one with a different <kbd>IMAGE</kbd> ID (unique) and tags (multiple). Consequently, when we talked about the <kbd>nginx:alpine</kbd> image, we were referring to the <kbd>docker.io</kbd> registry, the <kbd>nginx</kbd> repository, and the alpine tag, and the same rule should be applied to all other images used throughout the course of this chapter.</p>
+<h1 id="uuid-ec8b3b46-27ee-4414-ba34-42a15ae40383">Securing images</h1>
+<p>As seen in the previous chapter, Docker containers are secure by default, but this is because they run inside namespaces and cgroups isolation. Images are different objects and their security is related to their content. With this idea, it is easy to understand that having less content will be more secure. So, the main rules for securing images are as follows: </p>
+<ul>
+<li>Images should only contain mandatory binaries, libraries, and configurations to run our containerized process. Don't add any non-required applications or debug tools to production images. Less attack surface is better, and having many binaries increases this surface.</li>
+<li>Always declare resources on your images. In this case, we use the term <em>resources</em> to describe users, exposed ports, and volumes. Always describe what is needed to run your image and avoid root usage inside a container.</li>
+<li>Update image content packages if there is some security bug fix, rebuild all derived images, and redeploy the containers. In fact, there are more steps to follow, but this statement is true. If you identify any exploit or bug that could result in any security issue, you must fix it as soon as possible using a Docker container's life cycle. To fix the base image with an updated build and rebuild all their derivatives, follow the CI/CD workflow and pass all the tests again before deploying these new image versions to production. </li>
+</ul>
+<p>In the Docker Enterprise sections, we will learn about Docker image security scanning, which is an automated tool that verifies all of an image's content against the CVE database. We can mark images as insecure if a bug or exploit is found. This tool can trigger new events to implement a secure pipeline, scan all images before they go into the production stage, and provide information regarding any security risks found.</p>
+<p>We know that image layers are read-only for containers and that a new writable layer will be created for each container. In the next chapter, we will learn that we can improve this situation using the read-only root filesystem, allowing only write access to external volumes.</p>
+<h1 id="uuid-00ad5e7c-9313-41b9-93b6-8f7c61cb1652">Managing images and other related objects</h1>
+<p>We have learned how to manage image containers throughout this chapter, so now, let's take a look at the most common image administration tasks.</p>
+<p>Dangling images can be a nightmare if you do not take care of them from the very beginning. As we mentioned in the previous sections, <em>dangling images</em> are images that aren't referenced and therefore, are not used by any other image. In fact, they are the result of continuous builds as Docker uses them for caching and improving build performance. They are just layers used during image builds that are no longer used because, in a particular step, we changed a package, we updated our code, we changed a configuration file, and so on, and, as a result, it is not necessary. We should delete these images since they can consume a significant amount of disk space.</p>
+<p>Since version 1.13, Docker provides the <em>Docker</em> image prune action, which, by default, will remove all dangling images. However, we can choose what images we want to remove, for example, by filtering by date or labels:</p>
+<pre><strong>$ docker image prune --force --filter label=environment=test <br/>Deleted Images:<br/>deleted: sha256:285c3d16e6721700724848024b9258b05a0c8cd75ab9bd4330d9d48f3313ff28<br/>deleted: sha256:62ee8a779b918d678f139941d19e33eeecc8e333a1c00d120c3b83b8545a6650<br/>deleted: sha256:fb077551608a1c7244c4ed5f88e6ba301b6be2b7db7dd2a4f7194e03db6e18dd<br/>deleted: sha256:9a704cd7c7c2a5233fad31df5f7186a9cf631b9b22bc89bc4d32d7ab0a1bc4a7<br/><br/>Total reclaimed space: 19.83kB</strong></pre>
+<p>This command line has removed all dangling images with an environment label equal to <kbd>test</kbd>.</p>
+<p>The Docker image prune not only removes the dangling images but also the old images. However, you should manage this situation because it depends on what containers you have been running in your environment. Before removing non-dangling images in production, verify that there are no containers running using that image; for example, <kbd>docker container ls --filter ancestor=&lt;image_to_be_removed&gt;</kbd>.</p>
+<p>Many containers are used in building operations. By default, Docker daemon will delete all the containers used during builds that exited correctly, so all the containers that were used during correct builds will be removed. However, containers that have been used on faulty builds should be removed by hand. It is easy to identify faulty containers related to image builds. We will usually set container names in all containers launched by hand in other situations. In <em>Section 2</em>, <em>Containers Orchestration</em>, dedicated to orchestration, we will learn about the naming patterns used by Kubernetes and Swarm orchestrators to create containers, thereby helping us identify their origin.</p>
+<p>It is always useful to take a look at Docker host filesystem usage, especially the space used by Docker daemon. We can use <kbd>docker system df --verbose</kbd> to obtain fine-grained information about the images, containers, and volume usage of each host.</p>
+<p>Other common tasks involve inspecting images to understand the resources required in each case and sharing them.</p>
+<h2 id="uuid-e537d4ab-cf6b-4323-b917-91227d78acb6">Listing images</h2>
+<p>Listing images is a common task for reviewing host system content. We can modify the default <kbd>docker image ls</kbd> command's output using the <kbd>--format</kbd> modifier in the GoLang format structure:</p>
+<pre><strong>$ docker image ls --format "table {{.ID}}\\t{{.Repository}}:{{.Tag}}\\t{{.CreatedAt}}"<br/>IMAGE ID            REPOSITORY:TAG               CREATED AT<br/> 28b4509cdae8        debian-with-postfix:latest   2019-10-05 13:18:45 +0200 CEST<br/> c2c03a296d23        debian:latest                2019-09-12 01:21:51 +0200 CEST<br/> d87c83ec7a66        nginx:alpine                 2019-08-28 00:20:07 +0200 CEST</strong></pre>
+<p>As we learned in the previous examples, we can filter this output using labels, for example, to only show specific images.<br/></p>
+<h2 id="uuid-0fafe591-ae91-485d-8e22-9e853f417e9f">Sharing images using registries</h2>
+<p>We learned that registries are servers where images can be stored using the HTTP REST API. The Docker client knows how to manage the required requests, thereby facilitating image management at these locations.</p>
+<p>Images are always required to execute a container. Therefore, each time we run a new container, the image will be downloaded from a registry if it is not present on the Docker host.</p>
+<p>We can download images manually using <kbd>docker image pull &lt;IMAGE:TAG&gt;</kbd>. This will download all image layers and we will be ready to launch a new container based on this image. This is very useful for warming hosts before launching containers; think of a 2 GB image that should be downloaded from the internet, for example.</p>
+<p>We can download all the images from a repository using <kbd>--all-tags</kbd>; for example, <kbd>docker image pull --all-tags --quiet codegazers/colors</kbd>. Using this command line, we are downloading all the images (all tags) that are available in the <kbd>codegazers/colors</kbd> repository without any output.<br/></p>
+<p>Consequently, we will use Docker <kbd>push</kbd> to upload images to registries. But remember to use the full name, including the registry's fully qualified domain name and port (if we are not using <kbd>docker.io</kbd> and the default <kbd>443</kbd> port). We will use the full path with custom registries – <kbd>myregistry.com[:non-default-port]/myusername/myrepository[:tag]</kbd>; for example, <kbd>$ docker push docker.io/codegazers/colors:test</kbd>.<br/></p>
+<p>Docker registries should require a login to access them, for both pulling and pushing. Usually, we will use TLS encryption to connect to registries and it is enabled by default on Docker Client. Docker Engine needs to trust registry certificates to permit login and image pulling or pushing. If you do not want to use this feature, you will need to add a registry as an insecure registry in <kbd>/etc/docker/daemon.json</kbd> and restart Docker Daemon.</p>
+<p>There are other methods for sharing images. We can save an image, along with all its layers and meta-information, using <kbd>docker image save</kbd>. This command will stream content to standard output by default, so we usually use <kbd>--output</kbd> to store all the content in a file (or redirect its output to a file):<br/></p>
+<pre><strong>$ docker image save docker.io/codegazers/colors:test -o /tmp/codegazers_colors_test.tar<br/><br/>$ file /tmp/codegazers_colors_test.tar<br/> /tmp/codegazers_colors_test.tar: POSIX tar archive<br/> <br/>$ tar -tf /tmp/codegazers_colors_test.tar<br/>.........</strong><br/><strong>.........</strong><br/><strong>d420450ab5b04122577e05172291941dcd735eaefd01ab61c64c056b148ebfde/layer.tar<br/> f99211cb5c4f5e30e2c5d6ce0f0f2ac42361aecbdcc77fd0e2eccf1650558a0c/<br/> f99211cb5c4f5e30e2c5d6ce0f0f2ac42361aecbdcc77fd0e2eccf1650558a0c/VERSION<br/> f99211cb5c4f5e30e2c5d6ce0f0f2ac42361aecbdcc77fd0e2eccf1650558a0c/json<br/> f99211cb5c4f5e30e2c5d6ce0f0f2ac42361aecbdcc77fd0e2eccf1650558a0c/layer.tar<br/> manifest.json<br/> repositories</strong></pre>
+<p>As a result, <kbd>docker image save</kbd> will create a <kbd>.tar</kbd> file containing all the layers, along with all their files, and the manifest file (among other meta-information) required to recreate that image in your host. Notice that we choose the filename and its extension (<kbd>.tar</kbd> will not be added by default, but it does not affect content upload).</p>
+<p>Uploading this image <kbd>.tar</kbd> file is easy. We have two options.</p>
+<p>The first option will be to use <kbd>docker image import</kbd>. With this action, we will just import image layers, without any meta-information, and so we will not have a defined entry point, command arguments, exposed ports, volume definitions, and so on. It will just import the layers provided by the image into our host.</p>
+<p>Consequently, we will not be able to run a container using this image as is (but we will be able to add Dockerfile-like instructions on import to avoid this situation): </p>
+<pre><strong>$ docker import /tmp/codegazers_colors_test.tar <br/> sha256:5bd30fec31de659bbfb6e3a294e826ada0474817f4c4163dd8a62027b627c81d <br/><br/>$ docker image ls <br/> REPOSITORY            TAG                   IMAGE ID            CREATED             SIZE <br/> &lt;none&gt;                &lt;none&gt;                5bd30fec31de        4 seconds ago       77MB<br/> <br/>$ docker inspect codegazers/colors:test --format '{{json .Config.ExposedPorts }}'<br/> {"3000/tcp":{}}<br/><br/>$ docker inspect 5bd30fec31de --format '{{json .Config.ExposedPorts }}'<br/> null</strong></pre>
+<p>We can use <kbd>docker image load</kbd> to upload a saved image, along with all its layers and information for launching containers. This is a direct step, without any modifications, and we can use this loaded image as is. This command uses standard input to read content by default, but we can use a <kbd>.tar</kbd> file by adding the <kbd>--input</kbd> argument or simply by using redirection:</p>
+<pre><strong>$ docker image rm codegazers/colors:test</strong><br/><strong>Untagged: codegazers/colors:test<br/><br/>$ docker image load &lt;/tmp/codegazers_colors_test.tar  <br/> Loaded image: codegazers/colors:test<br/><br/></strong><strong>$ docker inspect codegazers/colors:test --format '{{json .Config.ExposedPorts }}'</strong><br/><strong> {"3000/tcp":{}}</strong><br/></pre>
+<p>As you will have noticed, we haven't used any name because it takes it from the image <kbd>.tar</kbd> file's meta-information.</p>
+<p>Using <kbd>docker image save</kbd> on the original host and Docker import/load on the destination host, we can avoid the use of external storage, but as the platform grows in terms of the number of images and hosts, this is not enough and you should use a registry to manage sharing images.</p>
+<h1 id="uuid-d9627584-11ca-43ff-9356-d30b58a1485c">Multistage building and image caches</h1>
+<p>Multistage building is a feature that appeared with Docker 17.05. Prior to this version, if we wanted to ensure minimum image size and void compilers on final production images, we usually had to install the packages required for compiling, execute the binary's build, and then remove all non-required software, including used compilers, which are a real security problem in production.</p>
+<p>Automating this kind of compilation was not easy, and sometimes, we needed to create our own scripts to reproduce those steps on every build, usually using third-party CI/CD orchestrations.</p>
+<p>We can use many build definitions on a Dockerfile to create small and compiler-free images. These images will only include application libraries, executables, and configurations. All compilations steps will be done on another image and we will just include the resulting files in a new one. We could also use external images in this process. We will only copy the required files for our application to a new image. This is known as multistage building. </p>
+<p>Let's look at an example that will help us understand this new process:</p>
+<pre>FROM alpine AS sdk<br/>RUN apk update &amp;&amp; \<br/>apk add --update --no-cache alpine-sdk<br/>RUN mkdir /myapp<br/>WORKDIR /myapp<br/>ADD hello.c /myapp<br/>RUN mkdir bin<br/>RUN gcc -Wall hello.c -o bin/hello<br/><br/>FROM alpine<br/>COPY --from=sdk /myapp/bin/hello /myapp/hello<br/>CMD /myapp/hello</pre>
+<p>In this example, we start a building stage named <kbd>sdk</kbd>. We add the name to be able to use it as a reference in the next stage. In the <kbd>sdk</kbd> stage, we compile our C code after installing the <kbd>alpine-sdk</kbd> package with the required tools for that task. As a result, we obtain a hello binary with our application, located in the <kbd>/myapp/bin</kbd> directory (check the <kbd>WORKDIR</kbd> instruction). In the next stage, we start again with a fresh alpine image and we just copy the compiled hello binary from the <kbd>sdk</kbd> build stage (from the previously compiled image container) to <kbd>/myapp/hello</kbd> on our new stage build container. And, as always in a building process, this container is committed as our new image. </p>
+<p>Multistage building simplifies the creation of images and improves security. This way, the process will just add previously created binaries and libraries instead of compilers, which can cause a security breach.</p>
+<h1 id="uuid-dde4fc96-33fd-4751-849b-f705c0d53121">Templating images</h1>
+<p>Using prepared Dockerfiles with a certain template format is common. It is certainly a very useful approach. Passing arguments and using environment variables during builds will create different images for different CI/CD stages, for example, using the same Dockerfile.</p>
+<p>Templating is key when building using CI/CD orchestration, but there are a few rules:</p>
+<ul>
+<li>Don't use debugging tools in production images, so take care of these images and use slimmer ones (with fewer components) by default in templates.</li>
+<li>Don't use credentials as arguments when building. There are other mechanisms for managing users and passwords and the Docker <kbd>history</kbd> command will reveal this information.</li>
+<li>Proxy settings are prepared for use as arguments. Therefore, the <kbd>HTTP_PROXY</kbd>, <kbd>HTTPS_PROXY</kbd>, <kbd>FTP_PROXY</kbd>, and <kbd>NO_PROXY</kbd> environment variables can be used during build time. These variables will be excluded from the Docker history output and will not be cached, so we will need to use an ARG definition to allow changes in proxy settings between compilations using the same Dockerfile. In other words, before using the <kbd>HTTP_PROXY</kbd> variable, we should call the <kbd>ARG</kbd> instruction to retrieve its value from the Docker build arguments:</li>
+</ul>
+<pre style="padding-left: 60px">FROM alpine:latest<br/>ARG HTTP_PROXY<br/>RUN apk update</pre>
+<p>The previous code shows an example that illustrates the behavior described since the proxy settings will get updated on every build if its value has changed.</p>
+<p>Operating systems and other applications would use <kbd>http_proxy</kbd>, <kbd>https_proxy</kbd>, <kbd>ftp_proxy</kbd>, and <kbd>no_proxy</kbd> instead of the capital strings described in this section. Review the application's requirements and use the appropriate format.</p>
+<p>We will see a simple, but illustrative, lab at the end of this chapter that uses a templated Dockerfile that will build a different version for production and development, along with a different base image that includes some debugging tools for developers.</p>
+<h1 id="uuid-24f63920-e157-4e91-b06c-7f5154d38d87">Image releases and updates</h1>
+<p>Earlier, we mentioned how we should manage image updates. In that instance, we were focused on security updates to avoid bugs and exploits in production. Similarly, we can apply this concept to application fixes and releases. </p>
+<p>Base images should be updated in critical image components and these changes do not happen very frequently. Usually, the application releases are weekly or even daily (or hourly, depending on numerous factors, such as business requirements and critical fixes). </p>
+<p>Depending on how many containers are running based on a specific image, a new image release can be a big change. These changes can be done in a couple of minutes or they can take you an hour. However, the procedure using containers is very quick; <em>let the orchestrator do its job</em>. Kubernetes and Swarm will provide automated image updates and rollback and we will be able to manage how this deployment should be done, how many containers will update their images in parallel, how much time we will wait between these updates, and more.</p>
+<p>It is easy to understand that changes to base images (used for building the others) require special care. Those image updates must be managed in cascade to all derived images. We will usually automate this kind of cascade building. These changes will require all the derived images to be rebuilt and will involve much more effort. It is recommended to use a Continuous Integration orchestrator to automate these kinds of tasks.</p>
+<p>On the other hand, when we create a code or binary update, the changes will be easier because we will only affect the containers that were created for a specific application. We can deploy these updates quickly after passing all the required tests in our organization.</p>
+<h1 id="uuid-c1e5fb07-0688-47c1-9ddf-1a37f9815d5f">Chapter labs</h1>
+<p>In this section, we will review the most important concepts for the Docker Certified Associate exam. For these labs, we will be using a CentOS Linux host with a Docker engine installed, which we covered in the previous chapter.</p>
+<p>Deploy <kbd>environments/standalone-environment</kbd> from this book's GitHub repository (<a href="https://github.com/PacktPublishing/Docker-Certified-Associate-DCA-Exam-Guide.git">https://github.com/PacktPublishing/Docker-Certified-Associate-DCA-Exam-Guide.git</a>) if you have not done so yet. You can use your own CentOS 7 server. Use <kbd>vagrant up</kbd> from the <kbd>environments/standalone-environment</kbd> folder to start your virtual environment.</p>
+<p>If you are using <kbd>standalone-environment</kbd>, wait until it is running. We can check the status of our nodes using <kbd>vagrant status</kbd>. Connect to your lab node using <kbd>vagrant ssh standalone</kbd>. <kbd>standalone</kbd> as the name of your node. You will be using the <kbd>vagrant</kbd> user with root privileges using <kbd>sudo</kbd>. You should get the following output:</p>
+<pre><strong>Docker-Certified-Associate-DCA-Exam-Guide/environments/standalone$ vagrant up</strong><br/><strong>Bringing machine 'standalone' up with 'virtualbox' provider...</strong><br/><strong>...</strong><br/><strong>Docker-Certified-Associate-DCA-Exam-Guide/environments/standalone$ vagrant status</strong><br/><strong>Current machine states:</strong><br/><strong>standalone running (virtualbox)</strong><br/><strong>...</strong><br/><strong>Docker-Certified-Associate-DCA-Exam-Guide/environments/standalone$</strong></pre>
+<p class="mce-root">We can now connect to the <kbd>standalone</kbd> node using <kbd>vagrant ssh standalone</kbd>. This process may vary if you've already deployed a <kbd>standalone</kbd> virtual node before and you've just started it using <kbd>vagrant up</kbd>:</p>
+<pre><strong>Docker-Certified-Associate-DCA-Exam-Guide/environments/standalone$ vagrant ssh standalone</strong><br/><strong>[vagrant@standalone ~]$</strong> </pre>
+<p>Now, you are ready to start the labs.</p>
+<h2 id="uuid-3cc07a82-6c5e-44d4-8b21-21160027c6f3">Docker build caching</h2>
+<p class="mce-root">This lab will show us how caching works when building images. We will be able to speed up the building process, but it will depend on how the image layers are sorted. Let's get started:</p>
+<ol>
+<li class="mce-root"> First, create a directory named <kbd>chapter2</kbd> in your home directory on your Docker host. We will use this directory for these labs:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>[vagrant@standalone ~]$</strong> <strong>cd $HOME</strong><br/><strong>[vagrant@standalone ~]$ mkdir chapter2</strong><br/><strong>[vagrant@standalone ~]$ cd chapter2</strong></pre>
+<ol start="2">
+<li class="mce-root">Create a file named <kbd>Dockerfile.cache</kbd> with the following simple content:</li>
+</ol>
+<pre style="padding-left: 60px">FROM alpine:latest<br/>RUN echo "hello world"</pre>
+<ol start="3">
+<li>Now, build an image named <kbd>test1</kbd> while using this directory as an image context:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>[vagrant@standalone chapter2]$ </strong><strong>docker image build \<br/>--file Dockerfile.cache --no-cache --label lab=lab1 -t test1 .<br/></strong><br/><strong> Sending build context to Docker daemon 2.048kB</strong><br/><strong> Step 1/2 : from alpine:latest</strong><br/><strong> ---&gt; 961769676411</strong><br/><strong> Step 2/2 : run echo "hello world"</strong><br/><strong> ---&gt; Running in af16173c7af8</strong><br/><strong> hello world</strong><br/><strong> Removing intermediate container af16173c7af8</strong><br/><strong> ---&gt; 9b3e0608971f</strong><br/><strong> Successfully built 9b3e0608971f</strong><br/><strong> Successfully tagged test1:latest</strong></pre>
+<ol start="4">
+<li>Since we have not used any specific tag, Docker adds <kbd>latest</kbd>. Now, rebuild the image without any changes:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>[vagrant@standalone chapter2]$ docker image build \<br/>--file Dockerfile.cache --no-cache --label lab=lab1 -t test2 .<br/></strong><br/><strong> Sending build context to Docker daemon 2.048kB</strong><br/><strong> Step 1/2 : from alpine:latest</strong><br/><strong> ---&gt; 961769676411</strong><br/><strong> Step 2/2 : run echo "hello world"</strong><br/><strong> ---&gt; Running in 308e47ddbf7a</strong><br/><strong> hello world</strong><br/><strong> Removing intermediate container 308e47ddbf7a</strong><br/><strong> ---&gt; aa5ec1fe2ca6</strong><br/><strong> Successfully built aa5ec1fe2ca6</strong><br/><strong> Successfully tagged test2:latest</strong></pre>
+<ol start="5">
+<li>Now, we can list our images using the <kbd>lab</kbd> label we created during the build:</li>
+</ol>
+<pre style="padding-left: 60px" class="mce-root"><strong>[vagrant@standalone chapter2]$ docker image ls --filter label=lab=lab1</strong><br/><strong> REPOSITORY          TAG                 IMAGE ID            CREATED              SIZE</strong><br/><strong> test2               latest              fefb30027241        About a minute ago   5.58MB</strong><br/><strong> test1               latest              4fe733b3db42        About a minute ago   5.58MB</strong><br/></pre>
+<p style="padding-left: 60px" class="mce-root">Although we have not changed anything, the image ID is different. This is because we have avoided layer caches and we have always compiled each layer. Because we launched image buildings one after the other, only a few seconds passed between them. However, the meta-information has changed between them and they have different IDs, even though they contain the same content. </p>
+<ol start="6">
+<li class="mce-root">Now, we will use caching because it will improve the build time. In many situations, this can make a big difference. Let's add just a line for installing Python on our Dockerfile. Updating the package cache and the Python installation with its dependencies will take some time. When we use cached layers that have been created from previous builds, the building process will be quicker:</li>
+</ol>
+<pre style="padding-left: 60px">FROM alpine:latest<br/>RUN echo "hello world"<br/>RUN apk add --update -q python3</pre>
+<ol start="7">
+<li>Now, we build again without caching, measuring how many seconds it took for the process to complete:</li>
+</ol>
+<pre style="padding-left: 60px" class="mce-root"><strong>[vagrant@standalone chapter2]$ time docker image build \<br/>--file Dockerfile.cache -q -t test3 --no-cache .</strong><br/><strong> sha256:f2b524ac662682bdc13f77216ded929225d1b4253ebacb050f07d6d7e570bc51</strong><br/> <br/><strong> real    0m8.508s</strong><br/><strong> user    0m0.021s</strong><br/><strong> sys     0m0.042s</strong><br/></pre>
+<ol start="8">
+<li class="mce-root">Now, add a new line for adding <kbd>httpie</kbd>, which needs Python (and the package cache) to be installed. Now, let's run the build with and without caching:</li>
+</ol>
+<pre style="padding-left: 60px">FROM alpine:latest<br/>RUN echo "hello world"<br/>RUN apk add --update -q python3<br/>RUN apk add -q httpie</pre>
+<p style="padding-left: 60px">Without caching, it will take more than a minute:</p>
+<pre style="padding-left: 60px"><strong>[vagrant@standalone chapter2]$ time docker image build \<br/>--file Dockerfile.cache -q -t test4 --no-cache . <br/> sha256:b628f57340b34e7fd2cba0b50f71f4269cf8e8fb779535b211dd668d7c21912f<br/></strong><strong>real 1m28.745s</strong><br/><strong> user 0m0.023s</strong><br/><strong> sys 0m0.030s</strong><br/></pre>
+<p>Before launching a new build with caching, we removed the <kbd>test4</kbd> image using <kbd>docker image rm test4</kbd> because we just wanted to use the previous layers.</p>
+<p style="padding-left: 60px">Using caching, it will just take a few seconds:</p>
+<pre style="padding-left: 60px"><strong>[vagrant@standalone chapter2]$ time docker image build --file Dockerfile.cache -q -t test5 .<br/> sha256:7bfc6574efa9e9600d896264955dcb93afd24cb0c91ee5f19a8e5d231e4c31c7<br/>real 0m15.038s</strong><br/><strong> user 0m0.025s</strong><br/><strong> sys 0m0.025s</strong></pre>
+<p>Since this process used the previously cached layers, it only took 15 seconds (<kbd>test4</kbd>, without caching, took 1 minute and 28 seconds to build). We have just added one layer and, to install just one package, we got more than 1 minute of difference, even though the images are small (around 100 MB in size). It can take hours to compile 5 GB images (which is not recommended, even though it is a good approach for caching).</p>
+<h2 id="uuid-c1ce7885-d442-4453-998b-ef3766ebf695">Where to use volumes in Dockerfiles</h2>
+<p>In this lab, we will review how the <kbd>VOLUME</kbd> key definition will be managed by Docker Daemon to specify persistent storage or to avoid container space when building. Let's get started:</p>
+<ol>
+<li>Let's consider a small Dockerfile that's using a volume to persist data between layers when building. The volume definition will also inform Docker Daemon about bypassing the volume directory from the CoW mechanism. We will name this Dockerfile <kbd>Dockerfile.chapter2.lab2</kbd>:</li>
+</ol>
+<pre style="padding-left: 60px">FROM alpine<br/>RUN mkdir /data<br/>RUN echo "hello world" &gt; /data/helloworld<br/>VOLUME /data</pre>
+<ol start="2">
+<li>Let's build this image: </li>
+</ol>
+<pre style="padding-left: 60px"><strong>[vagrant@standalone ~]$ docker image build \<br/>-f Dockerfile.chapter2.lab2 -t ch2lab2 --label lab=lab2 .</strong><br/><br/><strong> Sending build context to Docker daemon  3.072kB</strong><br/><strong> Step 1/5 : FROM alpine</strong><br/><strong> ---&gt; 961769676411</strong><br/><strong> Step 2/5 : RUN mkdir /data</strong><br/><strong> ---&gt; Running in fc194efe122b</strong><br/><strong> Removing intermediate container fc194efe122b</strong><br/><strong> ---&gt; d2d208a0c39e</strong><br/><strong> Step 3/5 : RUN echo "hello world" &gt; /data/helloworld</strong><br/><strong> ---&gt; Running in a390abafda32</strong><br/><strong> Removing intermediate container a390abafda32</strong><br/><strong> ---&gt; b934d9c51292</strong><br/><strong> Step 4/5 : VOLUME /data</strong><br/><strong> ---&gt; Running in 33df48627a75</strong><br/><strong> Removing intermediate container 33df48627a75</strong><br/><strong> ---&gt; 8f05e96b072b</strong><br/><strong> Step 5/5 : LABEL lab=lab2</strong><br/><strong> ---&gt; Running in 353a4ec552ef</strong><br/><strong> Removing intermediate container 353a4ec552ef</strong><br/><strong> ---&gt; 4a1ad6047fea</strong><br/><strong> Successfully built 4a1ad6047fea</strong><br/><strong> Successfully tagged ch2lab2:latest</strong><br/></pre>
+<ol start="3">
+<li>Now, run a container using the <kbd>ch2lab2</kbd> image to retrieve the container's <kbd>/data</kbd> directory content:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>[vagrant@standalone ~]$ docker container run ch2lab2 ls -lt /data</strong><br/><strong> total 4</strong><br/><strong> -rw-r--r--    1 root     root            12 Oct  7 19:30 helloworld</strong><br/></pre>
+<ol start="4">
+<li>Now, we will change the <kbd>VOLUME</kbd> instruction order. We write the <kbd>VOLUME</kbd> definition before the execution of <kbd>echo</kbd>. We will use a new file named <kbd>Dockerfile.chapter2.lab2-2</kbd>:<br/></li>
+</ol>
+<pre style="padding-left: 60px">FROM alpine<br/>RUN mkdir /data<br/>VOLUME /data<br/>RUN echo "hello world" &gt; /data/helloworld</pre>
+<ol start="5">
+<li>Now, let's build a new image and review what happened with the <kbd>/data</kbd> content:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>[vagrant@standalone ~]$ docker image build \<br/>-f Dockerfile.chapter2.lab2-2 -t ch2lab2-2 --label lab=lab2 .</strong><br/><br/><strong> Sending build context to Docker daemon  4.096kB</strong><br/><strong> Step 1/5 : FROM alpine</strong><br/><strong> ---&gt; 961769676411</strong><br/><strong> Step 2/5 : RUN mkdir /data</strong><br/><strong> ---&gt; Using cache</strong><br/><strong> ---&gt; d2d208a0c39e</strong><br/><strong> Step 3/5 : VOLUME /data</strong><br/><strong> ---&gt; Using cache</strong><br/><strong> ---&gt; 18022eec6fd2</strong><br/><strong> Step 4/5 : RUN echo "hello world" &gt; /data/helloworld</strong><br/><strong> ---&gt; Using cache</strong><br/><strong> ---&gt; dbab99bb29a0</strong><br/><strong> Step 5/5 : LABEL lab=lab2</strong><br/><strong> ---&gt; Using cache</strong><br/><strong> ---&gt; ac8ef5e1b61e</strong><br/><strong> Successfully built ac8ef5e1b61e</strong><br/><strong> Successfully tagged ch2lab2-2:latest</strong><br/></pre>
+<ol start="6">
+<li class="mce-root">Let's review the <kbd>/data</kbd> content again:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>[vagrant@standalone ~]$ docker container run ch2lab2-2 ls -lt /data                                                                        </strong><br/><strong> total 0</strong><br/></pre>
+<p>As we expected, the <kbd>VOLUME</kbd> directive allows containers to bypass the CoW filesystem. During builds, containers will not maintain volume content because the commit action will just transform container content into images, and volumes are not found inside containers. </p>
+<h2 id="uuid-02861bb9-ed9c-417a-a904-a55db3126f3c">Multistage building</h2>
+<p>In this lab, we will create a simple hello world binary in C and use an intermediate image to compile this code in the first stage and then copy the binary to a cleaner image. As a result, we will obtain a small image containing just the required components to run our compiled application. Let's get started:</p>
+<ol>
+<li>Create a new directory named <kbd>multistage</kbd> inside the <kbd>chapter2</kbd> directory:</li>
+</ol>
+<pre style="padding-left: 60px" class="mce-root"><strong>[vagrant@standalone ~]$ cd $HOME/chapter2</strong><br/><strong>[vagrant@standalone ~]$ mkdir multistage</strong><br/><strong>[vagrant@standalone ~]$ cd multistage</strong></pre>
+<ol start="2">
+<li>Now, create a <kbd>helloword.c</kbd> file with the following content:</li>
+</ol>
+<pre style="padding-left: 60px">#include &lt;stdio.h&gt;<br/> int main()<br/> {<br/>   printf("Hello, World!\n");<br/>   return 0;<br/> }<br/></pre>
+<ol start="3">
+<li>Prepare a multistage Dockerfile based on <kbd>alpine</kbd> called <kbd>Dockerfile.multistage</kbd>. The first stage will be named <kbd>compiler</kbd> and in it, we will install <kbd>alpine-sdk</kbd> to compile C code. We compile the C code in the first stage and we just use a <kbd>COPY</kbd> sentence to copy the binary from the previous stage. It will look like this:</li>
+</ol>
+<pre style="padding-left: 60px">FROM alpine AS compiler <br/>RUN apk update &amp;&amp; \ <br/>apk add --update -q --no-cache alpine-sdk <br/>RUN mkdir /myapp <br/>WORKDIR /myapp <br/>ADD helloworld.c /myapp <br/>RUN mkdir bin <br/>RUN gcc -Wall helloworld.c -o bin/helloworld <br/> <br/>FROM alpine <br/>COPY --from=compiler /myapp/bin/helloworld /myapp/helloworld <br/>CMD /myapp/helloworld</pre>
+<p style="padding-left: 60px">Using the previous code, we will build a new image:</p>
+<pre style="padding-left: 60px"><strong>[vagrant@standalone multistage]$ docker build \<br/>--file Dockerfile.multistage --no-cache -t helloworld --label lab=lab3 .<br/></strong><br/><strong> Sending build context to Docker daemon  3.072kB</strong><br/><strong> Step 1/11 : FROM alpine AS compiler</strong><br/><strong> ---&gt; 961769676411</strong><br/><strong> Step 2/11 : RUN apk update &amp;&amp; apk add --update -q --no-cache alpine-sdk</strong><br/><strong> ---&gt; Running in f827f4a85626</strong><br/><strong> fetch http://dl-cdn.alpinelinux.org/alpine/v3.10/main/x86_64/APKINDEX.tar.gz</strong><br/><strong> fetch http://dl-cdn.alpinelinux.org/alpine/v3.10/community/x86_64/APKINDEX.tar.gz</strong><br/><strong> v3.10.2-102-ge3e3e39529 [http://dl-cdn.alpinelinux.org/alpine/v3.10/main]</strong><br/><strong> v3.10.2-103-g1b5ddad804 [http://dl-cdn.alpinelinux.org/alpine/v3.10/community]</strong><br/><strong> OK: 10336 distinct packages available</strong><br/><strong> Removing intermediate container f827f4a85626</strong><br/><strong> ---&gt; f5c469c3ab61</strong><br/><strong> Step 3/11 : RUN mkdir /myapp</strong><br/><strong> ---&gt; Running in 6eb27f4029b3</strong><br/><strong> Removing intermediate container 6eb27f4029b3</strong><br/><strong> ---&gt; 19df6c9092ba</strong><br/><strong> Step 4/11 : WORKDIR /myapp</strong><br/><strong> ---&gt; Running in 5b7e7ef9504a</strong><br/><strong> Removing intermediate container 5b7e7ef9504a</strong><br/><strong> ---&gt; 759173258ccb</strong><br/><strong> Step 5/11 : ADD helloworld.c /myapp</strong><br/><strong> ---&gt; 08033f10200a</strong><br/><strong> Step 6/11 : RUN mkdir bin</strong><br/><strong> ---&gt; Running in eaaff98b5213</strong><br/><strong> Removing intermediate container eaaff98b5213</strong><br/><strong> ---&gt; 63b5d119a25e</strong><br/><strong> Step 7/11 : RUN gcc -Wall helloworld.c -o bin/helloworld</strong><br/><strong> ---&gt; Running in 247c18ccaf03</strong><br/><strong> Removing intermediate container 247c18ccaf03</strong><br/><strong> ---&gt; 612d15bf6d3c</strong><br/><strong> Step 8/11 : FROM alpine</strong><br/><strong> ---&gt; 961769676411</strong><br/><strong> Step 9/11 : COPY --from=compiler /myapp/bin/helloworld /myapp/helloworld</strong><br/><strong> ---&gt; 18c68d924646</strong><br/><strong> Step 10/11 : CMD /myapp/helloworld</strong><br/><strong> ---&gt; Running in 7055927efe3e</strong><br/><strong> Removing intermediate container 7055927efe3e</strong><br/><strong> ---&gt; 08fd2f42bba9</strong><br/><strong> Step 11/11 : LABEL lab=lab3</strong><br/><strong> ---&gt; Running in 3a4f4a1ad6d8</strong><br/><strong> Removing intermediate container 3a4f4a1ad6d8</strong><br/><strong> ---&gt; 0a77589c8ecb</strong><br/><strong> Successfully built 0a77589c8ecb</strong><br/><strong> Successfully tagged helloworld:latest</strong> <br/></pre>
+<ol start="4">
+<li>We can now verify that <kbd>helloworld:latest</kbd> works as expected and that it will just contain the <kbd>/myapp/helloworld</kbd> binary on top of a clean <kbd>alpine:latest</kbd> image:</li>
+</ol>
+<pre style="padding-left: 60px" class="mce-root"><strong>[vagrant@standalone multistage]$ docker container run helloworld:latest</strong><br/><strong> Hello, World!</strong> <br/></pre>
+<p style="padding-left: 60px">Now, we will list the images in order to review the image we created recently:</p>
+<pre style="padding-left: 60px" class="mce-root"><strong>[vagrant@standalone multistage]$ docker image ls --filter label=lab=lab3</strong><br/><strong> REPOSITORY          TAG                 IMAGE ID            CREATED             SIZE</strong><br/><strong> helloworld          latest              0a77589c8ecb        2 minutes ago       5.6MB</strong> <br/></pre>
+<h2 id="uuid-0a611e72-e10e-46ad-8e90-8b107b1bf234">Deploying a local registry</h2>
+<p>In this lab, we will run a local registry and push/pull an image. Let's get started:<br/></p>
+<ol>
+<li>First, we'll deploy a registry using the official Docker Registry image. We will launch it on the standard registry port, <kbd>5000</kbd>:</li>
+</ol>
+<pre style="padding-left: 60px" class="mce-root"><strong>[vagrant@standalone ~]$ cd $HOME/chapter2<br/></strong><strong><br/>[vagrant@standalone ~]$ docker container run -d \<br/>-p 5000:5000 --restart=always --name registry registry:2</strong><br/><strong>....</strong><br/><strong>....</strong><br/><strong>0d63bdad4017ce925b5c4456cf9f776551070b7780f306882708c77ce3dce78c</strong></pre>
+<ol start="2">
+<li>Then, we need to download a simple <kbd>alpine:latest</kbd> image (if you don't already have one):</li>
+</ol>
+<pre style="padding-left: 60px"><strong>[vagrant@standalone ~]$ docker pull alpine</strong><br/><strong>Using default tag: latest</strong><br/><strong>latest: Pulling from library/alpine</strong><br/><strong>e6b0cf9c0882: Pull complete </strong><br/><strong>Digest: sha256:2171658620155679240babee0a7714f6509fae66898db422ad803b951257db78</strong><br/><strong>Status: Downloaded newer image for alpine:latest</strong><br/><strong>docker.io/library/alpine:latest</strong></pre>
+<ol start="3">
+<li>Then, we need to add a new tag to this image to be able to upload it to our local registry, which is running on port <kbd>5000</kbd>:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>[vagrant@standalone ~]$ docker tag alpine localhost:5000/my-alpine<br/></strong></pre>
+<p style="padding-left: 60px">We will use <kbd>docker image tag &lt;ORIGINAL_TAG&gt; &lt;NEW_TAG&gt;</kbd> to add names and tags to images. This will add new names and tags; the old ones will stay until they are removed. We will use <kbd>docker image rm</kbd> to remove image names and tags. This will remove only the names and tags passed as arguments. Other images associated with the same ID will remain until they are specifically removed. If we create a new build, some layers will be un-referenced and even pushed out of any image construction chain.</p>
+<p>We can remove all the images associated with a specific ID using <kbd>docker image rm --force &lt;IMAGE_ID&gt;</kbd>. All image names and tags associated with it will be removed.</p>
+<p style="padding-left: 60px">Unreferenced images, also known as <strong>dangling</strong> images, should be removed, especially on image-building hosts. These are common in CI/CD environments where we assign some nodes to this process. We will use <kbd>docker image prune</kbd> to execute this image's housekeeping.<strong> </strong></p>
+<ol start="4">
+<li>Then, we push the image to our local registry:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>[vagrant@standalone ~]$ docker image push localhost:5000/my-alpine</strong><br/><strong>The push refers to repository [localhost:5000/my-alpine]</strong><br/><strong>6b27de954cca: Pushed </strong><br/><strong>latest: digest: sha256:3983cc12fb9dc20a009340149e382a18de6a8261b0ac0e8f5fcdf11f8dd5937e size: 528</strong></pre>
+<ol start="5">
+<li>To ensure that no other alpine image is present, we remove it by its ID:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>[vagrant@standalone ~]$ docker images --filter=reference='alpine:latest' </strong><br/><strong>REPOSITORY TAG IMAGE ID CREATED SIZE</strong><br/><strong>alpine latest cc0abc535e36 42 hours ago 5.59MB</strong></pre>
+<ol start="6">
+<li>We remove this ID and all its children (the IDs may vary):</li>
+</ol>
+<pre style="padding-left: 60px"><strong>[vagrant@standalone ~]$ docker image rm cc0abc535e36 --force</strong><br/><strong>Untagged: alpine:latest</strong><br/><strong>Untagged: alpine@sha256:2171658620155679240babee0a7714f6509fae66898db422ad803b951257db78</strong><br/><strong>Untagged: localhost:5000/my-alpine:latest</strong><br/><strong>Untagged: localhost:5000/my-alpine@sha256:3983cc12fb9dc20a009340149e382a18de6a8261b0ac0e8f5fcdf11f8dd5937e</strong><br/><strong>Deleted: sha256:cc0abc535e36a7ede71978ba2bbd8159b8a5420b91f2fbc520cdf5f673640a34</strong></pre>
+<ol start="7">
+<li>Then, we run a container using the <kbd>localhost:5000/my-alpine:latest</kbd> image:</li>
+</ol>
+<pre style="padding-left: 60px" class="mce-root"><strong>[vagrant@standalone ~]$ docker container run localhost:5000/my-alpine:latest ls /tmp</strong><br/><strong>Unable to find image 'localhost:5000/my-alpine:latest' locally</strong><br/><strong>latest: Pulling from my-alpine</strong><br/><strong>e6b0cf9c0882: Already exists </strong><br/><strong>Digest: sha256:3983cc12fb9dc20a009340149e382a18de6a8261b0ac0e8f5fcdf11f8dd5937e</strong><br/><strong>Status: Downloaded newer image for localhost:5000/my-alpine:latest</strong></pre>
+<p style="padding-left: 60px" class="mce-root">Here, we used the image we downloaded from our <kbd>localhost:5000</kbd> registry.</p>
+<p style="padding-left: 60px" class="mce-root">As we mentioned previously, Docker Registry is insecure by default. It is easy to deploy but we will need authentication and authorization in production. Authentication can be deployed using a frontend proxy with validation. NGINX can be deployed even with basic authentication and can also provide TLS certificate encryption. Authorization is not as easy, so Docker Trusted Registry is a better solution.</p>
+<p style="padding-left: 60px" class="mce-root">In this example, we published our registry on local port <kbd>5000</kbd>. The application container will restart if the main process dies and the image's data will be stored on the host under the <kbd>/var/lib/docker/volumes/REGISTRY_DATA/_data</kbd> directory. We have used the <kbd>REGISTRY_DATA</kbd> named volume, so the registry data will remain even if we remove the <kbd>registry</kbd> container.</p>
+<p>Docker Registry can be configured to use different storage backends. We will learn about this feature regarding DTR in <a href="108b5948-15a9-40fb-b8dd-5a44c54efd7d.xhtml">Chapter 13</a>, <em>Implementing an Enterprise-Grade Registry with DTR</em>. Docker Registry can be configured using the <kbd>/etc/docker/registry/config.yml</kbd> file. To deploy a localhost configuration file under the current directory, we will use <kbd>$(pwd)/config.yml:/etc/docker/registry/config.yml</kbd>. This will integrate a custom file as a bind-mount volume.</p>
+<ol start="8">
+<li>Finally, we remove the registry we deployed:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>[vagrant@standalone ~]$ docker container rm --force registry</strong><br/><strong>registry</strong></pre>
+<h2 id="uuid-3b5954e8-02c8-4668-a345-28699bfcdfd2">Image templating using Dockerfiles</h2>
+<p>This lab will show us how we can build images for different environments by adding some debugging tools, for example, to debug a container's processes.</p>
+<p>Create a new directory named <kbd>templating</kbd> inside the <kbd>chapter2</kbd> directory:</p>
+<pre style="padding-left: 60px" class="mce-root"><strong>[vagrant@standalone ~]$ cd $HOME/chapter2</strong><br/><strong>[vagrant@standalone ~]$ mkdir templating</strong><br/><strong>[vagrant@standalone ~]$ cd templating</strong></pre>
+<p>We will have a couple of images: one for production and one for development. We will build each one with its own Dockerfile; in this case, we will use a simple <kbd>nginx:alpine</kbd> image as the basis for both:</p>
+<ul>
+<li>Development – <kbd>Dockerfile.nginx-dev</kbd>:</li>
+</ul>
+<pre style="padding-left: 60px">FROM nginx:alpine <br/>RUN apk update -q<br/>RUN apk add \ <br/>curl \ <br/>httpie</pre>
+<ul>
+<li>Production – <kbd>Dockerfile.nginx</kbd>:</li>
+</ul>
+<pre style="padding-left: 60px">FROM nginx:alpine <br/>RUN apk update -q<br/></pre>
+<p>Let's build both images:</p>
+<ol>
+<li>We build both images as <kbd>baseimage:development</kbd> and <kbd>baseimage:production</kbd>:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>[vagrant@standalone templating]$ docker image build \<br/>--quiet --file Dockerfile.nginx-dev -t baseimage:development --label lab=lab4 .     <br/>            <br/> sha256:72f13a610dfb1eee3332b87bfdbd77b17f38caf08d07d5772335e963377b5f39<br/> </strong><br/><strong>[vagrant@standalone templating]$ docker image build \<br/> --quiet --file Dockerfile.nginx -t baseimage:production --label lab=lab4 .</strong><br/><br/><strong> sha256:1fc2505b3bc2ecf3f0b5580a6c5c0f018b03d309b6208220fc8b4b7a65be2ec8</strong><br/></pre>
+<ol start="2">
+<li>Now, we can review the image's sizes. These are pretty different because the debugging image has <kbd>curl</kbd> and <kbd>httpie</kbd> for testing (this is an example lab). We will use these images to launch debugging tools in order to review a container's processes or against other components:<br/></li>
+</ol>
+<pre style="padding-left: 60px"><strong>[vagrant@standalone templating]$ docker image ls --filter label=lab=lab4                                                                 </strong><br/><strong> REPOSITORY       TAG         IMAGE ID      CREATED              SIZE</strong><br/><strong> baseimage    development   72f13a610dfb  13 seconds ago       83.4MB</strong><br/><strong> baseimage     production   1fc2505b3bc2  4 minutes ago        22.6MB</strong><br/></pre>
+<ol start="3">
+<li>Now, we can build our application image for development and production environments using the <kbd>ENVIRONMENT</kbd> variable and a templated <kbd>Dockerfile.application</kbd> file:</li>
+</ol>
+<pre style="padding-left: 60px">ARG ENVIRONMENT=development <br/>FROM baseimage:${ENVIRONMENT} <br/>COPY html/* /usr/share/nginx/html<br/></pre>
+<ol start="4">
+<li>Now, we simply prepare a simple text file named <kbd>index.html</kbd> with some content inside the <kbd>html</kbd> directory:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>[vagrant@standalone templating]$ mkdir html</strong><br/><strong>[vagrant@standalone templating]$ </strong><strong>echo "</strong><strong>This is a simple test and of course it is not an application!!!" &gt; html/index.html</strong><br/></pre>
+<ol start="5">
+<li>Finally, we just compile both images for the <kbd>DEV</kbd> and <kbd>PROD</kbd> environments. For development, we use the <kbd>ENVIRONMENT</kbd> argument, as follows: </li>
+</ol>
+<pre style="padding-left: 60px"><strong>[vagrant@standalone templating]$ docker image build \<br/>--file Dockerfile.application \<br/>-t templated:development \</strong><br/><strong>--build-arg ENVIRONMENT=development \</strong><br/><strong>--label lab=lab4 .</strong><br/><strong> Sending build context to Docker daemon  5.632kB<br/> Step 1/4 : ARG ENVIRONMENT=development<br/> Step 2/4 : FROM baseimage:${ENVIRONMENT}<br/> ---&gt; 1fc2505b3bc2<br/> Step 3/4 : COPY html/* /usr/share/nginx/html<br/> ---&gt; Using cache<br/> ---&gt; e038e952a087<br/> Step 4/4 : LABEL lab=lab4<br/> ---&gt; Running in bee7d26757da<br/> Removing intermediate container bee7d26757da<br/> ---&gt; 06542624803f<br/> Successfully built 06542624803f<br/> Successfully tagged templated:development</strong></pre>
+<p style="padding-left: 60px">For the production environment, we will do the same: </p>
+<pre style="padding-left: 60px"><strong>[vagrant@standalone templating]$ docker image build \<br/>--file Dockerfile.application \<br/>-t templated:production \</strong><br/><strong>--build-arg ENVIRONMENT=production \</strong><br/><strong>--label lab=lab4 . </strong><br/><strong> Sending build context to Docker daemon  5.632kB</strong><br/><strong> Step 1/4 : ARG ENVIRONMENT=development</strong><br/><strong> Step 2/4 : FROM baseimage:${ENVIRONMENT}</strong><br/><strong> ---&gt; 1fc2505b3bc2</strong><br/><strong> Step 3/4 : COPY html/* /usr/share/nginx/html</strong><br/><strong> ---&gt; Using cache</strong><br/><strong> ---&gt; e038e952a087</strong><br/><strong> Step 4/4 : LABEL lab=lab4</strong><br/><strong> ---&gt; Using cache</strong><br/><strong> ---&gt; 06542624803f</strong><br/><strong> Successfully built 06542624803f</strong><br/><strong> Successfully tagged templated:production</strong><br/></pre>
+<p>With this lab, we built different images using just one Dockerfile. Arguments will change the building process.<br/></p>
+<h1 id="uuid-4487e41e-dca7-4644-9759-d4c0b08aae35">Summary</h1>
+<p>This chapter guided us in terms of building container images. We learned about all the building steps and tips and tricks that will help us to ensure we have security in images. Building good and secure images is key for production and, as we learned, having good base images will help us build better application images. We will reuse many layers, so it is safer to ensure security from the bottom to the top. To ensure security, we just need to add the requisite software, expose the required processes, and avoid the root processes if they are not required.</p>
+<p>We also learned how to store images and their meta-information using code versioning-like tags to ensure that the correct image is running in production.</p>
+<p>Finally, we learned how to implement templates to create images for different environments or stages on CI/CD pipelines.</p>
+<p>In the next chapter, we will learn how to run containers.</p>
+<h1 id="uuid-75063d79-e413-4fc1-9304-19e8675c46e7">Questions<br/></h1>
+<ol>
+<li>How can we uniquely identify an image?</li>
+</ol>
+<p style="padding-left: 90px">a) All images with their tags are unique<br/>
+b) The image ID is what really makes an image unique; we can have an image ID with many names and tags, but they will all reference the same layers and meta-information<br/>
+c) Only base images on the root registry namespace are unique because all other images are based on these<br/>
+d) All the preceding answers are correct</p>
+<ol start="2">
+<li class="mce-root">Which methods can be used to create container images?</li>
+</ol>
+<p style="padding-left: 90px">a) We can build images from containers, committing their read-write layers on top of read-only ones<br/>
+b) We can use a Dockerfile, starting with a base image<br/>
+c) We can start from an empty one, known as scratch<br/>
+d) All of the above.</p>
+<ol start="3">
+<li>Which image creation methods are reproducible?</li>
+</ol>
+<p style="padding-left: 90px">a) Committing containers to images is reproducible because we know which steps we followed<br/>
+b) Using Dockerfiles, we will ensure that the requisite steps are written and that the creation process is reproducible<br/>
+c) There is no reproducible method for creating images<br/>
+d) All of the above options are incorrect</p>
+<ol start="4">
+<li>Which Dockerfile instructions admit Shell and Exec formats?</li>
+</ol>
+<p style="padding-left: 90px">a) <kbd>RUN</kbd><br/>
+b) Only <kbd>CMD</kbd><br/>
+c) <kbd>ENTRYPOINT</kbd> and <kbd>CMD</kbd><br/>
+d) All Dockerfile instructions admit both Exec and Shell formats</p>
+<ol start="5">
+<li>How can we avoid using command arguments when launching a container based on an image?</li>
+</ol>
+<p style="padding-left: 90px">a) We can avoid user modification of the main process arguments and parameters by using the shell format for <kbd>ENTRYPOINT</kbd><br/>
+b) It is never possible to modify the container main process<br/>
+c) It is always possible to modify the main container process arguments, irrespective of the <kbd>ENTRYPOINT</kbd> format used<br/>
+d) None of the above options are correct</p>
+<h1 id="uuid-0bab13f3-4195-461a-9b08-f46796784643">Further reading</h1>
+<p>You can refer to the following links for more information on topics covered in this chapter:</p>
+<ul>
+<li>Multi-architecture images using new builds: <a href="https://www.docker.com/blog/multi-arch-images/">https://www.docker.com/blog/multi-arch-images/</a></li>
+<li>Dockerfile best practices: <a href="https://www.docker.com/blog/intro-guide-to-dockerfile-best-practices/">https://www.docker.com/blog/intro-guide-to-dockerfile-best-practices/</a></li>
+<li>Dockerfile reference: <a href="https://docs.docker.com/engine/reference/builder/">https://docs.docker.com/engine/reference/builder/</a></li>
+</ul>
+
+
+            
+
+            
+        
+    </body></html>

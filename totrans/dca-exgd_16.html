@@ -1,0 +1,796 @@
+<html><head></head><body>
+        
+
+                            
+                    Implementing an Enterprise-Grade Registry with DTR
+                
+            
+            
+                
+<p class="mce-root">Docker Enterprise is a complete <strong>Container as a Service</strong> (<strong>CaaS</strong>) platform. In previous chapters, we have learned how <strong>Universal Control Plane</strong> (<strong>UCP</strong>) provides a complete control plane solution for the Docker Swarm and Kubernetes orchestrators. We also learned about how UCP includes publishing features using Interlock. An enterprise-ready platform should also cover the storage of images. In this chapter, we will learn about <strong>Docker Trusted Registry</strong> (<strong>DTR</strong>), a component of the Docker Enterprise platform designed to manage and ensure security in Docker images.</p>
+<p>In this chapter, we will learn about DTR components and how to deploy and manage a secure registry with high availability in terms of its components. We will also learn about how DTR provides an enterprise solution using <strong>Role-Based Access Control</strong> (<strong>RBAC</strong>), image scanning, and other security features. The final topics covered will demonstrate how we can integrate DTR automation and promotion features in our CI/CD workflow and strategies to ensure DTR's health. By the end of this series of chapters about Docker Enterprise, you will have good knowledge of this platform.</p>
+<p>We will cover the following topics in this chapter:</p>
+<ul>
+<li>Understanding DTR components and features</li>
+<li>Deploying DTR with high availability </li>
+<li>Learning about RBAC</li>
+<li>Image scanning and security features</li>
+<li>Integrating and automating image workflow</li>
+<li>Backup strategies</li>
+<li>Updates, health checks, and troubleshooting</li>
+</ul>
+<h1 id="uuid-0892def6-4197-4b77-8114-9a69a95e4762">Technical requirements</h1>
+<p>You can find the code for this chapter in the GitHub repository: <a href="https://github.com/PacktPublishing/Docker-Certified-Associate-DCA-Exam-Guide.git">https://github.com/PacktPublishing/Docker-Certified-Associate-DCA-Exam-Guide.git</a></p>
+<p>Check out the following video to see the Code in Action:</p>
+<p>"<a href="https://bit.ly/32tg6sn" target="_blank">https://bit.ly/32tg6sn</a>"</p>
+<h1 id="uuid-354964e7-caa3-4156-88ae-105d28210a1f">Understanding DTR components and features</h1>
+<p>DTR is the Docker Enterprise's platform registry, used to store and manage images. It is deployed on top of defined UCP worker nodes. DTR will run as a multi-container application. This means that all containers will run together, associated with just one defined node. In the case of node failure, no other nodes will take its DTR containers. This is very important because we need to deploy multiple DTR deployments, on different nodes.</p>
+<p>DTR uses RethinkDB as a database to store and sync data between registry nodes. To provide high availability to DTR, we need to deploy an odd number of replicas. We will use three replicas, so we need to deploy DTR workloads on three worker nodes. Synchronization will be done using overlay networking. DTR installation will create a <kbd>dtr-ol</kbd> overlay network and this will be used internally for replica synchronization.</p>
+<p>Each replica will deploy the following processes:</p>
+<table style="border-collapse: collapse;width: 100%" border="1">
+<tbody>
+<tr>
+<td class="CDPAlignCenter CDPAlign">
+<p><strong>Replica (DTR instance)<br/></strong></p>
+</td>
+<td class="CDPAlignCenter CDPAlign">
+<p><strong>Process</strong></p>
+</td>
+</tr>
+<tr>
+<td>
+<p><kbd>dtr-api-&lt;replica_id&gt;</kbd></p>
+</td>
+<td>
+<p>This process exposes DTR's API internally.</p>
+</td>
+</tr>
+<tr>
+<td>
+<p><kbd>dtr-garant-&lt;replica_id&gt;</kbd></p>
+</td>
+<td>
+<p>DTR's authentication is managed by means of this component.</p>
+</td>
+</tr>
+<tr>
+<td>
+<p><kbd>dtr-jobrunner-&lt;replica_id&gt;</kbd></p>
+</td>
+<td>
+<p><kbd>jobrunner</kbd> is used to schedule different internal DTR maintenance tasks.</p>
+</td>
+</tr>
+<tr>
+<td>
+<p><kbd>dtr-nginx-&lt;replica_id&gt;</kbd></p>
+</td>
+<td>
+<p>The <kbd>nginx</kbd> process acts as a reverse proxy, publishing DTR's API and web UI on ports <kbd>80</kbd> and <kbd>443</kbd> (secure).</p>
+</td>
+</tr>
+<tr>
+<td>
+<p><kbd>dtr-notary-server-&lt;replica_id&gt;</kbd> and <kbd>dtr-notary-signer-&lt;replica_id&gt;</kbd></p>
+</td>
+<td>
+<p>These processes help us to sign and maintain users' signatures.</p>
+</td>
+</tr>
+<tr>
+<td>
+<p><kbd>dtr-registry-&lt;replica_id&gt;</kbd></p>
+</td>
+<td>
+<p>A community-based registry will be installed as a core component in DTR.</p>
+</td>
+</tr>
+<tr>
+<td>
+<p><kbd>dtr-rethinkdb-&lt;replica_id&gt;</kbd></p>
+</td>
+<td>
+<p>RethinkDB is the database used to store DTR's repository information.</p>
+</td>
+</tr>
+<tr>
+<td>
+<p><kbd>dtr-scanningstore-&lt;replica_id&gt;</kbd></p>
+</td>
+<td>
+<p>This component manages and stores scanning data.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<p> </p>
+<p>Notice that all processes will have a common suffix to identify each replica within the cluster. We will deploy different replicas, but their data will be synchronized.</p>
+<p>Notary server processes will also receive requests whenever any user pushes or pulls images using a client with content trust enabled. A notary signer will execute server-side timestamps and snapshots for image signatures.</p>
+<p>Volumes will be used to persist DTR data. Each node running a DTR replica will manage its own volumes. If DTR detects their existence, they will be used. This prevents the destruction of previous installations (we have to use the previous <kbd>replica_id</kbd> identification):</p>
+<table style="border-collapse: collapse;width: 100%" border="1">
+<tbody>
+<tr>
+<td style="width: 24.3542%" class="CDPAlignCenter CDPAlign">
+<p><strong>Replica (DTR instance)</strong></p>
+</td>
+<td style="width: 74.7847%" class="CDPAlignCenter CDPAlign">
+<p><strong>Process</strong></p>
+</td>
+</tr>
+<tr>
+<td style="width: 24.3542%">
+<p><kbd>dtr-ca-&lt;replica_id&gt;</kbd></p>
+</td>
+<td style="width: 74.7847%">
+<p>This volume manages the required key and root information to issue DTR's CA.</p>
+</td>
+</tr>
+<tr>
+<td style="width: 24.3542%">
+<p><kbd>dtr-notary-&lt;replica_id&gt;</kbd></p>
+</td>
+<td style="width: 74.7847%">
+<p>This volume stores notary keys and certificates.</p>
+</td>
+</tr>
+<tr>
+<td style="width: 24.3542%">
+<p><kbd>dtr-postgres-&lt;replica_id&gt;</kbd></p>
+</td>
+<td style="width: 74.7847%">
+<p>This volume is used by images' vulnerability scanning.</p>
+</td>
+</tr>
+<tr>
+<td style="width: 24.3542%">
+<p><kbd>dtr-registry-&lt;replica_id&gt;</kbd> and <kbd>dtr-nfs-registry-&lt;replica_id&gt;</kbd></p>
+</td>
+<td style="width: 74.7847%">
+<p>A registry's data is stored on this volume. This is the default option, but we are able to integrate third-party storage. In fact, shared storage will be required to provide DTR processes with high availability. <kbd>dtr-nfs-registry-&lt;replica_id&gt;</kbd> will be used if the storage's backend is NFS.</p>
+</td>
+</tr>
+<tr>
+<td style="width: 24.3542%">
+<p><kbd>dtr-rethink-&lt;replica_id&gt;</kbd></p>
+</td>
+<td style="width: 74.7847%">
+<p>This volume stores repository information.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<p> </p>
+<p>DTR's data storage is key because this is where images will live. Take care of your images' layers because DTR's backup does not back up their data and meta-information. You have to deploy your own backup to be able to restore your images' data.</p>
+<p>DTR can be deployed either on-premises or in the cloud. We can use Amazon, Google, or Microsoft Azure. It supports the following storage backends:</p>
+<ul>
+<li class="mce-root">NFS</li>
+<li class="mce-root">Amazon S3</li>
+<li class="mce-root">Cleversafe</li>
+<li class="mce-root">Google Cloud Storage</li>
+<li class="mce-root">OpenStack Swift</li>
+<li class="mce-root">Microsoft Azure</li>
+</ul>
+<p>We can use any S3 object's storage-compatible solution (Minio, for example). Object storage works great with an image's data if we have big layers with a lot of content.</p>
+<p>DTR provides image caching for multi-site environments where communication latency between users and the registry can become a problem. Image caching will be used to ensure that users get the required images from the nearest registry node.</p>
+<p>RBAC is provided with DTR as it is in UCP. Both applications can be integrated to have a single sign-on solution, but RBAC is independent. DTR will forward authentication to UCP and this will verify a user's authentication, but each application will manage different roles and profiles. This way, a UCP's power user can have limited access to images in DTR.</p>
+<p>Security in DTR is based on image security scanning and Docker Content Trust. Image security scanning will search for an image's content vulnerabilities using binaries' and libraries' <strong>bills of materials</strong> (<strong>BOMs</strong>). A <strong>Common Vulnerabilities and Exposures</strong> (<strong>CVE</strong>) database is used to search for well-known issues in our images.</p>
+<p>A BOM is a detailed list of all the files present inside an image. A CVE database is a public database of well-known vulnerabilities found in files around the world. It is community-driven and there are many contributors reporting and looking for vulnerabilities in applications' code. </p>
+<p>DTR also includes image promotion and task scheduling. These features allow us to monitor image tagging and security to trigger different modifications or interactions with either external or DTR-integrated tools.</p>
+<p>Repository mirroring and caching will help us to integrate DTR in enterprise environments.</p>
+<p class="mce-root">We will learn how to deploy DTR with high availability in the next section.</p>
+<h1 id="uuid-a880c374-6339-412a-b3e8-cc4b02eea366">Deploying DTR with high availability</h1>
+<p>Deploying DTR with high availability requires more than one replica executing all DTR components. We will deploy an odd number of replicas to ensure high availability.</p>
+<p>DTR should be deployed on dedicated worker nodes. This will ensure that none of the non-system processes will impact DTR's behavior and vice versa. DTR's processes can take a lot of CPU during scanning and other procedures. Therefore, we will use three dedicated worker nodes. We usually admit DHCP on worker nodes, but we will ask for fixed IP addresses on DTR's worker nodes. We will also require fixed hostnames.</p>
+<p>We can deploy the Docker Enterprise platform on-premises or in the cloud. DTR requirements were described in brief in <a href="1879ea92-ae47-4230-ac84-784d4bc73185.xhtml">Chapter 11</a>, <em>Universal Control Plane</em>.</p>
+<p>To deploy DTR on dedicated workers, these nodes require at least the following:</p>
+<ul>
+<li class="mce-root">16 GB of RAM</li>
+<li class="mce-root">2 vCPUs (virtual CPUs)</li>
+</ul>
+<p>For production, we will ask for bigger nodes with more resources:</p>
+<ul>
+<li class="mce-root">32 GB of RAM</li>
+<li class="mce-root">4 vCPUs</li>
+</ul>
+<p>This increment of hardware resources is due to image-scanning features. This will take a bunch of CPU and memory resources because it will load the content of all images and create all binary and library <kbd>md5-checksum-hashes</kbd> to compare these values against the CVE database.</p>
+<p>An image's data will be downloaded by default in the <kbd>dtr-registry-&lt;REPLICA_ID&gt;</kbd> volume. If you deploy a standalone replica for testing, for example, ensure that you have sufficient space for your images. A minimum of 25 GB is required, but we recommend having at least 500 GB if you plan to manage Microsoft Windows images.</p>
+<p>At the time of writing this book, the latest DTR release is 2.7.6. We will first install a DTR replica. Once the first replica is installed, we will join two other replicas. We recommend that you configure the first replica before continuing with others. This will ensure the synchronization of configuration changes between replicas. This is important for configuring DTR's data storage.</p>
+<p>If we configured a license on UCP, this will be copied to the DTR. If not, we will need to configure it in both environments.</p>
+<p>As we have seen in Docker's UCP installation, <kbd>installation-container</kbd> will have many actions associated with it, such as <kbd>backups</kbd>/<kbd>restore</kbd>, <kbd>install</kbd>, and <kbd>join</kbd>:</p>
+<table style="border-collapse: collapse;width: 100%" border="1">
+<tbody>
+<tr>
+<td class="CDPAlignCenter CDPAlign">
+<p><strong>Command</strong></p>
+</td>
+<td class="CDPAlignCenter CDPAlign">
+<p><strong>Action</strong></p>
+</td>
+</tr>
+<tr>
+<td>
+<p><kbd>install</kbd></p>
+</td>
+<td>
+<p>DTR will be installed using the <kbd>docker/dtr</kbd> image. We will launch this process from any UCP node because the UCP URL will be used and the process will be executed from manager nodes once the connection is established.</p>
+</td>
+</tr>
+<tr>
+<td>
+<p><kbd>join</kbd></p>
+</td>
+<td>
+<p>We will execute more than one DTR replica to provide high availability. In this case, we will install the first replica and then we will join others to this one.</p>
+</td>
+</tr>
+<tr>
+<td>
+<p><kbd>reconfigure</kbd></p>
+</td>
+<td>
+<p>We can modify DTR configurations using the DTR image. Some configurations require restarting. We will configure DTR replicas to avoid downtime.</p>
+</td>
+</tr>
+<tr>
+<td>
+<p><kbd>remove</kbd></p>
+</td>
+<td>
+<p>Sometimes, we need to remove a number of DTR replicas. We will use the <kbd>remove</kbd> action, available in the <kbd>docker/dtr</kbd> image, to delete replicas from the DTR environment. This action will neatly remove replicas, updating other replicas about this change.</p>
+</td>
+</tr>
+<tr>
+<td>
+<p><kbd>destroy</kbd></p>
+</td>
+<td>
+<p>This command will be used to forcefully remove all DTR replicas' containers and volumes. This procedure should be used with care because replica removal is forced and does not inform others about this condition, meaning that a cluster can be left in an unhealthy state. Use this option to completely remove DTR from your cluster.</p>
+</td>
+</tr>
+<tr>
+<td>
+<p><kbd>backup</kbd>/<kbd>restore</kbd></p>
+</td>
+<td>
+<p>This command creates a TAR file with all the information and files required to restore a DTR replica, including non-image volumes and configurations. This will not back up an image's data layers. An image's data must be stored using third-party tools. Take care with this because you should be able to restore your DTR cluster to a running state, but you could lose all your images.</p>
+</td>
+</tr>
+<tr>
+<td>
+<p><kbd>upgrade</kbd></p>
+</td>
+<td>
+<p>The <kbd>upgrade</kbd> option will help us to automatically deploy platform upgrades. All DTR components will be updated to a defined upgrade release. If we have deployed DTR with high availability, this process should not impact our users.</p>
+</td>
+</tr>
+<tr>
+<td>
+<p><kbd>images</kbd></p>
+</td>
+<td>
+<p>We can download DTR's required images prior to installation. This is very useful, for example, when we have to execute an offline installation. We will download DTR images using a Docker Engine instance with internet access.</p>
+</td>
+</tr>
+<tr>
+<td>
+<p><kbd>emergency-repair</kbd></p>
+</td>
+<td>
+<p>When all the replicas of DTR are unhealthy, but one replica is running with healthy core processes, we will use the <kbd>emergency-repair</kbd> action with this replica to recover the cluster.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<p> </p>
+<p>We will usually have the following common arguments for the majority of the actions:</p>
+<table style="border-collapse: collapse;width: 100%" border="1">
+<tbody>
+<tr>
+<td>
+<p><strong>Arguments</strong></p>
+</td>
+<td class="CDPAlignCenter CDPAlign"><strong>Actions</strong></td>
+</tr>
+<tr>
+<td>
+<p><kbd>--ucp-url</kbd></p>
+</td>
+<td>This should be our valid UCP's URL. We will use the cluster's <strong>Fully Qualified Domain Name</strong> (<strong>FQDN</strong>) and port (<kbd>443</kbd> by default).</td>
+</tr>
+<tr>
+<td>
+<p><kbd>--ucp-ca</kbd></p>
+<p>and <kbd>--ucp-insecure-tls</kbd></p>
+</td>
+<td>We will choose either of these options, using UCP's valid CA or insecure TLS, avoiding any CA authentication.</td>
+</tr>
+<tr>
+<td>
+<p><kbd>--ucp-username</kbd></p>
+<p>and <kbd>--ucp-password</kbd></p>
+</td>
+<td>These options will provide UCP's user authentication. If none are used, we will be asked for them during execution. These should be valid and must have administrator privileges.</td>
+</tr>
+</tbody>
+</table>
+<p>Always use the appropriate <kbd>docker/dtr:&lt;RELEASE&gt;</kbd> version for all actions. Do not mix releases unless you are doing a DTR upgrade. The current release, at the time of writing this book, is 2.7.6.</p>
+<p class="mce-root">DTR installation requires UCP's URL and one administrator's username and password. We can use these interactively, but as we learned in previous sections, it is preferable to include installation as part of script-like structures. This will help us to provide a reproducible configuration and installation methodology.</p>
+<p>We will now describe DTR's installation process. The first replica will be installed using <kbd>docker container run docker/dtr:&lt;RELEASE&gt; install</kbd>. We will launch the installation process from any cluster node. In fact, we can deploy DTR from our laptop because we will include UCP's URL and the administrator's username and password. Installation can be done using an interactive or automated process. We will also choose which UCP node will run the first replica's processes using <kbd>--ucp-node</kbd>:</p>
+<pre><strong>$ docker run -it --rm \</strong><br/><strong> docker/dtr:&lt;RELEASE&gt; install \</strong><br/><strong> --dtr-external-url &lt;DTR_COMPLETE_URL&gt;\</strong><br/><strong> --ucp-node &lt;UCP_NODE_TO_INSTALL&gt; \</strong><br/><strong> --ucp-username &lt;UCP_USERNAME&gt; \</strong><br/><strong> --ucp-password &lt;UCP_PASSWORD&gt; \</strong><br/><strong> --ucp-url &lt;UCP_COMPLETE_URL&gt; \</strong><br/><strong> --ucp-ca "$(curl -s -k &lt;UCP_COMPLETE_URL&gt;/ca)"</strong><br/><br/><strong>INFO[0000] Beginning Docker Trusted Registry installation </strong><br/><strong>INFO[0000] Validating UCP cert                          </strong><br/><strong>INFO[0000] Connecting to UCP                            </strong><br/><strong>INFO[0000] health checking ucp                          </strong><br/><strong>INFO[0000] The UCP cluster contains the following nodes without port conflicts: &lt;LIST_OF_UCP_CLUSTER_NODES&gt;</strong><br/><strong>INFO[0000] Searching containers in UCP for DTR replicas </strong><strong>       </strong><br/><strong>...<br/>...</strong><br/><strong>INFO[0000] Creating network: dtr-ol                     </strong><br/><strong>INFO[0000] Connecting to network: dtr-ol                </strong><br/><strong>INFO[0000] Waiting for phase2 container to be known to the Docker daemon </strong><br/><strong>INFO[0001] Setting up replica volumes...                </strong><br/><strong>...<br/>...</strong><br/><strong>INFO[0011] License config copied from UCP.              </strong><br/><strong>INFO[0011] Migrating db...                              </strong><br/><strong>...<br/>...</strong><br/><strong>INFO[0004] Migrated database from version 0 to 10       </strong><br/><strong>INFO[0016] Starting all containers...                   </strong><br/><strong>...<br/>...</strong><strong>              </strong><br/><strong>INFO[0114] Successfully registered dtr with UCP         </strong><br/><strong>INFO[0114] Installation is complete                     </strong><br/><strong>INFO[0114] Replica ID is set to: c8a9ec361fde           </strong><br/><strong>INFO[0114] You can use flag '--existing-replica-id c8a9ec361fde' when joining other replicas to your Docker Trusted Registry Cluster</strong> </pre>
+<p>Since DTR's installation process will connect to UCP's API, TLS will be used, and certificates will be sent. We added UCP's CA to validate its certificates.</p>
+<p>Once the first replica is installed, we will configure and then join other replicas. It is important to configure shared storage and other settings if you have not changed them during the installation process.</p>
+<p>Notice the last line of the installation's output. It shows the <kbd>You can use flag '--existing-replica-id c8a9ec361fde' when joining other replicas to your Docker Trusted Registry Cluster</kbd> text message. Keep this replica's ID; we will use it for reconfiguring it and joining other replicas.</p>
+<p>We can configure the shared storage we need to execute the <kbd>reconfigure</kbd> action. We can use either filesystem or object storage types:</p>
+<ul>
+<li><strong>Filesystem storage types</strong>: <strong>Network File System</strong> (<strong>NFS</strong>), bind mount, and volume</li>
+<li><strong>Object storage (cloud) types</strong>: Amazon S3, Openstack's Swift, Microsoft Azure, and Google Cloud Storage</li>
+</ul>
+<p>Object storage and NFS are valid options for shared storage. Each cloud provider will require its own specifications. Common parameters will be the user or account name, password, and bucket. Object storage is the preferred option for DTR shared image storage. There are some on-premises solutions, such as Minio, that are easy to implement in our data center. NFS is also valid and it is quite common in current data centers. In this case, we will use the <kbd>--nfs-storage-url</kbd> parameter with the <kbd>reconfigure</kbd> action. <kbd>nfs-storage-url</kbd> will require the following format: <kbd>nfs://&lt;ip|hostname&gt;/&lt;mountpoint&gt;</kbd>.</p>
+<p>DTR's storage backend configuration can also be managed using YAML format.</p>
+<p>Many DTR options can be set using environment variables. To review available variables, execute <kbd>docker container run docker/dtr:&lt;RELEASE&gt; &lt;ACTION&gt; --help</kbd> to retrieve an action's help. Variables will be shown on each argument or option.</p>
+<p class="mce-root">Joining replicas will provide high availability to DTR's processes. Replication requires external storage for sharing images' blobs (data layers) and meta-information. Therefore, we will reconfigure the first replica's storage if we did not choose shared storage during installation. We have the first replica's ID and we will use <kbd>docker/dtr:&lt;RELEASE&gt; reconfigure --existing-replica-id &lt;FIRST_REPLICA'S_ID&gt;</kbd> to reconfigure the storage's backend. In this example, we will just use NFS, which is common in our data centers.</p>
+<p>Before executing the storage's configuration, we will copy the registry volume's data into our NFS filesystem.</p>
+<p>The following lines provide us with a quick example of this migration mounting NFS endpoint as a local directory on DTR's host (we have used a sample IP address and the ID of the replica created previously):</p>
+<pre><strong>$ sudo mount -t nfs 10.10.10.11:/data /mnt</strong><br/><strong>$ sudo cp -pR /var/lib/docker/volumes/dtr-registry-c8a9ec361fde/_data/* /mnt/</strong></pre>
+<p>This step will guarantee previous data if we use <kbd>--storage-migrated</kbd> with the <kbd>reconfigure</kbd> action. If you are using NFS as a local volume, you should guarantee that it is mounted on reboot using the appropriate line in your <kbd>fstab</kbd> file. This was just an example. We will never use NFS locally mounted for DTR; we can use NFS directly, using appropriate command-line options, to mount an NFS endpoint as a DTR volume.</p>
+<p>The following screenshot shows Amazon's S3 options integrated in DTR's web UI. Each backend type will integrate different options:</p>
+<div><img src="img/d58a7bc5-662f-4efe-b0c8-444c997bf89e.jpg" style=""/></div>
+<p class="mce-root">We have used variables for command parameters, but we have left the command's output intact because it is interesting how NFS and the current replica's ID are present:</p>
+<pre><strong>$ docker container run --rm -it docker/dtr:&lt;RELEASE&gt; reconfigure \</strong><br/><strong>--existing-replica-id &lt;FIRST_REPLICA'S_ID&gt; \</strong><br/><strong>--nfs-storage-url nfs://&lt;NFS_SERVER&gt;/&lt;NFS_SHARED_DIR&gt; \</strong><br/><strong>--storage-migrated \</strong><br/><strong>--ucp-username &lt;UCP_USERNAME&gt; \</strong><br/><strong>--ucp-password &lt;UCP_PASSWORD&gt; \</strong><br/><strong>--ucp-url &lt;UCP_COMPLETE_URL&gt; \</strong><br/><strong>--ucp-insecure-tls</strong><br/><strong>INFO[0000] Starting phase1 reconfigure</strong><br/><strong>INFO[0000] Validating UCP cert</strong><br/><strong>INFO[0000] Connecting to UCP</strong><br/><strong>INFO[0000] health checking ucp</strong><br/><strong>INFO[0000] Searching containers in UCP for DTR replicas</strong><br/><strong>INFO[0000] Cluster reconfiguration will occur on all DTR replicas</strong><br/><strong>...<br/>...</strong><br/><strong>INFO[0000] Connecting to network: dtr-ol</strong><br/><strong>INFO[0000] Waiting for phase2 container to be known to the Docker daemon</strong><br/><strong>INFO[0000] Establishing connection with Rethinkdb</strong><br/>...<br/>...<br/><strong>INFO[0003] Getting container configuration and starting containers...</strong><br/><strong>INFO[0003] Waiting for database to stabilize for up to 600 seconds before attempting to reconfigure replica c8a9ec361fde</strong><br/><strong>INFO[0003] Establishing connection with Rethinkdb</strong><br/><strong>INFO[0003] Configuring NFS</strong><br/><strong>...<br/>...<br/></strong><strong>INFO[0004] Recreating volume node4/dtr-registry-nfs-c8a9ec361fde</strong><br/><strong>...<br/>...<br/></strong><strong>INFO[0009] Recreating dtr-registry-c8a9ec361fde...</strong><br/><strong>INFO[0013] Recreating dtr-garant-c8a9ec361fde...</strong><br/><strong>INFO[0017] Changing dtr-api-c8a9ec361fde mounts from [dtr-ca-c8a9ec361fde:/ca dtr-registry-c8a9ec361fde:/storage] to [dtr-ca-c8a9ec361fde:/ca dtr-registry-nfs-c8a9ec361fde:/storage]</strong><br/><strong>...<br/>...<br/></strong><strong>INFO[0038] Recreating dtr-scanningstore-c8a9ec361fde...</strong><br/><strong>INFO[0042] Trying to get the kv store connection back after reconfigure</strong><br/><strong>INFO[0042] Establishing connection with Rethinkdb</strong><br/><strong>INFO[0042] Verifying auth settings...</strong><br/><strong>INFO[0042] Successfully registered dtr with UCP</strong><br/><strong>INFO[0042] The `--storage-migrated` flag is set. Not erasing tags.</strong></pre>
+<p>Notice the <kbd>--storage-migrated</kbd> argument. If we migrate storage after the creation of a number of repositories, all this work will be lost if we do not migrate the registry volume's data. In this case, we have just copied the volume's content.</p>
+<p>Now that we have a shared registry's storage backend, we can join new replicas. We will use the current replica's ID because new replicas require a base replica to sync with. We will use the <kbd>join</kbd> action on any cluster node because we will select another worker node for this replica (we have mocked our example using <kbd>&lt;NEW_UCP_NODE&gt;</kbd>):</p>
+<pre><strong>$ docker container run --rm -it docker/dtr:&lt;RELEASE&gt; \</strong><br/><strong> join \</strong><br/><strong> --ucp-node &lt;NEW_UCP_NODE&gt; \</strong><br/><strong> --ucp-username &lt;UCP_USERNAME&gt; \</strong><br/><strong> --ucp-password &lt;UCP_PASSWORD&gt; \</strong><br/><strong> --ucp-url &lt;UCP_COMPLETE_URL&gt; \</strong><br/><strong> --ucp-insecure-tls \</strong><br/><strong> --existing-replica-id c8a9ec361fde</strong><br/><strong> INFO[0000] Beginning Docker Trusted Registry replica join</strong><br/><strong> INFO[0000] Validating UCP cert</strong><br/><strong> INFO[0000] Connecting to UCP</strong><br/><strong> INFO[0000] health checking ucp</strong><br/><strong> INFO[0000] The UCP cluster contains the following nodes without port conflicts: &lt;UCP_NODES_AVAILABLE&gt;</strong><br/><strong> INFO[0000] Searching containers in UCP for DTR replicas</strong><br/><strong> INFO[0001] Searching containers in UCP for DTR replicas</strong><br/><strong> INFO[0001] verifying [80 443] ports on node3</strong><br/><strong> INFO[0012] Waiting for running dtr-phase2 container to finish</strong><br/><strong> INFO[0012] starting phase 2</strong><br/><strong> INFO[0000] Validating UCP cert</strong><br/><strong> ...</strong><br/><strong> ...</strong><br/><strong> INFO[0057] Recreating dtr-scanningstore-c8a9ec361fde...</strong><br/><strong> INFO[0061] Configuring NFS</strong><br/><strong> INFO[0062] Using NFS storage: nfs://10.10.10.11/data</strong><br/><strong> INFO[0062] Using NFS options:</strong><br/><strong> ...</strong><br/><strong> ...</strong><br/><strong> </strong><strong>INFO[0176] Transferring data to new replica: cc0509711d05</strong><br/><strong> INFO[0000] Establishing connection with Rethinkdb</strong><br/><strong> ...<br/> ...<br/></strong><strong> INFO[0183] Database successfully copied</strong><br/><strong> INFO[0183] Join is complete</strong><br/><strong> INFO[0183] Replica ID is set to: cc0509711d05</strong><br/><strong> INFO[0183] There are currently 2 replicas in your Docker Trusted Registry cluster</strong><br/><strong> INFO[0183] You currently have an even number of replicas which can impact cluster availability</strong><br/><strong> INFO[0183] It is recommended that you have 3, 5 or 7 replicas in your cluster</strong></pre>
+<p class="mce-root">All values apart from the first replica's ID were mocked and the outputs of the <kbd>join</kbd> command have been reduced for this book. Notice that we have used <kbd>--ucp-insecure-tls</kbd> instead of adding UCP's CA. After <kbd>183</kbd> steps, the new replica was joined. At least three replicas are required for high availability. All replicas are deployed as multi-container applications on defined worker nodes.</p>
+<p>Starting in DTR 2.6, you should perform a backup before switching storage drivers. This ensures that your images will be preserved if you decide to switch back to your current storage driver.</p>
+<p>DTR will expose its API securely, using TLS. Therefore, certificates will be used to create secure tunnels. By default, DTR will create a CA to sign server certificates. We can use our corporation's private or public certificates. They can be applied during installation using <kbd>--dtr-ca</kbd> and <kbd>--dtr-cert</kbd>, but we can change them later in DTR's web UI or by using the <kbd>reconfigure</kbd> action. If you used your custom certificate, your certificate will probably be included in your system. If Docker created auto-signed certificates for us, these will not be trusted in your system. Docker created a CA for use to sign DTR certificates and you will probably get the following error message when you try to execute any registry action from your command line:</p>
+<pre><strong>Error response from daemon: Get https://&lt;DTR_FQDN&gt;[:DTR_PORT]/v2/: x509: certificate signed by unknown authority.</strong></pre>
+<p>To avoid this issue, we can either avoid SSL verification, define an insecure registry, or add DTR's CA as trusted on our system:</p>
+<ul>
+<li><strong>Insecure registry</strong>: To set up an insecure registry for our client, we will add <kbd>"insecure-registries" : ["&lt;DTR_FQDN&gt;[:DTR_PORT]"]</kbd> to our Docker Engine <kbd>daemon.json</kbd> file. This is not recommended and should be avoided in production because someone could hijack our server's identity.</li>
+<li><strong>Adding DTR's CA to our system</strong>: This procedure may change depending on the Docker Engine host's operating system. We will describe procedures for Ubuntu/Debian and Red Hat/CentOS nodes. They are very common in our data centers:</li>
+</ul>
+<pre style="padding-left: 60px">CA updating procedure on Ubuntu/Debian nodes:<strong><br/>$ openssl s_client -connect &lt;DTR_FQDN&gt;:&lt;DTR_PORT&gt; -showcerts &lt;/dev/null 2&gt;/dev/null | openssl x509 -outform PEM | sudo tee /usr/local/share/ca-certificates/&lt;DTR_FQDN&gt;.crt</strong><br/><strong>$ sudo update-ca-certificates</strong><br/><strong>$ sudo systemctl restart docker</strong><br/><br/>CA updating procedure on Red Hat/CenOS nodes:<strong><br/>$ openssl s_client -connect &lt;DTR_FQDN&gt;:&lt;DTR_PORT&gt; -showcerts &lt;/dev/null 2&gt;/dev/null | openssl x509 -outform PEM | sudo tee /etc/pki/ca-trust/source/anchors/&lt;DTR_FQDN&gt;.crt</strong><br/><strong>$ sudo update-ca-trust</strong><br/><strong>$ sudo systemctl restart docker</strong></pre>
+<p>Including DTR's CA in our client systems is the preferred method because we will still validate its certificates.</p>
+<p>We can log in to DTR's web UI using the defined DTR's URL. Since login is integrated with UCP by default, redirections will be integrated into this process and UCP will authorize users.</p>
+<p>The following screenshot shows DTR's main interface once we are logged in. Repositories will be shown in a tree-like structure. Users will only have access to their resources:</p>
+<div><img src="img/3f47db5f-1391-4c0f-b25d-39b447b06396.jpg"/></div>
+<p>DTR's web UI is quite simple. It allows administrators to manage users, teams, organizations, and RBAC integrations. The following is a screenshot of the system's endpoint:</p>
+<div><img src="img/bd8254c4-7514-475b-b57a-1e40a1076318.jpg" style=""/></div>
+<p>The system's endpoint provides access to the following resources and configurations:</p>
+<ul>
+<li><strong>The General tab</strong>:
+<ul>
+<li>Allows us to manage DTR's license.</li>
+<li>DTR's load-balanced URL.</li>
+<li>Integration of corporate proxies to download the required image-scanning CVE database.</li>
+<li>Single sign-on integration within UCP and DTR.</li>
+<li>Configures browser cookies for clients. This will help us to forward requests to specific DTR backends.</li>
+<li>Allows us to set whether repositories can be created on push. This allows users to push images, and repositories will automatically be created if they do not exist.</li>
+</ul>
+</li>
+<li><strong>The Storage tab</strong>: This tab allows us to configure all of DTR's storage backends. We can choose between filesystem or object storage (cloud), and each backend will have different options.</li>
+<li><strong>The Security tab</strong>: Security is key for images. This tab allows us to configure DTR's image-scanning features.</li>
+<li><strong>The Garbage collection tab</strong>: Untagged images consume space and will increase the risk if some use non-referenced layers. This tab allows us to schedule the automatic removal of untagged images.</li>
+<li><strong>The Job logs tab</strong>: The logs of internal tasks can be reviewed on this tab. This log will show us information regarding mirroring and image pruning, among other internal features.</li>
+</ul>
+<p>The following section will show us how to manage different access to consume images stored in your DTR repositories.</p>
+<h1 id="uuid-0828ca69-28b7-4e4f-afdd-b7c1e8d1475a">Learning about RBAC</h1>
+<p>DTR provides a complete RBAC environment. DTR will authenticate and authorize valid users. We can integrate third-party authentication solutions as we learned in <a href="1879ea92-ae47-4230-ac84-784d4bc73185.xhtml">Chapter 11</a>, <em>Universal Control Plane</em>. Integrating external <strong>Lightweight Directory Access Protocol</strong> (<strong>LDAP</strong>)/<strong>Active Directory</strong> (<strong>AD</strong>) authentication mechanisms will allow us to delegate users' passwords to them, while UCP and DTR will manage user authorization.</p>
+<p>By default, DTR redirects user authentications to UCP because single sign-on is included. We can change this behavior in the System | General menu. It is recommended to keep this setting so as to manage users in just one application. All authentication will be delegated to UCP and this will route users to its integrated third-party authentication mechanism (if configured).</p>
+<p>Once we are authenticated to the DTR environment, we will get different permissions to allow us to manage images from repositories or just pull different releases from them.</p>
+<p>By default, anonymous users will be able to pull images from public repositories. You must ensure that only allowed images are stored in public repositories.</p>
+<p>We can create users on either UCP or DTR because, by default, we will have a single sign-on environment and users will be shared between both applications.</p>
+<p>Users are managed in teams and organizations, as we also learned in <a href="1879ea92-ae47-4230-ac84-784d4bc73185.xhtml">Chapter 11</a>, <em>Universal Control Plane</em>. These allow us to integrate teams into organizations, while users will be integrated in those teams:</p>
+<ul>
+<li><strong>Organizations</strong> will provide a logical level of abstraction and isolation. They allow us to namespace other resources.</li>
+<li><strong>Teams</strong> will allow us to assign user access to repositories.</li>
+</ul>
+<p>Users will be integrated into organizations and teams. These allow us to restrict access to images within organizations and with the permissions and allowed actions given using teams.</p>
+<p>Repositories' accesses are managed by two concepts:</p>
+<ul>
+<li><strong>Ownership</strong>: Repository creators</li>
+<li><strong>Public accessibility</strong>: Public or private repositories</li>
+</ul>
+<p>Owners of repositories can decide about access for others. As has been mentioned, we can have public and private images.</p>
+<p>Private repositories can only be consumed by owners and DTR administrators. Other users cannot pull images from these repositories. Only repositories' owners can push images to them.</p>
+<p>Within organizations, we will provide read and write access for specific teams in an organization's private repositories. These teams will be able to push images to these repositories. These teams are owners of these repositories and we can provide read-only access to some teams. They will only be able to pull images. All other teams will not have any access because we are talking about an organization's private repositories.</p>
+<p>Public repositories are different. Users' public repositories allow other users to pull images from them, while only owners are able to push. They have read-write access. An organization's public repositories will allow users to also pull images. In these cases, only teams with read-write access will be allowed to push images.</p>
+<p>The following table represents permissions that can be applied to repositories:</p>
+<table style="border-collapse: collapse;width: 100%" border="1">
+<tbody>
+<tr>
+<td class="CDPAlignCenter CDPAlign">
+<p><strong>Permissions</strong></p>
+</td>
+<td class="CDPAlignCenter CDPAlign">
+<p><strong>Description</strong></p>
+</td>
+</tr>
+<tr>
+<td>
+<p><strong>Read-only</strong></p>
+</td>
+<td>
+<p>A user can browse/search and pull images from a repository. Users will not be able to push to this repository.</p>
+</td>
+</tr>
+<tr>
+<td>
+<p><strong>Read and write</strong></p>
+</td>
+<td>
+<p>A user can browse/search, pull, and push images to a repository.</p>
+</td>
+</tr>
+<tr>
+<td>
+<p><strong>Owner</strong></p>
+</td>
+<td>
+<p>The owner has read-write access to their repositories, but they are also allowed to manage their permissions and descriptions. They can also set a repository's privacy level (public/private).</p>
+</td>
+</tr>
+</tbody>
+</table>
+<p> </p>
+<p>Organizations' members have read-only access to public images within this organization. Therefore, an organization's users can always pull their public images. Organizations' members can see other members and view all teams included within their organization. But we need to integrate users within an organization's teams to provide management and read-write access.</p>
+<p>An organization's members who are not included in any team cannot manage an organization's repositories. They can only pull its public images.</p>
+<p>An organization's owners, on the other hand, will be able to manage the organization and all its repositories. We can include any user within an organization as an owner. These users can also manage teams within an organization and their level of access. </p>
+<p>We will use a simple example to help you understand how permissions and access will be given to users in different repositories.</p>
+<p>Let's imagine an organization named <strong>myorganization</strong>. Let's include a team for <strong>devops</strong> and others for <strong>developers</strong> and <strong>operations</strong>. In this example, the <strong>devops</strong> team will define core images, while <strong>developers</strong> will use them for their applications.</p>
+<p><strong>devops</strong> group members will have read-write access, while <strong>developers</strong> will have read-only access. These will just pull images to create their own ones. They will use enterprise-defined core images, created by the <strong>devops</strong> team. In this case, the <strong>operations</strong> team does not have access to these application core images.</p>
+<p>On the other hand, the <strong>devops</strong> team created a series of images for testing the platform, under the <strong>testing image</strong> repository. This repository is public and all users within the organization will be able to use it on the Docker Enterprise platform. The following diagram shows the RBAC situation described:</p>
+<div><img src="img/0e1848d9-a860-4a6f-bf67-72db259d8679.png" style=""/></div>
+<p>In the next section, we will review image scanning and other security features included in the DTR platform.</p>
+<h1 id="uuid-ec73994b-d4b4-41af-8c73-7e054cb2d1ea">Image scanning and security features</h1>
+<p>In this section, we will review DTR's security features, such as security scanning and image signing.</p>
+<h2 id="uuid-41999254-07fd-4f09-8504-b58cfe4c57ba">Security scanning</h2>
+<p>DTR includes image security scanning as a built-in feature. It will scan each image's layer for binaries and libraries. A scan report will include the aggregated BOM for each layer. We now have a complete picture of an image's files and its MD5 hashes. This ensures the immutability of each layer's content between image releases. If we change a file within a layer, its hash changes and scanning will be executed against the new layer's content. Image scanning will also download and manage a CVE database provided by Docker. This will be used to correlate an image's layer reports with the vulnerability information given.</p>
+<p>Scanning will show us a report regarding the health of our image, reporting all detected well-known vulnerabilities found on the image's layers.</p>
+<p>This CVE database should be updated frequently because new threats appear almost daily. We can use either online synchronization or offline manual updates. In both cases, we require a valid Docker Enterprise license. Online synchronization requires a valid internet connection (we can use our corporate's proxies within DTR, configuring the <kbd>--http-proxy</kbd> and/or <kbd>--https-proxy</kbd> options either on DTR's installation or by reconfiguring the environment following the installation process).</p>
+<p>Do not forget to use the <kbd>--no-proxy</kbd> option to configure all your enterprise's internal FQDNs.</p>
+<p>Image scanning consumes a lot of DTR's hosts' resources. In fact, the first security scan for each layer requires a lot of resources. Subsequent scans will use previous layers' reports. If an image's layer size is large, scanning will take a lot of resources to create the layer's report. All files' hashes should be included in the report to correlate them with the database's data. If we use common layers in our images, this process will only be executed once. A layer's report will be updated if we change that layer's content. That layer will become old and a new scan will be executed. Take care of these processes between image changes.</p>
+<p>Scanning can be executed whenever an image is updated or created within DTR's registry automatically. This will be set on each repository using the Scan on push feature. We can periodically execute images' scans manually, but this could prove hard to maintain without using DTR's API.</p>
+<p>The image's scanning report will be shown on each repository's tag. We will have a report of the health of the image's vulnerabilities, as can be seen in the following screenshot:</p>
+<div><img src="img/34825d8e-f894-4155-b846-ac0a14a84639.png" style=""/></div>
+<p>The vulnerability status of the image can be as follows:</p>
+<ul>
+<li><strong>Green</strong>: No vulnerability was found. The image is secure.</li>
+<li><strong>Orange</strong>: Some minor or major vulnerabilities were found.</li>
+<li><strong>Red</strong>: Critical vulnerabilities were found and security could be compromised.</li>
+</ul>
+<p>We can dive into each tag's report by clicking on its details. We will be able to review the full scan results, including the image's metadata, size, owner, and the most recent scan.</p>
+<p>We have two different views for a tag's scan details:</p>
+<ul>
+<li>The <strong>Layers</strong> view will show us a list of the image's layers in the order of the image's construction. We will see each layer with the vulnerabilities identified on it. We can click on each layer to drill down into its components.</li>
+<li>The <strong>Components</strong> view will list all the image's components. Components will be sorted according to the number of vulnerabilities identified because a file can have multiple issues.</li>
+</ul>
+<p>We can integrate triggers to inform other processes or applications regarding the scanning results once they are finished.</p>
+<h2 id="uuid-b3a0d162-b11c-46b1-a662-5cd67ef56d47">Image immutability</h2>
+<p>Another interesting feature can be enabled for each image's repository. An image's immutability will mean that the overwriting of tags will be avoided. This will ensure the uniqueness of tags. This is interesting in terms of production releases. No one will reuse a tag that has already been used, so the development life cycle is not compromised because each release will have a unique ID.</p>
+<h2 id="uuid-566b4ba2-327a-4824-88db-ad130b7e4893">Content trust in DTR</h2>
+<p>DTR has integration with <strong>Docker Content Trust</strong> (<strong>DCT</strong>). We have covered this topic in <a href="e9fd3807-5bbd-4ea8-84f7-ee02d288643d.xhtml">Chapter 6</a>, <em>Introduction to Docker Content Trust</em>. We learned that image signing improves cluster and application security, ensuring image ownership, immutability, and provenance. If we have a CI/CD pipeline that creates images as application artifacts, we can ensure that the correct image will run in production. UCP allowed us to run only signed images within our organization.</p>
+<p>DTR provides a notary server and a notary signer. These components are required for DCT. Both application components will be accessed through an internal proxy and integrated with UCP's roles and access environment. This integration enables the signing of images that UCP can trust and execute securely.</p>
+<p>The Docker client will allow us to configure content trust for repositories and sign images. We will use a simple Docker client command line to sign images. The main difference in a corporate environment is that we need to ensure that images are signed by enterprise users. We will use our own certificates, included in our user's bundle. We will use <kbd>key.pem</kbd> and <kbd>cert.pem</kbd> as private and public keys, respectively.</p>
+<p>We will now describe the steps necessary for signing images in the Docker Enterprise environment:</p>
+<ol>
+<li>First, we will download the user's bundle. We have already described this process in <a href="1879ea92-ae47-4230-ac84-784d4bc73185.xhtml">Chapter 11</a>, <em>Universal Control Plane</em>. Once we have our bundle in our system (already decompressed and ready to use), we will add a private key to our laptop's or Docker client node's trust store. We will use <kbd>docker trust load</kbd>:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ docker trust key load --name &lt;MY_USERNAME&gt; key.pem</strong><br/><strong>Loading key from "key.pem"...</strong><br/><strong>Enter passphrase for new &lt;MY_USERNAME&gt; key with ID ....:</strong><br/><strong>Repeat passphrase for new &lt;MY_USERNAME&gt; key with ID ....:</strong><br/><strong>Successfully imported key from key.pem</strong></pre>
+<ol start="2">
+<li>We will then initialize trust metadata for a specific repository. We should add ourselves as signers on each repository where we will push images. Remember that repositories should contain the registry's FQDN and port. We will use the <kbd>docker trust signer add</kbd> command:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ docker trust signer add \</strong><br/><strong>--key cert.pem \</strong><br/><strong>&lt;MY_USERNAME&gt; &lt;DTR_FQDN&gt;[:DTR_PORT][/ORGANIZATION][/USERNAME][/REPOSITORY]</strong><br/><strong>Adding signer "&lt;MY_USERNAME&gt;" to &lt;DTR_FQDN&gt;[:DTR_PORT][/ORGANIZATION][/USERNAME][/REPOSITORY]...</strong><br/><strong>Initializing signed repository for &lt;DTR_FQDN&gt;[:DTR_PORT][/ORGANIZATION][/USERNAME][/REPOSITORY]...</strong><br/><strong>Enter passphrase for root key with ID ....:</strong><br/><strong>Enter passphrase for new repository key with ID ....:</strong><br/><strong>Repeat passphrase for new repository key with ID .....:</strong><br/><strong>Successfully initialized "&lt;DTR_FQDN&gt;[:DTR_PORT][/ORGANIZATION][/USERNAME][/REPOSITORY]"</strong><br/><strong>Successfully added signer: &lt;MY_USERNAME&gt; to &lt;DTR_FQDN&gt;[:DTR_PORT][/ORGANIZATION][/USERNAME][/REPOSITORY]</strong></pre>
+<ol start="3">
+<li>With these few steps, we are ready to sign an image. Let's review a simple example with an <kbd>alpine</kbd> image. We will tag our image ready for our registry and we will sign it using <kbd>docker trust sign</kbd>:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ docker tag alpine &lt;DTR_FQDN&gt;[:DTR_PORT]/myorganization/alpine:signed-test</strong><br/><strong>$ docker trust sign &lt;DTR_FQDN&gt;[:DTR_PORT]/myorganization/alpine:signed-test</strong><br/><strong>Signing and pushing trust data for local image &lt;DTR_FQDN&gt;[:DTR_PORT]/myorganization/alpine:signed-test, may overwrite remote trust data</strong><br/><strong>The push refers to repository [&lt;DTR_FQDN&gt;[:DTR_PORT]/myorganization/alpine]</strong><br/><strong>beee9f30bc1f: Layer already exists </strong><br/><strong>signed-test: digest: sha256:cb8a924afdf0229ef7515d9e5b3024e23b3eb03ddbba287f4a19c6ac90b8d221 size: 528</strong><br/><strong>Signing and pushing trust metadata</strong><br/><strong>Enter passphrase for &lt;MY_USERNAME&gt; key with ID c7690cd: </strong><br/><strong>Successfully signed &lt;DTR_FQDN&gt;[:DTR_PORT]/myorganization/alpine:signed-test</strong></pre>
+<ol start="4">
+<li>Once signed, we can push our image to the registry. Notice that we are using <kbd>&lt;DTR_FQDN&gt;[:DTR_PORT]</kbd> as DTR's registry:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ docker push &lt;DTR_FQDN&gt;[:DTR_PORT]/myorganization/alpine:signed-test</strong><br/><strong>The push refers to repository [192.168.56.14/myorganization/alpine-base]</strong><br/><strong>beee9f30bc1f: Layer already exists </strong><br/><strong>signed-test: digest: sha256:cb8a924afdf0229ef7515d9e5b3024e23b3eb03ddbba287f4a19c6ac90b8d221 size: 528</strong></pre>
+<p style="padding-left: 60px">We now have our signed image in the registry, as we can observe in the following screenshot:</p>
+<div><img src="img/3b868554-3c49-4786-ba85-890116e9fb18.jpg" style=""/></div>
+<ol start="5">
+<li>We can review image ownership and its signatures using <kbd>docker trust inspect</kbd>:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ docker trust inspect --pretty &lt;DTR_FQDN&gt;[:DTR_PORT]/myorganization/alpine:signed-test</strong><br/> <br/><strong>Signatures for &lt;DTR_FQDN&gt;[:DTR_PORT]/myorganization/alpine:signed-test</strong><br/> <br/><strong>SIGNED TAG DIGEST SIGNERS </strong><br/><strong>signed-test cb8a924afdf0229ef7515d9e5b3024e23b3eb03ddbba287f4a19c6ac90b8d221 &lt;MY_USERNAME&gt;</strong><br/> <br/><strong>List of signers and their keys for &lt;DTR_FQDN&gt;[:DTR_PORT]/myorganization/alpine:signed-test</strong><br/> <br/><strong>SIGNER KEYS</strong><br/><strong>&lt;MY_USERNAME&gt; c7690cd8374b</strong><br/><br/><strong>Administrative keys for &lt;DTR_FQDN&gt;[:DTR_PORT]/myorganization/alpine:signed-test</strong><br/><br/><strong>Repository Key: 63116fb0f440e1d862e0d2cae8552ab2bcc5a332c26b553d9bfa0a856f15fe91</strong><br/><strong> Root Key: 69129c50992ecd90cd5be11e3a379f63071c1ffab20d99c45e1c1fa92bfee6ce</strong></pre>
+<p style="padding-left: 60px">We have mocked this output and other output seen in this chapter, but you will receive similar output. Your user should be shown under the <kbd>SIGNER KEYS</kbd> section (we have <kbd>&lt;MY_USERNAME&gt;</kbd> in the previous command's output).</p>
+<ol start="6">
+<li>There is also an important topic related to signing. Users can delegate image signing. This concept will allow other users to sign for us or share signing within a team. If we need to impersonate another user's signing process, we need to import their key. Therefore, we require the other user's <kbd>key.pem</kbd> key file. We will load this key in keeping with the steps covered previously:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ docker trust key load --name &lt;MY_TEAMMATE_USERNAME&gt; key.pem</strong><br/><strong>Loading key from "key.pem"...</strong><br/><strong>Enter passphrase for new &lt;MY_TEAMMATE_USERNAME&gt; key with ID ......:</strong><br/><strong>Repeat passphrase for new &lt;MY_TEAMMATE_USERNAME&gt; key with ID .....:</strong><br/><strong>Successfully imported key from key.pem</strong></pre>
+<p style="padding-left: 60px">We mocked the users' names and IDs.</p>
+<ol start="7">
+<li>We then add our teammate's public key to our repository:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ docker trust signer add --key cert.pem &lt;MY_TEAMMATE_USERNAME&gt; &lt;DTR_FQDN&gt;[:DTR_PORT][/ORGANIZATION][/USERNAME][/REPOSITORY]</strong><br/><strong>Adding signer "&lt;MY_TEAMMATE_USERNAME&gt;" to  &lt;DTR_FQDN&gt;[:DTR_PORT][/ORGANIZATION][/USERNAME][/REPOSITORY]...</strong><br/><strong>Enter passphrase for repository key with ID ......:</strong><br/><strong>Successfully added signer: &lt;MY_TEAMMATE_USERNAME&gt; to &lt;DTR_FQDN&gt;[:DTR_PORT][/ORGANIZATION][/USERNAME][/REPOSITORY]</strong></pre>
+<ol start="8">
+<li>Now, we can sign using both signatures:</li>
+</ol>
+<pre style="padding-left: 60px" class="mce-root"><strong>$ docker trust sign &lt;DTR_FQDN&gt;[:DTR_PORT][/ORGANIZATION][/USERNAME][/REPOSITORY][:TAG]</strong><br/><strong>Signing and pushing trust metadata for &lt;DTR_FQDN&gt;[:DTR_PORT][/ORGANIZATION][/USERNAME][/REPOSITORY][:TAG]</strong><br/><strong>Existing signatures for tag 1 digest 5b49c8e2c890fbb0a35f6....................</strong><br/><strong>from:</strong><br/><strong>&lt;MY_TEAMMATE_USERNAME&gt;</strong><br/><strong>Enter passphrase for &lt;MY_TEAMMATE_USERNAME&gt; key with ID ...:</strong><br/><strong>Enter passphrase for &lt;MY_USERNAME&gt; key with ID ...:</strong><br/><strong>Successfully signed &lt;DTR_FQDN&gt;[:DTR_PORT][/ORGANIZATION][/USERNAME][/REPOSITORY][:TAG]</strong></pre>
+<ol start="9">
+<li>Now, we can conduct a further inspection and we will see both signatures:</li>
+</ol>
+<pre style="padding-left: 60px"><strong>$ docker trust inspect --pretty &lt;DTR_FQDN&gt;[:DTR_PORT][/ORGANIZATION][/USERNAME][/REPOSITORY][:TAG]</strong><br/><strong>Signatures for &lt;DTR_FQDN&gt;[:DTR_PORT][/ORGANIZATION][/USERNAME][/REPOSITORY][:TAG]</strong><br/><strong>SIGNED TAG DIGEST SIGNERS</strong><br/><strong>1 5b49c8e2c890fbb0a35f6050ed3c5109c5bb47b9e774264f4f3aa85bb69e2033 &lt;MY_TEAMMATE_USERNAME&gt;, &lt;MY_USERNAME&gt;</strong><br/><strong>List of signers and their keys for &lt;DTR_FQDN&gt;[:DTR_PORT][/ORGANIZATION][/USERNAME][/REPOSITORY][:TAG]</strong><br/><strong>SIGNER KEYS</strong><br/><strong>&lt;MY_USERNAME&gt; 927f30366699</strong><br/><strong>&lt;MY_TEAMMATE_USERNAME&gt; 5ac7d9af7222</strong><br/><strong>Administrative keys for &lt;DTR_FQDN&gt;[:DTR_PORT][/ORGANIZATION][/USERNAME][/REPOSITORY][:TAG]</strong><br/><strong>Repository Key: e0d15a24b741ab049470298734397afbea539400510cb30d3b996540b4a2506b</strong><br/><strong> Root Key: b74854cb27cc25220ede4b08028967d1c6e297a759a6939dfef1ea72fbdd7b9a</strong></pre>
+<p>To delete the repository's DCT, we will use <kbd>notary delete &lt;DTR_FQDN&gt;[:DTR_PORT][/ORGANIZATION][/USERNAME][/REPOSITORY] --remote</kbd>. You will require the <kbd>notary</kbd> application's binary in your host.</p>
+<p>Remember that all client actions can be forced to be secure using <kbd>export DOCKER_CONTENT_TRUST=1</kbd>, to enable content trust as regards all the commands executed in the current shell.</p>
+<p>Content trust can be integrated into CI/CD with process orchestrators and other automation tools. To avoid a user's interaction as regards image signing procedures, we can use the following variables:</p>
+<ul>
+<li><kbd>DOCKER_CONTENT_TRUST_ROOT_PASSPHRASE</kbd>: Will be used for the local root key passphrase</li>
+<li><kbd>DOCKER_CONTENT_TRUST_REPOSITORY_PASSPHRASE</kbd>: Will be used for the repository passphrase</li>
+</ul>
+<p class="mce-root">As we have learned, users will be available to sign their images using their Docker bundle from UCP. It is also possible to generate keys using <kbd>docker trust key generate command</kbd>, but these will not be included in DTR.</p>
+<p class="mce-root">DTR ships with Notary built in so that you can use DCT to sign and verify images. For more information about managing Notary data in DTR, refer to the DTR-specific notary documentation.</p>
+<p class="mce-root">The following section will show us how we can integrate Docker Enterprise into our CI/CD pipeline using DTR's built-in features.</p>
+<h1 id="uuid-48cc4e65-af2a-4dd6-93e7-ebf381564e3c">Integrating and automating image workflow</h1>
+<p>DTR provides built-in features aligned with CI/CD pipeline construction logic. We will have webhooks that can be triggered to inform other applications or processes regarding certain events, such as a completed image scan or a new image/tag arrival. We also have image promotions. This feature will retag images between repositories. The following diagram shows a simple workflow for building, distributing, and executing an application. We are including some of the features provided by DTR:</p>
+<div><img src="img/977b9776-a6eb-4af7-bde5-05a2759718a9.jpg" style=""/></div>
+<p class="mce-root">This workflow represents how to implement DTR in several development stages. Promoting a scanned image for testing will ensure its security before going to production in this example. Toward the end of this section, we will also be reviewing image mirroring. This is a feature used to share images between different DTR environments.</p>
+<h2 id="uuid-70b9fe2a-beae-4c25-b56d-3f2b37f8df6f">Image promotion</h2>
+<p>DTR allows us to automatically promote images between repositories. Promotion is based on repository-defined policies. Therefore, policies are defined at the repository level. When an image is pushed to this repository, policies are reviewed and, if the rules match, a new push is done to another registry.</p>
+<p>Image promotion is very useful in CI/CD pipeline stages. It is easier to understand with the help of a quick example. Let's imagine a development repository for a frontend application's component. Developers will push images to this <kbd>development/frontend</kbd> repository. They manage all the updates in this repository. In fact, no one apart from them has access to this repository. They will develop new updates with fixes and new features. When a release has to be deployed to production, they will prepare a <kbd>release</kbd> version. They will include a <kbd>release</kbd> string in this image's tag. A policy will match this string and a new image will be created on the <kbd>Quality Assurance</kbd> repository for the application's component.</p>
+<p>This process creates a new image to be tested by the quality assurance team when the <kbd>release</kbd> image is pushed. These users do not have access to non-release images. Only those images tagged as <kbd>release</kbd> will be available to quality assurance users. We know that only an image's ID is unique. We can have many tags for each image. Therefore, we are not duplicating images. We are just adding new tags and names for a defined image.</p>
+<p>We can define policies based on the following attributes:</p>
+<table style="border-collapse: collapse;width: 100%" border="1">
+<tbody>
+<tr>
+<td class="CDPAlignCenter CDPAlign">
+<p><strong>Attributes</strong></p>
+</td>
+<td class="CDPAlignCenter CDPAlign">
+<p><strong>Description</strong></p>
+</td>
+</tr>
+<tr>
+<td>
+<p>Tag name</p>
+</td>
+<td>
+<p>We define a matching string for a repository's image's tags. Matching tags can be equal, or can start with, end with, contain, or be one of the image-defined ones.</p>
+</td>
+</tr>
+<tr>
+<td>
+<p>Component name</p>
+</td>
+<td>
+<p>This will be used to match if an image has a given component and its name equals, starts with, ends with, or contains, or is one the specified ones.</p>
+</td>
+</tr>
+<tr>
+<td>
+<p>Vulnerabilities</p>
+</td>
+<td>
+<p>We can define how many critical, major, or minor vulnerabilities (or all vulnerabilities) will be monitored to promote an image to another repository. We will use comparison expressions such as "is greater than," "greater than or equal to," "less than or equal to," "equal," or "not" with the defined value and the image will only be promoted if the equation is satisfied.</p>
+</td>
+</tr>
+<tr>
+<td>
+<p>License</p>
+</td>
+<td>
+<p>This rule will match if the image uses a license. This is usually used in relation to Microsoft Windows images.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<p> </p>
+<p>We can apply more than one attribute to this policy's rules. Once we choose which criteria will be applied, we can set up the new repository and tag. There are a number of templates for the names of new image tags. These allow us to include an image's source tag or timestamps.</p>
+<h2 id="uuid-886fd5fc-1566-474d-861c-62638bc2a8ca">DTR webhooks</h2>
+<p class="mce-root">DTR has a series of integrated webhooks that will be triggered under special circumstances. When some events occur, DTR will be able to send webhooks to third-party applications. This is vital to integrating DTR in your CI/CD pipelines. DTR webhooks can be secured using TLS if the receiver backend also has this feature.</p>
+<p>We will cover most of the important webhooks, but this link provides an accurate list of the current ones: <a href="https://docs.docker.com/ee/dtr/admin/manage-webhooks/">https://docs.docker.com/ee/dtr/admin/manage-webhooks/</a>:</p>
+<table style="border-collapse: collapse;width: 100%" border="1">
+<tbody>
+<tr>
+<td class="CDPAlignCenter CDPAlign">
+<p><strong>Webhooks</strong></p>
+</td>
+<td style="width: 53.3745%" class="CDPAlignCenter CDPAlign">
+<p><strong>Description</strong></p>
+</td>
+</tr>
+<tr>
+<td>
+<p><kbd>TAG_PUSH</kbd>, <kbd>TAG_PULL</kbd>, and <kbd>TAG_DELETE</kbd></p>
+</td>
+<td>
+<p>Repositories' tag events will generate webhooks when someone pushes or pulls on a repository or when it is removed.</p>
+</td>
+</tr>
+<tr>
+<td>
+<p><kbd>SCAN_COMPLETED</kbd> and <kbd>SCANNER_UPDATE_COMPLETED</kbd></p>
+</td>
+<td>
+<p>Scanning is key to ensuring security. We will send notifications when the image-scanning database is updated or when a repository's scan has ended correctly.</p>
+</td>
+</tr>
+<tr>
+<td>
+<p><kbd>PROMOTION</kbd></p>
+</td>
+<td>
+<p>Whenever a promotion policy is applied, we will send a webhook. This will help us to follow DTR images' internal workflow.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<p> </p>
+<p class="mce-root">We must have administrative privileges on a repository to be able to configure its webhooks using either DTR's web UI or its API. The web UI allows us to test defined webhooks by clicking Test.</p>
+<p>The following screenshot shows a repository's webhook configuration:</p>
+<div><img src="img/6824c1e9-c756-4b2e-b6fe-6d6b7ff6f6fd.jpg" style=""/></div>
+<p>The following section will show us how to implement registry mirroring.</p>
+<h2 id="uuid-67ec174f-0f0a-4376-bcc8-09d9aa70b227">Mirror images between registries</h2>
+<p>Registry mirroring can also help us in our CI/CD. When images get pushed into repositories and there is some mirroring configuration, DTR will push them into another defined registry. This helps us to distribute repositories on different registries, with high availability.</p>
+<p>Mirroring configuration is based on the promotion logic covered previously. We will first configure mirror direction to define which action will be used: pull or push. DTR mirroring allows us to integrate Docker Hub with the on-premises Docker Enterprise DTR environment.</p>
+<p>We need to understand that DTR's metadata is not synced between registries. Therefore, image scanning and signing information from the first registry will not be available on the second one. All these actions must also be executed on the mirror registry. We can integrate scanning automatically when images are pushed to the second registry. Image signing requires external integrations. The following screenshot shows the mirroring configurations for a repository:</p>
+<div><img src="img/42d76fea-b8cd-46b6-8986-b54a1f33a849.jpg" style=""/></div>
+<p>Now that we have learned about the built-in features for automation, we will review registry caching with a view to improving a developer's work.</p>
+<h2 id="uuid-155d2c58-fb21-474b-9485-267bac357648">Registry caching</h2>
+<p class="mce-root">Registry caching will help us to manage images on distributed environments. Users from remote locations can have latency problems and big images can take forever to load. We can deploy intermediate registry caches to decrease pull times.</p>
+<p>Caches are transparent to users because they will use the original DTR's URL. When a user pulls an image, the DTR will check whether it is authorized and it will then be redirected to a defined cache. This cache pulls an image's layers from the DTR and keeps a copy for users. New requests do not require an image's layers to be pulled from DTR again.</p>
+<p>To deploy a registry cache service, we will use the <kbd>docker/dtr-content-cache:&lt;RELEASE&gt;</kbd> image.</p>
+<p>Registry caching help us to manage distributed environments. Docker clients must be configured in order to use this feature. We will add <kbd>"registry-mirrors": ["https://&lt;REGISTRY's_MIRROR_URL&gt;"]</kbd> to the <kbd>daemon.json</kbd> configuration file or configure users to use it by using the Users Settings page. For this to work, it is necessary to register the deployed cache with DTR's configuration using DTR's API. Detailed instructions can be found at the following link: <a href="https://docs.docker.com/ee/dtr/admin/configure/deploy-caches/simple/">https://docs.docker.com/ee/dtr/admin/configure/deploy-caches/simple/</a></p>
+<p>We will now learn about DTR's automated garbage deletion.</p>
+<h2 id="uuid-8fb60c21-83c4-4f2c-894b-8f18c809d75c">Garbage collection</h2>
+<p>Garbage collection will remove unreferenced layers and manifests from DTR. Registry data can consume a lot of space in our storage backend. This is not only a problem for storage resources. Security can be compromised if unsecured layers remain. It is recommended to remove all unused layers (also known as <strong>dangling images</strong>).</p>
+<p>This process runs in two phases:</p>
+<ol>
+<li>DTR's garbage collector will search all registry manifests. Those with active content, and image layers included within other images, will not be deleted.</li>
+<li>The process will scan all the blobs. Those not included in the first phase's list will be removed.</li>
+</ol>
+<p>Garbage collection can be run manually from a registry's container using <kbd>bin/registry garbage-collect</kbd>. We will usually apply scheduled tasks integrated into DTR's web UI. Garbage collection options will allow us to configure the removal of unreferenced layers periodically using cron-like logic. We will also establish for how long we will allow the removal process to run because it can take a significant amount of time. The following screenshot shows the Garbage collection configuration page:</p>
+<div><img src="img/63c47699-4ee0-4425-85a4-ac79fb639906.jpg" style=""/></div>
+<p>In the next section, we will learn how to deploy DTR's backup.</p>
+<h1 id="uuid-d60990e0-850b-43e9-bee1-8bbc6feeed67">Backup strategies</h1>
+<p>DTR's backup procedure does not result in any service interruption. A backup process can be executed from any of the cluster nodes. It is recommended to create all backups from the same replica. This will help us to recover at least this replica. We will be able to recreate the full DTR's cluster environment using this replica.</p>
+<p>The following list shows which content will be stored as part of your DTR's backup TAR file:</p>
+<ul>
+<li>DTR configurations</li>
+<li>Repository metadata</li>
+<li>User access control and repository configurations</li>
+<li>TLS certificates and keys required for DTR communication</li>
+<li>Images' signatures and digests, including the integration of Notary</li>
+<li>Images' scan results</li>
+</ul>
+<p>The following content will not be included within your backups:</p>
+<ul>
+<li>Images' layers</li>
+<li>Users, teams, and organizations</li>
+<li>The vulnerability database used for image scanning</li>
+</ul>
+<p>Take care of the content of images because users, teams, and organizations will be included in UCP's backup and the vulnerability database (CVE and reports) can be recreated whenever we need it.</p>
+<p>By default, DTR's web UI will show a warning message if we haven't performed any backup.</p>
+<p>We will find the healthy replica's ID by using <kbd>REPLICA_ID=$(docker inspect -f '{{.Name}}' $(docker ps -q -f name=dtr-rethink) | cut -f 3 -d '-') &amp;&amp; echo $REPLICA_ID</kbd> and we will then execute a backup using this ID:</p>
+<pre class="mce-root"><strong>$ docker container run \</strong><br/><strong>--rm \</strong><br/><strong>--interactive \</strong><br/><strong>--log-driver none \</strong><br/><strong>--ucp-username &lt;UCP_USERNAME&gt; \</strong><br/><strong>--ucp-password &lt;UCP_PASSWORD&gt; \</strong><br/><strong>--ucp-url &lt;UCP_COMPLETE_URL&gt; \</strong><br/><strong>--ucp-ca "$(curl -s -k &lt;UCP_COMPLETE_URL&gt;/ca)" \</strong><br/><strong>--existing-replica-id &lt;REPLICA_ID&gt; &gt; dtr-backup.tar.gz</strong></pre>
+<p>Remember, this file does not include an image's blobs or meta-information. We need to include third-party backup solutions for DTR's storage backend.</p>
+<p>We can use either <kbd>--ucp-ca</kbd> with a valid UCP CA certificate or <kbd>--ucp-insecure-tls</kbd> to connect to UCP.</p>
+<p class="mce-root">To restore DTR, we will use the same <kbd>docker/dtr</kbd> image release. We will use <kbd>docker container run docker/dtr:&lt;RELEASE&gt; restore</kbd>:</p>
+<pre><strong>$ docker container run --rm --ti docker/dtr:&lt;RELEASE&gt; restore \</strong><br/><strong> --ucp-insecure-tls \</strong><br/><strong> --ucp-url &lt;UCP_COMPLETE_URL&gt; \</strong><br/><strong> --ucp-username &lt;UCP_USERNAME&gt; \</strong><br/><strong> --ucp-password &lt;UCP_PASSWORD&gt; &lt; PREVIOUS-DTR-BACKUP.tar</strong></pre>
+<p>This command will not restore images' blobs and meta-information as the backup only provides information to recover all of DTR's processes and their configurations.</p>
+<p>The following section will help us to understand how to monitor DTR's health.</p>
+<h1 id="uuid-8b2d17a9-cc0e-4f56-9ad8-2e68d96a4609">Updates, health checks, and troubleshooting</h1>
+<p>DTR application upgrades can sometimes integrate database modifications. Therefore, you must ensure the correct upgrade path between releases. The <kbd>upgrade</kbd> command can be executed from any node as we will execute this command against all DTR replicas. We will use the replicas' IDs or interactive mode to upgrade each DTR replica. The upgrade process will replace all replica containers.</p>
+<p>It is recommended to review Docker's documentation relating to updated procedures at the following link: <a href="https://docs.docker.com/ee/dtr/admin/upgrade">https://docs.docker.com/ee/dtr/admin/upgrade</a><a href="https://docs.docker.com/ee/dtr/admin/upgrade"/></p>
+<p>DTR uses semantic versioning. This is key for following upgrade paths. Downgrading is not supported because sometimes, an upgrade can modify database objects.</p>
+<p>Upgrades between different patch releases can be skipped if a minor release is applied. Patches do not modify the database, so CA can be applied without an object's data changing.</p>
+<p>On the other hand, upgrades between minor versions must follow the version number, although we can skip intermediate patches, as has been mentioned.</p>
+<p>Major version upgrades require upgrading to the latest minor/patch release before going to the next major release. This procedure will implement a host of changes and you must ensure that you have a valid backup before this upgrade. Remember to verify a valid image's data backup.</p>
+<p>To monitor DTR, we will use a common container's monitoring procedures. We can also use UCP's stacks view because DTR is deployed as a multi-container application. All replicas will be displayed. We can then click on each replica's link and inspect its resources.</p>
+<p>DTR exposes the following endpoints for monitoring. We will use them to verify its health:</p>
+<table style="border-collapse: collapse;width: 100%" border="1">
+<tbody>
+<tr>
+<td class="CDPAlignCenter CDPAlign">
+<p><strong>Endpoints</strong></p>
+</td>
+<td>
+<p><strong>Description</strong></p>
+</td>
+</tr>
+<tr>
+<td>
+<p><kbd>/_ping</kbd></p>
+</td>
+<td>
+<p>This endpoint shows a replica's status. We can verify status using third-party monitoring tools. If the replica is fine, we will obtain <kbd>"Healthy":true</kbd>:</p>
+<pre><strong>$ curl -ks https://&lt;DTR_COMPLETE_URL&gt;/_ping</strong><br/><strong>{"Error":"","Healthy":true}</strong></pre></td>
+</tr>
+<tr>
+<td>
+<p><kbd>/nginx_status</kbd></p>
+</td>
+<td>
+<p>This shows us the common open source <kbd>nginx</kbd> status and statistics page.</p>
+</td>
+</tr>
+<tr>
+<td>
+<p><kbd>/api/v0/meta/cluster_status</kbd></p>
+</td>
+<td>
+<p>For all replica statuses, we will use this endpoint. This requires authentication because we will be accessing DTR's API. We will use any administrator's access. An overall cluster state and a list of replicas with their statuses will be shown.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<p> </p>
+<p class="mce-root">We will also search for errors on DTR's container logs. In this case, we will usually integrate these logs in third-party logging management applications.</p>
+<h2 id="uuid-5176bfd9-040a-4ae0-9632-24158539f1d7">Logging</h2>
+<p>As standard, DTR's container logs will show all application errors. DTR also includes a view in its web UI with all job logs. We will have detailed information regarding the many actions executed within the environment. This log view provides useful audit information because it contains all images' management actions executed in DTR.</p>
+<p>The following section will show us how to recover an unhealthy DTR environment.</p>
+<h2 id="uuid-1c6ea5d0-887c-4372-9e65-a66f188d4084">DTR disaster recovery</h2>
+<p>DTR is deployed using a high-availability strategy. Therefore, we have a variety of situations, depending on how many replicas are unhealthy.</p>
+<h3 id="uuid-a686ce06-f936-4d3c-9e76-0261855d8d31">Some replicas are unhealthy, but we keep the cluster's quorum's state</h3>
+<p>In this case, the majority of replicas are healthy, so overall, the cluster's state is healthy. We will remove unhealthy replicas and add new ones as soon as possible. It is important to only join replicas after unhealthy ones have been removed. We will execute this procedure step by step, removing an unhealthy replica, adding a new one, and so on. This will keep the overall cluster's state intact. We will only remove unhealthy replicas that have been identified, so we will first need to identify which replicas are in a failing state using <kbd>docker ps --format "{{.Names}}" | grep dtr</kbd>. Once identified, we will execute <kbd>docker container run docker/dtr:&lt;RELEASE&gt; remove</kbd> to delete the replica in question:</p>
+<pre><strong>$ docker container run --rm --ti docker/dtr:&lt;RELEASE&gt; remove \</strong><br/><strong> --existing-replica-id &lt;HEALTHY_REPLICA_ID&gt; \</strong><br/><strong> --replica-ids &lt;HEALTHY_REPLICA_ID&gt; \</strong><br/><strong> --ucp-insecure-tls \</strong><br/><strong> --ucp-url &lt;UCP_COMPLETE_URL&gt; \</strong><br/><strong> --ucp-username &lt;UCP_USERNAME&gt; \</strong><br/><strong> --ucp-password &lt;UCP_PASSWORD&gt;</strong></pre>
+<p>Although the <kbd>--replica-ids</kbd> argument will allow us to remove a list of replicas, it is recommended to follow this procedure on each unhealthy replica, adding a new one with each removal:</p>
+<pre><strong>$ docker container run --rm --ti docker/dtr:&lt;RELEASE&gt; join \</strong><br/><strong> --existing-replica-id &lt;HEALTHY_REPLICA_ID&gt; \</strong><br/><strong> --ucp-insecure-tls \</strong><br/><strong> --ucp-url &lt;UCP_COMPLETE_URL&gt; \</strong><br/><strong> --ucp-username &lt;UCP_USERNAME&gt; \</strong><br/><strong> --ucp-password &lt;UCP_PASSWORD&gt;</strong></pre>
+<p>This will join a new replica. Always wait until synchronization has finished before continuing with a new one.</p>
+<h3 id="uuid-71fcc865-4a5a-4aaf-8efd-c305d4e61962">The majority of replicas are unhealthy</h3>
+<p>If the majority of replicas are unhealthy, the cluster's state will be unhealthy because it will have lost its quorum. However, if we still have at least one healthy node, we can repair the cluster using this replica. We will execute an emergency repair procedure using <kbd>docker container run docker/dtr:&lt;RELEASE&gt; emergency-repair</kbd>.</p>
+<p>We can find the healthy replica's ID using <kbd>REPLICA_ID=$(docker inspect -f '{{.Name}}' $(docker ps -q -f name=dtr-rethink) | cut -f 3 -d '-') &amp;&amp; echo $REPLICA_ID</kbd> and we will then execute the emergency repair procedure:</p>
+<pre><strong>$ docker container run --rm --ti docker/dtr:&lt;RELEASE&gt; emergency-repair \</strong><br/><strong> --existing-replica-id &lt;HEALTHY_REPLICA_ID&gt; \</strong><br/><strong> --ucp-insecure-tls \</strong><br/><strong> --ucp-url &lt;UCP_COMPLETE_URL&gt; \</strong><br/><strong> --ucp-username &lt;UCP_USERNAME&gt; \</strong><br/><strong> --ucp-password &lt;UCP_PASSWORD&gt;</strong></pre>
+<p>This process should recover a replica completely and we will then add new replicas to recover a cluster's consensus.</p>
+<h3 id="uuid-17930155-335d-4bcf-b231-57f6ba8d152f">All replicas are unhealthy</h3>
+<p>In this situation, we cannot recover the cluster without an existing backup. We will use <kbd>docker container run docker/dtr:&lt;RELEASE&gt; restore</kbd>. It is critical to have a valid DTR backup:</p>
+<pre><strong>$ docker container run --rm --ti docker/dtr:&lt;RELEASE&gt; restore \</strong><br/><strong> --ucp-insecure-tls \</strong><br/><strong> --ucp-url &lt;UCP_COMPLETE_URL&gt; \</strong><br/><strong> --ucp-username &lt;UCP_USERNAME&gt; \</strong><br/><strong> --ucp-password &lt;UCP_PASSWORD&gt; &lt; PREVIOUS-DTR-BACKUP.tar</strong></pre>
+<p>This command will not restore Docker images. We have to implement a separate procedure for this data. We will use the normal filesystem's backup and restore procedures. Once we have a healthy replica, we will be able to join new ones in keeping with the procedure described previously.</p>
+<h1 id="uuid-72151d21-7c29-4fe8-af8b-b29a476873ba">Summary</h1>
+<p>This chapter covered DTR's features and components. We learned how to implement DTR in production using a high-availability strategy. We reviewed different solutions available for storing images securely.</p>
+<p>We also covered image scanning and signing. Both options allow us to improve image security by integrating with UCP's application deployment platform. Users within organizations will have different levels of access to images thanks to DTR's integrated RBAC system.</p>
+<p>CI/CD environments have changed the way we create and deploy applications nowadays. We have reviewed different features built using DTR that help us to integrate image building, sharing, and security in CI/CD pipelines. We also learned how to mirror repositories and improve users' experiences with registry caching.</p>
+<p>Knowledge of DTR and UCP is required for the exam. We need to know their component distributions on cluster nodes and how they work. We also need to understand their installation processes and how we can ensure their health.</p>
+<p>This is the last chapter related to the Docker Enterprise platform. Later chapters will cover the content that is required for the exam, with some quick topic reviews and further questions and answers.</p>
+<h1 id="uuid-e5cb7217-d8f7-4491-bbb6-e8c706ed6629">Questions</h1>
+<ol>
+<li>Which features are included in DTR?</li>
+</ol>
+<p style="padding-left: 90px">a) Repository load balancing<br/>
+b) Repository mirroring<br/>
+c) Repository signing<br/>
+d) All of the above</p>
+<ol start="2">
+<li>How many DTR replicas do we need in order to provide high availability for Docker images' layers?</li>
+</ol>
+<p style="padding-left: 90px">a) We will need at least three DTR replicas to provide high availability.<br/>
+b) DTR does not manage the high availability of data. We need to provide third-party solutions for DTR storage.<br/>
+c) DTR manages volume synchronization when we deploy more than one replica.<br/>
+d) All of the above statements are true.</p>
+<ol start="3">
+<li>Which processes are part of DTR?</li>
+</ol>
+<p style="padding-left: 90px">a) <kbd>garant</kbd><br/>
+b) <kbd>jobrunner</kbd><br/>
+c) <kbd>notary-client</kbd><br/>
+d) <kbd>auth-store</kbd></p>
+<ol start="4">
+<li>Which of these statements are true in terms of how to deploy DTR with high availability?</li>
+</ol>
+<p style="padding-left: 90px">a) Configure a load balancer as a transparent reverse proxy. We will forward all requests for DTR's FQDN to any of the replicas.<br/>
+b) Deploy shared storage to allow all DTR replicas to store an image's data and meta-information at the same location.<br/>
+c) Deploy the first DTR replica with previously created shared storage on one node. Then, add at least two more replicas on different nodes.<br/>
+d) All of the above statements are true.</p>
+<ol start="5">
+<li>Which content is not included in DTR's backup?</li>
+</ol>
+<p style="padding-left: 90px">a) Repository metadata and images' layers.<br/>
+b) RBAC configurations.<br/>
+c) Image signatures.<br/>
+d) All of the above statements are true.</p>
+<h1 id="uuid-7e5e6e57-f949-48b3-b345-5a87a1c89ae3">Further reading</h1>
+<p>The following links will help us to understand some of the topics covered in this chapter:</p>
+<ul>
+<li>Content trust integration in DTR: <a href="https://docs.docker.com/engine/security/trust/content_trust/">https://docs.docker.com/engine/security/trust/content_trust/</a></li>
+<li>Deploying the registry cache: <a href="https://docs.docker.com/ee/dtr/admin/configure/deploy-caches/simple/">https://docs.docker.com/ee/dtr/admin/configure/deploy-caches/simple/</a></li>
+<li>Authentication and authorization in DTR: <a href="https://docs.docker.com/ee/dtr/admin/manage-users/">https://docs.docker.com/ee/dtr/admin/manage-users/</a></li>
+</ul>
+
+
+            
+
+            
+        
+    </body></html>

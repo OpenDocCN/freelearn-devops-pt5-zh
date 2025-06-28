@@ -1,0 +1,417 @@
+<html><head></head><body>
+		<div><h1 id="_idParaDest-122"><em class="italic"><a id="_idTextAnchor126"/>Chapter 7</em>: Continuous Deployment with Jenkins</h1>
+			<p>In order to reliably use Docker containers in production, you need a process that will consistently build, test, and deploy your software. A team building very small applications might be satisfied with running tests and deployment scripts manually. However, discipline often breaks down, and people step on each other's toes. This often results in broken builds and tests that are not run before or after a production deployment. The aftermath is often downtime and unhappy customers. In order to make sure that we can build, test, and deploy software reliably, we can use continuous integration software. This type of software can reliably build, test, and deploy revisions in a disciplined and traceable way. A well-run modern project can even use this software to achieve continuous deployment, where even the smallest changes to the software can be quickly promoted to either a test or production environment.</p>
+			<p>In this chapter, we show how to configure Jenkins, one of the most popular continuous integration software systems, to facilitate deployment to the minimal environment shown in the previous chapter. We will use Jenkins to manage both the production installation and a new staging environment installation of the application used to test changes before they reach production.</p>
+			<p>By the end of this chapter, you will know when it might be a good idea to deploy Jenkins for CI and CD with Docker. You will learn how to set up a basic <code>Jenkinsfile</code> that can help Jenkins <code>docker-compose</code> commands to update the application. You will discover how to set up Jenkins parameterized builds that allow both changing and auditing configuration parameters. You will extend the simple production setup by adding an isolated staging environment to allow developers to make changes more confidently. Finally, you will know when this type of solution has exhausted its limits and when it is time to reach for more sophisticated tools.</p>
+			<p>In this chapter, we're going to cover the following main topics:</p>
+			<ul>
+				<li>Using Jenkins to facilitate continuous deployment</li>
+				<li>The Jenkinsfile and host connectivity</li>
+				<li>Driving configuration changes through Jenkins</li>
+				<li>Deploying to multiple environments through multiple branches</li>
+				<li>Complexity and limits to scaling deployments through Jenkins</li>
+			</ul>
+			<h1 id="_idParaDest-123"><a id="_idTextAnchor127"/>Technical requirements</h1>
+			<p>To complete the exercises in this chapter, you'll need Git and Docker on your local workstation, and you will need to have already set up a production application as described in the previous chapter. To complete the exercises about deploying to multiple environments, you will need another host to run a test environment, with similar specifications as the production host.</p>
+			<p>You will also need a Jenkins server. This chapter will go over some options for the simple setup and maintenance of a Jenkins server if you don't already have one available to you. If your company already runs a Jenkins server, you can use that—ask the system administrators for permission. This server will need to be able to reach your production server via SSH. </p>
+			<p>You will need to be able to create DNS entries in a zone you control, for both the staging server and the Jenkins server. You can use the same DNS zone as you used in the previous chapter.</p>
+			<p>The GitHub repository for this chapter is <a href="https://github.com/Packt-Publishing/Docker-for-Developers">https://github.com/Packt-Publishing/Docker-for-Developers</a>—please see the <code>chapter7</code> folder inside.</p>
+			<p>Check out the following video to see the Code in Action:</p>
+			<p><a href="https://bit.ly/3kL1EUU">https://bit.ly/3kL1EUU</a></p>
+			<h2 id="_idParaDest-124"><a id="_idTextAnchor128"/>Example application – ShipIt Clicker v3</h2>
+			<p>The version of <em class="italic">ShipIt Clicker</em> in this chapter is very similar to the one in the previous chapter. We will use it to test deployment through Jenkins to both a production and a staging environment.</p>
+			<h1 id="_idParaDest-125"><a id="_idTextAnchor129"/>Using Jenkins to facilitate continuous deployment</h1>
+			<p>The world of <a id="_idIndexMarker352"/>continuous integration servers has come a long way in the last 20 years. One of the most popular systems is Jenkins (see <a href="https://jenkins.io/">https://jenkins.io/</a>)—because it is free, flexible, and offers a huge variety of integrations and plugins. CloudBees <a href="https://www.cloudbees.com/">(https://www.cloudbees.com</a>/), the company behind it, also offers commercial support via a paid version. Your company might already be running <a id="_idIndexMarker353"/>Jenkins, in which case you may not need to do much setup to get your project to build and run.</p>
+			<p>We are going to use the Jenkins 2.x Pipeline project type, where a <code>Jenkinsfile</code> is committed to source control in GitHub and controls the steps Jenkins uses to build and deploy the project.</p>
+			<h2 id="_idParaDest-126"><a id="_idTextAnchor130"/>Avoid these traps</h2>
+			<p>Before we set up Jenkins, we should make sure we avoid certain common traps people fall into when setting it up for the first time.</p>
+			<h3>Avoid running Jenkins in Docker</h3>
+			<p>Although you can use Docker to run a <a id="_idIndexMarker354"/>Jenkins server, doing so introduces some complications that are best avoided, especially when just trying to get a continuous integration server running for the first time. You would either need to <a id="_idIndexMarker355"/>use a feature called <strong class="bold">Docker-in-Docker</strong> (<strong class="bold">dind</strong>) or a customized Docker installation of Jenkins that has the correct ports and files mapped from the host in a very specific way. If you don't get it just right, you might run into trouble with not being able to build Docker containers since you can't double-mount a union filesystem, for example. </p>
+			<p>Setting up Jenkins itself running as a Docker container and working through the quirks would probably consume a ton of effort and time, and is beyond the scope of the advice we can give in this book.</p>
+			<h3>Avoid running Jenkins on the production server</h3>
+			<p>In a previous chapter, we set up a production server in the cloud to host an application. You might be tempted to have that <a id="_idIndexMarker356"/>same server you already have running do double-duty by having it run the Jenkins CI server as well. This would be economical, but it is risky as any problem with either the production configuration or the Jenkins server could both bring down production and knock your CI server offline. This would also complicate the network and web hosting virtual host configuration—it would be too easy to have these distinct services conflict, without a more sophisticated orchestration system.</p>
+			<p>Part of running robust systems is to have adequate isolation between processes and systems that have distinct purposes, so avoid doubling-up Jenkins and your production server; run it on a system separate from your production server.</p>
+			<h3>Avoid running Jenkins on your local workstation</h3>
+			<p>You might also be tempted to just install Jenkins on your local workstation to give it a test drive. However, you will find several major drawbacks to this approach:</p>
+			<ul>
+				<li>Your workstation <a id="_idIndexMarker357"/>probably does not have a stable IP address, necessitating dynamic DNS solutions, and possibly punching holes in firewalls and setting up NAT port redirections.</li>
+				<li>You would have to run Jenkins on your system constantly to have it process and build changes to the software as commits get pushed.</li>
+				<li>Jenkins can be pretty heavyweight to run alongside a full development environment—and it may slow your workstation down significantly.</li>
+			</ul>
+			<p>If we should not run Jenkins as a Docker container, and we should not run it on our local workstation, where should we run Jenkins? Let's explore the options.</p>
+			<h2 id="_idParaDest-127"><a id="_idTextAnchor131"/>Using an existing Jenkins server</h2>
+			<p>You don't have to set up <a id="_idIndexMarker358"/>Jenkins from scratch if you have access to a Jenkins server running a recent version of Jenkins in the 2.x series. Recent versions of Jenkins have excellent support for Docker, assuming that the hosts running the Jenkins builds have Docker running on them.</p>
+			<p>You will need to make sure that the following Jenkins plugins are present:</p>
+			<ul>
+				<li>SSH credentials</li>
+				<li>Pipeline</li>
+				<li>GitHub</li>
+				<li>GitHub Organization</li>
+			</ul>
+			<p>Ideally, the Jenkins server would already be set up with the GitHub Organization plugin and it should be configured so that it can automatically manage GitHub webhooks. If this is the case, you can either fork the sample repository or clone it and push it into your GitHub organization as a new <a id="_idIndexMarker359"/>repository and start deploying from there.</p>
+			<p>You will need enough permissions on the Jenkins server to create credentials, which we will use to hold secrets required for building and deploying the software.</p>
+			<h2 id="_idParaDest-128"><a id="_idTextAnchor132"/>Setting up a new Jenkins server</h2>
+			<p>A convenient way to simplify the set of technologies you have to maintain is to use the same base operating system <a id="_idIndexMarker360"/>and Docker setup that the production host runs. The instructions and scripts here are tailored to a CentOS 7 installation, but you can follow the same basic steps for other operating system distributions with some modification of the specific commands used to set up and maintain the packages, for example using <code>apt-get</code> instead of <code>yum</code> to install operating system packages.</p>
+			<p>Begin by installing Docker and <code>docker-compose</code> just as you did in the previous chapter. Once that is done, test that Docker works with the <code>docker run --rm hello-world</code> command and then install Jenkins. If you are using CentOS 7, you can use the script at https://github.com/PacktPublishing/Docker-for-Developers/blob/master/chapter7/bin/provision-jenkins.sh to install both Docker and Jenkins together (replace <code>centos@jenkins.example.com</code> with the user name and IP address or hostname of your new Jenkins server):</p>
+			<pre>$ ssh centos@jenkins.example.com &lt; bin/provision-jenkins.sh
+$ ssh centos@jenkins.example.com</pre>
+			<p>If you are using another operating system, consult the Jenkins documentation online for installation instructions: <a href="https://wiki.jenkins.io/display/JENKINS/Installing+Jenkins">https://wiki.jenkins.io/display/JENKINS/Installing+Jenkins</a></p>
+			<p>In order to configure CentOS 7 to allow network traffic to flow to Jenkins, you may have to configure its host firewall to allow inbound traffic.</p>
+			<p>Also, it is desirable to have Jenkins listen on a standard port such as port <code>80</code> or <code>443</code>. This can be accomplished in several ways, including having a web server act as a proxy for Jenkins, or using a load balancer to terminate SSL. A shortcut for allowing network traffic to flow <a id="_idIndexMarker361"/>to Jenkins on port <code>80</code> for CentOS 7 is as follows (if you used the <code>provision-docker.sh</code> script to provision Jenkins this is already done):</p>
+			<pre>$ sudo firewall-cmd --zone=public --permanent --add-masquerade
+$ sudo firewall-cmd --permanent --add-service=http
+$ sudo firewall-cmd --permanent --add-forward-port=port=80:proto=tcp:toport=8080
+$ sudo firewall-cmd --permanent --direct \
+   --add-rule ipv4 nat OUTPUT 0 \
+   -p tcp -o lo --dport 80 -j REDIRECT --to-ports 8080
+$ sudo firewall-cmd --reload</pre>
+			<p>The <code>firewall-cmd</code> invocation will allow you to reach Jenkins on port <code>80</code> instead of specifying port <code>8080</code>.</p>
+			<p>Once Jenkins is installed, you must retrieve a password from its logs to connect to the server:</p>
+			<pre>$ sudo grep -A 3 password /var/log/jenkins/jenkins.log</pre>
+			<p>Note the password given in the output of this command. If this does not work immediately, wait a  few minutes and try again, as Jenkins may still be starting up.</p>
+			<p>Then, open a web browser and put in the IP address with the appropriate port, either <code>8080</code> or <code>80</code> depending on whether you have redirected connections. For example, enter <a href="http://192.2.0.10:8080">http://192.2.0.10:8080</a> and navigate to the site.</p>
+			<p>You should see a screen that says <strong class="bold">Unlock Jenkins</strong>: </p>
+			<div><div><img src="img/B11641_07_001.jpg" alt="Figure 7.1 – Unlock Jenkins"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.1 – Unlock Jenkins</p>
+			<p>Use the <a id="_idIndexMarker362"/>administrator password from the <code>/var/log/jenkins/jenkins.log</code> file to sign in for the first time.</p>
+			<p>The next screen will prompt you to install plugins. Please install the suggested plugins:</p>
+			<div><div><img src="img/B11641_07_002.jpg" alt="Figure 7.2 – Customize Jenkins&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.2 – Customize Jenkins</p>
+			<p>If your system has less than 4 GB of memory, you will want to run with a swap file. Run the <code>free</code> command to see if the <a id="_idIndexMarker363"/>server has any swap memory available. If not, issue these commands to create a 1 GB swap file and activate it:</p>
+			<pre>$ free
+              total        used        free      shared  buff/cache   available
+Mem:        1882296       89008     1533220        8676      260068     1612156
+Swap:       2097148           0     2097148
+$ sudo dd if=/dev/zero of=/swap bs=1M count=1024
+1024+0 records in
+1024+0 records out
+1073741824 bytes (1.1 GB) copied, 2.94343 s, 365 MB/s
+[vagrant@localhost ~]$ sudo chmod 0600 /swap
+[vagrant@localhost ~]$ sudo mkswap /swap
+Setting up swapspace version 1, size = 1048572 KiB
+no label, UUID=2bd70cac-3730-45bb-8b77-982425fb7af5
+[vagrant@localhost ~]$ echo /swap swap swap defaults 0 0 | sudo tee -a /etc/fstab
+/swap swap swap defaults 0 0
+[vagrant@localhost ~]$ sudo mount -a
+[vagrant@localhost ~]$ free
+              total        used        free      shared  buff/cache   available
+Mem:        1882296       83120      481244        8668     1317932     1604256
+Swap:       2097148           0     2097148</pre>
+			<p>You should see that the <a id="_idIndexMarker364"/>system has non-zero swap memory in the output of <code>free</code>.</p>
+			<p class="callout-heading">Jenkins security and HTTPS</p>
+			<p class="callout">For production use, you <a id="_idIndexMarker365"/>should configure Jenkins to run behind <a id="_idIndexMarker366"/>either an SSL-terminating load balancer or a web server configured with an SSL certificate that will listen on HTTPS. Please consult the Jenkins documentation or the many tutorials available on the internet regarding securing Jenkins with HTTPS on how to accomplish this. You should also consider restricting the set of IP addresses that can directly reach the Jenkins server as these servers are frequent targets for malicious actors. See the <em class="italic">Further reading</em> section at the end of this chapter for more about securing Jenkins.</p>
+			<p>In order to use Jenkins with Docker, you will need to install the Docker Pipeline plugin. From the Jenkins main screen, go to the <strong class="bold">Manage Jenkins</strong> | <strong class="bold">Manage Plugins</strong> menu, click on the <strong class="bold">Available</strong> tab, select the <strong class="bold">Docker Pipeline</strong> plugin, and then press the <strong class="bold">Download now and install after restart</strong> button. When Jenkins restarts, log in again.</p>
+			<p>Now that you have a Jenkins server available to you, you can proceed to configure it to talk to the production server.</p>
+			<h2 id="_idParaDest-129"><a id="_idTextAnchor133"/>How Jenkins can support continuous deployment</h2>
+			<p>Jenkins can check out the sources for a project from version control, build the software, run tests, and run <a id="_idIndexMarker367"/>deployment scripts. Because it has Docker support, it can build a Docker container, push the container to Docker Hub or another container repository, and then run deployment scripts that connect to a server to tell it to update its running Docker containers. In order to support all these objectives, we must configure Jenkins to integrate with the production server, with a version control repository, and with Docker Hub. First, we will ensure that we can use Jenkins to connect to the production server.</p>
+			<h1 id="_idParaDest-130"><a id="_idTextAnchor134"/>The Jenkinsfile and host connectivity</h1>
+			<p>To ensure repeatable builds, we are going to use Jenkins scripts to run build and deployment <a id="_idIndexMarker368"/>automation. Jenkins supports a type of script called a <code>Jenkinsfile</code>. Because these scripts are written <a id="_idIndexMarker371"/>using the G<a href="https://groovy-lang.org/">roovy language (see http</a>s://groovy-lang.org/), you can declare variables, write functions, and use many features of this very powerful language to help you build and deploy your software. Jenkins supports both a free-form scripting style and a more structured declarative style of script that uses a special Groovy DSL to provide more scaffolding for concise scripts.</p>
+			<p>See here for more information on how to write a <code>Jenkinsfile</code>: <a href="https://www.jenkins.io/doc/book/pipeline/jenkinsfile/">https://www.jenkins.io/doc/book/pipeline/jenkinsfile/</a></p>
+			<p>You can either directly enter these scripts into a Jenkins job definition or store them in version control. If you put a file called <code>Jenkinsfile</code> in the root of a version control repository, Jenkins can discover those files if it gets configured to talk to a version control system such as GitHub. </p>
+			<h2 id="_idParaDest-131"><a id="_idTextAnchor135"/>Testing Jenkins and Docker with a pipeline script</h2>
+			<p>To test that <a id="_idIndexMarker372"/>Jenkins and Docker are working together, we will first enter a script through <a id="_idIndexMarker373"/>the console. At the top-level Jenkins screen, click on the <code>Hello Docker</code>:</p>
+			<div><div><img src="img/B11641_07_003.jpg" alt="Figure 7.3 – New Item – Hello Docker pipeline "/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.3 – New Item – Hello Docker pipeline </p>
+			<p>Then, in <a id="_idIndexMarker374"/>the <code>chapter7/</code></a><code>Jenkinsfile-hello-world</code> in the <a id="_idIndexMarker375"/>companion GitHub project):</p>
+			<pre>pipeline {
+     agent { docker { image 'alpine:20191114' } }
+     stages {
+         stage('build') {
+             steps {
+                 sh 'echo "Hello, World (Docker for Developers Chapter 7)"'
+             }
+         }
+     }
+ }</pre>
+			<p>Save the job <a id="_idIndexMarker376"/>and click on the <strong class="bold">Build Now</strong> link, and Jenkins will create build <strong class="bold">#1</strong>. Follow the <a id="_idIndexMarker377"/>link for <strong class="bold">#1</strong> that appears on the left and then click on the <strong class="bold">Console Output</strong> button. You should see something like this:</p>
+			<div><div><img src="img/B11641_07_004.jpg" alt="Figure 7.4 – New Item – Hello Docker Console Output&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.4 – New Item – Hello Docker Console Output</p>
+			<p>You should see <code>Hello, World (Docker for Developers Chapter 7)</code> in the <strong class="bold">Console Output</strong> on the <a id="_idIndexMarker378"/>Jenkins web page. If you see out of memory errors <a id="_idIndexMarker379"/>here, ensure that you have a swap file on your Jenkins server. If you see an error about Docker not being a known agent type, go to the <strong class="bold">Manage Jenkins</strong> | <strong class="bold">Manage Plugins</strong> menu, and install the <strong class="bold">Docker Pipeline</strong> plugin.</p>
+			<p>Connecting to the production server via SSH</p>
+			<p>Next, we will <a id="_idIndexMarker380"/>configure Jenkins to connect to the production server via SSH. We need to do this in order to control the Docker subsystem on the remote server. We will generate an SSH key for Jenkins to use and add it to the production server's list of authorized keys. </p>
+			<h3>Generating an SSH key and adding it to Jenkins credentials</h3>
+			<p>On your <a id="_idIndexMarker381"/>local workstation, issue the following command to generate a 2,048-bit RSA SSH key <a id="_idIndexMarker382"/>pair and view it:</p>
+			<pre>ssh-keygen -t rsa -b 2048 -f jenkins.shipit
+cat jenkins.shipit</pre>
+			<p>Copy the contents of the <code>jenkins.shipit</code> file to your clipboard, then go to your Jenkins home page, and in the left-hand menu, navigate to the <code>jenkins.shipit</code> and enter the username of the non-root user from the production server (typically, <code>centos</code> for CentOS 7 cloud servers). Click on <strong class="bold">Enter directly</strong> and add the key and click on the <strong class="bold">OK</strong> button to save the credentials:</p>
+			<div><div><img src="img/B11641_07_005.jpg" alt="Figure 7.5 – Add Credentials – SSH key&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.5 – Add Credentials – SSH key</p>
+			<p>Copy the <a id="_idIndexMarker383"/>SSH public key, <code>jenkins.shipit.pub</code>, from your local system to the production server and append it to the <code>~/.ssh/authorized_keys</code> file. By entering the following commands on your <a id="_idIndexMarker384"/>local workstation, replace <code>centos@192.2.0.10</code> with the username and IP address of your production server:</p>
+			<pre>prod=centos@192.2.0.10
+ssh $prod mkdir -p .ssh
+ssh $prod tee -a .ssh/authorized_keys &lt; jenkins.shipit.pub
+ssh $prod chmod 700 .ssh ssh $prod chmod 600 .ssh/authorized_keys</pre>
+			<p>Test that the SSH key authentication is working by using the key to log in from your local workstation:</p>
+			<pre>$ ssh -i jenkins.shipit $prod
+Last login: Mon Mar  2 04:57:35 2020 from gateway.example.net
+[centos@ip-172-26-13-202 ~]$</pre>
+			<p>Once you have done this, you can create a test job that uses these credentials to SSH to the server.</p>
+			<h3>Use a Jenkins Pipeline job to SSH to the production server</h3>
+			<p>In the <a id="_idIndexMarker385"/>Jenkins web console, create a new Jenkins job with the <code>SSH to Production</code>, and pick the <strong class="bold">Pipeline</strong> job type: </p>
+			<div><div><img src="img/B11641_07_006.jpg" alt="Figure 7.6 – Create Item – SSH to Production&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.6 – Create Item – SSH to Production</p>
+			<p>In the job definition form, in the <code>centos@192.2.0.10</code> to the user and host for your production se<a href="https://github.com/PacktPublishing/Docker-for-Developers/blob/master/chapter7/Jenkinsfile-ssh-proof-of-concept">rver, and save the job script (see <code>chapte</code></a><code>r7/Jenkinsfile-ssh-proof-of-concept</code>) in the <a id="_idIndexMarker387"/>companion GitHub project):</p>
+			<pre>pipeline {
+   agent any
+   stages {
+      stage('SSH') {
+         steps {
+            withCredentials([sshUserPrivateKey(
+                credentialsId: 'jenkins.shipit', 
+                keyFileVariable: 'keyfile')]) {
+                    sh '''
+prod=centos@192.2.0.10
+cmd="docker ps"
+ssh -i "$keyfile" -o StrictHostKeyChecking=no $prod $cmd
+                       '''
+                }
+         }
+      }
+   }
+}</pre>
+			<p>When you run this by clicking on the <strong class="bold">Build Now</strong> link, and view the console output, you should see output similar to the following:</p>
+			<pre>…
++ ssh -i **** -o StrictHostKeyChecking=no centos@34.238.248.192 docker ps
+CONTAINER ID        IMAGE                            COMMAND                  CREATED             STATUS              PORTS                  NAMES
+6c9ef1ca65f6        chapter6_shipit-clicker-web-v2   "npm start"              6 weeks ago         Up 6 weeks          0.0.0.0:80-&gt;3000/tcp   chapter6_shipit-clicker-web-v2_1
+…
+3f91820e097b        redis:5-alpine3.10               "docker-entrypoint.s…"   7 weeks ago         Up 7 weeks          6379/tcp               chapter6_redis_1</pre>
+			<p>If you do not see the output of <code>docker ps</code>, double-check the username, IP address, and SSH key. Check for any error messages that Jenkins emits about the <code>Jenkinsfile</code> or related to the <code>ssh</code> shell command to <a id="_idIndexMarker388"/>troubleshoot. You will need to get this to work in order to get the next stage to work reliably.</p>
+			<p>You can use Jenkins to connect to other hosts to run scripts that use <code>docker</code> and <code>docker-compose</code>. But you can also run <code>docker</code> and <code>docker-compose</code> directly on the Jenkins server if you need to. We will explore that later in the chapter.</p>
+			<p>Now that we can use Jenkins to connect to the production server via SSH, using a pipeline script, we can use that connection to make changes to the production server, including deploying new changes to the server.</p>
+			<h1 id="_idParaDest-132"><a id="_idTextAnchor136"/>Driving configuration changes through Jenkins</h1>
+			<p>Next, we <a id="_idIndexMarker389"/>will learn how to make changes to the production system by running scripts from the Git <a id="_idIndexMarker390"/>repository hosted in Jenkins. We can <a id="_idIndexMarker391"/>use Jenkins both to build the Docker containers for the <a id="_idIndexMarker392"/>application and to deploy those containers on the production server. That way, any changes to either the program or to its <code>Dockerfile</code> or the <code>docker-compose.yml</code> file can be propagated through automation to the production system.</p>
+			<p>Here are some tips for integrating Jenkins with other systems, including GitHub, that can make your life easier. The first tip relates to the best way to configure Jenkins with a <code>Jenkinsfile</code>—by storing it in a version control system.</p>
+			<h2 id="_idParaDest-133"><a id="_idTextAnchor137"/>Using Git and GitHub to store your Jenkinsfile</h2>
+			<p>In the previous <a id="_idIndexMarker393"/>section, we used <code>Jenkinsfile</code> entered <a id="_idIndexMarker394"/>directly into a Jenkins job to do some quick testing. That <a id="_idIndexMarker395"/>works well for doing exploratory work, but to build and manage a more complex set of scripts, you should use Git version <a id="_idIndexMarker396"/>control to store the <code>Jenkinsfile</code> and use GitHub to store and share the Git repository, since GitHub integrates nicely with Jenkins. This will let you make changes not only to your program but also to the deployment scripts in a controlled fashion. </p>
+			<p>For more information about why you should use the Git version control system in conjunction with GitHub, see this introductory guide: <a href="https://guides.github.com/introduction/git-handbook/">https://guides.github.com/introduction/git-handbook/</a>.</p>
+			<p>We can combine the power of a script stored in GitHub with the Jenkins <code>Jenkinsfile</code> as the one in the repository for this book to deploy the demonstration project. This support for environment variable substitution will allow you to use the <code>Jenkinsfile</code> unchanged, even though your production server may be set up with a distinct user and host, while also using your SSH, Docker Hub, and GitHub credentials, which are similarly distinct.</p>
+			<p>In order to make further progress, you must make sure that Jenkins has a GitHub username and security token as a credential so that you can use Jenkins to check out GitHub repositories.</p>
+			<h3>Ensuring Jenkins has a GitHub username and security token credential</h3>
+			<p>In order to use Jenkins with GitHub, you <a id="_idIndexMarker397"/>will need to save a Jenkins credential that has a GitHub personal access token. I<a href="https://github.com/settings/tokens">n a web browser, sign in to GitHub</a>, and go to <a href="https://github.com/settings/tokens">https://github.com/settings/tokens</a> and generate a token that has both the <code>repo</code> and <code>admin:repo_hook</code> scopes. Copy the generated token to the clipboard. Then, in another browser window, go to your Jenkins server and navigate through credentials to the Jenkins global credentials and create a <code>github.repo.username</code> and a description of <code>username</code> with your actual GitHub username. Press the <strong class="bold">OK</strong> button to save the credential.</p>
+			<h3>Option 1 – Configuring <a id="_idTextAnchor138"/><a id="_idTextAnchor139"/>Jenkins with a GitHub organization item</h3>
+			<p>Jenkins has support for defining <em class="italic">items</em> that might be individual Jenkins jobs or collections of related jobs. Several of the types of items allow you to connect a version control system to Jenkins so that it will automatically define multiple Jenkins jobs. One of the most powerful of these is a <code>GitHub Organization</code> item. Using a <code>GitHub Organization</code> item will allow Jenkins to scan GitHub for every project that has a <code>Jenkinsfile</code>, and Jenkins will automatically set up a forest of child items for all the repositories in the GitHub organization where it finds a <code>Jenkinsfile</code>.</p>
+			<p>This is the easiest way to have <a id="_idIndexMarker398"/>Jenkins manage a set of related projects If you are using a new Jenkins server to explore Docker development, in a GitHub organization you control, try setting this up. If you are using a corporate Jenkins server, this may already be set up.</p>
+			<p>From your Jenkins installation's home page, click the <code>GitHub Organization</code>. Use the credentials labeled as <strong class="bold">GitHub repo credentials (username)</strong> and make sure the name in the organization field matches your GitHub organization name.</p>
+			<p>You can set up a filter so that this scans only the projects you want for a <code>Jenkinsfile</code>. This might be a good idea if you have a huge number of repositories and branches in your organization, or if you only want your installation of Jenkins to build specific repositories—the repositories that might work with Jenkins—or there is some other Jenkins server that also builds a subset of the projects in your GitHub organization. If you want to do this, add a <code>Behavior</code> of type <code>Filter by name (with regular expression)</code> and construct a regular expression to match the names of only the repositories you want to include.</p>
+			<p>Using GitHub, fork the Docker-for-Developers repository (<a href="https://github.com/PacktPublishing/Docker-for-Developers/">https://github.com/PacktPublishing/Docker-for-Developers/</a>) to your organization. Alternatively, if you don't want to fork the repository, create an empty repository in your organization. Then, push your local copy of the repository to the freshly created repository, go into the GitHub organization item you created, and you should see a <strong class="bold">Docker-for-Developers</strong> item show up.</p>
+			<p>If you are using an individual GitHub account, and lack access to a GitHub organization, this may not be a good option, however. You could instead configure Jenkins with a multibranch pipeline item that retrieves the <code>Jenkinsfile</code> from a single GitHub repository.</p>
+			<h3>Option 2 – Configuring Jenkins with a multibranch pipeline item</h3>
+			<p>Using a multibranch pipeline item will allow Jenkins to scan GitHub for a single repository for every project that has a <code>Jenkinsfile</code>, and Jenkins will automatically set up a forest of child items for <a id="_idIndexMarker399"/>branches and pull requests for a single configured GitHub repository, for branches where it finds a <code>Jenkinsfile</code>.</p>
+			<p>Fork the Docker-for-Developers repository to your organization or create an empty repository in your account and push your local copy of the repository to GitHub. You need to do this before configuring the multibranch pipeline.</p>
+			<p>From your Jenkins installation's home page, click the <code>Multibranch Pipeline</code>. In <strong class="bold">Branch Sources</strong>, choose <strong class="bold">GitHub</strong>, and then fill out the GitHub form with the credentials labeled as <strong class="bold">GitHub repo credentials (username)</strong>, and put the URL of your GitHub repository in the <strong class="bold">Repository HTTPS URL</strong> field. Then, save the item. It will scan the repository and set up the individual Jenkins jobs for each Git branch.</p>
+			<p>At this point, whether you have used the multibranch pipeline or the GitHub organization item type, you should have a set of branches in your Jenkins.</p>
+			<h2 id="_idParaDest-134"><a id="_idTextAnchor140"/>Changing the origin of all checked out repositories</h2>
+			<p>At this point, you should also change the URL for your Git repositories, both on your local workstation, and on the production server you set up in the previous chapter, to the new repository URL. Replace <code>example</code> with the name of your GitHub organization or user where you forked the repository:</p>
+			<pre>git remote set-url origin https://github.com/example/Docker-for-Developers.git</pre>
+			<h3>Checking that your GitHub repository is talking to Jenkins via a webhook</h3>
+			<p>GitHub can communicate with <a id="_idIndexMarker400"/>other systems via webhooks, which are HTTP requests that the system triggers, targeting another system, when people do certain actions. </p>
+			<p>See here for more information about GitHub's support for webhooks and system integration: <a href="https://developer.github.com/webhooks/">https://developer.github.com/webhooks/</a></p>
+			<p>When we set up the <code>GitHub Organization</code> item or the <code>MultiBranch Pipeline</code> item, Jenkins should have set up one of these webhooks in GitHub so that it can talk to Jenkins. If it did not, you can go to the <code>https://jenkins.example.com/github-webhook/</code> (replacing <code>jenkins.example.com</code> with your Jenkins server).</p>
+			<p>Now that we have configured Jenkins to be able to communicate with GitHub, we want to make sure that pushing a branch to GitHub triggers builds in Jenkins. Depending on your account's GitHub permissions and the Jenkins configuration, it might not have created the webhook automatically.</p>
+			<p>In a web browser, navigate to your GitHub repository and go to <strong class="bold">Settings</strong>, then to <strong class="bold">Webhooks</strong>, and verify that there is a webhook with your Jenkins server URL there. </p>
+			<h3>What to expect now that Jenkins is connected to GitHub</h3>
+			<p>Now that we have configured Jenkins to be able to check for the presence of a <code>Jenkinsfile</code> in the repository we are using, we can proceed. Jenkins will try to build the project you have just defined. The <a id="_idIndexMarker401"/>build will fail unless you provide Jenkins with additional variables and credentials, however.</p>
+			<p>In order to tie the specific configurations for the build to your environment, we will need to use Jenkins to set up some environment variables to store the less sensitive items, in addition to storing cryptographic keys and passwords using the <strong class="bold">Credentials</strong> feature.</p>
+			<h2 id="_idParaDest-135"><a id="_idTextAnchor141"/>Creating Jenkins environment variables for production support</h2>
+			<p>Jenkins has support for <a id="_idIndexMarker402"/>setting environment variables that items (build and deployment jobs, for example) can reference. For secret variables, such as SSH private keys, or Docker Hub API credentials, you can use the <strong class="bold">Credentials</strong> system that we used in the previous section to store these securely. For values that are less sensitive, we can use the <strong class="bold">Environment variables</strong> settings available on the Jenkins <strong class="bold">configuration</strong> screen:</p>
+			<div><div><img src="img/B11641_07_007.jpg" alt="Figure 7.7 – Jenkins configuration – Environment variables for production host&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.7 – Jenkins configuration – Environment variables for production host</p>
+			<p>In order to proceed, please double-check with the DNS provider that you use that your production host has a DNS name associated with its IP address. In <a href="B11641_06_Final_NM_ePub.xhtml#_idTextAnchor102"><em class="italic">Chapter 6</em></a>, <em class="italic">Deploying Applications with Docker Compose</em>, we set up DNS names for the production server. Having a DNS <a id="_idIndexMarker403"/>name will make the configurations more readable and will make it easier for people to reach the server in a web browser. Set up variables for these keys and values:</p>
+			<ul>
+				<li><code>shipit_prod_host</code>: Production server DNS domain name, for example, <a href="http://shipitclicker.example.com">shipitclicker.example.com</a>)</li>
+				<li><code>shipit_prod_user</code>: Production server username, for example, <code>centos</code></li>
+			</ul>
+			<p>Once you have set up these variables, hit the <strong class="bold">Save</strong> button. We will use these variables when we run the Jenkins job that updates the running containers. Before we do that though, we need a place to put the containers. In a previous chapter, you learned how to push a container image to Docker Hub. Next, we will automate that process.</p>
+			<h2 id="_idParaDest-136"><a id="_idTextAnchor142"/>Building Docker containers and pushing them to Docker Hub</h2>
+			<p>In order to <a id="_idIndexMarker404"/>avoid building the containers on the production server, we will need to build them on Jenkins and then push the containers into a Docker container registry, such <a id="_idIndexMarker405"/>as Docker Hub. This allows a clean separation of building the Docker containers from deploying them. If you try to both build and deploy the container on a single small server, it is highly likely that at some point you will run into out of memory issues or other system stability problems. And on a production server, you want to maximize the stability of that environment.</p>
+			<p>While you could push the container to Docker Hub from your local workstation, part of the benefit of using Jenkins is that you can use it to automatically build and push containers to a central repository. To do that, you will need to give Jenkins credentials to Docker Hub.</p>
+			<h3>Adding Docker Hu<a href="https://hub.docker.com/">b credentials to Jenkin</a>s credential manager</h3>
+			<p>Log in to <a href="https://hub.docker.com/">https://hub.docker.com/</a> with your Docker accoun<a href="https://hub.docker.com/settings/security">t and create an API token for Jenkins t</a>o use from the <a href="https://hub.docker.com/settings/security">https://hub.docker.com/settings/security</a> security settings page. Copy that API token to the clipboard and in another <a id="_idIndexMarker407"/>web browser tab, visit the Jenkins credential manager and create another global unrestricted credential of type <code>Username with Password</code>. Give it an ID called <a href="http://shipit.dockerhub.id">shipit.dockerhub.id</a> and put your Docker account username in the <code>username</code> field, and the access token in the <code>password</code> field and save it.</p>
+			<p>This will allow you to use your Docker Hub credentials to push a build to Docker Hub, and since we already have SSH credentials set up in Jenkins, we can use those to push a Docker image to Docker Hub after we build it, and then to connect to the production server in order to deploy the new software.</p>
+			<h3>Ensuring the previous production environment is stopped</h3>
+			<p>If the production environment <a id="_idIndexMarker408"/>from the previous chapter is running, you will need to stop it in order to deploy the new environment. This will ensure that the new production environment can bind to the correct TCP ports.</p>
+			<p class="callout-heading">Note</p>
+			<p class="callout">In a situation where you have a real production application with valuable customer data, you would want to back up and restore any databases and other persistent storage to the new environment. The ShipIt Clicker application only uses Redis in order to save details about the production environment. For Redis, this can be done via the CLI using the <code>SAVE</code> command. You can then copy the resulting <code>dump.rdb</code> file into the Docker volume that this chapter's Redis container uses.</p>
+			<p>From your local workstation, SSH to the server and stop it (replace <code>192.0.2.10</code> with the IP address of your server):</p>
+			<pre>cmd='cd Docker-for-Developers/chapter6; docker-compose stop'
+ssh centos@192.2.0.10 "$cmd"</pre>
+			<p>Now that the previous Docker containers are stopped, you may proceed with using Jenkins to build the software, push <a id="_idIndexMarker409"/>to Docker Hub, and deploy the containers on the production server. You only have to do this once, when you are first transitioning from the setup from the previous chapter to the environment managed by Jenkins in this chapter.</p>
+			<p>Next, let's trigger a production environment deployment through Jenkins.</p>
+			<h2 id="_idParaDest-137"><a id="_idTextAnchor143"/>Pushing to Docker Hub and triggering a production deployment</h2>
+			<p>Now that we have all the environment variables and credentials in place, we can trigger a Jenkins build. Jenkins <a id="_idIndexMarker410"/>normally triggers a build when it detects a commit, but we can also force Jenkins to start a build. Go to the Jenkins job that is hooked up to the GitHub repository where the application code resides for the <code>master</code> branch and click on <strong class="bold">Build Now</strong>. Jenkins will start building the job and show the build number in the user interface:</p>
+			<div><div><img src="img/B11641_07_008.jpg" alt="Figure 7.8 – Jenkins jobs in GitHub Organization – master branch&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.8 – Jenkins jobs in GitHub Organization – master branch</p>
+			<p>Before we check on the progress of the job, let's examine how it works.</p>
+			<p>Jenkins runs a combination of the <code>Jenkinsfile</code> and the script <code>chapter7/bin/</code><a href="http://dep-ssh.sh">dep-ssh.sh</a> in order to build and deploy the software. The <code>Jenkinsfile</code> checks out the <a id="_idIndexMarker411"/>repository, builds the Docker container, and pushes it to Docker Hub. The following excerpt from the <code>Jenkinsfile</code> shows the code that manages the checkout, build, and push process:</p>
+			<pre>pipeline {
+  agent any
+  stages {
+    stage('build') {
+      steps {
+        checkout scm
+        script {
+          docker.withRegistry(registry, 'shipit.dockerhub.id') {
+            def image = docker.build(
+              getImageName(appName),
+              "-f ${dockerfile} --network host ./chapter7"
+            )
+            image.push()
+            }
+          }
+      }
+    }</pre>
+			<p>The next stage, the <code>deploy</code> stage, runs when the branch is <code>master</code> or staging and invokes the shell script <code>chapter7/bin/dep-ssh.sh</code>, which connects to the server via SSH and updates the copy of the <a id="_idIndexMarker412"/>repository, pulls the built Docker containers, and restarts the containers. See the following excerpt from <code>dep-ssh.sh</code> for the most important part:</p>
+			<pre>ssh -i "$keyfile" -o StrictHostKeyChecking=no "$targetEnv" &lt;&lt;EOF
+set -euo pipefail
+cd Docker-for-Developers/chapter7
+git fetch
+git reset --hard HEAD
+git checkout -f origin/"$GIT_BRANCH"
+docker pull "$image"
+set -a
+DOCKER_IMAGE="$image"
+PORT="$port"
+bin/restart.sh
+EOF</pre>
+			<p>Now that you understand <a id="_idIndexMarker413"/>how the build and deploys are chained together, you should see whether the deployment to the production environment worked.</p>
+			<h3>Verifying that the deployment worked</h3>
+			<p>Click on the most recent build and then click on <code>Finished: Success</code> at the end of the console output.</p>
+			<p>The console output will show these basic steps:</p>
+			<ol>
+				<li>The Git repository being cloned from GitHub.</li>
+				<li>The Docker container being built.</li>
+				<li>The Docker container being pushed to Docker Hub.</li>
+				<li>Jenkins connecting to the production server via SSH.</li>
+				<li>The script <code>chapter7/bin/ssh-dep.sh</code> runs on the production server, which then pulls the image from Docker Hub and restarts the Docker services.</li>
+			</ol>
+			<p>If any of the preceding steps fail, the Jenkins job will fail. If that happens, double-check that the credentials and environment variables are correct. You<a href="https://github.com/PacktPublishing/Docker-for-Developers/blob/master/chapter7/consoleOutput.txt"> can compare the output of</a> your test run to the sample output, <code>chapter7/consoleOutput.txt</code>, in the companion GitHub repository to see whether your Jenkins run worked as expected. </p>
+			<p>If this has built successfully, you should be able to go <a href="http://shipitclicker.example.com/">to the same URL you used in the p</a>revious chapter (for example, <a href="http://shipitclicker.example.com/">http://shipitclicker.example.com/</a> or <a href="http://192.2.0.10/">http://192.2.0.10/</a>) in order to see the application. Congratulations! Now every push to the master branch, including when pull requests get merged to the master branch, will deploy the production environment. This is one of the simplest ways to achieve continuous deployment.</p>
+			<p>You might want to be able to see your changes in a separate environment that is stable and always available so that if you make changes that might break the production environment, you can test them <a id="_idIndexMarker415"/>out in isolation. In the next section, we will learn how to set up a staging environment similar to the production environment and orchestrate deployments to it using Jenkins.</p>
+			<h1 id="_idParaDest-138"><a id="_idTextAnchor144"/>Deploying to multiple environments through multiple branches</h1>
+			<p>Being able to deploy to a single production environment is valuable, but in order to support development and testing, it is <a id="_idIndexMarker416"/>useful to have at least one other environment other than the production environment to test with. That way, people testing the software who do not have a development environment can see the effect of changes you make, without you having to deploy them to the production environment.</p>
+			<p>In the next part of the chapter, we are going to create a second environment, a staging environment, to allow us to test changes before they are in production.</p>
+			<h2 id="_idParaDest-139"><a id="_idTextAnchor145"/>Creating a staging environment</h2>
+			<p>You will need another host, similar in specifications to the one running the production environment, for the staging <a id="_idIndexMarker417"/>environment. Once you can SSH to that host, you could follow the instructions in the previous chapter about installing Docker and Git. Assuming you are running on CentOS 7, you can use the following script snippet to quickly provision Docker on that system and test that it is working (replace <code>centos@192.2.0.11</code> with the user and host you are using for your staging environment, and the GitHub URL with the URL of your organization's fork of the project repository):</p>
+			<pre>$ staging=centos@192.2.0.11
+$ ssh $staging &lt; bin/provision-docker.sh
+$ ssh $staging git clone https://github.com/PacktPublishing/Docker-for-Developers.git
+$ ssh $staging docker run --rm hello-world</pre>
+			<p>Once you have Docker working on the staging system, you can enter the <code>exit</code> command to go back to your local workstation. Then, make sure that the staging system has the same SSH public key that the production system has. Do this from the directory that contains the <code>jenkins.shipit.pub</code> key file:<a id="_idTextAnchor146"/><a id="_idTextAnchor147"/></p>
+			<pre>$ ssh $staging mkdir -p .ssh
+$ ssh $staging tee -a .ssh/authorized_keys &lt; jenkins.shipit.pub
+$ ssh $staging chmod 700 .ssh $ ssh $staging chmod 600 .ssh/authorized_keys</pre>
+			<p>Now that the staging server has <a id="_idIndexMarker418"/>been prepared with the right SSH credentials and the essential software needed to run Docker applications, we will configure Jenkins to support this staging environment.</p>
+			<h2 id="_idParaDest-140"><a id="_idTextAnchor148"/>Creating Jenkins environment variables for staging support</h2>
+			<p>In order to prepare Jenkins for deployments to the staging server, we will return to the <strong class="bold">Environment variables</strong> settings <a id="_idIndexMarker419"/>available on the Jenkins <strong class="bold">configuration</strong> screen. In order to proceed, please make sure that your staging host has a DNS name associated with it. Set up variables for these keys and values:</p>
+			<ul>
+				<li><code>shipit_staging_host</code>: Staging server DNS domain name, for example, <code>shipit-staging.example.com</code>)</li>
+				<li><code>shipit_staging_user</code>: Staging server username, for example, <code>centos</code></li>
+			</ul>
+			<h2 id="_idParaDest-141"><a id="_idTextAnchor149"/>Deploying by force-pushing to the staging branch</h2>
+			<p>The deployment scripts <a id="_idIndexMarker420"/>detect what branch is being processed and deploy to the right environment. This is done with a combination of directives in the <code>Jenkinsfile</code> and having the deploy script use environment variables set up through the <code>Jenkinsfile</code> and the Jenkins global <a id="_idIndexMarker421"/>configuration. Before we get to the example that shows how to use Git to force-push, we need to examine the <code>Jenkinsfile</code> and support scripts to see how they handle branch names.</p>
+			<h3>How do the scripts know what server to use?</h3>
+			<p>The <code>Jenkinsfile</code> will only run the <a id="_idIndexMarker422"/>deploy stage if the branch name is either <code>master</code> or <code>staging</code>:</p>
+			<pre>    stage('deploy') {
+      when {
+        anyOf {
+          branch 'master'
+          branch 'staging'
+        }
+      }</pre>
+			<p>Next up, we are going to see some of the power of using a <code>Jenkinsfile</code>, showing off some of the Groovy language features such as variable interpolation and calling functions. The steps that follow in the <code>Jenkinsfile</code> define environment variables that the <code>chapter7/bin/ssh-dep.sh</code> script uses to help pick the right environment:</p>
+			<pre>      steps {
+        echo "BRANCH_NAME is ${env.BRANCH_NAME}"
+        echo "Deploying to ${getTarget()}"
+        withCredentials([sshUserPrivateKey(
+          credentialsId: 'jenkins.shipit',
+          keyFileVariable: 'keyfile')]) {
+            sh """
+               set -a
+               target=${getTarget()}
+               image=${getImageName(appName)}
+               keyfile=${keyfile}
+               ./chapter7/bin/ssh-dep.sh
+               """</pre>
+			<p>These use Jenkins variable interpolation expressions to call Jenkins functions written in Groovy (<code>getTarget()</code> and <code>getImageName(appName)</code>) that set some of the environment variables that the  <code>chapter7/bin/ssh-dep.sh</code> script uses.</p>
+			<p>The <code>getTarget()</code> function uses this ternary expression to pick whether to target the <code>prod</code> or <code>staging</code> environment:</p>
+			<pre>def getTarget() {
+  env.BRANCH_NAME == 'staging' ? 'staging' : 'prod'
+}</pre>
+			<p>Once the flow of control has passed to the <code>chapter7/bin/ssh-dep.sh</code> script, it uses the target environment <a id="_idIndexMarker423"/>variables to pick what environment to target and sets variables up so that the SSH command will pick the correct server:</p>
+			<pre>port=${port:-80}
+prod="${shipit_prod_user}@${shipit_prod_host}"
+staging="${shipit_staging_user}@${shipit_staging_host}"
+image=${image:-dockerfordevelopers/shipitclicker:latest}
+if [[ "$target" = "staging" ]]; then
+    targetEnv="$staging"
+    targetHost="$shipit_staging_host"
+else
+    targetEnv="$prod"
+    targetHost="$shipit_prod_host"
+fi</pre>
+			<p>In this way, the shell script sets up <code>targetEnv</code> so that the following SSH command can reach the correct server:</p>
+			<pre>ssh -i "$keyfile" -o StrictHostKeyChecking=no "$targetEnv" &lt;&lt;EOF</pre>
+			<p>Now that you see how the variables in the <code>Jenkinsfile</code> and <code>chapter7/bin/ssh-dep.sh</code> interact, you are ready to use Git to initiate a deployment to staging.</p>
+			<h3>Preparing to use Git to force-push a branch to staging</h3>
+			<p>Although force-pushing branches in Git can be problematic, this is one of the times when it makes sense. If <a id="_idIndexMarker424"/>you consider the <code>staging</code> branch to be special, not something that you would ordinarily merge into the master, you can then repeatedly force-push work in progress from any branch to it.  </p>
+			<p>On your local workstation, create a new branch in the Git repository called <code>experiment</code> by issuing the command <code>git checkout -b experiment</code>. Edit the <code>chapter7/src/public/index.html</code> file and change the text enclosed in the <code>&lt;h1&gt;</code> tags to <code>ShipIt Clicker Experiment</code>. Save the file and do a <code>git commit</code> command. Then, force-push the <code>HEAD</code> of your branch to GitHub as follows:</p>
+			<pre>$ git push origin HEAD:staging --force</pre>
+			<p>This will push the code you just committed to GitHub. Then, open a web browser to your Jenkins server and examine the item for your repository. You should shortly see that Jenkins has created a <code>staging</code> branch job and will build the software and push it to Docker Hub, and deploy it to the staging environment. Observe the Jenkins console log for the job for the <code>staging</code> branch and make sure that it is similar to the one for the production deployments from the <code>master</code> branch.</p>
+			<p>If your deployment worked, check with a web browser to see that the title of the application on the staging server is <code>ShipIt Clicker Experiment</code>—the text you changed.</p>
+			<p>At this point, we have used Jenkins to deploy a Docker application to both a production and a staging server. You might wonder what it would take to add a third or fourth environment, or what the <a id="_idIndexMarker425"/>drawbacks of this approach might be. Very complex scripts and environments might make it harder to deploy with Jenkins—let's examine that more closely.</p>
+			<h1 id="_idParaDest-142"><a id="_idTextAnchor150"/>Complexity and limits to scaling deployments through Jenkins</h1>
+			<p>Since Jenkins is a general-purpose tool for building and scripting processes related to software <a id="_idIndexMarker426"/>development, it offers immense flexibility, but at the cost of complexity. While it can do almost any function related to continuous integration and deployment, it may take more scripting and setup than other systems, such as Spinnaker, CodeFresh, or WeaveWorks, that are more purpose-built. Some other <a id="_idIndexMarker427"/>continuous integration and deployment systems deal exclusively with Docker-focused workflows.</p>
+			<p>Using Jenkins to manage builds, tests, and deployments to one or two hosts is quite manageable. But when you start to scale out, it may become more complex and difficult to continue to use Jenkins to handle builds and deployments. The build and deployment scripts may also become too complex to manage due to the many different programming languages and approaches required. Let's examine these limits, starting with limits about managing multiple hosts.</p>
+			<h2 id="_idParaDest-143"><a id="_idTextAnchor151"/>Managing multiple hosts</h2>
+			<p>The scripts shown in this chapter handled deployments to two environments: a production environment and a staging environment. However, if we wanted to have four more similar <a id="_idIndexMarker428"/>environments, say, development, QA, demo, and beta, we might have to spin up four additional hosts and extend our scripts accordingly. It could get to be a big, expensive mess pretty fast. Also consider what would happen if one host became too small to run the production site. You might need to run a fleet of instances and make sure that they all use the same database. Then, you would get into issues about how you might update and deploy that fleet of instances without downtime. The questions and problems start to get bigger if you use a brute-force scripting approach.</p>
+			<p>If you were going to use Jenkins to manage multiple hosts at scale, you would want to look into integrating it with services that offer additional abstractions to handle scaling and deployment, such as AWS EC2 Auto Scaling Groups, and AWS CodeDeploy. However, neither of those are focused on Docker-specific functionality. You could also use Jenkins to run scripts that <a id="_idIndexMarker429"/>used Kubernetes tools, such as <code>kubectl</code> or <code>helm</code>, in order to deploy the software to a Kubernetes cluster, if you have an organizational commitment to using Jenkins as your continuous integration environment.</p>
+			<h2 id="_idParaDest-144"><a id="_idTextAnchor152"/>The complexity of build scripts</h2>
+			<p>One of the best things about Jenkins is that it allows you to script builds using the Groovy domain-specific <a id="_idIndexMarker430"/>language; however, this can be one of the worst things simultaneously. Groovy is a powerful and concise Java virtual machine-based language, but it is much less well known than many other scripting languages, such as Python, Ruby, and Bash. Furthermore, Jenkins uses a sandbox model to limit what type of Groovy statements are allowed.</p>
+			<p>This often means that implementers must split their build scripts between a high-level orchestration layer written in the Jenkins pipeline DSL dialect of Groovy and some other language. This project uses a combination of Groovy <code>Jenkinsfile</code> and Bash shell scripts to do this, wh<a id="_idTextAnchor153"/>ich drive the Docker builds and deploys.</p>
+			<h2 id="_idParaDest-145"><a id="_idTextAnchor154"/>How do you know when you have hit the limit?</h2>
+			<p>People who have had many <a id="_idIndexMarker431"/>years of experience using Jenkins and hand-rolled scripts to build and deploy software have learned to recognize a few signs that using Jenkins for your purposes has hit its limits:</p>
+			<ul>
+				<li>The installation of Jenkins itself becomes fragile and too complex for new people on the project to learn quickly.</li>
+				<li>It becomes difficult to upgrade Jenkins because of plugin incompatibilities.</li>
+				<li>The build scripts fail routinely, and people ignore the failures.</li>
+				<li>It starts taking too long to build and deploy the software to meet the business needs.</li>
+				<li>If you maintain many applications, the scripts used to build and maintain them become a maze of cut and paste spaghetti code.</li>
+			</ul>
+			<p>If you see these signs, it might be <a id="_idIndexMarker432"/>time to consider using a more purpose-built approach, such as Spinnaker, GitLab CI, or CodeFresh as your CI and container pipeline management tool.</p>
+			<h1 id="_idParaDest-146"><a id="_idTextAnchor155"/>Summary</h1>
+			<p>In this chapter, you have learned how to construct a continuous deployment pipeline using Docker, Jenkins, and GitHub. You learned how to establish connectivity between a Jenkins server and multiple host servers through SSH, scripted using a <code>Jenkinsfile</code>. You learned how to combine those techniques to drive configuration changes and Docker deployments to the production host using Jenkins. You also learned how to set up a second staging environment and use the Jenkins environment variables and credentials support in order to make a single set of scripts deploy to multiple environments. Finally, you learned about the limitations of using Jenkins to manage larger-scale deployments, and when it might be time to reach for other tools to manage continuous deployment.</p>
+			<p>Now that you have mastered the basics of using Jenkins to build and deploy software to both a production and a staging environment, you can apply this to your own projects. This will help you build and deploy your software more reliably.  </p>
+			<p>In the next chapter, we will see how we can use Kubernetes and the <strong class="bold">Amazon Web Services Elastic Kubernetes Service</strong> (<strong class="bold">AWS EKS</strong>) to manage larger-scale, more robust clusters of servers that can host applications running in Docker.</p>
+			<h1 id="_idParaDest-147"><a id="_idTextAnchor156"/>Further reading</h1>
+			<p>If you choose to use Jenkins to manage your Docker-based environments, you should look at these resources more closely:</p>
+			<ul>
+				<li>Using a <code>Jenkinsfile</code>: <a href="https://jenkins.io/doc/book/pipeline/jenkinsfile/">https://jenkins.io/doc/book/pipeline/jenkinsfile/</a></li>
+				<li>Jenkins Docker integration docs: <a href="https://jenkins.io/doc/book/pipeline/docker/">https://jenkins.io/doc/book/pipeline/docker/</a></li>
+				<li>Securing Jenkins: <a href="https://jenkins.io/doc/book/system-administration/security/">https://jenkins.io/doc/book/system-administration/security/</a></li>
+				<li>Using Let's Encrypt and Apache to secure Jenkins with SSL: https://www.agileana.com/blog/serve-jenkins-over-https-with-apache-as-proxy-and-certbot-lets<a href="https://wiki.jenkins.io/display/JENKINS/Jenkins+behind+an+NGinX+reverse+proxy">encrypt-ssl/</a></li>
+				<li><a href="https://wiki.jenkins.io/display/JENKINS/Jenkins+behind+an+NGinX+reverse+proxy">Using an NGINX reverse proxy or AWS ELB to secure Jenkins with S</a>SL: <a href="https://wiki.jenkins.io/display/JENKINS/Jenkins+behind+an+NGinX+reverse+proxy">https://wiki.jenkins.io/display/JENKINS/Jenkins+behind+an+NGinX+reverse+proxy</a></li>
+			</ul>
+			<p>If you are running a real production application on a single host with <code>docker-compose</code>, you should strongly consider securing your site with SSL. You can use Let's Encrypt and a host of Docker sidecar containers to achieve this:</p>
+			<ul>
+				<li>How to use Let's Encrypt, NGINX, and Docker to secure your site with SSL: <a href="https://github.com/nginx-proxy/docker-letsencrypt-nginx-proxy-companion">https://github.com/nginx-proxy/docker-letsencrypt-nginx-proxy-companion</a></li>
+				<li>Using <code>docker-compose.yml</code> to configure Let's Encrypt with NGINX and Docker: <a href="https://github.com/nginx-proxy/docker-letsencrypt-nginx-proxy-companion/blob/master/docs/Docker-Compose.md">https://github.com/nginx-proxy/docker-letsencrypt-nginx-proxy-companion/blob/master/docs/Docker-Compose.md</a></li>
+			</ul>
+		</div>
+	</body></html>

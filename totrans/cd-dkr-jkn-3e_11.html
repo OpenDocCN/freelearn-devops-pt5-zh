@@ -1,0 +1,381 @@
+<html><head></head><body>
+		<div><h1 id="_idParaDest-219"><em class="italic"><a id="_idTextAnchor218"/>Chapter 8</em>: Continuous Delivery Pipeline</h1>
+			<p>In this chapter, we will focus on the missing parts of the final pipeline, which are the environments and infrastructure, application versioning, and non-functional testing.</p>
+			<p>We will be covering the following topics:</p>
+			<ul>
+				<li>Environments and infrastructure</li>
+				<li>Non-functional testing</li>
+				<li>Application versioning</li>
+				<li>Completing the continuous delivery pipeline</li>
+			</ul>
+			<h1 id="_idParaDest-220"><a id="_idTextAnchor219"/>Technical requirements</h1>
+			<p>To follow this chapter, you'll need the following:</p>
+			<ul>
+				<li>A Jenkins instance (with Java 8+, Docker, and <code>kubectl</code> installed on your Jenkins agents)</li>
+				<li>A Docker registry (for example, an account on Docker Hub)</li>
+				<li>Two Kubernetes clusters</li>
+			</ul>
+			<p>All the examples and solutions for the exercises in this chapter can be found on GitHub at <a href="https://github.com/PacktPublishing/Continuous-Delivery-With-Docker-and-Jenkins-3rd-Edition/tree/main/Chapter08">https://github.com/PacktPublishing/Continuous-Delivery-With-Docker-and-Jenkins-3rd-Edition/tree/main/Chapter08</a>.</p>
+			<p>Code in Action videos for this chapter can be viewed at <a href="https://bit.ly/3JeyQ1X">https://bit.ly/3JeyQ1X</a>.</p>
+			<h1 id="_idParaDest-221"><a id="_idTextAnchor220"/>Environments and infrastructure</h1>
+			<p>So far, we have deployed our applications to some servers – that is, Docker hosts, Kubernetes clusters, and pure Ubuntu servers (in the case of Ansible). However, when we think more deeply about the <strong class="bold">continuous delivery</strong> (<strong class="bold">CD</strong>) process (or the software delivery process in general), we need to logically group our resources. There are two main reasons why this is important:</p>
+			<ul>
+				<li>The physical location of machines matters</li>
+				<li>No testing should be done on the production machines</li>
+			</ul>
+			<p>Taking these facts into consideration, in this section, we will discuss different types of environments, their role in the CD process, and the security aspect of our infrastructure.</p>
+			<h2 id="_idParaDest-222"><a id="_idTextAnchor221"/>Types of environments</h2>
+			<p>There are four common <a id="_idIndexMarker862"/>environment types – <strong class="bold">production</strong>, <strong class="bold">staging</strong>, <strong class="bold">QA</strong> (testing), and <strong class="bold">development</strong>. Let's discuss each of them one by one.</p>
+			<h3>Production</h3>
+			<p>The<a id="_idIndexMarker863"/> production environment<a id="_idIndexMarker864"/> is the environment that is used by the end user. It exists in every company and is the most important environment.</p>
+			<p>The following diagram shows how most production environments are organized:</p>
+			<div><div><img src="img/B18223_08_01.jpg" alt="Figure 8.1 – Production environment&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 8.1 – Production environment</p>
+			<p>Users access the service through the load balancer, which chooses the machine. If the application is released in multiple physical locations, then the (first) device is usually a DNS-based geographic load balancer. In each location, we have a cluster of servers. If we use Docker and Kubernetes, for example, this means that in each location, we have at least one Kubernetes cluster.</p>
+			<p>The physical location of machines matters because the request-response time can differ significantly, depending on the physical distance. Moreover, the database and other dependent services should be located on a machine that is close to where the service is deployed. What's even more important is that the database should be sharded in a way that minimizes the replication overhead between different locations; otherwise, we may end up waiting for the databases to reach a consensus between their instances, which will be located far away from each other. More details on the physical aspects are beyond the scope of this book, but it's important to remember that Docker and Kubernetes <a id="_idIndexMarker865"/>themselves do<a id="_idIndexMarker866"/> not solve this problem.</p>
+			<p class="callout-heading">Information </p>
+			<p class="callout">Containerization and virtualization allow you to think about servers as infinite resources; however, some physical aspects such as location are still relevant.</p>
+			<h3>Staging</h3>
+			<p>The staging environment<a id="_idIndexMarker867"/> is where the release candidate is <a id="_idIndexMarker868"/>deployed to perform the final tests before going live. Ideally, this environment is a mirror of the production environment.</p>
+			<p>The following diagram shows what such an environment should look like in the context of the delivery process:</p>
+			<div><div><img src="img/B18223_08_02.jpg" alt="Figure 8.2 – Staging environment&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 8.2 – Staging environment</p>
+			<p>Note that the staging environment is a clone of the production environment. If the application is deployed in multiple locations, then the staging environment should also have multiple locations.</p>
+			<p>In the CD process, all automated acceptance tests (both functional and non-functional) are run against this environment. While most functional tests don't usually require identical production-like infrastructure, in the case of non-functional (especially performance) tests, it is a must.</p>
+			<p>To save costs, it's not uncommon for the staging infrastructure to differ from the production environment (usually, it contains fewer machines). Such an approach can, however, lead to many production issues. <em class="italic">Michael T. Nygard</em>, in <em class="italic">Release It! Design and Deploy Production-Ready Software</em>, gives an example of a real-life scenario in which fewer machines were used in the staging environment than in production.</p>
+			<p>The<a id="_idIndexMarker869"/> story goes like this: in one company, the system was stable until a certain code change caused the production environment to become extremely slow, even<a id="_idIndexMarker870"/> though all the stress tests were passed. <em class="italic">How was this possible?</em> This happened because there was a synchronization point where each server communicated with the others. In the case of the staging environment, there was one server, so there was no blocker. In production, however, there were many servers, which resulted in servers waiting for each other. This example is just the tip of the iceberg, and many production issues may fail to be tested by acceptance tests if the staging environment is different from the production environment.</p>
+			<h3>QA</h3>
+			<p>The <a id="_idIndexMarker871"/>QA environment (also called the testing environment) is intended for the <a id="_idIndexMarker872"/>QA team to perform exploratory testing and for external applications (that depend on our service) to perform integration testing. The use cases and the infrastructure of the QA environment are shown in the following diagram:</p>
+			<div><div><img src="img/B18223_08_03.jpg" alt="Figure 8.3 – QA environment&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 8.3 – QA environment</p>
+			<p>While staging does not need to be stable (in the case of CD, it is changed after every code change that's committed to the repository), the QA instance needs to provide a certain amount of stability and expose the same (or backward-compatible) API as the production environment. In contrast to the staging environment, the infrastructure can be different from that of the production environment since its purpose is not to ensure that the release candidate works properly.</p>
+			<p>A very <a id="_idIndexMarker873"/>common case is to allocate fewer machines (for example, only <a id="_idIndexMarker874"/>from one location) to the QA instance.</p>
+			<p class="callout-heading">Information </p>
+			<p class="callout">Deploying to the QA environment is usually done in a separate pipeline so that it's independent of the automatic release process. Such an approach is convenient because the QA instance has a different life cycle than the production one (for instance, the QA team may want to perform testing on the experimental code branched from the trunk).</p>
+			<h3>Development</h3>
+			<p>The development environment<a id="_idIndexMarker875"/> can be created as a shared <a id="_idIndexMarker876"/>server for all developers, or each developer can have a development environment for themselves. The following is a simple diagram of this:</p>
+			<div><div><img src="img/B18223_08_04.jpg" alt="Figure 8.4 – Development environment&#13;&#10;"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 8.4 – Development environment</p>
+			<p>The development environment always contains the latest version of the code. It is used to enable integration between developers and can be treated the same way as the QA environment. However, it is used by developers, not QAs.</p>
+			<p>Now that we've looked at all the environments, let's see how they fit into the CD process.</p>
+			<h2 id="_idParaDest-223"><a id="_idTextAnchor222"/>Environments in continuous delivery</h2>
+			<p>In the CD process, the <a id="_idIndexMarker877"/>staging environment is indispensable. In some very rare cases, when performance is not important and the project doesn't have many <a id="_idIndexMarker878"/>dependencies, we can perform the acceptance tests on the local (development) Docker host, but that should be an exception, not a rule. In such cases, we always risk some production issues occurring that are related to the environment.</p>
+			<p>The other environments are usually not important in terms of CD. If we would like to deploy to the QA or development environment with every commit, then we can create separate pipelines for that purpose (being careful not to obscure the main release pipeline). In many cases, deployment to the QA environment is triggered manually since it has a different life cycle from production.</p>
+			<h2 id="_idParaDest-224"><a id="_idTextAnchor223"/>Securing environments</h2>
+			<p>All <a id="_idIndexMarker879"/>environments need to be well secured – that's clear. What's even more obvious is that the most important requirement is to keep the production environment secure because our business depends on it, and the consequences of any security flaw can be the most serious.</p>
+			<p class="callout-heading">Information </p>
+			<p class="callout">Security is a broad topic. In this section, we will only focus on the topics related to the CD process. Nevertheless, setting up a complete server infrastructure requires much more security knowledge.</p>
+			<p>In the CD process, the Jenkins agent must have access to servers so that it can deploy the application.</p>
+			<p>There are different approaches for providing agents with the server's credentials:</p>
+			<ul>
+				<li><strong class="bold">Put an SSH key in the agent</strong>: If we don't use dynamic Docker slave provisioning, then we can configure Jenkins agent machines so that they contain private SSH keys.</li>
+				<li><strong class="bold">Put an SSH key in the agent image</strong>: If we use dynamic Docker slave provisioning, we can add the SSH private key to the Docker agent image; however, this creates a possible security hole since anyone who has access to that image would have access to the production servers.</li>
+				<li><strong class="bold">Use Jenkins credentials</strong>: We can configure Jenkins to store credentials and use them in the pipeline.</li>
+				<li><strong class="bold">Copy to the slave Jenkins plugin</strong>: We can copy the SSH key dynamically into the slave while starting the Jenkins build.</li>
+			</ul>
+			<p>Each solution <a id="_idIndexMarker880"/>has some advantages and drawbacks. While using any of them, we have to take extra caution since, when an agent has access to the production environment, anyone breaking into that agent can break into the production environment.</p>
+			<p>The riskiest solution is to put SSH private keys into the Jenkins agent image since everywhere the image is stored (the Docker registry or Docker host within Jenkins) needs to be well secured.</p>
+			<p>Now that we've covered the infrastructure, let's look at a topic that we haven't covered yet – non-functional testing.</p>
+			<h1 id="_idParaDest-225"><a id="_idTextAnchor224"/>Non-functional testing</h1>
+			<p>We learned a lot <a id="_idIndexMarker881"/>about functional requirements and automated acceptance testing in the previous chapters. <em class="italic">But what should we do with non-functional requirements?</em> Or even more challenging, <em class="italic">what if there are no requirements?</em> <em class="italic">Should we skip them in the CD process?</em> We will answer these questions throughout this section.</p>
+			<p>Non-functional aspects of the software are always important because they can cause a significant risk to how the system operates.</p>
+			<p>For example, many applications fail because they are unable to bear the load of a sudden increase in the number of users. In one of his books, <em class="italic">Jakob Nielsen</em> writes about the user experience that <em class="italic">1 second is about the limit for the user's flow of thought to stay uninterrupted</em>. Imagine that our system, with its growing load, starts to exceed that limit. Users may stop using the service just because of its performance. Taking this into consideration, non-functional testing is just as important as functional testing.</p>
+			<p>To cut a long story short, we should always<a id="_idIndexMarker882"/> take the following steps for non-functional testing:</p>
+			<ol>
+				<li>Decide which non-functional aspects are crucial to our business.</li>
+				<li>For each of them, we must do the following:<ul><li>Specify the tests the same way we did for acceptance testing</li><li>Add a stage to the CD pipeline (after acceptance testing, while the application is still deployed on the staging environment)</li></ul></li>
+				<li>The application comes to the release stage only after all the non-functional tests have passed.</li>
+			</ol>
+			<p>Irrespective of the type of non-functional test, the idea is always the same. The approach, however, may differ slightly. Let's examine different test types and the challenges they pose.</p>
+			<h2 id="_idParaDest-226"><a id="_idTextAnchor225"/>Types of non-functional test</h2>
+			<p>Functional tests are<a id="_idIndexMarker883"/> always related to the same aspect – the behavior of the system. In contrast, non-functional tests are concerned with a lot of different aspects. Let's discuss the most common system properties and how they can be tested inside the CD process.</p>
+			<h3>Performance testing</h3>
+			<p>Performance tests are <a id="_idIndexMarker884"/>the most widely used non-functional tests. They<a id="_idIndexMarker885"/> measure the responsiveness and stability of the system. The simplest performance test we can create is one that sends a request to the web service and measures <a id="_idIndexMarker886"/>its <strong class="bold">round-trip time</strong> (<strong class="bold">RTT</strong>).</p>
+			<p>There are different definitions of performance testing. They are often meant to include load, stress, and scalability testing. Sometimes, they are also described as white-box tests. In this book, we will define performance testing as the most basic form of black-box test to measure the latency of the system.</p>
+			<p>For <a id="_idIndexMarker887"/>performance testing, we can use a dedicated framework (for Java, the most popular is JMeter) or just use the same tool we used for our acceptance tests. A simple performance test is usually added as a pipeline stage, just after the acceptance tests. Such a test should fail if the RTT exceeds the given limit and it detects bugs that slow<a id="_idIndexMarker888"/> down our service.</p>
+			<p class="callout-heading">Tip</p>
+			<p class="callout">The JMeter plugin for Jenkins can show performance trends over time.</p>
+			<h3>Load testing</h3>
+			<p>Load tests<a id="_idIndexMarker889"/> are used to check how the system functions when there are a lot of concurrent requests. While a system can be very fast with a single request, this doesn't mean <a id="_idIndexMarker890"/>that it works fast enough with 1,000 requests being worked on at the same time. During load testing, we measure the average request-response time of many concurrent calls, which are usually performed from many machines. Load testing is a very common QA phase in the release cycle. To automate it, we can use the same tools that we do when conducting a simple performance test; however, in the case of larger systems, we may need a separate client environment to perform a large number of concurrent requests.</p>
+			<h3>Stress testing</h3>
+			<p>Stress testing, also <a id="_idIndexMarker891"/>called <strong class="bold">capacity testing</strong> or <strong class="bold">throughput testing</strong>, is a test that<a id="_idIndexMarker892"/> determines how <a id="_idIndexMarker893"/>many concurrent users can access our service. It may sound the same as load testing, but in the case of load testing, we set the<a id="_idIndexMarker894"/> number of concurrent users (throughput) to a given number, check the response time (latency), and make the build fail if that limit is exceeded. During stress testing, however, we keep the latency constant and increase the throughput to discover the maximum number of concurrent calls when the system is still operable. Therefore, the result of a stress test may be a notification that our system can handle 10,000 concurrent users, which helps us prepare for the peak usage time.</p>
+			<p>Stress testing is not well suited for the CD process because it requires long tests with an increasing number of concurrent requests. It should be prepared as a separate script of a separate Jenkins pipeline and triggered on demand when we know that the code change can cause performance issues.</p>
+			<h3>Scalability testing</h3>
+			<p>Scalability testing<a id="_idIndexMarker895"/> explains how latency and throughput change when we add <a id="_idIndexMarker896"/>more servers or services. The perfect characteristic would be linear, which means that if we have one server and the average request-response time is 500 ms when it's used by 100 parallel users, then adding another server would keep the response time the same and allow us to add another 100 parallel users. In reality, it's often hard to achieve this because of the need to keep data consistent between servers.</p>
+			<p>Scalability testing should be automated and provide a graph that shows the relationship between the number of machines and the number of concurrent users. Such data helps determine the limits of the system and the point at which adding more machines doesn't help.</p>
+			<p>Scalability tests, similar to stress tests, are hard to put into the CD pipeline and should be kept separate.</p>
+			<h3>Soak testing</h3>
+			<p>Soak<a id="_idIndexMarker897"/> tests, also <a id="_idIndexMarker898"/>called <strong class="bold">endurance tests</strong> or <strong class="bold">longevity tests</strong>, run the<a id="_idIndexMarker899"/> system for<a id="_idIndexMarker900"/> a long time to see if the performance drops after a certain period. They detect memory leaks and stability issues. Since they require a system to run for a long time, it doesn't make sense to run them inside the CD pipeline.</p>
+			<h3>Security testing</h3>
+			<p>Security testing<a id="_idIndexMarker901"/> deals with different aspects related to security mechanisms <a id="_idIndexMarker902"/>and data protection. Some security aspects are purely functional requirements, such as authentication, authorization, and role assignment. These elements should be checked the same way as any other functional requirement – during the acceptance test phase. Other security aspects are non-functional; for example, the system should be protected against SQL injection. No client would probably specify such a requirement, but it's implicit.</p>
+			<p>Security tests <a id="_idIndexMarker903"/>should be included in the CD process as a pipeline stage. They can be written using the same frameworks as the acceptance tests or with <a id="_idIndexMarker904"/>dedicated security <a id="_idIndexMarker905"/>testing frameworks – for example, <strong class="bold">behavior-driven development</strong> (<strong class="bold">BDD</strong>) security.</p>
+			<p class="callout-heading">Information </p>
+			<p class="callout">Security should also always be a part of the explanatory testing process, in which testers and security experts detect security holes and add new testing scenarios.</p>
+			<h3>Maintainability testing</h3>
+			<p>Maintainability tests <a id="_idIndexMarker906"/>explain how simple a system is to maintain. In other words, they<a id="_idIndexMarker907"/> judge code quality. We have already described stages in the commit phase that check test coverage and perform static code analysis. The Sonar tool can also provide an overview of the code quality and the technical debt.</p>
+			<h3>Recovery testing</h3>
+			<p>Recovery testing<a id="_idIndexMarker908"/> is a technique that's used to determine how quickly the system can <a id="_idIndexMarker909"/>recover after it's crashed because of a software or hardware failure. The best case would be if the system doesn't fail at all, even if a part of its service is down. Some companies even perform production failures on purpose to check if they can survive a disaster. The most well-known example is Netflix and their Chaos Monkey tool, which randomly terminates instances of the production environment. Such an approach forces engineers to write code that makes systems resilient to failures.</p>
+			<p>Recovery testing is not part of the CD process, but rather a periodic event that checks its overall health.</p>
+			<p class="callout-heading">Tip </p>
+			<p class="callout">You can read more about Chaos Monkey<a id="_idIndexMarker910"/> at <a href="https://github.com/Netflix/chaosmonkey">https://github.com/Netflix/chaosmonkey</a>.</p>
+			<p>Many more <a id="_idIndexMarker911"/>nonfunctional test types are closer to or further from the code <a id="_idIndexMarker912"/>and the CD process. Some of them relate to the law, such as compliance testing, while others are related to documentation or internationalization. There's also usability testing and volume testing (which check whether the system behaves well when it's handling large amounts of data). Most of these tests, however, have no part in the CD process.</p>
+			<h2 id="_idParaDest-227"><a id="_idTextAnchor226"/>Non-functional challenges</h2>
+			<p>Non-functional aspects pose new<a id="_idIndexMarker913"/> challenges to software development and delivery. Let's go over some of them now:</p>
+			<ul>
+				<li><strong class="bold">Long test runs</strong>: The tests can take a long time to run and may need a special execution environment.</li>
+				<li><strong class="bold">Incremental nature</strong>: It's hard to set the limit value when the test should fail (unless the SLA is well-defined). Even if the edge limit is set, the application would probably incrementally approach the limit. In most cases, no code changes will cause the test to fail.</li>
+				<li><strong class="bold">Vague requirements</strong>: Users usually don't have much input when it comes to non-functional requirements. They may provide some guidelines concerning the request-response time or the number of users; however, they probably won't know much about maintainability, security, or scalability.</li>
+				<li><strong class="bold">Multiplicity</strong>: There are a lot of different non-functional tests and choosing which should be implemented means making some compromises.</li>
+			</ul>
+			<p>The best <a id="_idIndexMarker914"/>approach to address non-functional aspects is to perform the following steps:</p>
+			<ol>
+				<li value="1">Make a list of all the non-functional test types.</li>
+				<li>Explicitly cross out the tests you don't need for your system. There may be a lot of reasons you don't need one kind of test, such as the following:<ul><li>The service is super small, and a simple performance test is enough.</li><li>The system is internal only and exclusively available for read-only purposes, so it may not need any security checks.</li><li>The system is designed for one machine only and does not need any scaling.</li><li>The cost of creating certain tests is too high.</li></ul></li>
+				<li>Split your tests<a id="_idIndexMarker915"/> into two groups:<ul><li><strong class="bold">Continuous Delivery</strong>: It is possible to add it to the pipeline.</li><li><strong class="bold">Analysis</strong>: It is not possible to add it to the pipeline because of its execution time, nature, or associated cost.</li></ul></li>
+				<li>For the CD group, implement the related pipeline stages.</li>
+				<li>For the analysis group, do the following:<ul><li>Create automated tests</li><li>Schedule when they should be run</li><li>Schedule meetings to discuss their results and take action<p class="callout-heading">Tip </p><p class="callout">A very good approach is to have a nightly build with the long tests that don't fit the CD pipeline. Then, it's possible to schedule a weekly meeting to monitor and analyze the trends of system performance.</p></li></ul></li>
+			</ol>
+			<p>As we can see, there are many types of non-functional tests, and they pose additional challenges to the delivery process. Nevertheless, for the sake of the stability of our system, these tests should never be skipped. The technical implementation differs based on the test's type, but in most cases, they can be implemented similarly to functional acceptance tests and should be run against the staging environment.</p>
+			<p class="callout-heading">Tip </p>
+			<p class="callout">If you're interested in the topic of non-functional testing, system properties, and system stability, then read the book <em class="italic">Release It!</em>, by <em class="italic">Michael T. Nygard</em>.</p>
+			<p>Now that we've discussed the nonfunctional testing, let's look at another aspect that we haven't looked at in too much detail – application versioning.</p>
+			<h1 id="_idParaDest-228"><a id="_idTextAnchor227"/>Application versioning</h1>
+			<p>So far, throughout every<a id="_idIndexMarker916"/> Jenkins build, we have created a new Docker image, pushed it into the Docker registry, and used the <em class="italic">latest</em> version throughout the process. However, such a solution has at least three disadvantages:</p>
+			<ul>
+				<li>If, during the Jenkins build, after the acceptance tests, someone pushes a new version of the image, then we can end up releasing the untested version.</li>
+				<li>We always push an image that's named in the same way so that, effectively, it is overwritten in the Docker registry.</li>
+				<li>It's very hard to manage images without versions just by using their hashed-style IDs.</li>
+			</ul>
+			<p><em class="italic">What is the recommended way of managing Docker image versions alongside the CD process?</em> In this section, we'll look at the different versioning strategies and learn how to create versions in the Jenkins pipeline.</p>
+			<h2 id="_idParaDest-229"><a id="_idTextAnchor228"/>Versioning strategies</h2>
+			<p>There are different <a id="_idIndexMarker917"/>ways to version applications.</p>
+			<p>Let's discuss the most popular solutions that can be applied alongside the CD process (when each commit creates a new version):</p>
+			<ul>
+				<li><code>x.y.z</code>). This method requires a commit to be made to the repository by Jenkins to increase the current version number, which is usually stored in the build file. This solution is well supported by Maven, Gradle, and other build tools. The identifier usually consists of three numbers:<ul><li><code>x</code>: This is the major version; the software does not need to be backward compatible when this version is incremented.</li><li><code>y</code>: This is the minor version; the software needs to be backward compatible when the version is incremented.</li><li><code>z</code>: This is the build number (also called<a id="_idIndexMarker919"/> the <strong class="bold">patch version</strong>); this is sometimes also considered as a backward-and forward-compatible change.</li></ul></li>
+				<li><strong class="bold">Timestamp</strong>: Using the<a id="_idIndexMarker920"/> date and time of the build for the application version is less verbose than sequential numbers, but it's very convenient in the case of the CD process because it does not require Jenkins to commit it back to the repository.</li>
+				<li><strong class="bold">Hash</strong>: A randomly generated hash version shares the benefit of the date-time and is probably the simplest solution possible. The drawback is that it's not possible to look at two versions and tell which is the latest one.</li>
+				<li><strong class="bold">Mixed</strong>: There are many variations of the solutions described earlier – for example, the major and minor versions with the date-time.</li>
+			</ul>
+			<p>All of these solutions can be used alongside the CD process. Semantic versioning, however, requires a commit to be made to the repository from the build execution so that the version is increased in the source code repository.</p>
+			<p class="callout-heading">Information </p>
+			<p class="callout">Maven (and other build tools) popularized version snapshotting, which added a <code>SNAPSHOT</code> suffix to the versions that haven't been released and have been kept just for the development process. Since CD means releasing every change, there are no snapshots.</p>
+			<p>Now, let's learn how to adapt versioning in the Jenkins pipeline.</p>
+			<h2 id="_idParaDest-230"><a id="_idTextAnchor229"/>Versioning in the Jenkins pipeline</h2>
+			<p>As we<a id="_idIndexMarker921"/> mentioned earlier, there<a id="_idIndexMarker922"/> are different possibilities when it comes to using software versioning, and each of them can be implemented in Jenkins.</p>
+			<p>As an example, let's use the date-time.</p>
+			<p class="callout-heading">Information </p>
+			<p class="callout">To use the timestamp information from Jenkins, you need to install the Build Timestamp plugin and set the timestamp format in the Jenkins configuration under <code>yyyyMMdd-HHmm</code>.</p>
+			<p>Everywhere we use the Docker image, we need to add the <code>${BUILD_TIMESTAMP}</code> tag suffix.</p>
+			<p>For example, the <code>Docker build</code> stage should look like this:</p>
+			<pre>sh "docker build -t leszko/calculator:${BUILD_TIMESTAMP} ."</pre>
+			<p>After making these changes, when we run the Jenkins build, the image should be tagged with the timestamp's version in our Docker registry.</p>
+			<p>With versioning completed, we are finally ready to complete the CD pipeline.</p>
+			<h1 id="_idParaDest-231"><a id="_idTextAnchor230"/>Completing the continuous delivery pipeline</h1>
+			<p>Now that we've covered<a id="_idIndexMarker923"/> Ansible, environments, non-functional testing, and versioning, we are ready to extend the Jenkins pipeline and finalize a simple, but complete, CD pipeline.</p>
+			<p>Follow these steps:</p>
+			<ol>
+				<li value="1">Create the inventory of staging and production environments.</li>
+				<li>Use version in the Kubernetes deployment.</li>
+				<li>Use a remote Kubernetes cluster as the staging environment.</li>
+				<li>Update the acceptance tests so that they use the staging Kubernetes cluster.</li>
+				<li>Release the application to the production environment.</li>
+				<li>Add a <a id="_idIndexMarker924"/>smoke test that makes sure the application was released successfully.</li>
+			</ol>
+			<p>Let's start by creating an inventory.</p>
+			<h2 id="_idParaDest-232"><a id="_idTextAnchor231"/>Inventory</h2>
+			<p>We looked at the<a id="_idIndexMarker925"/> inventory file in the previous chapter while describing Ansible. To generalize this concept, an inventory contains a list of environments that describe how to access them. In this example, we'll use Kubernetes directly, so the Kubernetes configuration file, which is usually stored in <code>.kube/config</code>, will act as the inventory.</p>
+			<p class="callout-heading">Information </p>
+			<p class="callout">As we explained in the previous chapter, depending on your needs, you may use <code>kubectl</code> directly or via Ansible or Terraform. These approaches are suitable for the CD pipeline.</p>
+			<p>Let's configure two Kubernetes clusters – <code>staging</code> and <code>production</code>. Your <code>.kube/config</code> file should look similar to the following one:</p>
+			<pre>apiVersion: v1
+clusters:
+- cluster:
+    certificate-authority-data: LS0tLS1CR...
+    server: https://35.238.191.252
+  name: staging
+- cluster:
+    certificate-authority-data: LS0tLS1CR...
+    server: https://35.232.61.210
+  name: production
+contexts:
+- context:
+    cluster: staging
+    user: staging
+  name: staging
+- context:
+    cluster: production
+    user: production
+  name: production
+users:
+- name: staging
+  user:
+    token: eyJhbGciOiJSUzI1NiIsImtpZCI6I...
+- name: production
+  user:
+    token: eyJ0eXAiOiJKV1QiLCJhbGciOiJSU...</pre>
+			<p>The Kubernetes<a id="_idIndexMarker926"/> configuration stores the following information for each cluster:</p>
+			<ul>
+				<li><code>cluster</code>: The address of the cluster (Kubernetes master endpoint) and its CA certificate</li>
+				<li><code>context</code>: The binding of the cluster and user</li>
+				<li><code>user</code>: The authorization data to access the Kubernetes cluster<p class="callout-heading">Tip</p><p class="callout">The simplest way to<a id="_idIndexMarker927"/> create two Kubernetes clusters is to use <code>kubectl</code> using <code>gcloud container clusters get-credentials</code>, and finally rename the cluster context with <code>kubectl config rename-context &lt;original-context-name&gt; staging</code>. Note that you may also need to create a GCP Firewall rule to allow traffic into your Kubernetes nodes.</p></li>
+			</ul>
+			<p>You also need to<a id="_idIndexMarker928"/> make sure that the Kubernetes configuration is available on the Jenkins agent nodes. As we mentioned in the previous sections, think carefully about your security so that no unauthorized persons can access your environments via the Jenkins agent.</p>
+			<p>Now that we've defined the inventory, we can prepare the Kubernetes deployment configuration so that it can work with application versioning.</p>
+			<h2 id="_idParaDest-233"><a id="_idTextAnchor232"/>Versioning</h2>
+			<p>Kubernetes YAML files are the same as <a id="_idIndexMarker929"/>what we defined in the previous chapters. The only difference is that we need to introduce a template variable for the application version. Let's make one change in the <code>deployment.yaml</code> file:</p>
+			<pre>image: leszko/calculator:{{VERSION}}</pre>
+			<p>Then, we can fill the version in <code>Jenkinsfile</code>:</p>
+			<pre>stage("Update version") {
+    steps {
+        sh "sed -i 's/{{VERSION}}/${BUILD_TIMESTAMP}/g' deployment.yaml"
+    }
+}</pre>
+			<p>Now, we can change acceptance testing to use the remote staging environment.</p>
+			<h2 id="_idParaDest-234"><a id="_idTextAnchor233"/>The remote staging environment</h2>
+			<p>Depending on our<a id="_idIndexMarker930"/> needs, we could test<a id="_idIndexMarker931"/> the application by running it on the local Docker host (as we did previously) or using the remote (and clustered) staging environment. The former solution is closer to what happens in production, so it can be considered a better one.</p>
+			<p>To do this, we need to change the command we use from <code>docker</code> to <code>kubectl</code>. Let's modify the related part of our <code>Jenkinsfile</code>:</p>
+			<pre>stage("Deploy to staging") {
+    steps {
+        sh "kubectl config use-context staging"
+        sh "kubectl apply -f hazelcast.yaml"
+        sh "kubectl apply -f deployment.yaml"
+        sh "kubectl apply -f service.yaml"
+    }
+}</pre>
+			<p>First, we switched <code>kubectl</code> to use the <code>staging</code> context. Then, we deployed the Hazelcast server. Finally, we <a id="_idIndexMarker932"/>deployed <code>Calculator</code> into the Kubernetes server. At this point, we have a fully functional application in our staging environment. Let's see how we need to modify the acceptance testing stage.</p>
+			<h2 id="_idParaDest-235"><a id="_idTextAnchor234"/>The acceptance testing environment</h2>
+			<p>The <code>Acceptance test</code> stage looks<a id="_idIndexMarker933"/> the same as<a id="_idIndexMarker934"/> it did in the previous chapter. The only thing we need to change is the IP and port of our service to the one from the remote Kubernetes cluster. As we explained in <a href="B18223_06_ePub.xhtml#_idTextAnchor152"><em class="italic">Chapter 6</em></a>, <em class="italic">Clustering with Kubernetes</em>, the way you should do this depends on your Kubernetes Service type. We used <code>NodePort</code>, so we need to make the following change in <code>Jenkinsfile</code>:</p>
+			<pre>stage("Acceptance test") {
+    steps {
+        sleep 60
+        sh "chmod +x acceptance-test.sh &amp;&amp; ./acceptance-test.sh"
+    }
+} </pre>
+			<p>The <code>acceptance-test.sh</code> script should look as follows:</p>
+			<pre>#!/bin/bash
+set -x
+NODE_IP=$(kubectl get nodes -o jsonpath='{ $.items[0].status.addresses[? 
+        (@.type=="ExternalIP")].address }')
+NODE_PORT=$(kubectl get svc calculator-service -o=jsonpath='{.spec.ports[0].nodePort}')
+./gradlew acceptanceTest -Dcalculator.url=http://${NODE_IP}:${NODE_PORT}</pre>
+			<p>First, we<a id="_idIndexMarker935"/> used <code>sleep</code> to wait for our<a id="_idIndexMarker936"/> application to be deployed. Then, using <code>kubectl</code>, we fetched the IP address (<code>NODE_IP</code>) and the port (<code>NODE_PORT</code>) of our service. Finally, we executed the acceptance testing suite.</p>
+			<p class="callout-heading">Tip </p>
+			<p class="callout">If you use Minishift for your Kubernetes cluster, then you can fetch <code>NODE_IP</code> using <code>minishift ip</code>. If you use Docker for Desktop, then your IP will be <code>localhost</code>.</p>
+			<p>Now that all our tests are in place, it's time to release the application.</p>
+			<h2 id="_idParaDest-236"><a id="_idTextAnchor235"/>Release</h2>
+			<p>The production environment <a id="_idIndexMarker937"/>should be as close to the staging environment as possible. The Jenkins stage for the release should also be as close as possible to the <code>Deploy to staging</code> step.</p>
+			<p>In the simplest scenario, the only difference will be the Kubernetes configuration context and the application configuration (for example, in the case of a Spring Boot application, we would set a different Spring profile, which results in taking a different <code>application.properties</code> file). In our case, there are no application properties, so the only difference is the <code>kubectl</code> context:</p>
+			<pre>stage("Release") {
+    steps {
+        sh "kubectl config use-context production"
+        sh "kubectl apply -f hazelcast.yaml"
+        sh "kubectl apply -f deployment.yaml"
+        sh "kubectl apply -f service.yaml"
+    }
+}</pre>
+			<p>Once the release has been done, we may think that everything is complete; however, one stage is missing – smoke testing.</p>
+			<h2 id="_idParaDest-237"><a id="_idTextAnchor236"/>Smoke testing</h2>
+			<p>A smoke test<a id="_idIndexMarker938"/> is a very small subset of acceptance tests whose only purpose is to check that <a id="_idIndexMarker939"/>the release process is completed successfully; otherwise, we could have a situation where the application is perfectly fine, but where there is an issue in the release process, so we may end up with a non-working production environment.</p>
+			<p>The smoke test is usually defined in the same way as the acceptance test. So, the <code>Smoke test</code> stage in the pipeline should look like this:</p>
+			<pre>stage("Smoke test") {
+    steps {
+        sleep 60
+        sh "chmod +x smoke-test.sh &amp;&amp; ./smoke-test.sh"
+    }
+}</pre>
+			<p>Once everything has been set up, the CD build should run automatically, and the application should be <a id="_idIndexMarker940"/>released to production. With that, we have finished analyzing the CD pipeline in its simplest, but fully productive, form.</p>
+			<h2 id="_idParaDest-238"><a id="_idTextAnchor237"/>Complete Jenkinsfile</h2>
+			<p>To summarize, in the<a id="_idIndexMarker941"/> past few chapters, we have gone through quite a few stages that have resulted in us creating a complete CD pipeline that can be used in many projects.</p>
+			<p>The following is the complete <code>Jenkinsfile</code> for the <code>Calculator</code> project:</p>
+			<pre>pipeline {
+  agent any
+  triggers {
+    pollSCM('* * * * *')
+  }
+  stages {
+    stage("Compile") { steps { sh "./gradlew compileJava" } }
+    stage("Unit test") { steps { sh "./gradlew test" } }
+    stage("Code coverage") { steps {
+      sh "./gradlew jacocoTestReport"
+      sh "./gradlew jacocoTestCoverageVerification"
+    } }
+    stage("Static code analysis") { steps {
+      sh "./gradlew checkstyleMain"
+    } }
+    stage("Build") { steps { sh "./gradlew build" } }
+    stage("Docker build") { steps {
+      sh "docker build -t leszko/calculator:${BUILD_TIMESTAMP} ."
+    } }
+    stage("Docker push") { steps {
+      sh "docker push leszko/calculator:${BUILD_TIMESTAMP}"
+    } }
+    stage("Update version") { steps {
+        sh "sed -i 's/{{VERSION}}/${BUILD_TIMESTAMP}/g' deployment.yaml"
+    } }
+    stage("Deploy to staging") { steps {
+      sh "kubectl config use-context staging"
+      sh "kubectl apply -f hazelcast.yaml"
+      sh "kubectl apply -f deployment.yaml" 
+      sh "kubectl apply -f service.yaml"
+    } }
+    stage("Acceptance test") { steps {
+      sleep 60
+      sh "chmod +x acceptance-test.sh &amp;&amp; ./acceptance-test.sh"
+    } }  
+    // Performance test stages
+    stage("Release") { steps {
+      sh "kubectl config use-context production"
+      sh "kubectl apply -f hazelcast.yaml"
+      sh "kubectl apply -f deployment.yaml" 
+      sh "kubectl apply -f service.yaml"
+    } }
+    stage("Smoke test") { steps {
+      sleep 60
+      sh "chmod +x smoke-test.sh &amp;&amp; ./smoke-test.sh"
+    } } 
+  }
+}</pre>
+			<p>The <a id="_idIndexMarker942"/>preceding code is a declarative description of the whole CD process, which starts with checking out the code and ends with releasing it to production. Congratulations – with this code, you have completed the main goal of this book, which is to create a CD pipeline!</p>
+			<h1 id="_idParaDest-239"><a id="_idTextAnchor238"/>Summary</h1>
+			<p>In this chapter, we completed the CD pipeline, which means we can finally release the application. The following are the key takeaways from this chapter:</p>
+			<ul>
+				<li>When it comes to CD, two environments are indispensable: staging and production.</li>
+				<li>Non-functional tests are an essential part of the CD process and should always be considered as pipeline stages.</li>
+				<li>Non-functional tests that don't fit the CD process should be used as periodic tasks to monitor the overall performance trends.</li>
+				<li>Applications should always be versioned; however, the versioning strategy depends on the type of application.</li>
+				<li>A minimal CD pipeline can be implemented as a sequence of scripts that ends with two stages: release and smoke test.</li>
+				<li>The smoke test should always be added as the last stage of the CD pipeline to check whether the release was successful.</li>
+			</ul>
+			<p>In the next chapter, we will look at some of the advanced aspects of the CD pipeline.</p>
+			<h1 id="_idParaDest-240"><a id="_idTextAnchor239"/>Exercises</h1>
+			<p>In this chapter, we have covered a lot of new aspects of the CD pipeline. To help you understand these concepts, we recommend that you complete the following exercises:</p>
+			<ol>
+				<li value="1">Add a performance test that tests the <code>hello world</code> service:<ol><li>The <code>hello world</code> service can be taken from the previous chapter.</li><li>Create a <code>performance-test.sh</code> script that makes 100 calls and checks whether the average request-response time is less than 1 second.</li><li>You can use Cucumber or the <code>curl</code> command for the script.</li></ol></li>
+				<li>Create a Jenkins pipeline that builds the <code>hello world</code> web service as a versioned Docker image and performs performance tests:<ol><li>Create a <code>Docker build</code> (and <code>Docker push</code>) stage that builds the Docker image with the <code>hello world</code> service and adds a timestamp as a version tag.</li><li>Use the Kubernetes deployment from the previous chapters to deploy the application.</li><li>Add the <code>Deploy to staging</code> stage, which deploys the image to the remote machine.</li><li>Add the <code>Performance testing</code> stage, which executes <code>performance-test.sh</code>.</li><li>Run the pipeline and observe the results.</li></ol></li>
+			</ol>
+			<h1 id="_idParaDest-241"><a id="_idTextAnchor240"/>Questions</h1>
+			<p>To check your knowledge of this chapter, answer the following questions:</p>
+			<ol>
+				<li value="1">Name at least three different types of software environments.</li>
+				<li>What is the difference between the staging and QA environments?</li>
+				<li>Name at least five types of non-functional tests.</li>
+				<li>Should all non-functional tests be part of the CD pipeline?</li>
+				<li>Name at least two types of application versioning strategies.</li>
+				<li>What is a smoke test?</li>
+			</ol>
+			<h1 id="_idParaDest-242"><a id="_idTextAnchor241"/>Further reading</h1>
+			<p>To learn more about the CD pipeline, please refer to the following resources:</p>
+			<ul>
+				<li><em class="italic">Sameer Paradkar: Mastering Non-Functional Requirements</em>: <a href="https://www.packtpub.com/application-development/mastering-non-functional-requirements">https://www.packtpub.com/application-development/mastering-non-functional-requirements</a>.</li>
+				<li><em class="italic">Sander Rossel: Continuous Integration, Delivery, and Deployment</em>: <a href="https://www.packtpub.com/application-development/continuous-integration-delivery-and-deployment">https://www.packtpub.com/application-development/continuous-integration-delivery-and-deployment</a>.</li>
+			</ul>
+		</div>
+	</body></html>

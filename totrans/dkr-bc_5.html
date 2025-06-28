@@ -1,0 +1,189 @@
+<html><head></head><body><div><div><div><div><h1 class="title"><a id="ch05"/>Chapter 5. Docker Plugins</h1></div></div></div><p>During DockerCon Europe 2014, there was a round table discussion which took place on the state of the Docker ecosystem, the following problem and possible solution was identified:</p><div><blockquote class="blockquote"><p>The problem which Docker currently faces is that by moving to become a platform it is being seen to threaten its own ecosystem. The proposed solution is that Docker ships its own additions to Docker as late-bound, composable, optional extensions and enables other vendors to do likewise. Docker calls this "batteries included but removable".</p></blockquote></div><p>During DockerCon 2015 in Seattle, Docker announced the availability of plugins in the experimental branch, the announcement came in the form of a blog post which can be found at <a class="ulink" href="https://blog.docker.com/2015/06/extending-docker-with-plugins/">https://blog.docker.com/2015/06/extending-docker-with-plugins/</a>.</p><p>As you can see from the post, Docker provided a solution where third parties can swap out core functionality. Now a user could run the <code class="literal">docker volume</code> and <code class="literal">docker network</code> commands along with a driver option to have Docker call external components which add functionality outside of the core Docker Engine while maintaining a high level of compatibility.</p><p>In this chapter, we are going to look at two different Docker plugins, the first is a volume plugin called <strong>REX-Ray</strong> and the second is a network plugin called <strong>Weave</strong>.</p><div><div><div><div><h1 class="title"><a id="ch05lvl1sec34"/>REX-Ray volume plugin</h1></div></div></div><p>So far, we<a id="id215" class="indexterm"/> have been usingthe local storage which is available on our hosts, as mentioned in <a class="link" href="ch04.html" title="Chapter 4. Docker Swarm">Chapter 4</a>, <em>Docker Swarm</em>
+<a class="link" href=""> </a>that isn't very useful when you potentially have move the storage between multiple hosts either because you are hosting a cluster or because of problems with the host machine itself.</p><p>In this example, we are going to be launching a Docker instance in Amazon Web Services, install a volume plugin called REX-Ray, written by EMC, and then launch our WordPress example but this time we will attach AmazonElastic Block Storage volumes to our containers. Once configured, we will move our containers to a second host machine to demonstrate that the data has persisted.</p><p>REX-Ray<a id="id216" class="indexterm"/> supports <a id="id217" class="indexterm"/>several storage<a id="id218" class="indexterm"/> types on both public clouds and <a id="id219" class="indexterm"/>EMC's <a id="id220" class="indexterm"/>own<a id="id221" class="indexterm"/> range, as follows:</p><div><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">Amazon Elastic Block Store - <a class="ulink" href="https://aws.amazon.com/ebs/">https://aws.amazon.com/ebs/</a></li><li class="listitem" style="list-style-type: disc">Digital Ocean Block Storage - <a class="ulink" href="https://www.digitalocean.com/products/storage">https://www.digitalocean.com/products/storage</a></li><li class="listitem" style="list-style-type: disc">OpenStack Cinder - <a class="ulink" href="https://wiki.openstack.org/wiki/Cinder">https://wiki.openstack.org/wiki/Cinder</a></li><li class="listitem" style="list-style-type: disc">Google Compute Engine - <a class="ulink" href="https://cloud.google.com/compute/docs/disks/">https://cloud.google.com/compute/docs/disks/</a></li><li class="listitem" style="list-style-type: disc">EMC Isilon, ScaleIO, VMAX, and XtremIO - <a class="ulink" href="https://www.emc.com/">https://www.emc.com/</a></li></ul></div><p>The driver is in active development <a id="id222" class="indexterm"/>and more types of supported storage are frequently being added, also work is on-going to move the driver over to Dockers new plugin system.</p><p>Before we look at installing REX-Ray we need a Docker host in Amazon Web Services, to launch one, use the following command. You can refer to the Amazon Web Services Driver section of <a class="link" href="ch02.html" title="Chapter 2. Launching Applications Using Docker">Chapter 2</a>, <em>Launching Applications Using Docker</em>. for details on how to generate your access and secret key and find your VPC ID. Remember to replace the <code class="literal">access-key</code>, <code class="literal">secret-key</code> and <code class="literal">vpc-id</code> with your own:</p><div><pre class="programlisting">
+<strong>docker-machine create \</strong>
+<strong>    --driver amazonec2 \</strong>
+<strong>    --amazonec2-access-key AKIAJ3GYNKVTEWNMFDHQ \</strong>
+<strong>    --amazonec2-secret-key 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 \</strong>
+<strong>    --amazonec2-vpc-id vpc-35c91750 \</strong>
+<strong>    awstest</strong>
+</pre></div><p>Now that you have your instance launched, you can see it in the AWS Console:</p><div><img src="img/B06455_05_01.jpg" alt="REX-Ray volume plugin"/></div><p>We need to install the <a id="id223" class="indexterm"/>REX-Ray plugin. As REX-Ray supports Docker's new plugin format this means we need to run the <code class="literal">docker plugin</code> command. To start with, we need to configure our local Docker client to connect to our AWS host by running:</p><div><pre class="programlisting">
+<strong>eval $(docker-machine env awstest)</strong>
+</pre></div><p>Now that we are connected to install the plugin, we simply need to run the following command, the <code class="literal">EBS_ACCESSKEY</code> and <code class="literal">EBS_SECRETKEY</code> variables are the same we used for Docker Machine, replace them with your own:</p><div><pre class="programlisting">
+<strong>docker plugin install rexray/ebs \</strong>
+<strong>EBS_ACCESSKEY=AKIAJ3GYNKVTEWNMFDHQ \</strong>
+<strong>EBS_SECRETKEY=l2WikM2NIz2GA+1Q2PGKVUCfTNBPBT1Nzgf+jDJC</strong>
+</pre></div><p>Before the plugin is installed, you will be asked to confirm that you are OK to grant permissions for the plugin to access various parts of your Docker installation, answer yes (y) to this when prompted and the plugin will be downloaded and installed.</p><p>Now that the plugin is installed, we need to create two volumes, one which will hold our WordPress data and the second one will back store our MySQL databases. To create the volumes run the following:</p><div><pre class="programlisting">
+<strong>docker volume create --driver rexray/ebs --name dbdata</strong>
+<strong>docker volume create --driver rexray/ebs --name wpdata</strong>
+</pre></div><p>You can see the preceding commands being run in the following terminal:</p><div><img src="img/B06455_05_02.jpg" alt="REX-Ray volume plugin"/></div><p>You should also be<a id="id224" class="indexterm"/> able to see your two volumes by clicking on <strong>Volumes</strong> in the left-hand side menu of the EC2 section of the AWS Console:</p><div><img src="img/B06455_05_03.jpg" alt="REX-Ray volume plugin"/></div><p>Now we have our two volumes, we <a id="id225" class="indexterm"/>need to launch WordPress, to do this we will use the Docker Compose file which can be found in the repo at <code class="literal">/bootcamp/chapter05/wordpress-rexray/</code>.</p><p>As you can see from the <code class="literal">docker-compose.yml</code> file, we are building a WordPress image with <code class="literal">wp-cli</code> installed:</p><div><pre class="programlisting">version: "3"
+
+services:
+mysql:
+     image: mysql
+     volumes:
+       - dbdata:/var/lib/mysql
+     restart: always
+     environment:
+       MYSQL_ROOT_PASSWORD: wordpress
+       MYSQL_DATABASE: wordpress
+wordpress:
+depends_on:
+       - mysql
+     build: ./
+     volumes:
+       - wpdata:/var/www/html
+     ports:
+       - "80:80"
+     restart: always
+     environment:
+       WORDPRESS_DB_PASSWORD: wordpress
+
+volumes:
+dbdata:
+      external:
+        name: dbdata
+wpdata:
+      external:
+        name: wpdata</pre></div><p>As you can also see from the end of the file, we are telling Docker Compose to use the two external volumes we have already created with the <code class="literal">docker volume create</code> command.</p><p>To build our WordPress image and launch the containers run the following command:</p><div><pre class="programlisting">
+<strong>docker-compose up -d</strong>
+</pre></div><p>You can check your containers up by running:</p><div><pre class="programlisting">
+<strong>docker-compose ps</strong>
+</pre></div><p>Now that the two containers we make our WordPress application are up and running you can quickly install WordPress by running the following command (update the variables as needed):</p><div><pre class="programlisting">
+<strong>$awshost = "$(docker-machine ip awstest)"</strong>
+<strong>docker-compose exec wordpress wp core install --url=http://$(awshost)/ --title=Testing --admin_user=admin --admin_password=adminpassword --admin_email=russ@mckendrick.io</strong>
+</pre></div><p>Once installed, you should see a message which says <strong>Success: WordPress installed successfully</strong>. This means that you can open your installation in a browser by running:</p><div><pre class="programlisting">
+<strong>open http://$(docker-machine ip awstest)</strong>
+</pre></div><p>This should present you with the now familiar WordPress site:</p><div><img src="img/B06455_05_05.jpg" alt="REX-Ray volume plugin"/></div><p>Now let's make a change to our <a id="id226" class="indexterm"/>WordPress installation so we can be sure that when we move our application between hosts everything works as expected. We are going to be replacing the image of the plant with fireworks. To do this we need to customize our theme, to get to the theme edit page run the following:</p><div><pre class="programlisting">
+<strong>open "http://$(docker-machine ip awstest)/wp-admin/customize.php?return=%2Fwp-admin%2Fthemes.php"</strong>
+</pre></div><p>You will be prompted to login using the admin username and password which if you followed the installation will be <code class="literal">admin</code> / <code class="literal">adminpassword</code> or if you entered your own then use them.</p><p>Once you have the page open click on Header Media in the left-hand menu. Scroll down to where it says <strong>Add new image</strong> in the left-hand menu and follow the on-screen prompts to upload, crop and set the new header image, you can find an image called <code class="literal">fireworks.jpg</code> in the repo or use your own image. Once you have finished click on <strong>Save &amp; Publish</strong>.</p><p>Going back to your sites home <a id="id227" class="indexterm"/>page should then show your new header image:</p><div><img src="img/B06455_05_07.jpg" alt="REX-Ray volume plugin"/></div><p>Before we remove our Docker host we need to make a note of it's IP address, to do this run the following command:</p><div><pre class="programlisting">
+<strong>echo $(docker-machine ip awstest)</strong>
+</pre></div><p>And write down the IP address as we are going to need it, in my case the IP address was <code class="literal">54.173.130.142</code>.</p><p>Now let's remove our host using the following command:</p><div><pre class="programlisting">
+<strong>docker-machine rm awstest</strong>
+</pre></div><p>Once the host has been removed our two volumes are shown as <strong>available</strong> within the AWS console:</p><div><img src="img/B06455_05_09.jpg" alt="REX-Ray volume plugin"/></div><p>That is our WordPress and database data, to access it on a new Docker host we need to first launch one. To do this run the following command again remembering to replace the credentials and vpc id with your own:</p><div><pre class="programlisting">
+<strong>docker-machine create \</strong>
+<strong>    --driver amazonec2 \</strong>
+<strong>    --amazonec2-access-key AKIAJ3GYNKVTEWNMFDHQ \</strong>
+<strong>    --amazonec2-secret-key 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 \</strong>
+<strong>    --amazonec2-vpc-id vpc-35c91750 \</strong>
+<strong>    awstest2</strong>
+</pre></div><p>Once the new Docker host is<a id="id228" class="indexterm"/> up and running the following command to switch our local client over and install REX-Ray:</p><div><pre class="programlisting">
+<strong>eval $(docker-machine env awstest2)</strong>
+<strong>docker plugin install rexray/ebs \</strong>
+<strong>  EBS_ACCESSKEY=AKIAJ3GYNKVTEWNMFDHQ \</strong>
+<strong>  EBS_SECRETKEY=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</strong>
+</pre></div><p>Once REX-Ray is installed, we need to make it aware of our two existing volumes, to do this simply run the following command:</p><div><pre class="programlisting">
+<strong>docker volume create --driver rexray/ebs --name dbdata</strong>
+<strong>docker volume create --driver rexray/ebs --name wpdata</strong>
+</pre></div><p>Do not worry, it will not overwrite our existing volumes, it will just make Docker aware that they are there as REX-Ray uses the name you assign to volume rather than a unique ID if it comes across a volume with the name you have told it to use it will assume that is the volume you meant to use, so be careful when naming your volumes as they will be attached to the running container.</p><p>You may notice that the commands execute a lot quicker this time, this is because the volumes are already there and do not need re-creating.Running:</p><div><pre class="programlisting">
+<strong>docker volume ls</strong>
+</pre></div><p>should show our two volumes are there as before.</p><p>Now we need to launch WordPress, to do that just run:</p><div><pre class="programlisting">
+<strong>docker-compose up -d</strong>
+</pre></div><p>If you were to try and access your WordPress site now, you would see a very broken looking site with content, but no styling or images.</p><p>This is because the database is still referencing the IP address of the Docker host we terminated, to the database. Run the following the command making sure to replace the IP address in the command to that of your previous Docker host (remember mine was <code class="literal">54.173.130.142</code>):</p><div><pre class="programlisting">
+<strong>docker-compose exec wordpress wp search-replace 54.173.130.142 $(docker-machine ip awstest2)</strong>
+</pre></div><p>You should see a list of every<a id="id229" class="indexterm"/> table within the database along with confirmation of how many instances of the IP address it has replaced with that of the new Docker host.</p><p>Going to your new WordPress installation by running:</p><div><pre class="programlisting">
+<strong>open http://$(docker-machine ip awstest2)</strong>
+</pre></div><p>Should show your cover image is intact and the WordPress installation is exactly how you left it, apart from the change in IP address.</p><p>When you have finished test you can remove your installation by running the following commands:</p><div><pre class="programlisting">
+<strong>docker-compose stop</strong>
+<strong>docker-compose rm</strong>
+<strong>docker volume rmdbdata</strong>
+<strong>docker volume rmwpdata</strong>
+<strong>docker-machine rm awstest2</strong>
+</pre></div><div><div><h3 class="title"><a id="note21"/>Note</h3><p>You may notice that when you run the <code class="literal">docker volume rm</code> commands you are not prompted to confirm your actions, so be careful.</p></div></div><p>Checking your AWS console should confirm that your Docker host has been terminated and your two volumes have been removed.</p></div></div>
+<div><div><div><div><h1 class="title"><a id="ch05lvl1sec35"/>WeaveNetwork Plugin</h1></div></div></div><p>Weave are one of the original <a id="id230" class="indexterm"/>Docker plugins, in-fact they were involved in the round table discussions around Dockers plugin functionality, and Weave was included in the original plugin announcement mentioned at the start of this chapter.</p><p>Weave describe their network plugin as:</p><div><blockquote class="blockquote"><p>Quickly, easily, and securely network and cluster containers across any environment (on premises, in the cloud, or hybrid) with zero code or configuration.</p></blockquote></div><p>Anyone who worked with software defined networks will know that this is quite a bold claim, especially a Weave is creating a mesh network.For a full explanation of what that means, I would recommend reading through Weaves<a id="id231" class="indexterm"/> own overview which can be found at <a class="ulink" href="https://www.weave.works/docs/net/latest/how-it-works/">https://www.weave.works/docs/net/latest/how-it-works/</a>.</p><p>Rather than going into any more detail. let's roll our sleeves up and perform an installation. To start with, let's bring up two independent Docker hosts DigitalOcean using Docker Machine.</p><p>To make it interesting, we will launch one host in New York Cityand the other in London. As these are going to be acting as individual hosts there is no need to configure Docker Swarm – which is what you would typically need to for multi-host networking with Docker.</p><p>To launch the Docker host in New York City run:</p><div><pre class="programlisting">
+<strong>docker-machine create \</strong>
+<strong>    --driver digitalocean \</strong>
+<strong>    --digitalocean-access-token 57e4aeaff8d7d1a8a8e46132969c2149117081536d50741191c79d8bc083ae73 \</strong>
+<strong>    --digitalocean-region nyc1\</strong>
+<strong>   </strong>
+<strong> weave-nyc</strong>
+</pre></div><p>And then for the Docker host in London run:</p><div><pre class="programlisting">
+<strong>docker-machine create \</strong>
+<strong>    --driver digitalocean \</strong>
+<strong>    --digitalocean-access-token 57e4aeaff8d7d1a8a8e46132969c2149117081536d50741191c79d8bc083ae73 \</strong>
+<strong>    --digitalocean-region lon1 \</strong>
+<strong>    weave-lon</strong>
+</pre></div><p>Now that we have our two Digital Ocean hosts we need to get Weave up and running.At the time of writing, Weave has not completed the transition to Dockers native plugin architecture and it is due very soon, so we will be using a control script to configure Weave.</p><p>First, we need to download the control scripton our NYC Docker host:</p><div><pre class="programlisting">
+<strong>docker-machine ssh weave-nyc 'curl -L git.io/weave -o /usr/local/bin/weave; chmoda+x /usr/local/bin/weave'</strong>
+</pre></div><p>Once downloaded we can launch Weave using the following command:</p><div><pre class="programlisting">
+<strong>docker-machine ssh weave-nyc weave launch --password 3UnFh4jhahFC</strong>
+</pre></div><p>This will download and launch several containers on the Docker host, once downloaded the Weave will be configured and the password set meaning that if you want to add a host to network you will need to provide a valid password.</p><p>If you do not define a password then anyone will be able to connect to your Weave network, which is fine if you know that your host machines are running on an isolated closed network, however as we are sending traffic over the public internet we have set a password.</p><p>You can check the containers by running:</p><div><pre class="programlisting">
+<strong>docker $(docker-machine config weave-nyc) container ps</strong>
+</pre></div><p>Now that we have the <a id="id232" class="indexterm"/>three containers we need launched, it is time to install Weave on our London Docker host and then connect it to our NYC Docker host. To do the installation run the following commands:</p><div><pre class="programlisting">
+<strong>docker-machine ssh weave-lon 'curl -L git.io/weave -o /usr/local/bin/weave; chmoda+x /usr/local/bin/weave'</strong>
+<strong>docker-machine ssh weave-lon weave launch --password 3UnFh4jhahFC</strong>
+</pre></div><p>Once the three containers have launched, simply run the following command to connect to our NYC Docker host:</p><div><pre class="programlisting">
+<strong>docker-machine ssh weave-lon weave connect "$(docker-machine ip weave-nyc)"</strong>
+</pre></div><p>Once our second host has been configured you can check the status of the Weave mesh network by running:</p><div><pre class="programlisting">
+<strong>docker-machine ssh weave-nyc weave status</strong>
+</pre></div><div><img src="img/B06455_05_15.jpg" alt="WeaveNetwork Plugin"/></div><p>As you can see from the preceding terminal above, we have five services running, and other than providing a password, we didn't have to configure any of them.</p><p>As I am running a <a id="id233" class="indexterm"/>Mac OS machine, I am also going to install Weave locally, the same instructions will also work on a Linux machine.</p><p>The following commands will install the Weave control script which will be used to launch the containers within your Docker for Mac installation and connect to our Weave mesh network:</p><div><pre class="programlisting">
+<strong>sudo curl -L git.io/weave -o /usr/local/bin/weave; sudochmoda+x /usr/loca</strong>
+<strong>l/bin/weave</strong>
+<strong>weave launch --password 3 UnFh4jhahFC</strong>
+<strong>weave connect "$(docker-machine ip weave-nyc)"</strong>
+</pre></div><p>Once installed and connected, running <code class="literal">weave status</code> locally should show you that there are now 3 peers with 6 established connections:</p><div><img src="img/B06455_05_16.jpg" alt="WeaveNetwork Plugin"/></div><p>So now we have three <a id="id234" class="indexterm"/>Docker hosts:</p><div><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">One in NYC hosted by Digital Ocean </li><li class="listitem" style="list-style-type: disc">One in London hosted by Digital Ocean </li><li class="listitem" style="list-style-type: disc">Our local Docker host running on Docker for Mac (or Linux)</li></ul></div><p>All with a network called <strong>weave</strong> using the <code class="literal">weavemesh</code> driver. You can confirm this by running:</p><div><pre class="programlisting">
+<strong>docker network ls</strong>
+<strong>docker $(docker-machine config weave-nyc) network ls</strong>
+<strong>docker $(docker-machine config weave-lon) network ls</strong>
+</pre></div><p>You should see something similar to the following terminal output:</p><div><img src="img/B06455_05_17.jpg" alt="WeaveNetwork Plugin"/></div><p>Now we are ready to start launching containers into our Weave network and demonstrate that they can communicate with each other.</p><div><div><h3 class="title"><a id="note22"/>Note</h3><p>Netcat is a service which allows you to be read and write to a network using TCP or UDP.</p></div></div><p>Let's start by launching a <a id="id235" class="indexterm"/>container in NYC running Netcat(nc). Each time a request is sent to port 4242 <code class="literal">nc</code> will answer with <code class="literal">Hello from NYC!!!</code>:</p><div><pre class="programlisting">
+<strong>docker $(docker-machine config weave-nyc) container run -itd \</strong>
+<strong>  --name=nyc \</strong>
+<strong>  --net=weave \</strong>
+<strong>  --hostname="nyc.weave.local" \</strong>
+<strong>  --dns="172.17.0.1" \</strong>
+<strong>  --dns-search="weave.local" \</strong>
+<strong>  alpine nc -p 4242-ll -e echo 'Hello from NYC!!!'</strong>
+</pre></div><p>As you can see from the Docker command, we are passing quite a few different options, we are telling the container which network to use, as well configuring the DNS resolver within the container and setting a hostname of <code class="literal">nyc.weav</code>
+<code class="literal">e.local</code>.</p><div><img src="img/B06455_05_18.jpg" alt="WeaveNetwork Plugin"/></div><p>Now that we have our NYC container up and running, the first thing to do is to check if we can ping from our London Docker host, to do this run the following:</p><div><pre class="programlisting">
+<strong>docker $(docker-machine config weave-lon) container run -it --rm \</strong>
+<strong>  --name=ping \</strong>
+<strong>  --net=weave \</strong>
+<strong>  --dns="172.17.0.1" \</strong>
+<strong>  --dns-search="weave.local" \</strong>
+<strong>  alpine sh -c 'ping -c3 nyc.weave.local'</strong>
+</pre></div><p>This will send three <a id="id236" class="indexterm"/>pings to <code class="literal">nyc.weave.local</code>, all of which should be answered:</p><div><img src="img/B06455_05_19.jpg" alt="WeaveNetwork Plugin"/></div><p>Now that have confirmed that we can Ping the NYC container, we need to connect to port <code class="literal">4242</code> and check if we get the response we expect:</p><div><pre class="programlisting">
+<strong>docker $(docker-machine config weave-lon) container run -it --rm \</strong>
+<strong>  --name=conect \</strong>
+<strong>  --net=weave \</strong>
+<strong>  --dns="172.17.0.1" \</strong>
+<strong>  --dns-search="weave.local" \</strong>
+<strong>  alpine sh -c 'echo "Where are you?" | ncnyc.weave.local 4242'</strong>
+</pre></div><p>You should receive the message <strong>Hello from </strong>
+<strong>NYC!!!</strong>:</p><div><img src="img/B06455_05_20.jpg" alt="WeaveNetwork Plugin"/></div><p>Now let's launch a container on our local Docker host using the following command:</p><div><pre class="programlisting">
+<strong>docker container run -itd \</strong>
+<strong>  --name=mac \</strong>
+<strong>  --net=weave \</strong>
+<strong>  --hostname="mac.weave.local" \</strong>
+<strong>  --dns="172.17.0.1" \</strong>
+<strong>  --dns-search="weave.local" \</strong>
+<strong>  alpine nc -p 4242 -ll -e echo 'Hello from Docker for Mac!!!'</strong>
+</pre></div><div><img src="img/B06455_05_21.jpg" alt="WeaveNetwork Plugin"/></div><p>As before, we will do<a id="id237" class="indexterm"/> a simple ping test to our local container:</p><div><pre class="programlisting">
+<strong>docker $(docker-machine config weave-nyc) container run -it --rm \</strong>
+<strong>  --name=ping \</strong>
+<strong>  --net=weave \</strong>
+<strong>  --dns="172.17.0.1" \</strong>
+<strong>  --dns-search="weave.local" \</strong>
+<strong>  alpine sh -c 'ping -c3 mac.weave.local'</strong>
+</pre></div><p>As expected, we receive a response:</p><div><img src="img/B06455_05_22.jpg" alt="WeaveNetwork Plugin"/></div><p>It's a little slow to start with, but it eventually gets better. Now that we know we can ping our local container lets connect to port <code class="literal">4242</code> and check the response. First, from our NYC Docker host:</p><div><pre class="programlisting">
+<strong>docker $(docker-machine config weave-nyc) container run -it --rm \</strong>
+<strong>  --name=conect \</strong>
+<strong>  --net=weave \</strong>
+<strong>  --dns="172.17.0.1" \</strong>
+<strong>  --dns-search="weave.local" \</strong>
+<strong>  alpine sh -c 'echo "Where are you?" | ncmac.weave.local 4242'</strong>
+</pre></div><p>Then from our London <a id="id238" class="indexterm"/>Docker host:</p><div><pre class="programlisting">
+<strong>docker $(docker-machine config weave-lon) container run -it --rm \</strong>
+<strong>  --name=conect \</strong>
+<strong>  --net=weave \</strong>
+<strong>  --dns="172.17.0.1" \</strong>
+<strong>  --dns-search="weave.local" \</strong>
+<strong>  alpine sh -c 'echo "Where are you?" | ncmac.weave.local 4242'</strong>
+</pre></div><p>As you can see from the following terminal output we got the answer we expected to receive:</p><div><img src="img/B06455_05_23.jpg" alt="WeaveNetwork Plugin"/></div><p>To tidy up your local Docker host run the following commands:</p><div><pre class="programlisting">
+<strong>docker container stop mac</strong>
+<strong>docker container rm mac</strong>
+<strong>weave stop</strong>
+<strong>sudorm -f /usr/local/bin/weave</strong>
+</pre></div><p>And then to terminate our two Digital Ocean hosts run:</p><div><pre class="programlisting">
+<strong>docker-machine stop weave-lon weave-nyc</strong>
+<strong>docker-machine rm weave-lon weave-nyc</strong>
+</pre></div><p>While these tests <a id="id239" class="indexterm"/>haven't been as visually interesting as the walkthrough of the REX-Ray Volume plugin, as you have seen, Weave is an incredibly powerful software-defined network, which is very easy to configure.</p><p>Speaking fromexperience, this is a difficult combination to pull off, as most SDN solutions are incredibly complex to install, configure, and maintain.</p><p>We have only touched on what is possible with Weave. For a full feature list, along with instructions on some most of the <a id="id240" class="indexterm"/>advanced use cases, refer to <a class="ulink" href="http://docs.weave.works/weave/latest_release/features.html">http://docs.weave.works/weave/latest_release/features.html</a>.</p></div>
+<div><div><div><div><h1 class="title"><a id="ch05lvl1sec36"/>Summary</h1></div></div></div><p>Hopefully you are now starting to see use cases for different types of plugins.For example, a developer is fine working with local volumes, however for production traffic you would want to have some sort of either shared or block storage which is accessible to containers across multiple Docker hosts.</p><p>With plugins, this is possible without any real changes to your user's workflow as you know exactly how Docker handles volumes created with the <code class="literal">docker volume create</code> command.</p><p>As already mentioned, Docker are in the process of transitioning legacy plugins to a new architecture, a list of legacy plugins can be found at the following URL <a class="ulink" href="https://docs.docker.com/engine/extend/legacy_plugins/">https://docs.docker.com/engine/extend/legacy_plugins/</a> and new plugins which use the new architecture a can be found at <a class="ulink" href="https://store.docker.com/search?q=&amp;type=plugin">https://store.docker.com/search?q=&amp;type=plugin</a>.</p><p>In the next chapter, we are going to look at how to monitor your containers, and what to do if anything goes wrong.</p></div></body></html>

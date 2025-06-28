@@ -1,0 +1,557 @@
+<html><head></head><body>
+		<div><p><a id="_idTextAnchor268"/></p>
+			<h1 id="_idParaDest-255"><em class="italic"><a id="_idTextAnchor269"/>Chapter 12</em>: Kubernetes Security and Compliance</h1>
+			<p>In this chapter, you will learn about some of the key pieces of Kubernetes security. We'll discuss some recent Kubernetes security issues, and the finding of a recent audit that was performed on Kubernetes. Then, we'll look at implementing security at each level of our cluster, starting with the security of Kubernetes resources and their configurations, moving on to container security, and then finally, runtime security with intrusion detection. To start, we will discuss some key security concepts as they relate to Kubernetes.</p>
+			<p>In this chapter, we will cover the following topics:</p>
+			<ul>
+				<li>Understanding security on Kubernetes</li>
+				<li>Reviewing CVEs and security audits for Kubernetes</li>
+				<li>Implementing tools for cluster configuration and container security</li>
+				<li>Handling intrusion detection, runtime security, and compliance on Kubernetes</li>
+			</ul>
+			<h1 id="_idParaDest-256"><a id="_idTextAnchor270"/>Technical requirements</h1>
+			<p>In order to run the commands detailed in this chapter, you will need a computer that supports the <code>kubectl</code> command-line tool, along with a working Kubernetes cluster. See <a href="B14790_01_Final_PG_ePub.xhtml#_idTextAnchor016"><em class="italic">Chapter 1</em></a>, <em class="italic">Communicating with Kubernetes</em>, for several methods for getting up and running with Kubernetes quickly, and for instructions on how to install the <code>kubectl</code> tool. </p>
+			<p>Additionally, you will need a machine that supports the Helm CLI tool, which typically has the same prerequisites as <code>kubectl</code> – for details, check the Helm documentation at <a href="https://helm.sh/docs/intro/install/">https://helm.sh/docs/intro/install/</a>.</p>
+			<p>The code used in this chapter can be found in the book's GitHub repository at <a href="https://github.com/PacktPublishing/Cloud-Native-with-Kubernetes/tree/master/Chapter12">https://github.com/PacktPublishing/Cloud-Native-with-Kubernetes/tree/master/Chapter12</a>.</p>
+			<h1 id="_idParaDest-257"><a id="_idTextAnchor271"/>Understanding security on Kubernetes</h1>
+			<p>When discussing security <a id="_idIndexMarker622"/>on Kubernetes, it is very important to note security boundaries and shared responsibility. The <em class="italic">Shared Responsibility Model</em> is a common term used to describe how security is handled in public cloud services. It states that the customer is responsible for the security of their applications, and the security of their configuration of public cloud components and services. The public cloud provider, on the other hand, is responsible for the security of the services themselves as well as the infrastructure they run on, all the way to the data center and physical layer.</p>
+			<p>Similarly, security on Kubernetes is shared. Though upstream Kubernetes is not a commercial product, the thousands of Kubernetes contributors and significant organizational heft from large tech companies ensure that the security of Kubernetes components is maintained. Additionally, the large ecosystem of individual contributors and companies using the technology ensures that it gets better as CVEs are reported and handled. Unfortunately, as we will discuss in the next section, the complexity of Kubernetes means that there are many possible attack vectors.</p>
+			<p>Applying the shared responsibility model then, as a developer you are responsible for the security of how you configure Kubernetes components, the security of the applications that you run on Kubernetes, and access-level security in your cluster configuration. While the security of your applications and containers themselves are not quite in scope for this book, they are definitely important to Kubernetes security. We will spend most of our time discussing configuration-level security, access security, and runtime security.</p>
+			<p>Either Kubernetes itself or the Kubernetes ecosystem provides tooling, libraries, and full-blown products to handle security at each of these levels – and we'll be reviewing some of these options in this chapter.</p>
+			<p>Now, before we discuss these solutions, it's best to start with a base understanding of why they may be needed in the first place. Let's move on to the next section, where we'll detail some issues that Kubernetes has encountered in the realm of security.</p>
+			<h1 id="_idParaDest-258"><a id="_idTextAnchor272"/>Reviewing CVEs and security audits for Kubernetes</h1>
+			<p>Kubernetes has<a id="_idIndexMarker623"/> encountered <a id="_idIndexMarker624"/>several <code>kubernetes</code>. Each one of these is related either directly to Kubernetes, or to a common open source solution that runs on Kubernetes (like the NGINX ingress controller, for instance).</p>
+			<p>Several of these were critical enough to require hotfixes to the Kubernetes source, and thus they list the affected versions in the CVE description. A full list of all CVEs related to Kubernetes can be found at <a href="https://cve.mitre.org/cgi-bin/cvekey.cgi?keyword=kubernetes">https://cve.mitre.org/cgi-bin/cvekey.cgi?keyword=kubernetes</a>. To give you an idea of some of the issues that have been found, let's review a few of these CVEs in chronological order.</p>
+			<h2 id="_idParaDest-259"><a id="_idTextAnchor273"/>Understanding CVE-2016-1905 – Improper admission control</h2>
+			<p>This CVE was one of <a id="_idIndexMarker625"/>the first major security issues with production Kubernetes. The National Vulnerability Database (a NIST website) gives this issue a base score of 7.7, putting it in the high-impact category. </p>
+			<p>With this issue, a Kubernetes admission controller would not ensure that a <code>kubectl patch</code> command followed admission rules, allowing users to completely work around the admission controller – a nightmare in a multitenant scenario.</p>
+			<h2 id="_idParaDest-260"><a id="_idTextAnchor274"/>Understanding CVE-2018-1002105 – Connection upgrading to the backend</h2>
+			<p>This CVE was likely the <a id="_idIndexMarker626"/>most critical to date in the Kubernetes project. In fact, NVD gives it a 9.8 criticality score! In this CVE, it was found that it was possible in some versions of Kubernetes to piggyback on an error response from the Kubernetes API server and then upgrade the connection. Once the connection was upgraded, it was possible to send authenticated requests to any backend server in the cluster. This allowed a malicious user to essentially emulate a perfectly authenticated TLS request without proper credentials.</p>
+			<p>In addition to these CVEs (and likely partially driven by them), the CNCF sponsored a third-party security audit of Kubernetes in 2019. The results of the audit are open source and<a id="_idIndexMarker627"/> publicly available and are worth a review.</p>
+			<h2 id="_idParaDest-261"><a id="_idTextAnchor275"/>Understanding the 2019 security audit results</h2>
+			<p>As we mentioned in <a id="_idIndexMarker628"/>the previous section, the 2019 Kubernetes security audit was performed by a third party, and the results of the audit are completely open source. The full audit report with all sections can be found at <a href="https://www.cncf.io/blog/2019/08/06/open-sourcing-the-kubernetes-security-audit/">https://www.cncf.io/blog/2019/08/06/open-sourcing-the-kubernetes-security-audit/</a>.</p>
+			<p>In general, this audit focused on the following pieces of Kubernetes functionality:</p>
+			<ul>
+				<li><code>kube-apiserver</code></li>
+				<li><code>etcd</code></li>
+				<li><code>kube-scheduler</code></li>
+				<li><code>kube-controller-manager</code></li>
+				<li><code>cloud-controller-manager</code></li>
+				<li><code>kubelet</code></li>
+				<li><code>kube-proxy</code></li>
+				<li>The Container Runtime</li>
+			</ul>
+			<p>The intent was to focus on the most important and relevant pieces of Kubernetes when it came to security. The results of the audit included not just a full security report, but also a threat model and a penetration test, as well as a whitepaper.</p>
+			<p>Diving deep into the audit results is not in the scope of this book, but there are some major takeaways that are great windows into the crux of many of the biggest Kubernetes security issues.</p>
+			<p>In short, the audit found that since Kubernetes is a complex, highly networked system with many different settings, there are many possible configurations that inexperienced engineers may perform and in doing so, open their cluster to outside attackers.</p>
+			<p>This idea of Kubernetes being complex enough that an insecure configuration could happen easily is important to note and take to heart. </p>
+			<p>The entire audit is worth a read – for those with significant knowledge of network security and containers, it is an excellent view of some of the security decisions that were made as part of the development of Kubernetes as a platform.</p>
+			<p>Now that we have discussed where Kubernetes security issues have been found, we can start looking into<a id="_idIndexMarker629"/> ways to increase the security posture of your clusters. Let's start with some default Kubernetes functionality for security.</p>
+			<h1 id="_idParaDest-262"><a id="_idTextAnchor276"/>Implementing tools for cluster configuration and container security</h1>
+			<p>Kubernetes<a id="_idIndexMarker630"/> gives us many inbuilt options for the <a id="_idIndexMarker631"/>security of cluster configurations and container permissions. Since we've already talked about RBAC, TLS Ingress, and encrypted Kubernetes Secrets, let's discuss a few concepts that we haven't had time to review yet: admission controllers, Pod security policies, and network policies.</p>
+			<h2 id="_idParaDest-263"><a id="_idTextAnchor277"/>Using admission controllers</h2>
+			<p>Admission controllers <a id="_idIndexMarker632"/>are an often overlooked but extremely important Kubernetes feature. Many of Kubernetes' advanced features use admission controllers under the hood. In addition, you can create new admission controller rules in order to add custom functionality to your cluster.</p>
+			<p>There are two general <a id="_idIndexMarker633"/>types of admission controllers:</p>
+			<ul>
+				<li>Mutating admission controllers</li>
+				<li>Validating admission controllers</li>
+			</ul>
+			<p>Mutating admission controllers take in Kubernetes resource specifications and return an updated resource specification. They also perform side-effect calculations or make external calls (in the case of custom admission controllers). </p>
+			<p>On the other hand, validating admission controllers simply accept or deny Kubernetes resource API requests. It is important to know that both types of controllers only act on create, update, delete, or proxy requests. These controllers cannot mutate or change requests to list resources.</p>
+			<p>When a request of one of those types comes into the Kubernetes API server, it will first run the request through all the relevant mutating admission controllers. Then, the output, which may be mutated, will pass through the validating admission controllers, before finally being acted upon (or not, if the call is denied by an admission controller) in the API server.</p>
+			<p>Structurally, the Kubernetes-provided admission controllers are functions or "plugins," which run as part of the Kubernetes API server. They rely on two webhook controllers (which are admission controllers themselves, just special ones): <strong class="bold">MutatingAdmissionWebhook</strong> and <strong class="bold">ValidatingAdmissionWebhook</strong>. All other admission<a id="_idIndexMarker634"/> controllers <a id="_idIndexMarker635"/>use either<a id="_idIndexMarker636"/> one of these webhooks under the hood, depending on their type. In addition, any custom admission controllers you write can be attached to either one of these webhooks.</p>
+			<p>Before we look at the process of creating a custom admission controller, let's review a few of the default admission controllers that Kubernetes provides. For a full list, check the Kubernetes official documentation at <a href="https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/#what-does-each-admission-controller-do">https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/#what-does-each-admission-controller-do</a>.</p>
+			<h3>Understanding default admission controllers</h3>
+			<p>There are quite a few <a id="_idIndexMarker637"/>default admission controllers present in a typical Kubernetes setup – many of which are required for some fairly important basic functionality. Here are some examples of default admission controllers.</p>
+			<h4>The NamespaceExists admission controller</h4>
+			<p>The <strong class="bold">NamespaceExists</strong> admission <a id="_idIndexMarker638"/>controller checks any incoming Kubernetes resource (other than namespaces themselves). This is to check whether the namespace attached to the resource exists. If not, it denies the resource request at the admission controller level.</p>
+			<h4>The PodSecurityPolicy admission controller</h4>
+			<p>The <strong class="bold">PodSecurityPolicy</strong> admission controller supports Kubernetes Pod security policies, which <a id="_idIndexMarker639"/>we will learn about momentarily. This controller prevents resources that do not follow Pod security policies from being created.</p>
+			<p>In addition to the default admission controllers, we can create custom admission controllers.</p>
+			<h3>Creating custom admission controllers</h3>
+			<p>Creating a custom <a id="_idIndexMarker640"/>admission controller can be done dynamically using one of the two webhook controllers. The way this works is as follows:</p>
+			<ol>
+				<li> You must write your own server or script that runs separately to the Kubernetes API server.</li>
+				<li>Then, you configure one of the two previously mentioned webhook triggers to make a request with resource data to your custom server controller.</li>
+				<li>Based on the result, the webhook controller will then tell the API server whether or not to proceed.</li>
+			</ol>
+			<p>Let's start with the first step: writing a quick admission server.</p>
+			<h3>Writing a server for a custom admission controller</h3>
+			<p>To create our <a id="_idIndexMarker641"/>custom admission controller<a id="_idIndexMarker642"/> server (which will accept webhooks from the Kubernetes control plane), we can use any programming language. As with most extensions to Kubernetes, Go has the best support and libraries that make the task of writing a custom admission controller easier. For now, we will use some pseudocode.</p>
+			<p>The control flow for our server will look something like this:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">Admission-controller-server.pseudo</p>
+			<pre>// This function is called when a request hits the
+// "/mutate" endpoint
+function acceptAdmissionWebhookRequest(req)
+{
+  // First, we need to validate the incoming req
+  // This function will check if the request is formatted properly
+  // and will add a "valid" attribute If so
+  // The webhook will be a POST request from Kubernetes in the
+  // "AdmissionReviewRequest" schema
+  req = validateRequest(req);
+  // If the request isn't valid, return an Error
+  if(!req.valid) return Error; 
+  // Next, we need to decide whether to accept or deny the Admission
+  // Request. This function will add the "accepted" attribute
+  req = decideAcceptOrDeny(req);
+  if(!req.accepted) return Error;
+  // Now that we know we want to allow this resource, we need to
+  // decide if any "patches" or changes are necessary
+  patch = patchResourceFromWebhook(req);
+  // Finally, we create an AdmissionReviewResponse and pass it back
+  // to Kubernetes in the response
+  // This AdmissionReviewResponse includes the patches and
+  // whether the resource is accepted.
+  admitReviewResp = createAdmitReviewResp(req, patch);
+  return admitReviewResp;
+}</pre>
+			<p>Now that we have <a id="_idIndexMarker643"/>a simple server for our custom<a id="_idIndexMarker644"/> admission controller, we can configure a Kubernetes admission webhook to call it.</p>
+			<h3>Configuring Kubernetes to call a custom admission controller server</h3>
+			<p>In order to tell <a id="_idIndexMarker645"/>Kubernetes<a id="_idIndexMarker646"/> to call our custom admission server, it needs a place to call. We can run our custom admission controller anywhere – it doesn't need to be on Kubernetes.</p>
+			<p>That being said, it's easy for the purposes of this chapter to run it on Kubernetes. We won't go through the full manifest, but let's assume we have a Service and a Deployment that it is pointed at, running a container that is our server. The Service would look something like this:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">Service-webhook.yaml</p>
+			<pre>apiVersion: v1
+kind: Service
+metadata:
+  name: my-custom-webhook-server
+spec:
+  selector:
+    app: my-custom-webhook-server
+  ports:
+    - port: 443
+      targetPort: 8443</pre>
+			<p>It's important to note that our server needs to use HTTPS in order for Kubernetes to accept webhook responses. There are many ways to configure this, and we won't get into it in this book. The certificate can be self-signed, but the common name of the certificate<a id="_idIndexMarker647"/> and CA needs to <a id="_idIndexMarker648"/>match the one used when setting up the Kubernetes cluster.</p>
+			<p>Now that we have our server running and accepting HTTPS requests, let's tell Kubernetes where to find it. To do this, we use <code>MutatingWebhookConfiguration</code>.</p>
+			<p>An example of <code>MutatingWebhookConfiguration</code> is shown in the following code block:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">Mutating-webhook-config-service.yaml</p>
+			<pre>apiVersion: admissionregistration.k8s.io/v1beta1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: my-service-webhook
+webhooks:
+  - name: my-custom-webhook-server.default.svc
+    rules:
+      - operations: [ "CREATE" ]
+        apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["pods", "deployments", "configmaps"]
+    clientConfig:
+      service:
+        name: my-custom-webhook-server
+        namespace: default
+        path: "/mutate"
+      caBundle: ${CA_PEM_B64}</pre>
+			<p>Let's pick apart the YAML for our <code>MutatingWebhookConfiguration</code>. As you can see, we can configure more than one webhook in this configuration – though we've only done one in this example.</p>
+			<p>For each<a id="_idIndexMarker649"/> webhook, we<a id="_idIndexMarker650"/> set <code>name</code>, <code>rules</code>, and a <code>configuration</code>. The <code>name</code> is simply the identifier for the webhook. The <code>rules</code> allow us to configure exactly in which cases Kubernetes should make a request to our admission controller. In this case, we have configured our webhook to fire whenever a <code>CREATE</code> event for resources of the types <code>pods</code>, <code>deployments</code>, and <code>configmaps</code> occurs.</p>
+			<p>Finally, we have the <code>clientConfig</code>, where we specify exactly where and how Kubernetes should make the webhook request. Since we're running our custom server on Kubernetes, we specify the Service name as in the previous YAML, in addition to the path on our server to hit (<code>"/mutate"</code> is a best practice here), and the CA of the cluster to compare to the certificate of the HTTPS termination. If your custom admission server is running somewhere else, there are other possible configuration fields – check the docs if you need them (<a href="https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/">https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/</a>).</p>
+			<p>Once we create the <code>MutatingWebhookConfiguration</code> in Kubernetes, it is easy to test the validation. All we need to do is create a Pod, Deployment, or ConfigMap as normal, and check whether our requests are denied or patched according to the logic in our server.</p>
+			<p>Let's assume for now that our server is set to deny any Pod with a name that includes the string <code>deny-me</code>. It is also set up to add an error response to the <code>AdmissionReviewResponse</code>.</p>
+			<p>Let's use a Pod spec as follows:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">To-deny-pod.yaml</p>
+			<pre>apiVersion: v1
+kind: Pod
+metadata:
+  name: my-pod-to-deny
+spec:
+  containers:
+  - name: nginx
+    image: nginx</pre>
+			<p>Now, we <a id="_idIndexMarker651"/>can create our Pod to <a id="_idIndexMarker652"/>check the admission controller. We can use the following command:</p>
+			<pre>kubectl create -f to-deny-pod.yaml</pre>
+			<p>This results in the following output:</p>
+			<pre>Error from server (InternalError): error when creating "to-deny-pod.yaml": Internal error occurred: admission webhook "my-custom-webhook-server.default.svc" denied the request: Pod name contains "to-deny"!</pre>
+			<p>And that's it! Our custom admission controller has successfully denied a Pod that doesn't match the conditions we specified in our server. For resources that are patched (not denied, but altered), <code>kubectl</code> will not show any special response. You will need to fetch the resource in question to see the patch in action.</p>
+			<p>Now that we've explored custom admission controllers, let's look at another way to impose cluster security practices – Pod security policies.</p>
+			<h2 id="_idParaDest-264"><a id="_idTextAnchor278"/>Enabling Pod security policies</h2>
+			<p>The basics of Pod<a id="_idIndexMarker653"/> security policies are that they allow a cluster administrator to create rules that Pods must follow in order to be scheduled onto a node. Technically, Pod security policies are just another type of admission controller. However, this feature is officially supported by Kubernetes and is worth an in-depth discussion, since many options are available.</p>
+			<p>Pod security policies can be used to prevent Pods from running as root, put limits on ports and volumes used, restrict privilege escalation, and much more. We will review a subset of Pod security policy capabilities now, but for a full list of Pod security policy configuration types, check the official PSP documentation at <a href="https://kubernetes.io/docs/concepts/policy/pod-security-policy/">https://kubernetes.io/docs/concepts/policy/pod-security-policy/</a>.  </p>
+			<p>As a final note, Kubernetes also supports low-level primitives for controlling container permissions – namely <em class="italic">AppArmor</em>, <em class="italic">SELinux</em>, and <em class="italic">Seccomp</em>. These configurations are outside the scope of this book, but they can be useful for highly secure environments.</p>
+			<h3>Steps to create a Pod security policy</h3>
+			<p>There are several <a id="_idIndexMarker654"/>steps to implementing Pod security policies:</p>
+			<ol>
+				<li value="1">First, the Pod security policy admission controller must be enabled. </li>
+				<li>This will prevent all Pods from being created in your cluster since it requires a matched Pod security policy and role to be able to create a Pod. You will likely want to create your Pod security policies and roles before enabling the admission controller for this reason.</li>
+				<li>After the admission controller is enabled, the policy itself must be created.</li>
+				<li>Then, a <code>Role</code> or <code>ClusterRole</code> object must be created with access to the Pod security policy.</li>
+				<li>Finally, that role can be bound with a <code>accountService</code> account, allowing Pods created with that service account to use permissions available to the Pod security policy.</li>
+			</ol>
+			<p>In some cases, you may not have the Pod security policy admission controller enabled by default on your<a id="_idIndexMarker655"/> cluster. Let's look at how to enable it.</p>
+			<h3>Enabling the Pod security policy admission controller</h3>
+			<p>In order to<a id="_idIndexMarker656"/> enable the PSP admission controller, the <code>kube-apiserver</code> must be started with a flag that specifies admission controllers to start with. On managed Kubernetes (EKS, AKS, and others), the PSP admission controller will likely be enabled by default, along with a privileged Pod security policy created for use by the initial admin user. This prevents the PSP from causing any issues with creating Pods in the new cluster.</p>
+			<p>If you're self-managing Kubernetes and you haven't yet enabled the PSP admission controller, you can do so by restarting the <code>kube-apiserver</code> <a id="_idTextAnchor279"/>component with the following flags:</p>
+			<pre>kube-apiserver --enable-admission-plugins=PodSecurityPolicy,ServiceAccount…&lt;all other desired admission controllers&gt;</pre>
+			<p>If your Kubernetes API server is run using a <code>systemd</code> file (as it would be if following <em class="italic">Kubernetes: The Hard Way</em>), you should update the flags there instead. Typically, <code>systemd</code> files are placed in the <code>/etc/systemd/system/</code> folder.</p>
+			<p>In order to find out which admission plugins are already enabled, you can run the following command:</p>
+			<pre>kube-apiserver -h | grep enable-admission-plugins</pre>
+			<p>This command will present a long list of admission plugins that are enabled. For instance, you will see the following admission plugins in the output:</p>
+			<pre>NamespaceLifecycle, LimitRanger, ServiceAccount…</pre>
+			<p>Now that we are sure the PSP admission controller is enabled, we can actually create a PSP.</p>
+			<h3>Creating the PSP resource</h3>
+			<p>Pod security <a id="_idIndexMarker657"/>policies themselves can be created using typical Kubernetes resource YAML. Here's a YAML file for a privileged Pod security policy:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">Privileged-psp.yaml</p>
+			<pre>apiVersion: policy/v1beta1
+kind: PodSecurityPolicy
+metadata:
+  name: privileged-psp
+  annotations:
+    seccomp.security.alpha.kubernetes.io/allowedProfileNames: '*'
+spec:
+  privileged: true
+  allowedCapabilities:
+  - '*'
+  volumes:
+  - '*'
+  hostNetwork: true
+  hostPorts:
+  - min: 2000
+    max: 65535
+  hostIPC: true
+  hostPID: true
+  allowPrivilegeEscalation: true
+  runAsUser:
+    rule: 'RunAsAny'
+  supplementalGroups:
+    rule: 'RunAsAny'
+  fsGroup:
+    rule: 'RunAsAny'</pre>
+			<p>This Pod security policy allows the user or <a id="_idIndexMarker658"/>service account (via a <code>PodSecurityPolicy</code> would be able to bind to the host network on ports <code>2000</code>-<code>65535</code>, run as any user, and bind to any volume type. In addition, we have an annotation<a id="_idIndexMarker660"/> for a <code>seccomp</code> restriction on <code>allowedProfileNames</code> – to give you an idea of how <code>Seccomp</code> and <code>AppArmor</code> annotations work with <code>PodSecurityPolicies</code>.</p>
+			<p>As we mentioned previously, just creating the PSP does nothing. For any service account or user that will be creating privileged Pods, we need to give them access to the Pod security policy via a <code>ClusterRole</code> and <code>ClusterRoleBinding</code>).</p>
+			<p>In order to create a <code>ClusterRole</code> that has access to this PSP, we can use the following YAML:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">Privileged-clusterrole.yaml</p>
+			<pre>apiVersion: rbac.authorization.k8s.io
+kind: ClusterRole
+metadata:
+  name: privileged-role
+rules:
+- apiGroups: ['policy']
+  resources: ['podsecuritypolicies']
+  verbs:     ['use']
+  resourceNames:
+  - privileged-psp</pre>
+			<p>Now, we can bind our newly created <code>ClusterRole</code> to the user or service account with which we intend to create privileged Pods. Let's do this with a <code>ClusterRoleBinding</code>:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">Privileged-clusterrolebinding.yaml</p>
+			<pre>apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: privileged-crb
+roleRef:
+  kind: ClusterRole
+  name: privileged-role
+  apiGroup: rbac.authorization.k8s.io
+subjects:
+- kind: Group
+  apiGroup: rbac.authorization.k8s.io
+  name: system:authenticated</pre>
+			<p>In our case, we <a id="_idIndexMarker661"/>want to let every authenticated user on the cluster create privileged Pods, so we bind to the <code>system:authenticated</code> group.</p>
+			<p>Now, it is likely that we do not want all our users or Pods to be privileged. A more realistic Pod security policy places restrictions on what Pods are capable of. </p>
+			<p>Let's take a look at some example YAML of a PSP that has these restrictions:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">unprivileged-psp.yaml</p>
+			<pre>apiVersion: policy/v1beta1
+kind: PodSecurityPolicy
+metadata:
+  name: unprivileged-psp
+spec:
+  privileged: false
+  allowPrivilegeEscalation: false
+  <strong class="bold">volumes:</strong>
+<strong class="bold">    - 'configMap'</strong>
+<strong class="bold">    - 'emptyDir'</strong>
+<strong class="bold">    - 'projected'</strong>
+<strong class="bold">    - 'secret'</strong>
+<strong class="bold">    - 'downwardAPI'</strong>
+<strong class="bold">    - 'persistentVolumeClaim'</strong>
+  hostNetwork: false
+  hostIPC: false
+  hostPID: false
+  runAsUser:
+    rule: 'MustRunAsNonRoot'
+  supplementalGroups:
+    rule: 'MustRunAs'
+    ranges:
+      - min: 1
+        max: 65535
+  fsGroup:
+    rule: 'MustRunAs'
+    ranges:
+      - min: 1
+        max: 65535
+  readOnlyRootFilesystem: false</pre>
+			<p>As you can tell, this Pod security policy is vastly different in the restrictions it imposes on created Pods. No Pods under this policy are allowed to run as root or escalate to root. They also have restrictions on the types of volumes they can bind to (this section has been highlighted in the preceding code snippet) – and they cannot use host networking or bind directly to host ports.</p>
+			<p>In this YAML, both the <code>runAsUser</code> and <code>supplementalGroups</code> sections control the Linux user ID and group IDs that can run or be added by the container, while the <code>fsGroup</code> key controls the filesystem groups that can be used by the container.</p>
+			<p>In addition to <a id="_idIndexMarker662"/>using rules like <code>MustRunAsNonRoot</code>, it is possible to directly specify which user ID a container can run with – and any Pods not running specifically with that ID in their spec will not be able to schedule onto a Node.</p>
+			<p>For a sample PSP that restricts users to a specific ID, look at the following YAML:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">Specific-user-id-psp.yaml</p>
+			<pre>apiVersion: policy/v1beta1
+kind: PodSecurityPolicy
+metadata:
+  name: specific-user-psp
+spec:
+  privileged: false
+  allowPrivilegeEscalation: false
+  hostNetwork: false
+  hostIPC: false
+  hostPID: false
+  runAsUser:
+    rule: 'MustRunAs'
+    ranges:
+      - min: 1
+        max: 3000
+  readOnlyRootFilesystem: false</pre>
+			<p>This Pod security policy, when applied, will prevent any Pods from running as user ID <code>0</code> or <code>3001</code>, or higher. In order to create a Pod that satisfies this condition, we use the <code>runAs</code> option in the <code>securityContext</code> in a Pod spec.</p>
+			<p>Here is an example Pod that satisfies this constraint and would be successfully scheduled even<a id="_idIndexMarker663"/> with this Pod security policy in place:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">Specific-user-pod.yaml</p>
+			<pre>apiVersion: v1
+kind: Pod
+metadata:
+  name: specific-user-pod
+spec:
+  securityContext:
+    runAsUser: 1000
+  containers:
+  - name: test
+    image: busybox
+    securityContext:
+      allowPrivilegeEscalation: false</pre>
+			<p>As you can see, in this YAML, we give our Pod a specific user to run with, ID <code>1000</code>. We also disallowed our Pod from escalating to root. This Pod spec would successfully schedule even when <code>specific-user-psp</code> is in place.</p>
+			<p>Now that we've discussed how Pod security policies can secure Kubernetes by placing restrictions on how a<a id="_idIndexMarker664"/> Pod runs, we can move onto network policies, where we can restrict how Pods network.</p>
+			<h2 id="_idParaDest-265"><a id="_idTextAnchor280"/>Using network policies</h2>
+			<p>Network policies in<a id="_idIndexMarker665"/> Kubernetes work similar to firewall rules or route tables. They allow users to specify a group of Pods via a selector and then determine how and where those Pods can communicate.</p>
+			<p>For network policies to work, your chosen Kubernetes network plugin (such as, <em class="italic">Weave</em>, <em class="italic">Flannel</em>, or <em class="italic">Calico</em>) must support the network policy spec. Network policies can be created as all other Kubernetes resources are – through a YAML file. Let's start with a very simple network policy.</p>
+			<p>Here is a network policy spec that restricts access to Pods with the label <code>app=server</code>:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">Label-restriction-policy.yaml</p>
+			<pre>apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: frontend-network-policy
+spec:
+  podSelector:
+    matchLabels:
+      app: server
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: frontend
+    ports:
+    - protocol: TCP
+      port: 80</pre>
+			<p>Now, let's pick apart this network policy YAML since it will help us explain some more complicated network policies as we progress.</p>
+			<p>First, in our spec, we<a id="_idIndexMarker666"/> have a <code>podSelector</code>, which works similarly to node selectors in functionality. Here, we are using <code>matchLabels</code> to specify that this network policy will only affect Pods with the label <code>app=server</code>.</p>
+			<p>Next, we specify a policy type for our network policy. There are two policy types: <code>ingress</code> and <code>egress</code>. A network policy can specify one or both types. <code>ingress</code> refers to making network rules that come into effect for connections to the matched Pods, and <code>egress</code> refers to network rules that come into effect for connections leaving the matched Pods.</p>
+			<p>In this specific network policy, we are simply dictating a single <code>ingress</code> rule: the only traffic that will be accepted by Pods with the label <code>app=server</code> is traffic that originates from Pods with the label <code>app:frontend</code>. Additionally, the only port that will accept traffic on Pods with the label <code>app=server</code> is <code>80</code>.</p>
+			<p>There can be multiple <code>from</code> blocks in an <code>ingress</code> policy set that correspond to multiple traffic rules. Similarly, with <code>egress</code>, there can be multiple <code>to</code> blocks.</p>
+			<p>It is important to note that network policies work by namespace. By default, if there isn't a single network policy in a namespace, there are no restrictions on Pod-to-Pod communication within that namespace. However, as soon as a specific Pod is selected by a single network policy, all traffic to and from that Pod must explicitly match a network policy rule. If it doesn't match a rule, it will be blocked.</p>
+			<p>With this in mind, we can easily create policies that enforce broad restrictions on Pod networking.  Let's take a look at the following network policy:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">Full-restriction-policy.yaml</p>
+			<pre>apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: full-restriction-policy
+  namespace: development
+spec:
+  policyTypes:
+  - Ingress
+  - Egress
+  podSelector: {}</pre>
+			<p>In this <code>NetworkPolicy</code>, we specify that we will be including both an <code>Ingress</code> and <code>Egress</code> policy, but we don't write a block for either of them. This has the effect of automatically<a id="_idIndexMarker667"/> denying any traffic for both <code>Egress</code> and <code>Ingress</code> since there are no rules for traffic to match against.</p>
+			<p>Additionally, our <code>{}</code> Pod selector value corresponds to selecting every Pod in the namespace. The end result of this rule is that every Pod in the <code>development</code> namespace will not be able to accept ingress traffic or send egress traffic.</p>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">It is also important to note that network policies are interpreted by combining all the separate network policies that affect a Pod and then applying the combination of all those rules to Pod traffic.</p>
+			<p>This means that even though we have restricted all ingress and egress traffic in the <code>development</code> namespace in our preceding example, we can still enable it for specific Pods by adding another network policy.  </p>
+			<p>Let's assume that now our <code>development</code> namespace has complete traffic restriction for Pods, we want to allow a subset of Pods to receive network traffic on port <code>443</code> and send traffic on port <code>6379</code> to a database Pod. In order to do this, we simply need to create a new network policy that, by the additive nature of policies, allows this traffic.</p>
+			<p>This is what the<a id="_idIndexMarker668"/> network policy looks like:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">Override-restriction-network-policy.yaml</p>
+			<pre>apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: override-restriction-policy
+  namespace: development
+spec:
+  podSelector:
+    matchLabels:
+      app: server
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: frontend
+    ports:
+    - protocol: TCP
+      port: 443
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app: database
+    ports:
+    - protocol: TCP
+      port: 6379</pre>
+			<p>In this network policy, we are allowing our server Pods in the <code>development</code> namespace to receive traffic from frontend Pods on port <code>443</code> and send traffic to database Pods on port <code>6379</code>.</p>
+			<p>If instead, we wanted <a id="_idIndexMarker669"/>to open up all Pod-to-Pod communication without any restrictions, while still actually instituting a network policy, we could do so with the following YAML:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">All-open-network-policy.yaml</p>
+			<pre>apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-all-egress
+spec:
+  podSelector: {}
+  egress:
+  - {}
+  ingress:
+  - {}
+  policyTypes:
+  - Egress
+  - Ingress</pre>
+			<p>Now we have discussed how we can use network policies to set rules on Pod-to-Pod traffic. However, it is also possible to use network policies as an external-facing firewall of sorts. To do this, we create network policy rules based not on Pods as origin or destination, but external IPs.</p>
+			<p>Let's look at an example network policy where we are restricting communication to and from a Pod, with a<a id="_idIndexMarker670"/> specific IP range as the target:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">External-ip-network-policy.yaml</p>
+			<pre>apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: specific-ip-policy
+spec:
+  podSelector:
+    matchLabels:
+      app: worker
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - ipBlock:
+        cidr: 157.10.0.0/16
+        except:
+        - 157.10.1.0/24
+  egress:
+  - to:
+    - ipBlock:
+        cidr: 157.10.0.0/16
+        except:
+        - 157.10.1.0/24</pre>
+			<p>In this network policy, we are specifying a single <code>Ingress</code> rule and a single <code>Egress</code> rule. Each of these rules accepts or denies traffic based not on which Pod it is coming from but on the source IP of the network request.</p>
+			<p>In our case, we have selected a <code>/16</code> subnet mask range (with a specified <code>/24</code> CIDR exception) for both our <code>Ingress</code> and <code>Egress</code> rules. This has the side effect of preventing any<a id="_idIndexMarker671"/> traffic from within our cluster from reaching these Pods since none of our Pod IPs will match the rules in a default cluster networking setup.</p>
+			<p>However, traffic from outside the cluster in the specified subnet mask (and not in the exception range) will be able to both send traffic to the <code>worker</code> Pods and also be able to accept traffic from the <code>worker</code> Pods.</p>
+			<p>With the end of our discussion on network policies, we can move onto a completely different layer of the security stack – runtime security and intrusion detection.</p>
+			<h1 id="_idParaDest-266"><a id="_idTextAnchor281"/>Handling intrusion detection, runtime security, and compliance on Kubernetes</h1>
+			<p>Once you <a id="_idIndexMarker672"/>have<a id="_idIndexMarker673"/> set your Pod security<a id="_idIndexMarker674"/> policies and network policies – and generally ensured that your configuration is as watertight as possible – there are still many attack vectors that are possible in Kubernetes. In this section, we will focus on attacks from within a Kubernetes cluster. Even with highly specific Pod security policies in place (which definitely do help, to be clear), it is possible for containers and applications running in your cluster to perform unexpected or malicious operations.  </p>
+			<p>In order to solve this problem, many professionals look to runtime security tools, which allow constant monitoring and alerting of application processes. For Kubernetes, a popular open<a id="_idIndexMarker675"/> source<a id="_idIndexMarker676"/> tool that can<a id="_idIndexMarker677"/> accomplish this is <em class="italic">Falco</em>.</p>
+			<h2 id="_idParaDest-267"><a id="_idTextAnchor282"/>Installing Falco</h2>
+			<p>Falco bills itself <a id="_idIndexMarker678"/>as a <em class="italic">behavioral activity monitor</em> for processes on Kubernetes. It can monitor both your containerized applications running on Kubernetes as well as the Kubernetes components themselves.</p>
+			<p>How does Falco work? In real time, Falco parses system calls from the Linux kernel. It then filters these system calls through rules – which are sets of configurations that can be applied to the Falco engine. Whenever a rule is broken by a system call, Falco triggers an alert. It's that simple!</p>
+			<p>Falco ships with an extensive set of default rules that add significant observability at the kernel level. Custom rules are of course supported by Falco – and we will show you how to write them.</p>
+			<p>First, however, we need to install Falco on our cluster! Luckily, Falco can be installed using Helm. However, it is very important to note that there are a few different ways to install Falco, and they differ significantly in how effective they can be in the event of a breach.  </p>
+			<p>We're going to be installing Falco using the Helm chart, which is simple and works well for managed Kubernetes clusters, or any scenario where you may not have direct access to the worker nodes.</p>
+			<p>However, for the best possible security posture, Falco should be installed directly onto the Kubernetes nodes at the Linux level. The Helm chart, which uses a DaemonSet is great for ease of use but is inherently not as secure as a direct Falco installation. To install Falco directly <a id="_idIndexMarker679"/>to your nodes, check the installation instructions at <a href="https://falco.org/docs/installation/">https://falco.org/docs/installation/</a>.</p>
+			<p>With that caveat out of the way, we can install Falco using Helm: </p>
+			<ol>
+				<li value="1">First, we need to add the <code>falcosecurity</code> repo to our local Helm:<pre><strong class="bold">helm repo add falcosecurity https://falcosecurity.github.io/charts</strong>
+<strong class="bold">helm repo update</strong></pre><p>Next, we can proceed with actually installing Falco using Helm.</p><p class="callout-heading">Important note</p><p class="callout">The Falco Helm chart has many possible variables that can be changed in the values file – for a full review of those, you can check the official Helm chart repo at <a href="https://github.com/falcosecurity/charts/tree/master/falco">https://github.com/falcosecurity/charts/tree/master/falco</a>.</p></li>
+				<li>To install Falco, run the following:<pre><strong class="bold">helm install falco falcosecurity/falco</strong></pre></li>
+			</ol>
+			<p>This command will install Falco using the default values, which you can see at <a href="https://github.com/falcosecurity/charts/blob/master/falco/values.yaml">https://github.com/falcosecurity/charts/blob/master/falco/values.yaml</a>.</p>
+			<p>Next, let's dive into <a id="_idIndexMarker680"/>what Falco offers a security-conscious Kubernetes administrator.</p>
+			<h2 id="_idParaDest-268"><a id="_idTextAnchor283"/>Understanding Falco's capabilities</h2>
+			<p>As mentioned <a id="_idIndexMarker681"/>previously, Falco ships with a set of default rules, but we can easily add more rules using new YAML files. Since we're using the Helm version of Falco, passing custom rules to Falco is as simple as either creating a new values file or editing the default one with custom rules.</p>
+			<p>Adding custom rules looks like this:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">Custom-falco.yaml</p>
+			<pre>customRules:
+  my-rules.yaml: |-
+    Rule1
+    Rule2
+    etc...</pre>
+			<p>Now is a good time to discuss the structure of a Falco rule. To illustrate, let's borrow a few lines of rules from the <code>Default</code> Falco ruleset that ships with the Falco Helm chart.</p>
+			<p>When specifying Falco configuration in YAML, we can use three different types of keys to help compose our rules. These are macros, lists, and rules themselves.</p>
+			<p>The specific rule we're looking at in this example is called <code>Launch Privileged Container</code>. This rule will detect when a privileged container has been started and log some information about the container to <code>STDOUT</code>. Rules can do all sorts of things when it comes to alerts, but logging to <code>STDOUT</code> is a good way to increase observability when high-risk events happen.</p>
+			<p>First, let's look at the rule entry itself. This rule uses a few helper entries, several macros, and lists – but <a id="_idIndexMarker682"/>we'll get to those in a second:</p>
+			<pre>- rule: Launch Privileged Container
+  desc: Detect the initial process started in a privileged container. Exceptions are made for known trusted images.
+  condition: &gt;
+    container_started and container
+    and container.privileged=true
+    and not falco_privileged_containers
+    and not user_privileged_containers
+  output: Privileged container started (user=%user.name command=%proc.cmdline %container.info image=%container.image.repository:%container.image.tag)
+  priority: INFO
+  tags: [container, cis, mitre_privilege_escalation, mitre_lateral_movement]</pre>
+			<p>As you can see, a Falco rule has several parts. First, we have the rule name and description. Then, we specify the triggering condition for the rule – which acts as a filter for Linux system calls. If a system call matches all the logic filters in the <code>condition</code> block, the rule is triggered.</p>
+			<p>When a rule is triggered, the output key allows us to set a format for how the text of the output appears. The <code>priority</code> key lets us assign a priority, which can be one of <code>emergency</code>, <code>alert</code>, <code>critical</code>, <code>error</code>, <code>warning</code>, <code>notice</code>, <code>informational</code>, and <code>debug</code>.</p>
+			<p>Finally, the <code>tags</code> key applies tags to the rule in question, making it easier to categorize rules. This is especially important when using alerts that aren't simply plain text <code>STDOUT</code> entries.</p>
+			<p>The syntax for <code>condition</code> is especially important here, and we will focus on how this system of filtering works.  </p>
+			<p>First off, since the filters are essentially logical statements, you will see some familiar syntax (if you have ever programmed or written pseudocode) – and, and not, and so on. This syntax is pretty simple to learn, and a full discussion of it – the <em class="italic">Sysdig</em> filter syntax – can be found at <a href="https://github.com/draios/sysdig/wiki/sysdig-user-guide#filtering">https://github.com/draios/sysdig/wiki/sysdig-user-guide#filtering</a>.  </p>
+			<p>As a note, the Falco open source project was originally created by <em class="italic">Sysdig</em>, which is why it uses the <a id="_idIndexMarker683"/>common <em class="italic">Sysdig</em> filter syntax.</p>
+			<p>Next, you will see reference to <code>container_started</code> and <code>container</code>, as well as <code>falco_privileged_containers</code> and <code>user_privileged_containers</code>. These are not plain strings but the use of macros – references to other blocks in the YAML that specify additional functionality, and generally make it much easier to write rules without repeating a lot of configuration.</p>
+			<p>To see how this rule really works, let's look at a full reference for all the macros that were referenced in the preceding rule:</p>
+			<pre>- macro: container
+  condition: (container.id != host)
+- macro: container_started
+  condition: &gt;
+    ((evt.type = container or
+     (evt.type=execve and evt.dir=&lt; and proc.vpid=1)) and
+     container.image.repository != incomplete)
+- macro: user_sensitive_mount_containers
+  condition: (container.image.repository = docker.io/sysdig/agent)
+- macro: falco_privileged_containers
+  condition: (openshift_image or
+              user_trusted_containers or
+              container.image.repository in (trusted_images) or
+              container.image.repository in (falco_privileged_images) or
+              container.image.repository startswith istio/proxy_ or
+              container.image.repository startswith quay.io/sysdig)
+- macro: user_privileged_containers
+  condition: (container.image.repository endswith sysdig/agent)</pre>
+			<p>You will see in the <a id="_idIndexMarker684"/>preceding YAML that each macro is really just a reusable block of <code>Sysdig</code> filter syntax, often using other macros to accomplish the rule functionality. Lists, not pictured here, are like macros except that they do not describe filter logic. Instead, they include a list of string values that can be used as part of a comparison using the filter syntax.</p>
+			<p>For instance, <code>(</code><code>trusted_images)</code> in the <code>falco_privileged_containers</code> macro references a list called <code>trusted_images</code>. Here's the source for that list:</p>
+			<pre>- list: trusted_images
+  items: []</pre>
+			<p>As you can see, this particular list is empty in the default rules, but a custom ruleset could use a list of trusted images in this list, which would then automatically be consumed by all the other macros and rules that use the <code>trusted_image</code> list as part of their filter rules.</p>
+			<p>As mentioned <a id="_idIndexMarker685"/>previously, in addition to tracking Linux system calls, Falco can also track Kubernetes control plane events as of Falco v0.13.0.</p>
+			<h3>Understanding Kubernetes audit event rules in Falco</h3>
+			<p>Structurally, these<a id="_idIndexMarker686"/> Kubernetes audit event rules work the <a id="_idIndexMarker687"/>same way as Falco's Linux system call rules. Here's an example of one of the default Kubernetes rules in Falco:</p>
+			<pre>- rule: Create Disallowed Pod
+  desc: &gt;
+    Detect an attempt to start a pod with a container image outside of a list of allowed images.
+  condition: kevt and pod and kcreate and not allowed_k8s_containers
+  output: Pod started with container not in allowed list (user=%ka.user.name pod=%ka.resp.name ns=%ka.target.namespace images=%ka.req.pod.containers.image)
+  priority: WARNING
+  source: k8s_audit
+  tags: [k8s]</pre>
+			<p>This rule acts on Kubernetes audit events in Falco (essentially, control plane events) to alert when a Pod is created that isn't on the list <code>allowed_k8s_containers</code>. The default <code>k8s</code> audit rules contain many similar rules, most of which output formatted logs when triggered.</p>
+			<p>Now, we talked about Pod security policies a bit earlier in this chapter – and you may be seeing some similarities between PSPs and Falco Kubernetes audit event rules. For instance, take this entry from the default Kubernetes Falco rules:</p>
+			<pre>- rule: Create HostNetwork Pod
+  desc: Detect an attempt to start a pod using the host network.
+  condition: kevt and pod and kcreate and ka.req.pod.host_network intersects (true) and not ka.req.pod.containers.image.repository in (falco_hostnetwork_images)
+  output: Pod started using host network (user=%ka.user.name pod=%ka.resp.name ns=%ka.target.namespace images=%ka.req.pod.containers.image)
+  priority: WARNING
+  source: k8s_audit
+  tags: [k8s]</pre>
+			<p>This rule, which is <a id="_idIndexMarker688"/>triggered when a Pod is attempting to <a id="_idIndexMarker689"/>start using the host network, maps directly to host network PSP settings.</p>
+			<p>Falco capitalizes on this similarity by letting us use Falco as a way to <code>trial</code> new Pod security policies without applying them cluster-wide and causing issues with running Pods.  </p>
+			<p>For this purpose, <code>falcoctl</code> (the Falco command-line tool) comes with the <code>convert psp</code> command. This command takes in a Pod security policy definition and turns it into a set of Falco rules. These Falco rules will just output logs to <code>STDOUT</code> when triggered (instead of causing Pod scheduling failures like a PSP mismatch), which makes it much easier to test out new Pod security policies in an existing cluster.</p>
+			<p>To learn how to use the <code>falcoctl</code> conversion tool, check out the official Falco documentation at <a href="https://falco.org/docs/psp-support/">https://falco.org/docs/psp-support/</a>.</p>
+			<p>Now that we have a good grounding on the Falco tool, let's discuss how it can be used to implement compliance controls and runtime security.</p>
+			<h2 id="_idParaDest-269"><a id="_idTextAnchor284"/>Mapping Falco to compliance and runtime security use cases</h2>
+			<p>Because of its <a id="_idIndexMarker690"/>extensibility and ability to audit low-level <a id="_idIndexMarker691"/>Linux system calls, Falco is a great tool for continuous compliance and runtime security.</p>
+			<p>On the compliance side, it is possible to leverage Falco rulesets that map specifically to the requirements of a compliance standard – for instance, PCI or HIPAA. This allows users to quickly detect and act on any processes that do not comply with the standard in question. There are open and closed source Falco rulesets for several standards.</p>
+			<p>Similarly, for runtime security, Falco exposes an alerting/eventing system, which means that any runtime events that trigger an alert can also trigger automated intervention and remediation processes. This can work for both security and compliance. As an example, if a Pod triggers a Falco alert for non-compliance, a process can work off that alert and delete the offending Pod immediately.</p>
+			<h1 id="_idParaDest-270"><a id="_idTextAnchor285"/>Summary</h1>
+			<p>In this chapter, we learned about security in the context of Kubernetes. First, we reviewed the basics of security on Kubernetes – which layers of the security stack are relevant to our cluster and some broad strokes of how to manage that complexity. Next, we learned about some of the major security issues that Kubernetes has encountered, as well as discussing the results of the 2019 security audit.</p>
+			<p>Then, we implemented security at two different levels of the stack in Kubernetes – first, in configuration with Pod security policies and network policies, and finally, runtime security with Falco.</p>
+			<p>In the next chapter, we will learn how to make Kubernetes your own by building custom resources. This will allow you to add significant new functionality to your cluster.</p>
+			<h1 id="_idParaDest-271"><a id="_idTextAnchor286"/>Questions</h1>
+			<ol>
+				<li value="1">What are the names of the two webhook controllers that a custom admission controller can use?</li>
+				<li>What effect does a blank <code>NetworkPolicy</code> for ingress have?</li>
+				<li>What sort of Kubernetes control plane events would be valuable to track in order to prevent attackers from altering Pod functionality?</li>
+			</ol>
+			<h1 id="_idParaDest-272"><a id="_idTextAnchor287"/>Further reading</h1>
+			<ul>
+				<li>Kubernetes CVE Database: <a href="https://cve.mitre.org/cgi-bin/cvekey.cgi?keyword=kubernetes">https://cve.mitre.org/cgi-bin/cvekey.cgi?keyword=kubernetes</a></li>
+			</ul>
+		</div>
+	</body></html>

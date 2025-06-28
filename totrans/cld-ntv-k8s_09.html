@@ -1,0 +1,395 @@
+<html><head></head><body>
+		<div><h1 id="_idParaDest-162"><em class="italic"><a id="_idTextAnchor166"/>Chapter 7</em>: Storage on Kubernetes</h1>
+			<p>In this chapter, we will learn how to provide application storage on Kubernetes. We'll review two storage resources on Kubernetes, volumes and persistent volumes. Volumes are great for transient data needs, but persistent volumes are necessary for running any serious stateful workload on Kubernetes. With the skills you'll learn in this chapter, you will be able to configure storage for your applications running on Kubernetes in several different ways and environments.</p>
+			<p>In this chapter, we will cover the following topics:</p>
+			<ul>
+				<li>Understanding the difference between volumes and persistent volumes</li>
+				<li>Using volumes</li>
+				<li>Creating persistent volumes</li>
+				<li>Persistent volume claims</li>
+			</ul>
+			<h1 id="_idParaDest-163"><a id="_idTextAnchor167"/>Technical requirements</h1>
+			<p>In order to run the commands detailed in this chapter, you will need a computer that supports the <code>kubectl</code> command-line tool along with a working Kubernetes cluster. See <a href="B14790_01_Final_PG_ePub.xhtml#_idTextAnchor016"><em class="italic">Chapter 1</em></a>, <em class="italic">Communicating with Kubernetes</em>, for several methods to get up and running with Kubernetes quickly, and for instructions on how to install the <code>kubectl</code> tool.</p>
+			<p>The code used in this chapter can be found in the book's GitHub repository at <a href="https://github.com/PacktPublishing/Cloud-Native-with-Kubernetes/tree/master/Chapter7">https://github.com/PacktPublishing/Cloud-Native-with-Kubernetes/tree/master/Chapter7</a>.</p>
+			<h1 id="_idParaDest-164"><a id="_idTextAnchor168"/>Understanding the difference between volumes and persistent volumes</h1>
+			<p>A completely stateless, containerized<a id="_idIndexMarker334"/> application may only need disk space for the container files themselves. When running applications of this type, no additional configuration is required on Kubernetes.</p>
+			<p>However, this is not always true in the real world. Legacy apps that are being moved to containers may need disk space volumes for many possible reasons. In order to hold files for use by containers, you need the Kubernetes volume resource.</p>
+			<p>There are two main storage resources that can be created in Kubernetes:</p>
+			<ul>
+				<li>Volumes</li>
+				<li>Persistent volumes</li>
+			</ul>
+			<p>The distinction between the two is in the name: while volumes are tied to the lifecycle of a particular Pod, persistent volumes stay alive until deleted and can be shared across different Pods. Volumes can be handy in sharing data across containers within a Pod, while persistent volumes can be used for many possible advanced purposes.</p>
+			<p>Let's look at how to implement volumes first.</p>
+			<h1 id="_idParaDest-165"><a id="_idTextAnchor169"/>Volumes</h1>
+			<p>Kubernetes supports many <a id="_idIndexMarker335"/>different subtypes of volumes. Most can be used for either volumes or persistent volumes, but some are specific to either resource. We'll start with the simplest and review a few types.</p>
+			<p class="callout-heading">Important note</p>
+			<p class="callout">You can see the full current list<a id="_idIndexMarker336"/> of volume types at https://kubernetes.io/docs/concepts/storage/volumes/#types-of-volumes.</p>
+			<p>Here is a short list of volume subtypes:</p>
+			<ul>
+				<li><code>awsElasticBlockStore</code></li>
+				<li><code>cephfs</code></li>
+				<li><code>ConfigMap</code></li>
+				<li><code>emptyDir</code></li>
+				<li><code>hostPath</code></li>
+				<li><code>local</code></li>
+				<li><code>nfs</code></li>
+				<li><code>persistentVolumeClaim</code></li>
+				<li><code>rbd</code></li>
+				<li><code>Secret</code></li>
+			</ul>
+			<p>As you can see, both ConfigMaps and Secrets <a id="_idIndexMarker337"/>are actually implemented as <em class="italic">types</em> of volume. Additionally, the list includes cloud provider volume types such as <code>awsElasticBlockStore</code>.</p>
+			<p>Unlike persistent volumes, which are created separately from any one Pod, creating a volume is most often done in the context of a Pod. </p>
+			<p>To create a simple volume, you can use the following Pod YAML:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">pod-with-vol.yaml</p>
+			<pre>apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-with-vol
+spec:
+  containers:
+  - name: busybox
+    image: busybox
+    volumeMounts:
+    - name: my-storage-volume
+      mountPath: /data
+  volumes:
+  - name: my-storage-volume
+    emptyDir: {}</pre>
+			<p>This YAML will create a Pod along with a volume of type <code>emptyDir</code>. Volumes of type <code>emptyDir</code> are provisioned using<a id="_idIndexMarker338"/> whatever storage already exists on the node that the Pod is assigned to. As mentioned previously, the volume is tied to the lifecycle of the Pod, not its containers. </p>
+			<p>This means that in a Pod with multiple containers, all containers will be able to access volume data. Let's take the following example YAML file for a Pod: </p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">pod-with-multiple-containers.yaml</p>
+			<pre>apiVersion: v1
+kind: Pod
+metadata:
+  name: my-pod
+spec:
+  containers:
+  - name: busybox
+    image: busybox
+    volumeMounts:
+    - name: config-volume
+      mountPath: /shared-config
+  - name: busybox2
+    image: busybox
+    volumeMounts:
+    - name: config-volume
+      mountPath: /myconfig
+  volumes:
+  - name: config-volume
+    emptyDir: {}</pre>
+			<p>In this example, both containers in the Pod can access the volume data, though at different paths. Containers can even communicate via files in the shared volume.</p>
+			<p>The important parts of the spec are the <code>volume spec</code> itself (the list item under <code>volumes</code>) and the <code>mount</code> for the volume (the list item under <code>volumeMounts</code>).</p>
+			<p>Each mount item <a id="_idIndexMarker339"/>contains a name, which corresponds to the name of the volume in the <code>volumes</code> section, and a <code>mountPath</code>, which will dictate to which file path on the container the volume gets mounted. For instance, in the preceding YAML, the volume <code>config-volume</code> will be accessible from within the <code>busybox</code> Pod at <code>/shared-config</code>, and within the <code>busybox2</code> Pod at <code>/myconfig</code>.</p>
+			<p>The volume spec itself takes a name – in this case, <code>my-storage</code>, and additional keys/values specific to the volume type, which in this case is <code>emptyDir</code> and just takes empty brackets.</p>
+			<p>Now, let's address the example of a cloud-provisioned <a id="_idIndexMarker340"/>volume mounted to a Pod. To mount an AWS <strong class="bold">Elastic Block Storage</strong> (<strong class="bold">EBS</strong>) volume, for instance, the following YAML can be used:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">pod-with-ebs.yaml</p>
+			<pre>apiVersion: v1
+kind: Pod
+metadata:
+  name: my-app
+spec:
+  containers:
+  - image: busybox
+    name: busybox
+    volumeMounts:
+    - mountPath: /data
+      name: my-ebs-volume
+  volumes:
+  - name: my-ebs-volume
+    awsElasticBlockStore:
+      volumeID: [INSERT VOLUME ID HERE]</pre>
+			<p>This YAML will, as long as your <a id="_idIndexMarker341"/>cluster is set up correctly to authenticate with AWS, attach your existing EBS volume to the Pod. As you can see, we use the <code>awsElasticBlockStore</code> key to specifically configure the exact volume ID to be used. In this case, the EBS volume must already exist on your AWS account and region. This is much <a id="_idIndexMarker342"/>easier with AWS <strong class="bold">Elastic Kubernetes Service</strong> (<strong class="bold">EKS</strong>) since it allows us to automatically provision EBS volumes from within Kubernetes.</p>
+			<p>Kubernetes also includes features within the Kubernetes AWS cloud provider to automatically provision volumes – but these are for use with persistent volumes. We'll look at how to get these automatically provisioned volumes in the <em class="italic">Persistent volumes</em> section.</p>
+			<h1 id="_idParaDest-166"><a id="_idTextAnchor170"/>Persistent volumes</h1>
+			<p>Persistent volumes hold some key <a id="_idIndexMarker343"/>advantages over regular Kubernetes volumes. As mentioned previously, their (persistent volumes) lifecycle is tied to the life of the cluster, not the life of a single Pod. This means that persistent volumes can be shared between Pods and reused as long as the cluster is running. For this reason, the pattern matches much better to external stores such as EBS (a block storage service on AWS) since the storage itself outlasts a single Pod.</p>
+			<p>Using persistent volumes actually requires two resources: the <code>PersistentVolume</code> itself and a <code>PersistentVolumeClaim</code>, which is used to mount a <code>PersistentVolume</code> to a Pod.</p>
+			<p>Let's start with the <code>PersistentVolume</code> itself – take a look at the basic YAML for creating a <code>PersistentVolume</code>:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">pv.yaml</p>
+			<pre>apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: my-pv
+spec:
+  storageClassName: manual
+  capacity:
+    storage: 5Gi
+  accessModes:
+    - ReadWriteOnce
+  hostPath:
+    path: "/mnt/mydata"</pre>
+			<p>Now let's pick this apart. Starting with the first line in the spec – <code>storageClassName</code>.</p>
+			<p>This first config, <code>storageClassName</code>, represents the type of storage we want to use. For the <code>hostPath</code> volume type, we simply specify <code>manual</code>, but for AWS EBS, for instance, you could create and use<a id="_idIndexMarker344"/> a storage class called <code>gp2Encrypted</code> to match the <code>gp2</code> storage type in AWS with EBS encryption enabled. Storage classes are therefore combinations of configuration that are available for a particular volume type – which can be referenced in the volume spec.</p>
+			<p>Moving forward with our AWS <code>StorageClass</code> example, let's provision a new <code>StorageClass</code> for <code>gp2Encrypted</code>:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">gp2-storageclass.yaml</p>
+			<pre>kind: StorageClass
+apiVersion: storage.k8s.io/v1
+metadata:
+  name: gp2Encrypted
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: kubernetes.io/aws-ebs
+parameters:
+  type: gp2
+  encrypted: "true"
+  fsType: ext4</pre>
+			<p>Now, we can create our <code>PersistentVolume</code> using the <code>gp2Encrypted</code> storage class. However, there's a shortcut to creating <code>PersistentVolumes</code> using dynamically<a id="_idIndexMarker345"/> provisioned EBS (or other cloud) volumes. When using dynamically provisioned volumes, we create the <code>PersistentVolumeClaim</code> first, which then automatically generates the <code>PersistentVolume</code>.</p>
+			<h2 id="_idParaDest-167"><a id="_idTextAnchor171"/>Persistent volume claims</h2>
+			<p>We now know that you can<a id="_idIndexMarker346"/> easily create persistent volumes in Kubernetes, however, that does not allow you to bind storage to a Pod. You need to create a <code>PersistentVolumeClaim</code>, which claims a <code>PersistentVolume</code> and allows you to bind that claim to a Pod or multiple Pods.</p>
+			<p>Building on our new <code>StorageClass</code> from the last section, let's make a claim that will automatically result in a new <code>PersistentVolume</code> being created since there are no other persistent volumes with our desired <code>StorageClass</code>:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">pvc.yaml</p>
+			<pre>kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: my-pv-claim
+spec:
+  storageClassName: gp2Encrypted
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi</pre>
+			<p>Running <code>kubectl apply -f</code> on this file should result in a new, autogenerated <strong class="bold">Persistent Volume</strong> (<strong class="bold">PV</strong>) being created. If your AWS cloud provider is set up correctly, this will result in the creation of a new <a id="_idIndexMarker347"/>EBS volume with type GP2 and encryption enabled.</p>
+			<p>Before we attach our EBS-backed persistent volume to our Pod, let's confirm that the EBS volume was created correctly in AWS.</p>
+			<p>To do so, we can navigate to our AWS console and ensure we are in the same region that our EKS cluster is running in. Then go to <strong class="bold">Services</strong> &gt; <strong class="bold">EC2</strong> and click on <strong class="bold">Volumes</strong> in the left menu under <strong class="bold">Elastic Block Store</strong>. In this section, we should see a line item with an autogenerated volume of the same size (<strong class="bold">1 GiB</strong>) as our PVC states. It should have the class of GP2, and it should have encryption enabled. Let's see what this would look like in the AWS console:</p>
+			<div><div><img src="img/B14790_07_001.jpg" alt="Figure 7.1 – AWS console with autocreated EBS volume"/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 7.1 – AWS console with autocreated EBS volume</p>
+			<p>As you can see, we have our dynamically generated EBS volume properly created in AWS, with encryption enabled and the <strong class="bold">gp2</strong> volume type assigned. Now that we have our volume created, and <a id="_idIndexMarker348"/>we've confirmed that it has been created in AWS, we can attach it to our Pod.</p>
+			<h2 id="_idParaDest-168"><a id="_idTextAnchor172"/>Attaching Persistent Volume Claims (PVCs) to Pods</h2>
+			<p>Now we have both a <code>PersistentVolume</code> and a <code>PersistentVolumeClaim</code>, we can attach them to a Pod<a id="_idIndexMarker349"/> for consumption. This process is very similar to attaching a ConfigMap or Secret – which makes sense, because ConfigMaps and <a id="_idIndexMarker350"/>Secrets are essentially types of volumes!</p>
+			<p>Check out the YAML that allows us to attach our encrypted EBS volume to a Pod and name it <code>pod-with-attachment.yaml</code>:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">Pod-with-attachment.yaml</p>
+			<pre>apiVersion: v1
+kind: Pod
+metadata:
+  name: my-pod
+spec:
+  volumes:
+    - name: my-pv
+      persistentVolumeClaim:
+        claimName: my-pv-claim
+  containers:
+    - name: my-container
+      image: busybox
+      volumeMounts:
+        - mountPath: "/usr/data"
+          name: my-pv</pre>
+			<p>Running <code>kubectl apply -f pod-with-attachment.yaml</code> will result in the creation of a Pod that has our <code>PersistentVolume</code> mounted via our claim to <code>/usr/data</code>.</p>
+			<p>To confirm that the <a id="_idIndexMarker351"/>volume has been successfully created, let's <code>exec</code> into our Pod and create a file in the location that our volume has been mounted:</p>
+			<pre>&gt; kubectl exec -it shell-demo -- /bin/bas<a id="_idTextAnchor173"/>h
+&gt; cd /usr/data
+&gt; <a id="_idTextAnchor174"/>touch myfile.txt</pre>
+			<p>Now, let's delete the <a id="_idIndexMarker352"/>Pod using the f<a id="_idTextAnchor175"/>ollowing command:</p>
+			<pre>&gt; kubectl <a id="_idTextAnchor176"/>delete pod my-pod</pre>
+			<p>And recreate it again using the f<a id="_idTextAnchor177"/>ollowing command:</p>
+			<pre>&gt; kubectl app<a id="_idTextAnchor178"/>ly -f my-pod.yaml</pre>
+			<p>If we've done our job right, we should be able to see our file when running <code>kubectl exec</code> to get into the Pod again:</p>
+			<pre>&gt; kubectl exec -it my-pod -- /bin/bash
+&gt; ls /usr/data
+&gt; myfile.txt</pre>
+			<p>Success!</p>
+			<p>We now know how to create a cloud-storage-provided persistent volume for Kubernetes. However, you may be running Kubernetes on-premise or on your laptop using minikube. Let's look at some alternate persistent volume subtypes that you can use instead.</p>
+			<h1 id="_idParaDest-169"><a id="_idTextAnchor179"/>Persistent volumes without cloud storage</h1>
+			<p>Our previous examples <a id="_idIndexMarker353"/>assume that you are running Kubernetes in a cloud environment and can make use of storage services provided by the cloud platform (AWS EBS and others). This, however, is not always possible. You may be running Kubernetes in a data center environment, or on dedicated hardware.</p>
+			<p>In this case, there are many potential solutions for providing storage to Kubernetes. A simple one is to change the volume type to <code>hostPath</code>, which works within the node's existing storage devices to create persistent volumes. This is great when running on minikube, for instance, but does not provide as powerful an abstraction as something like AWS EBS. For a tool with on-premise capabilities similar to cloud storage tools like EBS, let's look at using Ceph with Rook. For the full documentation, check out the Rook docs (which will teach you Ceph as well) at <a href="https://rook.io/docs/rook/v1.3/ceph-quickstart.html">https://rook.io/docs/rook/v1.3/ceph-quickstart.html</a>.</p>
+			<p>Rook is a popular open source Kubernetes storage abstraction layer. It can provide persistent volumes through a variety of providers, such as EdgeFS and NFS. In this case, we'll use Ceph, an open source storage project that provides object, block, and file storage. For simplicity, we'll use block mode.</p>
+			<p>Installing Rook on Kubernetes is actually pretty simple. We'll take you from installing Rook to setting up a Ceph cluster, to finally provisioning persistent volumes on our cluster.</p>
+			<h2 id="_idParaDest-170"><a id="_idTextAnchor180"/>Installing Rook</h2>
+			<p>We're going to use a typical<a id="_idIndexMarker354"/> Rook installation default setup provided by the Rook GitHub repository. This could be highly customized depending on the use case but will allow us to quickly set up block storage for our workloads. Please refer to the following steps to do this:</p>
+			<ol>
+				<li>First, let's clone the Rook repository:<pre><strong class="bold">&gt; git clone --single-branch --branch master</strong> <a href="https://github.com/rook/rook.git">https://github.com/rook/rook.git</a>
+<strong class="bold">&gt; cd cluster/examples/kubernetes/ceph</strong></pre></li>
+				<li>Our next step is to create all the relevant Kubernetes resources, including several <strong class="bold">Custom Resource Definitions</strong> (<strong class="bold">CRDs</strong>). We'll talk about these in later chapters, but for now, consider them new Kubernetes resources that are specific to Rook, outside of the typical Pods, Services, and so on. To create common resources, run the following command:<pre><strong class="bold">&gt; kubectl apply -f ./common.yaml</strong></pre></li>
+				<li>Next, let's start our Rook operator, which will handle provisioning all the necessary resources for a particular Rook provider, which in this case will be Ceph:<pre><strong class="bold">&gt; kubectl apply -f ./operator.yaml</strong></pre></li>
+				<li>Before the <a id="_idIndexMarker355"/>next step, ensure that the Rook operator Pod is actually running by using the following command:<pre><strong class="bold">&gt; kubectl -n rook-ceph get pod</strong></pre></li>
+				<li>Once the Rook Pod is in the <code>Running</code> state, we can set up our Ceph cluster! The YAML for this is also in the folder we've cloned from Git. Create it using the following command:<pre><strong class="bold">&gt; kubectl create -f cluster.yaml</strong></pre></li>
+			</ol>
+			<p>This process can take a few minutes. The Ceph cluster is comprised of several different Pod types, including the operator, <strong class="bold">Object Storage Devices</strong> (<strong class="bold">OSDs</strong>), and managers.</p>
+			<p>To ensure that our Ceph cluster is working properly, Rook provides a toolbox container image that allows you to use the Rook and Ceph command-line tools. To start the toolbox, you can use the toolbox Pod spec provided by the Rook project at <a href="https://rook.io/docs/rook/v0.7/toolbox.html">https://rook.io/docs/rook/v0.7/toolbox.html</a>.</p>
+			<p>Here is a sample of the spec for the toolbox Pod:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">rook-toolbox-pod.yaml</p>
+			<pre>apiVersion: v1
+kind: Pod
+metadata:
+  name: rook-tools
+  namespace: rook
+spec:
+  dnsPolicy: ClusterFirstWithHostNet
+  containers:
+  - name: rook-tools
+    image: rook/toolbox:v0.7.1
+    imagePullPolicy: IfNotPresent</pre>
+			<p>As you can see, this<a id="_idIndexMarker356"/> Pod uses a special container image provided by Rook. The image comes with all the tools you need to investigate Rook and Ceph pre-installed.</p>
+			<p>Once you have the toolbox Pod running, you can use the <code>rookctl</code> and <code>ceph</code> commands to check on the cluster status (check the Rook docs for specifics).</p>
+			<h2 id="_idParaDest-171"><a id="_idTextAnchor181"/>The rook-ceph-block storage class</h2>
+			<p>Now our cluster is working, we <a id="_idIndexMarker357"/>can create our storage class that will be used by our PVs. We will call this storage class <code>rook-ceph-block</code>. Here's our YAML file (<code>ceph-rook-combined.yaml</code>), which will include our <code>CephBlockPool</code> (which will handle our block storage in Ceph – see <a href="https://rook.io/docs/rook/v0.9/ceph-pool-crd.html">https://rook.io/docs/rook/v0.9/ceph-pool-crd.html</a> for more information) as well as the storage class itself:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">ceph-rook-combined.yaml</p>
+			<pre>apiVersion: ceph.rook.io/v1
+kind: CephBlockPool
+metadata:
+  name: replicapool
+  namespace: rook-ceph
+spec:
+  failureDomain: host
+  replicated:
+    size: 3
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+   name: rook-ceph-block
+provisioner: rook-ceph.rbd.csi.ceph.com
+parameters:
+    clusterID: rook-ceph
+    pool: replicapool
+    imageFormat: "2"
+currently supports only `layering` feature.
+    imageFeatures: layering
+    csi.storage.k8s.io/provisioner-secret-name: rook-csi-rbd-provisioner
+    csi.storage.k8s.io/provisioner-secret-namespace: rook-ceph
+    csi.storage.k8s.io/node-stage-secret-name: rook-csi-rbd-node
+    csi.storage.k8s.io/node-stage-secret-namespace: rook-ceph
+csi-provisioner
+    csi.storage.k8s.io/fstype: xfs
+reclaimPolicy: Delete</pre>
+			<p>As you can see, the YAML spec defines both our <code>StorageClass</code> and the <code>CephBlockPool </code>resource. As we mentioned earlier in this chapter, <code>StorageClass</code> is how we tell Kubernetes how to fulfill a <code>PersistentVolumeClaim</code>. The <code>CephBlockPool</code> resource, on the other hand, tells Ceph how and where to create distributed storage resources – in this case, how much to replicate the storage.</p>
+			<p>Now we can give some <a id="_idIndexMarker358"/>storage to our Pod! Let's create a new PVC with our new storage class:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">rook-ceph-pvc.yaml</p>
+			<pre>kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: rook-pvc
+spec:
+  storageClassName: rook-ceph-block
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi</pre>
+			<p>Our PVC is of storage class <code>rook-ceph-block</code>, so it will use the new storage class we just created. Now, let's give the PVC to our Pod in our YAML file:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">rook-ceph-pod.yaml</p>
+			<pre>apiVersion: v1
+kind: Pod
+metadata:
+  name: my-rook-test-pod
+spec:
+  volumes:
+    - name: my-rook-pv
+      persistentVolumeClaim:
+        claimName: rook-pvc
+  containers:
+    - name: my-container
+      image: busybox
+      volumeMounts:
+        - mountPath: "/usr/rooktest"
+          name: my-rook-pv</pre>
+			<p>When the Pod is created, Rook should <a id="_idIndexMarker359"/>spin up a new persistent volume and attach it to the Pod. Let's peer into the Pod to see if it worked properly:</p>
+			<pre>&gt; kubectl exec -it my-rook-test-pod -- /bin/bash
+&gt; cd /usr/rooktest
+&gt; touch myfile.txt
+&gt; ls</pre>
+			<p>We get the following output:</p>
+			<pre>&gt; myfile.txt</pre>
+			<p>Success!</p>
+			<p>Though we just used Rook's and Ceph's block storage functionality with Ceph, it also has a filesystem mode, which has some benefits – let's discuss why you may want to use it.</p>
+			<h2 id="_idParaDest-172"><a id="_idTextAnchor182"/>The Rook Ceph filesystem</h2>
+			<p>The downside of Rook's Ceph Block provider is that it can only be written to by one Pod at a time. In order to<a id="_idIndexMarker360"/> create a <code>ReadWriteMany</code> persistent volume with Rook/Ceph, we need to use the filesystem provider, which supports RWX mode. For more information, check out the Rook/Ceph docs at <a href="https://rook.io/docs/rook/v1.3/ceph-quickstart.html">https://rook.io/docs/rook/v1.3/ceph-quickstart.html</a>.</p>
+			<p>Up to creating the Ceph cluster, all the previous steps apply. At this point, we need to create our filesystem. Let's use the following YAML file to create it:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US"> rook-ceph-fs.yaml</p>
+			<pre>apiVersion: ceph.rook.io/v1
+kind: CephFilesystem
+metadata:
+  name: ceph-fs
+  namespace: rook-ceph
+spec:
+  metadataPool:
+    replicated:
+      size: 2
+  dataPools:
+    - replicated:
+        size: 2
+  preservePoolsOnDelete: true
+  metadataServer:
+    activeCount: 1
+    activeStandby: true</pre>
+			<p>In this case, we're replicating metadata and data to at least two pools for reliability, as configured in the <code>metadataPool</code> and <code>dataPool</code> blocks. We are also preserving the pools on delete using the <code>preservePoolsOnDelete</code> key.</p>
+			<p>Next, let's create <a id="_idIndexMarker361"/>our new storage class specifically for Rook/Ceph filesystem storage. The following YAML does this:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">rook-ceph-fs-storageclass.yaml</p>
+			<pre>apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: rook-cephfs
+provisioner: rook-ceph.cephfs.csi.ceph.com
+parameters:
+  clusterID: rook-ceph
+  fsName: ceph-fs
+  pool: ceph-fs-data0
+  csi.storage.k8s.io/provisioner-secret-name: rook-csi-cephfs-provisioner
+  csi.storage.k8s.io/provisioner-secret-namespace: rook-ceph
+  csi.storage.k8s.io/node-stage-secret-name: rook-csi-cephfs-node
+  csi.storage.k8s.io/node-stage-secret-namespace: rook-ceph
+reclaimPolicy: Delete</pre>
+			<p>This <code>rook-cephfs</code> storage class specifies our previously created pool and describes the reclaim policy of our storage class. Finally, it uses a few annotations that are explained in the Rook/Ceph documentation. Now, we can attach this via a PVC to a deployment, not just a Pod! Take a look at our PV:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">rook-cephfs-pvc.yaml</p>
+			<pre>kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: rook-ceph-pvc
+spec:
+  storageClassName: rook-cephfs
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 1Gi</pre>
+			<p>This persistent<a id="_idIndexMarker362"/> volume references our new <code>rook-cephfs</code> storage class in <code>ReadWriteMany</code> mode – we're asking for <code>1 Gi</code> of this data. Next, we can create our <code>Deployment</code>:</p>
+			<p class="SC---Heading" lang="en-US" xml:lang="en-US">rook-cephfs-deployment.yaml</p>
+			<pre>apiVersion: v1
+kind: Deployment
+metadata:
+  name: my-rook-fs-test
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25% 
+  selector:
+    matchLabels:
+      app: myapp
+  template:
+      spec:
+  	  volumes:
+    	  - name: my-rook-ceph-pv
+        persistentVolumeClaim:
+          claimName: rook-ceph-pvc
+  	  containers:
+    	  - name: my-container
+         image: busybox
+         volumeMounts:
+         - mountPath: "/usr/rooktest"
+           name: my-rook-ceph-pv</pre>
+			<p>This <code>Deployment</code> references our <code>ReadWriteMany</code> persistent volume claim using the <code>persistentVolumeClaim</code> block under <code>volumes</code>. When deployed, all of our Pods can now read and write to the same persistent volume.</p>
+			<p>After this, you should have<a id="_idIndexMarker363"/> a good understanding of how to create persistent volumes and attach them to Pods.</p>
+			<h1 id="_idParaDest-173"><a id="_idTextAnchor183"/>Summary</h1>
+			<p>In this chapter, we reviewed two methods of providing storage on Kubernetes – volumes and persistent volumes. First, we discussed the difference between these two methods: while volumes are tied to the lifetime of the Pod, persistent volumes last until they or the cluster is deleted. Then, we looked at how to implement volumes and attach them to our Pods. Lastly, we extended our learning on volumes to persistent volumes, and discovered how to use several different types of persistent volumes. These skills will help you assign persistent and non-persistent storage to your applications in many possible environments – from on-premises to the cloud.</p>
+			<p>In the next chapter, we'll take a detour from application concerns and discuss how to control Pod placement on Kubernetes.</p>
+			<h1 id="_idParaDest-174"><a id="_idTextAnchor184"/>Questions</h1>
+			<ol>
+				<li value="1">What are the differences between volumes and persistent volumes?</li>
+				<li>What is a <code>StorageClass</code>, and how does it relate to a volume?</li>
+				<li>How can you automatically provision cloud resources when creating Kubernetes resources such as a persistent volume?</li>
+				<li>In which use cases do you think that using volumes instead of persistent volumes would be prohibitive?</li>
+			</ol>
+			<h1 id="_idParaDest-175"><a id="_idTextAnchor185"/>Further reading</h1>
+			<p>Please refer to the following links for more information:</p>
+			<ul>
+				<li>Ceph Storage Quickstart for Rook: <a href="https://github.com/rook/rook/blob/master/Documentation/ceph-quickstart.md">https://github.com/rook/rook/blob/master/Documentation/ceph-quickstart.md</a></li>
+				<li>Rook Toolbox: <a href="https://rook.io/docs/rook/v0.7/toolbox.html">https://rook.io/docs/rook/v0.7/toolbox.html</a></li>
+				<li>Cloud providers: https://kubernetes.io/docs/tasks/administer-cluster/running-cloud-controller/</li>
+			</ul>
+		</div>
+	</body></html>

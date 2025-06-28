@@ -1,0 +1,143 @@
+<html><head></head><body>
+<div><div><div><div><div><h1 class="title" id="calibre_pb_0"><a id="ch06" class="calibre1"/>Chapter 6. Load Balancing</h1></div></div></div><p class="calibre8">No matter how we tune our Docker applications, we will reach our application's performance limits. Using the benchmarking techniques we discussed in the previous chapter, we should be able to identify the capacity of our application. In the near future, our Docker application's users will exceed this limit. We cannot turn these users away just because our Docker application cannot handle their requests anymore. We need to scale out our application so that it can serve our growing number of users.</p><p class="calibre8">In this chapter, we will talk about how to scale out our Docker applications to increase our capacity. We will use load balancers, which are a key component in the architecture of various web scale applications. Load balancers distribute our application's users to multiple Docker applications deployed in our farm of Docker hosts. The following steps covered in this chapter will help us accomplish this:</p><div><ul class="itemizedlist"><li class="listitem">Preparing a Docker host farm</li><li class="listitem">Balancing load with Nginx</li><li class="listitem">Scaling out our Docker applications</li><li class="listitem">Managing zero downtime releases with load balancers</li></ul></div></div>
+
+<div><div><div><div><div><h1 class="title" id="calibre_pb_1"><a id="ch06lvl1sec35" class="calibre1"/>Preparing a Docker host farm</h1></div></div></div><p class="calibre8">A key component in <a id="id248" class="calibre1"/>load balancing our Docker application is to have a farm of servers to send our application's requests to. In the case of our infrastructure, this involves preparing a farm of Docker hosts to deploy our application to. The scalable way to do this is to have a common base configuration that is managed by configuration management software, such as Chef, as we previously covered in <a class="calibre1" title="Chapter 3. Automating Docker Deployments with Chef" href="part0022_split_000.html#KVCC1-afc4585f6623427885a0b0c8e5b2e22e">Chapter 3, </a>
+<em class="calibre9">Automating Docker Deployments with Chef</em>.</p><p class="calibre8">After preparing the farm of Docker hosts, it is time to prepare the application that we will run. In this chapter, we will scale a simple NodeJS application. The rest of this section will describe how this application works.</p><p class="calibre8">The web application is a small NodeJS application written in a file called <code class="literal">app.js</code>. For the purpose of visualizing how our application load balances, we will also log some information about our application and the Docker host it is running in. The <code class="literal">app.js</code> file will contain the following code:</p><div><pre class="programlisting">var http = require('http');
+
+var server = http.createServer(function (request, response) {
+  response.writeHead(200, {"Content-Type": "text/plain"});
+  var version = "1.0.0";
+  var log = {};
+  log.header = 'mywebapp';
+  log.name = process.env.HOSTNAME;
+  log.version = version;
+  console.log(JSON.stringify(log));
+  response.end(version + " Hello World  "+ process.env.HOSTNAME);
+});
+server.listen(8000);</pre></div><p class="calibre8">To deploy the preceding application code, we will package it in a Docker image called <code class="literal">hubuser/app:1.0.0</code> with the following <code class="literal">Dockerfile</code>:</p><div><pre class="programlisting">FROM node:4.0.0
+
+COPY app.js /app/app.js
+EXPOSE 8000
+CMD ["node", "/app/app.js"]</pre></div><p class="calibre8">Make sure that our <a id="id249" class="calibre1"/>Docker image is built and available at Docker Hub. This way, we can easily deploy it. Run this with the following command:</p><div><pre class="programlisting">
+<strong class="calibre2">dockerhost$ docker build -t hubuser/app:1.0.0 .</strong>
+<strong class="calibre2">dockerhost$ docker push hubuser/app:1.0.0</strong>
+</pre></div><p class="calibre8">As the final step in our preparation, we will deploy our Docker application to three Docker hosts: <code class="literal">greenhost00</code>, <code class="literal">greenhost01</code>, and <code class="literal">greenhost02</code>. Log in to each of the hosts and type the following command to start the container:</p><div><pre class="programlisting">
+<strong class="calibre2">greenhost00$ docker run -d -p 8000:8000 hubuser/app:1.0.0</strong>
+<strong class="calibre2">greenhost01$ docker run -d -p 8000:8000 hubuser/app:1.0.0</strong>
+<strong class="calibre2">greenhost02$ docker run -d -p 8000:8000 hubuser/app:1.0.0</strong>
+</pre></div><div><h3 class="title2"><a id="tip08" class="calibre1"/>Tip</h3><p class="calibre8">Better yet, we can write a Chef cookbook that will deploy the Docker application that we just wrote.</p></div></div></div>
+<div><div><div><div><h1 class="title" id="calibre_pb_0"><a id="ch06lvl1sec36" class="calibre1"/>Balancing load with Nginx</h1></div></div></div><p class="calibre8">Now that we have a <a id="id250" class="calibre1"/>pool of Docker applications to forward traffic to, we <a id="id251" class="calibre1"/>can prepare our load balancer. In this section, we will briefly cover Nginx, a popular web server that has high concurrency and performance. It is commonly used as a reverse proxy to forward requests to more dynamic web applications, such as the NodeJS one we wrote earlier. By configuring Nginx to have multiple reverse proxy destinations, such as our pool of Docker applications, it will balance the load of requests coming to it across the pool.</p><p class="calibre8">In our load balancer deployment, we will deploy our Nginx Docker container in a Docker host called <code class="literal">dockerhost</code>. After deployment, the Nginx container will start forwarding to the pool of Docker hosts called <code class="literal">greenhost*</code>, which we provisioned in the earlier section.</p><p class="calibre8">The following is a simple configuration of Nginx that will forward traffic to the pool of Docker applications that we deployed earlier. Save this file in <code class="literal">/root/nginx.conf</code> inside the <code class="literal">dockerhost</code> Docker host, as follows:</p><div><pre class="programlisting">events { }
+
+http {
+  upstream app_server {
+    server greenhost00:8000;
+    server greenhost01:8000;
+    server greenhost02:8000;
+  }
+  server {
+    location / {
+      proxy_pass http://app_server;
+    }
+  }
+}</pre></div><p class="calibre8">The preceding Nginx configuration file is basically composed of directives. Each directive has a corresponding effect on Nginx's configuration. To define our pool of applications, we will use the <code class="literal">upstream</code> directive to define a group of servers. Next, we will place the list of servers in our pool using the <code class="literal">server</code> directive. A server in the pool is normally defined in the <code class="literal">&lt;hostname-or-ip&gt;:&lt;port&gt;</code> format.</p><div><h3 class="title2"><a id="note38" class="calibre1"/>Note</h3><p class="calibre8">The following <a id="id252" class="calibre1"/>are the references referring to the described directives mentioned earlier:</p><div><ul class="itemizedlist"><li class="listitem"><code class="literal">upstream</code>—<a class="calibre1" href="http://nginx.org/en/docs/http/ngx_http_upstream_module.html#upstream">http://nginx.org/en/docs/http/ngx_http_upstream_module.html#upstream</a></li><li class="listitem"><a id="id253" class="calibre1"/><code class="literal">server</code>—<a class="calibre1" href="http://nginx.org/en/docs/http/ngx_http_upstream_module.html#server">http://nginx.org/en/docs/http/ngx_http_upstream_module.html#server</a></li><li class="listitem"><a id="id254" class="calibre1"/><code class="literal">proxy_pass</code>—<a class="calibre1" href="http://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_pass">http://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_pass</a></li></ul></div><p class="calibre8">Introductory material discussing the basics of directives can be found at <a class="calibre1" href="http://nginx.org/en/docs/beginners_guide.html#conf_structure">http://nginx.org/en/docs/beginners_guide.html#conf_structure</a>.</p></div><p class="calibre8">Now that we have prepared our <code class="literal">nginx.conf</code> file, we can deploy our Nginx container together with this configuration. To perform this deployment, let's run the following command in our <code class="literal">dockerhost</code> Docker host:</p><div><pre class="programlisting">
+<strong class="calibre2">dockerhost$ docker run -p 80:80 -d --name=balancer \</strong>
+<strong class="calibre2">       --volume=/root/nginx.conf:/etc/nginx/nginx.conf:ro nginx:1.9.4</strong>
+</pre></div><p class="calibre8">Our web application is <a id="id255" class="calibre1"/>now accessible via <code class="literal">http://dockerhost</code>. Each request will then be routed to one of the <code class="literal">hubuser/webapp:1.0.0</code> <a id="id256" class="calibre1"/>containers we deployed to our pool of Docker hosts.</p><p class="calibre8">To confirm our deployment, we can look at our Kibana visualization to show the distribution of traffic across our three hosts. To show the distribution of traffic, we must first generate load for our application. We can use our JMeter testing infrastructure described in <a class="calibre1" title="Chapter 5. Benchmarking" href="part0035_split_000.html#11C3M2-afc4585f6623427885a0b0c8e5b2e22e">Chapter 5</a>, <em class="calibre9">Benchmarking</em>, to achieve this. For quick testing, we can also generate load using a long-running command similar to the following:</p><div><pre class="programlisting">
+<strong class="calibre2">$ while true; do curl http://dockerhost &amp;&amp; sleep 0.1; done</strong>
+<strong class="calibre2">1.0.0 Hello World  56547aceb063</strong>
+<strong class="calibre2">1.0.0 Hello World  af272c6968f0</strong>
+<strong class="calibre2">1.0.0 Hello World  7791edeefb8c</strong>
+<strong class="calibre2">1.0.0 Hello World  56547aceb063</strong>
+<strong class="calibre2">1.0.0 Hello World  af272c6968f0</strong>
+<strong class="calibre2">1.0.0 Hello World  7791edeefb8c</strong>
+<strong class="calibre2">1.0.0 Hello World  56547aceb063</strong>
+<strong class="calibre2">1.0.0 Hello World  af272c6968f0</strong>
+<strong class="calibre2">1.0.0 Hello World  7791edeefb8c</strong>
+</pre></div><p class="calibre8">Recall that in the application we prepared earlier, we printed out <code class="literal">$HOSTNAME</code> as a part of the HTTP response. In the preceding case, the responses show the Docker container's hostname. Note that Docker containers get the short hash of their container IDs as their hostname by default. As we can note from the initial output of our test workload, we are getting responses from three containers.</p><p class="calibre8">We can visualize the response better in a Kibana visualization if we set up our logging infrastructure as we did in <a class="calibre1" title="Chapter 4. Monitoring Docker Hosts and Containers" href="part0028_split_000.html#QMFO1-afc4585f6623427885a0b0c8e5b2e22e">Chapter 4</a>, <em class="calibre9">Monitoring Docker Hosts and Containers</em>. In the following screenshot, we can count the number of responses per minute according to the Docker host that the log <a id="id257" class="calibre1"/>entry came from:</p><div><img src="img/00032.jpeg" alt="Balancing load with Nginx" class="calibre10"/></div><p class="calibre11"> </p><p class="calibre8">We can note in the preceding figure that our workload gets distributed evenly by Nginx to our three Docker hosts: <strong class="calibre2">greenhost00</strong>, <strong class="calibre2">greenhost01</strong>, and <strong class="calibre2">greenhost02</strong>.</p><div><h3 class="title2"><a id="tip09" class="calibre1"/>Tip</h3><p class="calibre8">To properly visualize <a id="id258" class="calibre1"/>our deployment in Kibana we have to annotate our Docker containers and filter these log entries in Logstash so that they get properly annotated to Elasticsearch. We can do this via the following steps:</p><p class="calibre8">First, we will make sure that we use the <code class="literal">syslog-tag</code> option when deploying our Docker container. This makes our application easier to filter out later in Logstash. Run the following code:</p><div><pre class="programlisting">
+<strong class="calibre2">greenhost01$ docker run -d -p 8000:8000 \</strong>
+<strong class="calibre2">  --log-driver syslog \</strong>
+<strong class="calibre2">  --log-opt syslogtag=webapp \</strong>
+<strong class="calibre2">  hubuser/app:1.0.0</strong>
+</pre></div><p class="calibre8">With this, Logstash will receive our Docker container's log entries with the <code class="literal">docker/webapp</code> tag. We can then use a Logstash <code class="literal">filter</code> as follows to get this information in Elasticsearch:</p><div><pre class="programlisting">filter {
+  if [program] == "docker/webapp" {
+    json {
+      source =&gt; "message"
+    }
+  }
+}</pre></div></div></div>
+
+<div><div><div><div><div><h1 class="title" id="calibre_pb_0"><a id="ch06lvl1sec37" class="calibre1"/>Scaling out our Docker applications</h1></div></div></div><p class="calibre8">Now, suppose that the <a id="id259" class="calibre1"/>workload in the previous section starts to overload each of our three Docker hosts. Without a load balancer such as our preceding Nginx setup, our application's performance will start to degrade. This may mean a lower quality of service to our application's users or being paged in the middle of the night to perform heroic systems operations. However, with a load balancer managing the connections to our applications, it is very simple to add more capacity to scale out the performance of our application.</p><p class="calibre8">As our application is already designed to be load balanced, our scale-out process is very simple. The next few steps form a typical workflow on how to add capacity to a load-balanced application:</p><div><ol class="orderedlist"><li class="listitem" value="1">First, provision new Docker hosts with the same base configuration as the first three in our Docker host pool. In this section, we will create two new Docker hosts, named <code class="literal">greenhost03</code> and <code class="literal">greenhost04</code>.</li><li class="listitem" value="2">The next step in our scale-out process is to then deploy our applications in these new Docker hosts. Type the same command before for deployment as the following one to each of the new Docker hosts:<div><pre class="programlisting">
+<strong class="calibre2">greenhost03$ docker run -d -p 8000:8000 hubuser/app:1.0.0greenhost04$ docker run -d -p 8000:8000 hubuser/app:1.0.0</strong>
+</pre></div></li><li class="listitem" value="3">At this point, new application servers in our pool are ready to accept connections. It is now time to add them as destinations to our Nginx-based load balancer. To add them to our pool of upstream servers, first update the <code class="literal">/root/nginx.conf</code> file, as follows:<div><pre class="programlisting">events { }
+
+http {
+  upstream app_server {
+    server greenhost00:8000;
+    server greenhost01:8000;
+    server greenhost02:8000;
+<strong class="calibre2">    server greenhost03:8000;</strong>
+<strong class="calibre2">    server greenhost04:8000;</strong>
+  }
+  server {
+    location / {
+      proxy_pass http://app_server;
+    }
+  }
+}</pre></div></li><li class="listitem" value="4">Finally, we will notify our running Nginx Docker container to reload its configuration. In Nginx, this is done by sending a <code class="literal">HUP</code> Unix signal to its master process. To send the signal to a master process inside the Docker container, type the following Docker command. Send the reload signal:<div><pre class="programlisting">
+<strong class="calibre2">dockerhost$ docker kill -s HUP balancer</strong>
+</pre></div><div><h3 class="title2"><a id="note40" class="calibre1"/>Note</h3><p class="calibre8">More information <a id="id260" class="calibre1"/>on how to control Nginx with various Unix signals is documented at <a class="calibre1" href="http://nginx.org/en/docs/control.html">http://nginx.org/en/docs/control.html</a>.</p></div></li></ol><div></div><p class="calibre8">Now that we are done <a id="id261" class="calibre1"/>scaling out our Docker application, let's look back at our Kibana visualization to observe the effect. The following screenshot shows the distribution of traffic across the five Docker hosts we currently have:</p><div><img src="img/00033.jpeg" alt="Scaling out our Docker applications" class="calibre10"/></div><p class="calibre11"> </p><p class="calibre8">We can note in the preceding screenshot that after we reloaded Nginx, it started to distribute load across our new Docker containers. Before this, each Docker container received only a third <a id="id262" class="calibre1"/>of the traffic from Nginx. Now, each Docker application in the pool only receives a fifth of the traffic.</p></div>
+
+<div><div><div><div><div><h2 class="title1" id="calibre_pb_1"><a id="ch06lvl2sec32" class="calibre1"/>Deploying with zero downtime</h2></div></div></div><p class="calibre8">Another <a id="id263" class="calibre1"/>advantage of having our Docker application load balanced is that we can use the same load balancing techniques to update our application. Normally, operations engineers have to schedule downtime or a maintenance window in order to update an application deployed in production. However, as our application's traffic goes to a load balancer before it reaches our application, we can use this intermediate step to our advantage. In this section, we will employ a technique <a id="id264" class="calibre1"/>called blue-green deployments to update our running application with zero downtime.</p><p class="calibre8">Our current pool of <code class="literal">hubuser/app:1.0.0</code> Docker containers is called our <em class="calibre9">green</em> Docker host pool because it actively receives requests from our Nginx load balancer. We will update the application being served by our Nginx load balancer to pool of <code class="literal">hubuser/app:2.0.0</code> Docker containers. The following are the steps to perform the update:</p><div><ol class="orderedlist"><li class="listitem" value="1">First, let's update our application by changing the version string in our <code class="literal">app.js</code> file, as follows:<div><pre class="programlisting">var http = require('http');
+
+var server = http.createServer(function (request, response) {
+  response.writeHead(200, {"Content-Type": "text/plain"});
+  var version = "2.0.0";
+  var log = {};
+  log.header = 'mywebapp';
+  log.name = process.env.HOSTNAME;
+  log.version = version;
+  console.log(JSON.stringify(log));
+  response.end(version + " Hello World  "+ process.env.HOSTNAME);
+});
+
+server.listen(8000);</pre></div></li><li class="listitem" value="2">After updating the content, we will prepare a new version of our Docker image called <code class="literal">hubuser/app:2.0.0</code> and publish it to Docker Hub via the following command:<div><pre class="programlisting">
+<strong class="calibre2">dockerhost$ docker build -t hubuser/app:2.0.0 .
+dockerhost$ docker push hubuser/app:2.0.0</strong>
+</pre></div></li><li class="listitem" value="3">Next, we will provision a set of Docker hosts called <code class="literal">bluehost01</code>, <code class="literal">bluehost02</code>, and <code class="literal">bluehost03</code>, either through our cloud provider or by buying actual hardware. This will become our <em class="calibre9">blue</em> Docker host pool.</li><li class="listitem" value="4">Now that our Docker hosts are prepared, we will deploy our new Docker application on each of the new hosts. Type the following commands on each Docker host to perform the deployment:<div><pre class="programlisting">
+<strong class="calibre2">bluehost00$ docker run -d -p 8000:8000 hubuser/app:2.0.0
+bluehost01$ docker run -d -p 8000:8000 hubuser/app:2.0.0
+bluehost02$ docker run -d -p 8000:8000 hubuser/app:2.0.0</strong>
+</pre></div></li></ol><div></div><p class="calibre8">Our <em class="calibre9">blue</em> Docker host pool is now prepared. It is called blue because although it is now live and running, it has yet to receive user traffic. At this point, we can do whatever is needed, such as performing preflight checks and tests before siphoning our users to the new version of our application.</p><p class="calibre8">After we <a id="id265" class="calibre1"/>are confident that our blue Docker host pool is fully functional and working, it will be time to send traffic to it. As in the scaling-out process of our Docker host pool, we will simply add our blue Docker hosts to the list of servers inside our <code class="literal">/root/nginx.conf</code> configuration, as follows:</p><div><pre class="programlisting">events { }
+
+http {
+  upstream app_server {
+    server greenhost00:8000;
+    server greenhost01:8000;
+    server greenhost02:8000;
+    server greenhost03:8000;
+    server greenhost04:8000;
+<strong class="calibre2">    server bluehost00:8000;</strong>
+<strong class="calibre2">    server bluehost01:8000;</strong>
+<strong class="calibre2">    server bluehost02:8000;</strong>
+  }
+  server {
+    location / {
+      proxy_pass http://app_server;
+    }
+  }
+}</pre></div><p class="calibre8">To complete the activation, reload our Nginx load balancer by sending it the <code class="literal">HUP</code> signal through the following command:</p><div><pre class="programlisting">
+<strong class="calibre2">dockerhost$ docker kill -s HUP balancer</strong>
+</pre></div><p class="calibre8">At this point, Nginx sends traffic to both the old version (<code class="literal">hubuser/app:1.0.0</code>) and the new version (<code class="literal">hubuser/app:2.0.0</code>) of our Docker application. With this, we can completely verify that our new application is indeed working as expected because it now serves live traffic from our application's users. In the cases when it does not work properly, we can safely roll back by removing the <code class="literal">bluehost*</code> Docker hosts in the pool and resending the <code class="literal">HUP</code> signal to our Nginx container.</p><p class="calibre8">However, suppose we are already satisfied with our new application. We can then safely remove the <a id="id266" class="calibre1"/>old Docker application from our load balancer's configuration. In our <code class="literal">/root/nginx.conf</code> file, we can perform this by removing all the <code class="literal">greenhost*</code> lines, as follows:</p><div><pre class="programlisting">http {
+  upstream app_server {
+    <strong class="calibre2">server bluehost00:8000;</strong>
+    <strong class="calibre2">server bluehost01:8000;</strong>
+    <strong class="calibre2">server bluehost02:8000;</strong>
+  }
+  server {
+    location / {
+      proxy_pass http://app_server;
+    }
+  }
+}</pre></div><p class="calibre8">Now, we can complete our zero-downtime deployment with another <code class="literal">HUP</code> signal to Nginx. At this point, our blue Docker host pool serves all the production traffic of our application. This, therefore, becomes our new green Docker host pool. Optionally, we can deprovision our old green Docker host pool to save on resource usage.</p><p class="calibre8">The whole blue-green deployment process we did earlier can be summarized in the following Kibana visualization:</p><div><img src="img/00034.jpeg" alt="Deploying with zero downtime" class="calibre10"/></div><p class="calibre11"> </p><p class="calibre8">Note that in the preceding <a id="id267" class="calibre1"/>graph, our application still serves traffic even though we updated our application. Note also that before this, all of the traffic was distributed to our five <strong class="calibre2">1.0.0</strong> applications. After activating the blue Docker host pool, three-eighths of the traffic started going to version <strong class="calibre2">2.0.0</strong> of our application. In the end, we deactivated all the endpoints in our old green Docker host pool, and all of the application's traffic is now served by version <strong class="calibre2">2.0.0</strong> of our application.</p><div><h3 class="title2"><a id="note41" class="calibre1"/>Note</h3><p class="calibre8">More information about blue-green deployments and other types of zero-downtime <a id="id268" class="calibre1"/>release techniques can be found in a book called <em class="calibre9">Continuous Delivery </em>by Jez Humble and Dave Farley. The book's website can be found at <a class="calibre1" href="http://continuousdelivery.com">http://continuousdelivery.com</a>.</p></div></div></div>
+<div><div><div><div><h1 class="title" id="calibre_pb_0"><a id="ch06lvl1sec38" class="calibre1"/>Other load balancers</h1></div></div></div><p class="calibre8">There are other tools that <a id="id269" class="calibre1"/>can be used to load balance applications. Some are similar to Nginx, where configuration is defined through external configuration files. Then, we can send a signal to the running process to reload the updated configuration. Some have their pool configurations stored in an outside store, such as Redis, etcd, and even regular databases, so that the list is dynamically loaded by the load balancer itself. Even Nginx has some of these functionalities with its commercial offering. There are also other open source projects that extend Nginx with third-party modules.</p><p class="calibre8">The following is a short list of load balancers that we can deploy as some form of Docker containers in our infrastructure:</p><div><ul class="itemizedlist"><li class="listitem">Redx <a id="id270" class="calibre1"/>(<a class="calibre1" href="https://github.com/rstudio/redx">https://github.com/rstudio/redx</a>)</li><li class="listitem">HAProxy <a id="id271" class="calibre1"/>(<a class="calibre1" href="http://www.haproxy.org">http://www.haproxy.org</a>)</li><li class="listitem">Apache HTTP <a id="id272" class="calibre1"/>Server (<a class="calibre1" href="http://httpd.apache.org">http://httpd.apache.org</a>)</li><li class="listitem">Vulcand <a id="id273" class="calibre1"/>(<a class="calibre1" href="http://vulcand.github.io/">http://vulcand.github.io/</a>)</li><li class="listitem">CloudFoundry's <a id="id274" class="calibre1"/>GoRouter (<a class="calibre1" href="https://github.com/cloudfoundry/gorouter">https://github.com/cloudfoundry/gorouter</a>)</li><li class="listitem">dotCloud's Hipache <a id="id275" class="calibre1"/>(<a class="calibre1" href="https://github.com/hipache/hipache">https://github.com/hipache/hipache</a>) </li></ul></div><p class="calibre8">There are also hardware-based load balancers that we can procure ourselves and configure via their own <a id="id276" class="calibre1"/>proprietary formats or APIs. If we use cloud providers, some of their own load balancer offerings would have their own cloud APIs that we can use as well.</p></div>
+<div><div><div><div><h1 class="title" id="calibre_pb_0"><a id="ch06lvl1sec39" class="calibre1"/>Summary</h1></div></div></div><p class="calibre8">In this chapter, you learned the benefits of using load balancers and how to use them. We deployed and configured Nginx as a load balancer in a Docker container so that we can scale out our Docker application. We also used the load balancer to perform zero-downtime releases to update our application to a new version.</p><p class="calibre8">In the next chapter, we will continue to improve our Docker optimization skills by debugging inside the Docker containers we deploy.</p></div></body></html>

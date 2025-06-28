@@ -1,0 +1,205 @@
+<html><head></head><body>
+		<div><h1 id="_idParaDest-260"><em class="italic"><a id="_idTextAnchor278"/>Chapter 12</em>: Introduction to Container Security </h1>
+			<p>When developing technical projects, security should be a fundamental concern. We live in a world surrounded by security threats, from malware and viruses to data breaches. Being the victim of cybercrime or information leaks can have increasingly negative consequences, especially under regulations such as the EU's <strong class="bold">General Data Protection Regulation</strong> (<strong class="bold">GDPR</strong>).</p>
+			<p>When breaches or compromises do happen, having the ability to limit their scope through good architectural practices is a must. This is achieved through the concept of limiting what is called lateral movement. By this, we mean using one breached system to access another, thereby providing the attacker with the ability to traverse through your system, compromising further systems and stealing data.</p>
+			<p>Thankfully, containerization, when deployed correctly, can help you improve your security posture through a variety of features that will be explored in the final section of this book. First, however, we should explore the technical fundamentals of Docker's security architecture so that we can start to build upon it. Some of the concepts in this chapter will be a recap of ideas we have explored elsewhere in this book, framed in a security setting. This should help to not only cement those concepts in your learning process but also help you to understand how to secure your application development projects.</p>
+			<p>In this chapter, we're going to cover a brief overview of the security architecture of containers and how this relates and compares to virtualization, as well as how Docker Engine and containerd work from a security perspective and the concepts they have inherited from Linux. We will also look at an overview of best practices that you can implement that leverage Docker's security architecture. This will provide a foundation for exploring the topic deeper in the following chapters.</p>
+			<p>We will cover the following topics in this chapter:</p>
+			<ul>
+				<li>Virtualization and hypervisor security models</li>
+				<li>Container security models</li>
+				<li>Docker Engine and containerd – Linux security features</li>
+				<li>A note on cgroups</li>
+				<li>An overview of best practices</li>
+			</ul>
+			<p>So, let's start by reviewing how containers and virtualization differ and how security is a fundamental component of both.</p>
+			<h1 id="_idParaDest-261"><a id="_idTextAnchor279"/>Technical requirements</h1>
+			<p>For this chapter, you will need to have access to a Linux machine running Docker. We recommend that you use the setup you have been using so far in this book.</p>
+			<p>If you have jumped to the security section as your starting point, we recommend you install the Docker Community Edition from <a href="https://docs.docker.com/v17.09/engine/installation/">https://docs.docker.com/v17.09/engine/installation/</a>.</p>
+			<p>Check out the following video to see the Code in Action:</p>
+			<p><a href="https://bit.ly/3gW33FD">https://bit.ly/3gW33FD</a></p>
+			<h1 id="_idParaDest-262"><a id="_idTextAnchor280"/>Virtualization and hypervisor security models </h1>
+			<p>In previous chapters, we explored <a id="_idIndexMarker941"/>how Docker works and how it compares to<a id="_idIndexMarker942"/> other technologies, such as FreeBSD jails and virtualization. Building on what we learned here, we will now seek to understand the security model that underpins Docker better.</p>
+			<p>To start with, let's look at how security is implemented by virtualization tools so that we can then understand how Docker matches and differs from them.</p>
+			<h2 id="_idParaDest-263"><a id="_idTextAnchor281"/>Virtualization and protection rings</h2>
+			<p>When using <strong class="bold">virtual machines</strong> (<strong class="bold">VMs</strong>), you may have <a id="_idIndexMarker943"/>come across the term hypervisor. This is a program that orchestrates how the VMs run on your system<a id="_idIndexMarker944"/> and interact with the underlying hardware. Some hypervisor products, known as type 1 hypervisors, run directly on top of the hardware. Others, such as VirtualBox, are installed via your existing operating system and allow you to load additional operating systems as VMs. </p>
+			<p>How the hypervisor works with the underlying hardware is governed by what is known as protection rings. These rings dictate the layers of privilege, effectively deciding which aspects of a computer system's software, such as the operating system, drivers, and desktop applications, can access which parts of the underlying hardware.</p>
+			<p>Typically, you will see the protection ring<a id="_idIndexMarker945"/> modeled as a set of concentric circles, such as the following:</p>
+			<div><div><img src="img/B11641_12_001.jpg" alt=""/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 12.1 – Protection ring example</p>
+			<p>Sometimes <a id="_idIndexMarker946"/>the <strong class="bold">device drivers</strong> ring may <a id="_idIndexMarker947"/>show as two separate rings as well (denoted by the dotted circle in the diagram).</p>
+			<p>Each hardware architecture will differ slightly in its adaptation of the protection ring model and, in turn, the operating systems that run on it may also run code at different levels than expected. However, it is typical to find ring 0—that is, the ring at the center with the most privilege—denoted <a id="_idIndexMarker948"/>as the <strong class="bold">kernel ring</strong> (sometimes called <strong class="bold">kernel land</strong>).</p>
+			<p>Malicious software will often try to attack the kernel in order to gain full access over the system and run low-level system processes. This software is usually known as kernel-mode rootkits. Therefore, protecting the kernel is a must, as well as ensuring that if a system is breached with a malicious application, library, or package, it cannot escalate privileges to gain kernel access is paramount.</p>
+			<p>Outer rings may then handle device drivers and applications. Each is assigned a ring and the outer ring containing user applications is <a id="_idIndexMarker949"/>often known as <strong class="bold">user land</strong>. Gates handle how each ring can speak to the ring below it. As with the kernel, there is a risk of malicious software infecting applications that run at these levels including user-mode rootkits that run at level 3.</p>
+			<p>With these threats in mind, the protection ring model helps prevent the programs that you install on your desktop from maliciously accessing the underlying hardware and bypassing the kernel. Therefore, malware writers are forced to look for security holes and other means of obfuscating their attacks, such as injecting their code into other processes. You can think of these layers of security as providing a set of doors that need to be breached, rather than an<a id="_idIndexMarker950"/> attacker just being able to walk in and be given direct access to the underlying hardware.</p>
+			<p>These layers of segmentation, while not foolproof, help to provide what is known as a layered approach to security. The idea here is that by adding one layer of security to another, we make it increasingly difficult for an attack to be pulled off.</p>
+			<h3>Virtualization and malware</h3>
+			<p>Since we are interested in virtualization<a id="_idIndexMarker951"/> and subsequently, how this compares to Docker containers, we are, of course, interested in how virtualization fits into this model. How does virtualization protect against rootkits and other malware?</p>
+			<p>Many modern hardware architectures, such as the ARMv7-A, include a hypervisor as a privilege level in our ring model that is more privileged than the operating system level. This allows the hypervisor to switch between operating systems that are running at the next ring above.</p>
+			<p>Some architectures also implement what is <a id="_idIndexMarker952"/>known as <strong class="bold">ring -1</strong>. This allows the hypervisor to run at a further deeper security ring, with the guest operating system kernels running at ring 0. If, for example, you are running VirtualBox on top of an x86 platform, depending on whether hardware virtualization exists, VirtualBox will run either at ring -1 or ring 0.</p>
+			<p>VMs are useful for conducting malware analysis for a number of reasons, including the fact the machine can be locked down, so it is a self-contained environment. Once the investigator is done analyzing the code and its effects, the VM can be deleted without having to reinstall the whole operating system of the machine, or (if configured correctly) risk the malware gaining access to the underlying hardware.</p>
+			<p>So, in summary, protection rings provide a mechanism to provide a way to segment software so that it can only access certain resources. In a virtualization model, a hypervisor can run in the ring with the most privilege to switch between operating systems. A hypervisor can be installed via an existing operating system, such as Windows, or be deployed on bare metal, such as the VMware ESXi product. It can also be used to create a sandbox environment that prevents malicious code from infecting the underlying hardware or operating system. </p>
+			<p>So, how does this compare to Docker and how does the protection ring model apply?</p>
+			<h2 id="_idParaDest-264"><a id="_idTextAnchor282"/>Docker and protection rings</h2>
+			<p>Like VMs, Docker containers <a id="_idIndexMarker953"/>provide an isolated environment for running your code on top of an existing operating system. This operating system can be either virtualized or installed directly onto bare metal. </p>
+			<p>So, how does this work? You may remember that Docker containers run on top of Docker Engine, which in turn sits on top of the operating system via an intermediate component called <strong class="bold">containerd</strong>. This is in <a id="_idIndexMarker954"/>comparison to the type 1 hypervisor, which runs on top of the infrastructure, as we discussed previously, with the guest operating systems running on top of the hypervisor.</p>
+			<p>Docker containers, therefore, all run on top of the same operating system, regardless of whether it is virtualized or not. In fact, in some instances, such as if you run Linux containers on Docker on Windows, you may notice that it uses an intermediary step. This consists of running a virtualized version of Linux, which in turn runs the Docker engine. In this scenario, all the containers are running on the same virtualized Linux operating system.</p>
+			<p class="callout-heading">Note</p>
+			<p class="callout">Docker Engine Enterprise Edition also supports <a id="_idIndexMarker955"/>native Windows containers. You can read more about them at <a href="https://www.docker.com/products/windows-containers">https://www.docker.com/products/windows-containers</a>.</p>
+			<p>The key concept to all of this is that isolation happens at the container level, rather than—or in addition to—the VM level. So, at a basic level, Docker does not provide the same sandboxing that the VM itself does.</p>
+			<p>The following diagram demonstrates the difference:</p>
+			<div><div><img src="img/B11641_12_002.jpg" alt=""/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 12.2 – Example of isolation in Docker and VMs</p>
+			<p>In the preceding diagram, if we run Docker on the VM stack, we would replace the <strong class="bold">Applications</strong> layer with the <strong class="bold">Docker Engine</strong>/<strong class="bold">Containerd</strong> and container layers.</p>
+			<p>As you can probably see, this <a id="_idIndexMarker956"/>provides a layer of security in addition to that provided by the underlying host operating system or, when applicable, the additional layer of the hypervisor. However, this layer of security when operating on top of the host operating system and not via a VM does mean that if the Docker Engine contains a security vulnerability, you have an additional layer of risk. </p>
+			<p>The Docker containers' access to the underlying system/kernel, therefore, is mediated by the engine, which in turn makes system calls via containerd (and, in most cases, is called via <code>runc</code>).</p>
+			<p class="callout-heading">Note</p>
+			<p class="callout">If you want to read about containerd<a id="_idIndexMarker957"/> and runc<a id="_idIndexMarker958"/> in more detail, check out the official website at <a href="https://containerd.io/">https://containerd.io/</a>.</p>
+			<p>Here, we have provided a level of isolation between each container and the underlying operating system and hardware. Docker Engine does not run at ring 0 or ring -1, but rather at ring 3, meaning while it is susceptible to other forms of attack, it does not have direct access to the hardware as the hypervisor does.</p>
+			<p class="callout-heading">Note</p>
+			<p class="callout">Even with this layered approach to security, flaws have been found in the past. You can read more at <a href="https://www.twistlock.com/labs-blog/breaking-docker-via-runc-explaining-cve-2019-5736/">https://www.twistlock.com/labs-blog/breaking-docker-via-runc-explaining-cve-2019-5736/</a>.</p>
+			<p>Additionally, each container is <a id="_idIndexMarker959"/>a separate self-contained set of libraries and applications that can only communicate with each other via Docker Engine. By default, as we noted, the containers do not have access to the underlying operating system that Docker Engine is hosted on. In fact, any calls to access system resources at the underlying OS level have to be explicitly configured when setting up the Dockerfile. The Docker containers, therefore, run at ring level 3, aka user land, with additional layers of security in place.</p>
+			<p>Now that we have an understanding of the ring model and how Docker and virtualization work in conjunction with it, let's look at container security models and what they have inherited from Linux's best practices and techniques.</p>
+			<h1 id="_idParaDest-265"><a id="_idTextAnchor283"/>Container security models</h1>
+			<p>Moving up from the <a id="_idIndexMarker960"/>hardware layer and how the hypervisor and base operating system mediate access to it, we can begin to review what happens at the software layer running at ring level 3. To explore this, there are two key features of Docker's container security model that we need to understand:</p>
+			<ul>
+				<li>Applications are isolated from the underlying host system.</li>
+				<li>Containerized applications are isolated from each other.</li>
+			</ul>
+			<p>So, how does Docker achieve these objectives? The answer to this is, as you may have guessed, via Docker Engine and related components, such as containerd. These components have inherited a number of key Linux features and concepts with major benefits for security, including the following:</p>
+			<ul>
+				<li><strong class="bold">runc</strong>: A lightweight container runtime</li>
+				<li><strong class="bold">Namespaces</strong>: A Linux method for partitioning kernel resources</li>
+				<li><strong class="bold">Control groups (cgroups)</strong>: A kernel feature for limiting resources such as CPU usage</li>
+			</ul>
+			<p>Additionally, it also allows the implementation of other security features found in the Linux kernel, such as the following:</p>
+			<ul>
+				<li><strong class="bold">SELinux</strong>: The Linux <a id="_idIndexMarker961"/>kernel security module for handling access control security policies</li>
+				<li><strong class="bold">AppArmor</strong>: A Linux<a id="_idIndexMarker962"/> feature for restricting application capabilities </li>
+				<li><strong class="bold">TOMOYO</strong>: A Linux<a id="_idIndexMarker963"/> security module <a id="_idIndexMarker964"/>for handling <strong class="bold">mandatory access control</strong> (<strong class="bold">MAC</strong>)</li>
+				<li><strong class="bold">GRSEC</strong>: A collection <a id="_idIndexMarker965"/>of security enhancements for the Linux kernel</li>
+			</ul>
+			<p>These tried and true best practices allow containers to be isolated from one another and from the host operating system in a secure fashion. We will now delve deeper into Docker Engine and containerd to get a better understanding of how these security features are implemented. </p>
+			<h1 id="_idParaDest-266"><a id="_idTextAnchor284"/>Docker Engine and containerd – Linux security features</h1>
+			<p>Docker Engine, which <a id="_idIndexMarker966"/>you installed previously, acts as the coordinator for all your application containers. In addition to the engine are other key components that make up the Docker ecosystem. Initially, many of the components were baked into Docker Engine, but over the years, in order to make the engine smaller and faster, some components, such as the runtime mechanism for managing containers, were broken down into separate projects.</p>
+			<p>One example of this is the containerd<a id="_idIndexMarker967"/> project. containerd, which implements <code>runc</code>, allows container management and is used in a number of related projects beyond Docker, including Kubernetes CRI.</p>
+			<p class="callout-heading">Note</p>
+			<p class="callout">You can download and view the source code for containerd from GitHub at <a href="https://github.com/docker/containerd">https://github.com/docker/containerd</a> and <code>runc</code> at <a href="https://github.com/opencontainers/runc">https://github.com/opencontainers/runc</a>.</p>
+			<p>containerd solves the problem of aggregating a number of features in the Linux kernel and providing an abstraction layer to <a id="_idIndexMarker968"/>handle <strong class="bold">system calls</strong> (<strong class="bold">syscalls</strong>). Docker Engine, therefore, sits on<a id="_idIndexMarker969"/> top of this and uses it to interact with the underlying operating system. An example of a task handed off to it from Docker Engine is attaching a process to an existing container.</p>
+			<p>This modular approach is not limited to the engine and how it interacts with the operating system. For example, containers and the engine do not need to reside on the same machine. Therefore, hosting options can be broken up.</p>
+			<p>This distributed model works as Docker implements a client-server model with the engine being the server and each of your containers acting as clients. Some of the key features of this architecture are as follows:</p>
+			<ul>
+				<li>The server running as a Linux daemon process (<a href="https://man7.org/linux/man-pages/man7/daemon.7.html">https://man7.org/linux/man-pages/man7/daemon.7.html</a>).</li>
+				<li>A Docker <code>docker</code> command in your terminal.</li>
+				<li>Communication between the containers and the engine handled over a REST API.</li>
+			</ul>
+			<p>It is important to note that the communication channel between the containers and the engine can be encrypted using SSL/TLS.</p>
+			<p>SSL/TLS is the de facto standard for encrypting traffic between web endpoints. You will have seen it used on websites when accessing content via the HTTPS protocol. Later on, we will explore how you can enable SSL/TLS to help protect the Docker daemon socket. </p>
+			<p>Docker provides an extensive set of features for configuring complex networks, and you can read more about it in detail at the Docker<a id="_idIndexMarker970"/> website at <a href="https://docs.docker.com/v17.09/engine/userguide/networking/">https://docs.docker.com/v17.09/engine/userguide/networking/</a>.</p>
+			<p>The isolation that this client-server architecture provides between the host OS and your various containers (whether located on the same machine or distributed) works on the premise of least access. This means that each Docker container effectively only has access to the resources it needs, such as to the disk or network resources, and nothing more. Additionally, one Docker container cannot access the processes of another container. </p>
+			<p>This model of least access is aided by the implementation of Linux namespaces to isolate processes from one another. Running Docker on Windows via a virtualized Linux environment hosting the engine is one way that Windows users can reap the benefits of this technology.</p>
+			<p class="callout-heading">Note</p>
+			<p class="callout">If you would like to learn more about how native <a id="_idIndexMarker971"/>Windows containers achieve process and<a id="_idIndexMarker972"/> Hyper-V isolation, you can refer to the Windows Containers website at <a href="https://docs.microsoft.com/en-us/virtualization/windowscontainers/manage-containers/hyperv-container">https://docs.microsoft.com/en-us/virtualization/windowscontainers/manage-containers/hyperv-container</a>.</p>
+			<p>Docker Engine, when deploying a container, will generate a number of these Linux namespaces. They are as follows:</p>
+			<ul>
+				<li>The <strong class="bold">process ID</strong> (<strong class="bold">PID</strong>) namespace</li>
+				<li>The <strong class="bold">mount</strong> (<strong class="bold">MNT</strong>) namespace</li>
+				<li>The <strong class="bold">networking</strong> (<strong class="bold">NET</strong>) namespace</li>
+				<li>The <strong class="bold">inter-process communication</strong> (<strong class="bold">IPC</strong>) namespace</li>
+				<li>The <strong class="bold">Unix time-sharing</strong> (<strong class="bold">UTS</strong>) namespace</li>
+				<li>The <code>USER</code> namespace</li>
+			</ul>
+			<p>We'll now look at each of these in a little more detail to understand the security implications.</p>
+			<h2 id="_idParaDest-267"><a id="_idTextAnchor285"/>PID namespaces</h2>
+			<p>As<a id="_idIndexMarker973"/> you may know, each process in the Linux operating system resides in a tree structure and is <a id="_idIndexMarker974"/>assigned an ID called the PID. The PID namespace allows the separation of processes. By implementing the PID namespace, we can prevent our container from viewing the system processes. Aside from the security benefit of this, it has the additional benefit that system PIDs, such as PID 1, can be reused. </p>
+			<p>If you want to<a id="_idIndexMarker975"/> grant your containers access to system processes, you will, therefore, have to encode this into your Dockerfile explicitly. This follows the previously mentioned principle of <a id="_idIndexMarker976"/>granting the least access. So, think carefully before you implement any features this way.</p>
+			<h2 id="_idParaDest-268"><a id="_idTextAnchor286"/>MNT namespaces</h2>
+			<p>The<a id="_idIndexMarker977"/> MNT namespace <a id="_idIndexMarker978"/>allows a container to have access to its own collection of root directories and file mounts. This method allows you to create a private filesystem and so segment which files are accessible to which container, reducing the risk of a compromised container getting access to files it shouldn't or accidental file corruption.</p>
+			<h2 id="_idParaDest-269"><a id="_idTextAnchor287"/>NET namespaces</h2>
+			<p>Docker, as we <a id="_idIndexMarker979"/>discussed briefly, has a variety of networking tools at its disposal. By default, when you deploy a container, it will have its networking features enabled. This <a id="_idIndexMarker980"/>will allow them to make outgoing connections. By default, the container will use the same DNS servers as configured by the host and have a MAC address assigned to it. The IP address in IPv4 and IPv6 can be set using the relevant flags. If you chose to override the MAC address via the available flag, you should be aware that there is no mechanism to automatically check whether the MAC address is unique. Duplicate MAC addresses will likely result in a MAC address collision.</p>
+			<p>If you wish to disable networking as part of your security posture for a particular container, this can be achieved by overriding the settings using the <code>--network</code> flag when you execute the <code>run</code> command. Setting the flag to <code>none</code> will disable all external access, leaving only the loopback address accessible. </p>
+			<p>A number of other configuration options are available to customize your container network settings, and these can be accessed under the help menu.</p>
+			<h2 id="_idParaDest-270"><a id="_idTextAnchor288"/>IPC namespaces</h2>
+			<p>The IPC<a id="_idIndexMarker981"/> namespace is used <a id="_idIndexMarker982"/>to provide separation of named shared memory segments, along with message queues. </p>
+			<p>IPC namespaces are locked down to prevent processes in one namespace accessing those within another. The benefit of this model is that a container can safely deploy a set of services that require memory segment utilization, such as the types of applications you might find in FinTech. </p>
+			<h2 id="_idParaDest-271"><a id="_idTextAnchor289"/>UTS namespaces</h2>
+			<p>The UTS namespace <a id="_idIndexMarker983"/>allows us to set the domain and hostname for processes <a id="_idIndexMarker984"/>running in the namespace. This namespace is a default feature, so all containers have it enabled, and it allows you to assign a different hostname per container. </p>
+			<h2 id="_idParaDest-272"><a id="_idTextAnchor290"/>USER namespaces</h2>
+			<p>The final category of <a id="_idIndexMarker985"/>namespace we will discuss is the <code>USER</code> namespace. This is a <a id="_idIndexMarker986"/>mechanism that allows you to map users and groups to a container. Once mapped, users can be assigned different user IDs.</p>
+			<p>One extremely useful benefit of this feature from a security perspective is that it helps to prevent your container from being leveraged for privilege escalation attacks. Examples of how to achieve this include not only running applications as an unprivileged user but also mapping the root user within the container to a less-privileged user at the Docker host level. Therefore, processes running at root within the container have this privilege level limited to the container they operate within. </p>
+			<h1 id="_idParaDest-273"><a id="_idTextAnchor291"/>A note on cgroups</h1>
+			<p>Linux <strong class="bold">cgroups</strong> are a <a id="_idIndexMarker987"/>mechanism used to control the number of processes that can be spawned and so prevent a system from suffering severe performance loss or worse, crashing.</p>
+			<p>By using cgroups, we can set a limit to the number of processes that can be spawned through the <code>fork()</code> and <code>clone()</code> operations. Once a limit is hit, it's not possible to generate any further processes under the cgroup. Additionally, cgroups support the ability to set CPU and memory limits. You can read about their <a id="_idIndexMarker988"/>comprehensive list of options at <a href="https://www.man7.org/linux/man-pages/man7/cgroups.7.html">https://www.man7.org/linux/man-pages/man7/cgroups.7.html</a></p>
+			<p>Using this feature enables you to have more granular control over the system resources that your container is using. In an unfortunate event where a container is compromised, preventing it from over-consuming system resources is a useful mechanism to limit the damage until you can remediate the problem. </p>
+			<p>Having looked at how Docker Engine and containerd use best practices from Linux, let's now move on to look at some best practices that we can use that also implement some of the features we have discussed so far.</p>
+			<h1 id="_idParaDest-274"><a id="_idTextAnchor292"/>An overview of best practices</h1>
+			<p>In the following chapters, we <a id="_idIndexMarker989"/>will be delving into techniques to ensure your<a id="_idIndexMarker990"/> containers are secure. You'll be happy to know that there are a number of best practices that you can use off the bat to ensure that you are thinking about and implementing security at the most basic level.</p>
+			<p>The first thing to understand, and that you may have already picked up on, is that Docker containers, compared to VMs, do not provide the same level of security. We gave an example earlier of how a VM can be used for malware analysis due to its sandboxed environment. Therefore, from a security perspective, you should approach containers as a mechanism that is used to optimally package system resources and applications for development and delivery (with some very useful security built in) but not treat them as a micro-VM.</p>
+			<p>With this in mind, let's look at some best practices we can apply when using Docker.</p>
+			<h2 id="_idParaDest-275"><a id="_idTextAnchor293"/>Keeping Docker patched</h2>
+			<p>As with any application you run, it is important to keep Docker patched. Unpatched security vulnerabilities in Docker Engine, for example, can be leveraged by nefarious actors who gain access to one of your containers in the case of a breach.</p>
+			<p>The Docker Desktop application in macOS, for example, provides an option to check for updates, and the preferences allow you to automatically check for updates:</p>
+			<div><div><img src="img/B11641_12_003.jpg" alt=""/>
+				</div>
+			</div>
+			<p class="figure-caption">Figure 12.3 – Example of checking for updates on macOS</p>
+			<p>When implementing Docker, you<a id="_idIndexMarker991"/> may also wish to manually upgrade the software based <a id="_idIndexMarker992"/>on security patches or whether you are using the Docker Enterprise edition. </p>
+			<p>A list of each patch/release can be found on the <a id="_idIndexMarker993"/>Docker website with a list of the features added or issues addressed: </p>
+			<p><a href="https://docs.docker.com/engine/release-notes/">https://docs.docker.com/engine/release-notes/</a></p>
+			<p>You will notice here that some of the items are listed with the <strong class="bold">CVE</strong> prefix, which stands for <strong class="bold">common vulnerabilities and exposures</strong>. The CVE list is a collection of publicly disclosed security issues. When<a id="_idIndexMarker994"/> a security problem with Docker is identified, it may be listed in the CVE database, and then when it is fixed, the CVE ID for the issue will be listed in the release notes.</p>
+			<p>As a final note on this topic, also remember to keep the underlying operating system that Docker is running on patched and hardened, too.</p>
+			<h2 id="_idParaDest-276"><a id="_idTextAnchor294"/>Securing the Docker daemon socket</h2>
+			<p>In addition to ensuring that <a id="_idIndexMarker995"/>Docker is regularly patched, we also need to safeguard the daemon socket. This means locking it down to prevent an attacker from using it to gain root access to the underlying host. Docker security documentation provides an extensive guide to <a id="_idIndexMarker996"/>doing this; however, we will summarize it here.</p>
+			<p class="callout-heading">Note</p>
+			<p class="callout">To read more about the daemon socket, review <a id="_idIndexMarker997"/>the official documentation on Docker's website at <a href="https://docs.docker.com/engine/reference/commandline/dockerd/#daemon-socket-option">https://docs.docker.com/engine/reference/commandline/dockerd/#daemon-socket-option</a>.</p>
+			<p>You can find the domain socket file on Linux systems at <code>/var/run/docker.sock</code>.</p>
+			<p>This file should only be accessible via root permissions or accounts in the Docker group.</p>
+			<p>We are now going to set up encrypted access over TLS/SSL to the Docker daemon to add another layer of protection.</p>
+			<p>As you may be aware, unencrypted TCP sockets are enabled through using the <code>-H</code> flag and include the TCP protocol, host, and port number. The port for unencrypted connections by convention is <code>2375</code>. Going forward, if you have been using that method, we recommend you stop and use the built-in TLS/SSL support.</p>
+			<p>Before we can connect over the secure channel between our client and host, we need to generate the following files:</p>
+			<ul>
+				<li><strong class="bold">Certificate authority</strong> (<strong class="bold">CA</strong>) private and public keys</li>
+				<li>Server key</li>
+				<li>Server <strong class="bold">certificate signing request</strong> (<strong class="bold">CSR</strong>)</li>
+				<li>Signed certificates</li>
+				<li>Client key</li>
+				<li>Client CSR</li>
+			</ul>
+			<p>Depending on your operating system, the steps to generate these OpenSSL files will be different. The Docker website provides a handy list of steps for this process. Windows users can use a Linux VM to perform these steps as well:</p>
+			<p><a href="https://docs.docker.com/engine/security/https/">https://docs.docker.com/engine/security/https/</a></p>
+			<p>Implementing encryption can be achieved in the following fashion by enabling the Docker daemon to use the CA, server certificate, and server key. In this example, we will run the daemon on <code>0.0.0.0</code> and on port <code>2376</code>:</p>
+			<pre>dockerd --tlsverify --tlscacert=tlsca.pem --tlscert=tlsservercert.pem --tlskey=tlsserverkey.pem -H=0.0.0.0:2376</pre>
+			<p>Now, we can test connecting to it. First, make sure that the client certificate, key, and CA are available. Then, run the following command: </p>
+			<pre>docker --tlsverify --tlscacert=tlsca.pem --tlscert=tlscert.pem --tlskey=tlskey.pem -H=$HOST:2376 version</pre>
+			<p>You should now be able to successfully connect to the Docker daemon over the encrypted channel.</p>
+			<h2 id="_idParaDest-277"><a id="_idTextAnchor295"/>Docker won't fix bad code</h2>
+			<p>Docker can do a lot to help <a id="_idIndexMarker998"/>negate the effects of security problems, but it cannot fix bad code. The<a id="_idIndexMarker999"/> same best practices apply when writing applications that apply when deploying on an EC2 instance, VMware, or any other platform.</p>
+			<p>A great place to start with application security is the OWASP top 10. OWASP also offers a number of helpful cheat sheet guides for<a id="_idIndexMarker1000"/> application security development, in addition to their standard documentation.</p>
+			<p>You can find them at <a href="https://cheatsheetseries.owasp.org/">https://cheatsheetseries.owasp.org/</a>.</p>
+			<h2 id="_idParaDest-278"><a id="_idTextAnchor296"/>Always set an unprivileged user</h2>
+			<p>We touched on the subject of the <code>USER</code> namespace and how it can aid you in securing your Docker setup. One practice you should implement is to make sure you configure containers to use an unprivileged user where possible. Doing this from the start will help you get into good habits.</p>
+			<p>The two easiest methods <a id="_idIndexMarker1001"/>to do this are as follow<a id="_idTextAnchor297"/>s: </p>
+			<ul>
+				<li>Add a user to the Dockerfile.</li>
+				<li>When running Docker, add<a id="_idIndexMarker1002"/> the <code>--user</code> flag to the <code>run</code> command.</li>
+			</ul>
+			<p>In the first case, this can be achieved in the following fashion:</p>
+			<pre>FROM alpine
+ 
+RUN addgroup -S secureusers &amp;&amp; adduser -S secureuser -G secureusers
+#Execute any root commands prior to needing to switch users
+USER secureuser</pre>
+			<p>With the second option, we can apply the flag to the command line as follows:</p>
+			<pre>docker run --user 5000:500</pre>
+			<p>Here, we have included the user ID and group ID. </p>
+			<p>Now that we have some basics in place, let's quickly review what we have learned before we further dig into some of the fundamentals and get our hands dirty. </p>
+			<h1 id="_idParaDest-279"><a id="_idTextAnchor298"/>Summary</h1>
+			<p>Over the course of this chapter, we learned about how VMs and Docker work in conjunction with the underlying operating system, hardware, and each other.</p>
+			<p>Following this, we explored the various features that Docker has implemented from Linux to bake in security concerns.</p>
+			<p>Finally, we looked at some best practices that apply regardless of the applications we are developing. Now, let's jump into some security fundamentals and learn about Docker image security, commands, and the build process in the next chapter.</p>
+		</div>
+	</body></html>

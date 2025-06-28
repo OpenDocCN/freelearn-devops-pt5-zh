@@ -1,0 +1,282 @@
+<html><head></head><body>
+        
+
+                            
+                    Publishing Applications in Docker Enterprise
+                
+            
+            
+                
+<p class="mce-root">The previous chapter helped us to understand Docker Enterprise's control plane components. Docker UCP deploys Docker Swarm and Kubernetes clusters over the same nodes. Both orchestrators share host components and devices. Each orchestrator will manage its own hardware resources. Information such as available memory and CPU is not shared between orchestrators. Therefore, we have to take care if we use both on a host simultaneously.</p>
+<p class="mce-root">But what about publishing applications deployed on them? We learned how to publish applications on Docker Swarm and Kubernetes, but working on enterprise environments must be secure. In this chapter, we will learn how to publish applications on Docker Enterprise environments using either UCP-provided or community tools.</p>
+<p>This chapter will show us the main publishing resources and features provided by UCP for Docker Swarm and Kubernetes. These components will help us to publish only front services, thereby ensuring an application's security. We will learn about ingress controllers, which is the preferred solution for publishing applications in Kubernetes, and Interlock, an enterprise-ready solution provided by UCP to publish applications in Docker Swarm.</p>
+<p>We will cover the following topics in this chapter:</p>
+<ul>
+<li>Understanding publishing concepts and components</li>
+<li>Deep diving into your application's logic</li>
+<li>Ingress controllers</li>
+<li>Interlock</li>
+<li>Chapter labs</li>
+</ul>
+<p>We will begin this chapter by reviewing some of the concepts learned in connection with Docker Swarm and Kubernetes deployments.</p>
+<h1 id="uuid-63c88278-73cf-4865-988e-6c7ebb5f5885">Technical requirements</h1>
+<p>You can find the code for this chapter in the GitHub repository: <a href="https://github.com/PacktPublishing/Docker-Certified-Associate-DCA-Exam-Guide.git">https://github.com/PacktPublishing/Docker-Certified-Associate-DCA-Exam-Guide.git</a></p>
+<p>Check out the following video to see the Code in Action:</p>
+<p>"<a href="https://bit.ly/2EHobBy" target="_blank">https://bit.ly/2EHobBy</a>"</p>
+<h1 id="uuid-ace90f64-898b-4156-988c-0d0d97fa61bf" class="mce-root">Understanding publishing concepts and components</h1>
+<p><a href="78af3b70-773d-4f5d-9835-71d1c15a104a.xhtml">Chapter 8</a>, <em>Orchestration Using Docker Swarm</em>, showed us how applications work when deployed on top of a Docker Swarm cluster.</p>
+<p>We will use service objects to deploy applications in Docker Swarm. Internal communication between services is always allowed if they run in the same network. Therefore, we will deploy an application's components in the same network and they will interact with other published applications. If two applications have to interact, they should share the network or be published.</p>
+<p>Publishing applications is easy; we will just specify the ports that should be listening on the host where the process is running. However, we learned that Docker Swarm will publish an application's ports on all cluster hosts, and Router Mesh will route internal traffic to reach an appropriate service's tasks. Let's go back to these topics relating to containers and services before reviewing multi-service applications.</p>
+<p>We have different options to publish container applications, as we learned in <a href="e7804d8c-ed8c-4013-8449-b746ee654210.xhtml">Chapter 4</a>, <em>Container Persistency and Networking</em>. To make processes visible out of a container's isolated network namespace, we will use different network strategies:</p>
+<ul>
+<li><strong>Bridge networking</strong>: This is the default option. A container's processes will be exposed using the host's <strong>Network Address Translation</strong> (<strong>NAT</strong>) features. Therefore, a container's process listening on a port will be attached to a host's port. NAT rules will be applied either to Linux or Microsoft Windows containers. This allows us to execute more than one container's instances using different hosts' ports.</li>
+</ul>
+<p style="padding-left: 60px">We will publish container processes using the <kbd>--publish</kbd> or <kbd>-p</kbd> (or even <kbd>--publish-all</kbd> or <kbd>-P</kbd> to publish all image-declared exposed ports) option with the optional Docker host's IP address and port alongside the published port and protocol (TCP/UDP): <kbd>docker container run -p [HOST_IP:HOST_PORT:]&lt;CONTAINER_PORT&gt;[/PROTOCOL]</kbd>. By default, all the host's IP addresses and random ports within the <kbd>32768</kbd>-<kbd>65000</kbd> range will be used.</p>
+<ul>
+<li><strong>The host's network namespace</strong>: In this situation, we will use the host's network namespace. Processes will be directly available, listening on the host's ports. No port translation will be used between the container and the host. Since the process port is attached directly, only one container's instance is allowed per host. We will use <kbd>docker container run --net=host</kbd> to associate a new container with the host's network namespace.</li>
+<li><strong>MacVLAN</strong>: This is a special case where a container will use its own namespace, but it will be available at the host's network level. This allows us to attach VLANs (Virtual LANs) directly to containers and make them visible within an actual network. Containers will receive their own MACs; hence, services will be available in the network as if they were nodes.</li>
+</ul>
+<p>These were the basic options. We will use external DNS to announce how they will be reached. We can also deploy containers on customized bridge networks. Custom networks have their own DNS namespace and containers will reach one another within the same network through their names or aliases. Services won't be published for other services running in the same network. We will just publish them for other networks or user access. In these cases, we will use NAT (common bridge networking), a host's namespace, or MacVLAN.</p>
+<p>These will work on standalone hosts, but things will change if we distribute our workloads cluster-wide. We will now introduce the Kubernetes network model. This model must cover these situations:</p>
+<ul>
+<li>Pods running on a node should be able to communicate with others running on other hosts without NAT.</li>
+<li>System components (kubelet and control plane daemons) should be able to communicate with pods running on a host.</li>
+<li>Pods running in the host network of a node can communicate with all pods running on other hosts without NAT.</li>
+</ul>
+<p>As we have learned, all containers within a pod share its IP address and all pods run on a flat network. We do not have network segmentation in Kubernetes, so we need other tools to isolate them. We will use network policies to implement firewall-like or network ACL-like rules. These rules are also applied to publishing services (ingress traffic).</p>
+<p>Docker's network model is based on the <strong>Container Network Model</strong> (<strong>CNM</strong>) standard, while Kubernetes' network model is implemented using the <strong>Container Network Interface</strong> (<strong>CNI</strong>) model.</p>
+<p>Docker's CNM manages <strong>Internet Protocol Address Management</strong> (<strong>IPAM</strong>) and network plugins. IPAM will be used to manage address pools and containers' IP addresses, while network plugins will be responsible for managing networks on each Docker Engine. CNM is implemented on Docker Engine via its <kbd>libnetwork</kbd> library, although we can add third-party plugins to replace this built-in Docker driver.</p>
+<p>On the other hand, CNI modes expose an interface for managing a container's network. CNI will assign IP addresses to pods, although we can also add external IPAM interfaces, describing its behavior using JSON format. These describe how any CNI plugin must provide cluster and standalone networking when we add third-party plugins. As mentioned previously, Docker Enterprise's default CNI plugin is Calico. It provides cluster networking and security features using IP in IP encapsulation (although it also provides VXLAN mode).</p>
+<p>Let's move on. Docker Engine provides all the networking features for hosts, and Kubernetes will also provide cluster-wide networking using CNI. Docker Swarm includes cluster-wide networking out of the box using VXLAN. An overlay network driver creates a distributed network between all hosts using their bridge network interfaces. We will just initialize a Docker Swarm cluster and no additional operations will be required. An ingress overlay network and a <kbd>docker_gwbridge</kbd> bridge network will be created. The former will manage control and data traffic related to Swarm services, while <kbd>docker_gwbridge</kbd> will be used to interconnect Docker hosts within Docker Swarm overlay networks.</p>
+<p>We improved cluster's security by encrypting overlay networks, but we will expect some overhead and a minor negative impact on performance. As demonstrated in standalone networking and containers sharing networks, all services connected to the same overlay network will be able to talk to one another, even if we have not published any ports. Ports that should be accessible outside of a service's network must be explicitly published using <kbd>-p [ HOSTS_PORT:]&lt;CONTAINER_PORT&gt;[/PROTOCOL]</kbd>.</p>
+<p>There is a long format for publishing a service's ports. Although you have to write more, it is clearer. We will write <kbd>-p published=&lt;HOSTS_PORT&gt;,target=&lt;CONTAINER_PORT&gt;,protocol=&lt;PROTOCOL&gt;</kbd>.</p>
+<p>Publishing services within Docker Swarm will expose a defined service's port on all hosts in the cluster. This feature is <strong>Router Mesh</strong>. All hosts will publish this service even if they do not really run any service's processes. Docker will guide traffic to a service's tasks within the cluster using an internal ingress overlay network.</p>
+<p>Remember that all services received a virtual IP address. This IP address will be fixed during a service's lifetime. Each service is composed of tasks associated with the containers. Docker will run as many tasks, and thus containers, as are required for this service to work. Each task will run just one container, with its IP address. As containers can run everywhere in the cluster and they are ephemeral (between different hosts), they will receive different IP addresses. A service's IP addresses are fixed and will create a DNS entry in Docker Swarm's embedded DNS. Therefore, all services within an overlay network will be reachable and known by their names (and aliases).</p>
+<p>A similar approach is present in Kubernetes. In this case, services are just a grouping of pods. Pods will get different dynamic IP addresses because resilience will manage their life cycle, creating new ones if they die. But services will always have a fixed IP address during their life. This is also true for Docker Swarm. Therefore, we will publish services and internal routing and load balancing will guide traffic to pods or tasks' containers.</p>
+<p>Both orchestrators will allow us to bypass these default behaviors, but we are not going to dive deep into these ideas because we have covered them in <a href="78af3b70-773d-4f5d-9835-71d1c15a104a.xhtml">Chapter 8</a>, <em>Orchestration Using Docker Swarm</em>, and <a href="abcbf266-c469-4d84-ad4f-abd321a64b53.xhtml">Chapter 9</a>, <em>Orchestration Using Kubernetes</em>.</p>
+<p>Now that we have a basic understanding, we can introduce ingress controllers. These are pieces of software that will allow us to publish fewer ports within our cluster. They will help us to ensure security by default access, publishing fewer ports and only specific application routes. Ingress controllers will provide reverse proxy with load balancing capacities to help us publish an application's backends running as services inside a container's infrastructure. We will use internal networking instead of publishing an application's services. We will just publish the ingress controller and all the application's traffic will become internal from this endpoint.</p>
+<p>The ingress controller concept can be applied to both Kubernetes and Docker Swarm. Kubernetes has special resources for this to work, but Docker Swarm has nothing already prepared. In this case, we will have to use external applications. Docker Enterprise does provide an out-of-the-box solution for Docker Swarm services. Interlock integrates the ingress controller features described but applied to Docker Swarm's behavior.</p>
+<p>In the next section, we will talk a little about application logic and expected behavior on container platforms.</p>
+<h1 id="uuid-a29df65b-f31e-49c7-b075-b7088de8eefb" class="mce-root">Understanding an application's logic</h1>
+<p>We have reviewed how publishing will work for our application's components, but should they all be published? The short answer is probably no. Imagine a three-layer application. We will have a middle layer for some kind of backend that will consume a database and should be accessed through a frontend. In a legacy data center, this layered application will probably run each service on a separate node. These nodes will run on different subnets to isolate accesses between them with firewalls. This architecture is quite common. Backend components will be in the middle, between the database and the frontend. The frontend should not access the database. In fact, the database should only be accessible from the backend component. Therefore, should we publish the database component service? The frontend component will access the backend, but do we have to publish the backend component? No, but the frontend should be able to access the backend service. Users and other applications will use frontend components to consume our application. Therefore, only frontend components should be published. This guarantees security by using a container's features instead of firewalls and subnets, but the final outcome is the same.</p>
+<p>Docker Swarm allows us to implement multi-networking applications using overlay custom networks. These will allow us to interconnect components of applications from different applications sharing some networks. This can become complex if many services from different applications have to consume one service. This many-to-one networking behavior may not work correctly in your environment. To avoid this complexity, you have two options:</p>
+<ul>
+<li>Use flat networks, either moving to Kubernetes or defining large overlay subnets. The first option is better in this case as Kubernetes provides network policies to improve flat network security. Large networks in Docker Swarm do not provide any security for their components. It is up to you to improve it with external tools.</li>
+<li>Publish this common service and allow other applications to consume it as if they were cluster-external. We will use DNS entries for our service and other applications will know how to access it. We will use load balancers and/or API managers to improve availability and security. These external components are beyond the scope of this book, but they will provide non-container-based application behavior.</li>
+</ul>
+<p>Now that we understand how applications can be deployed and published, we will introduce the concept of ingress controllers and their components before getting into Docker Enterprise's Interlock.</p>
+<h1 id="uuid-7687bdd1-89eb-4707-9e35-8160a7b61226" class="mce-root">Publishing applications in Kubernetes using ingress controllers</h1>
+<p>As mentioned previously, ingress controllers are special Kubernetes components that are deployed to publish applications and services.</p>
+<p>Ingress resources will define rules and routes required to expose HTTP and HTTPS deployed services.</p>
+<p>An ingress controller will complete this equation as a reverse proxy, adding load-balancing capabilities. These features can be arranged by an external edge router or a cluster-deployed software proxy. Any of these will manage traffic using dynamic configurations built using ingress resource rules.</p>
+<p>We can also use ingress for TCP and UDP raw services. This will depend on which ingress reverse proxy has been deployed. It is customary to publish an application's services using protocols other than HTTP and HTTPS. In this case, we can use either Router Mesh on Docker Swarm or NodePort/LoadBalancer on Kubernetes.</p>
+<p>An ingress resource may look like the following YAML file:</p>
+<pre>apiVersion: networking.k8s.io/v1beta1<br/>kind: Ingress<br/>metadata:<br/>  name: test-ingress<br/>  annotations:<br/>    nginx.ingress.kubernetes.io/rewrite-target: /<br/>spec:<br/>  rules:<br/>  - http:<br/>      paths:<br/>      - path: /testpath<br/>        pathType: Prefix<br/>        backend:<br/>          serviceName: test<br/>          servicePort: 80</pre>
+<p>Ingress rules contain an optional host key used to associate this resource with a proxied host header for inbound traffic. All subsequent rules will be applied to this host.</p>
+<p>It will also contain a list of paths, associated with different services, defined as proxied backends. All requests matching the host and path keys will be redirected to listed backends. Deployed services and ports will define each backend for an application.</p>
+<p>We will define a default backend to route any request not matching any ingress resource's rules.</p>
+<p>As mentioned, ingress controllers will deploy ingress rules on different proxy services. We will either use existing external hardware or software load balancers or we will deploy these components within the cluster. As these pieces are interchangeable, different deployments will provide different behaviors, although ingress resource configurations will be similar. These deployments should be published, but backend services do not require direct external access. Ingress controller pieces will manage routes and rules required to access services.</p>
+<p>Ingress controllers will be published using any of this chapter's described methods, although we will usually use NodePort- and LoadBalancer-type services.</p>
+<p>We can deploy multiple ingress controllers on any Kubernetes cluster. This is important because we can improve isolation on multi-tenant environments using specific ingress controllers for each customer.</p>
+<p>We have described a layer 7 routing architecture for Kubernetes. The following diagram shows an example of ingress controller deployment. An external load balancer will route a user's requests to the ingress controller. This component will review ingress resource tables and route traffic to the appropriate internal service's ClusterIP. Then, Kubernetes will manage internal service-to-pod communications to ensure that a user's requests reach the service's associated pods:</p>
+<div><img src="img/0bbf197b-2648-4bc0-94e9-cc86c2add1dc.png" style=""/></div>
+<p>In the next section, we will learn how Docker Enterprise deploys this publishing logic for Docker Swarm services.</p>
+<h1 id="uuid-547c1c8c-6064-495b-83ad-86b06242f2c9" class="mce-root">Using Interlock to publish applications deployed in Docker Swarm</h1>
+<p>Interlock is based on the ingress controller's logic described previously. Docker Swarm architecture is different. Its differences are even more pronounced when we talk about Kubernetes and Docker Swarm networking implementations. Kubernetes provides a flat network architecture, as we have seen. Multiple networks within the cluster will add additional security features, but also more complexity.</p>
+<p>Interlock substitutes the previous Docker Enterprise's router mesh L7 routing implementation. Router mesh was available in previous UCP releases. Interlock appeared in the 2.0 release of Docker Enterprise.</p>
+<p>Interlock will integrate Docker Swarm and Docker Remote API features to isolate and configure dynamically an application proxy such as NGINX or HA-Proxy using extensions. Interlock will use Docker Swarm's well-known objects, such as configs and secrets, to manage proxy required configurations. We will be able to manage TLS tunnels and integrate rolling updates (and rollbacks) and zero-downtime reconfigurations.</p>
+<p>Interlock's logic is distributed in three main services:</p>
+<ul>
+<li>The <strong>Interlock service</strong> is the main process. It will interact with the Docker Remote API to monitor Docker Swarm events. This service will create all the configurations required by a proxy to route requests to an application's endpoints, including headers, routes, and backends. It will also manage extensions and proxy services. The Interlock service will be consumed via its gRPC API. Other Interlock services and extensions will access Interlock's API to get their prepared configurations.</li>
+<li>The <strong>Interlock-extension</strong> service will query Interlock's API for the configurations created upstream. Extensions will use this pre-configuration to prepare real configurations for the extension-associated proxy. For proxy services such as NGINX or HA-Proxy, deployed within the cluster, the Interlock-extension service will create its configurations and then these will be sent to the Interlock service via its API. The Interlock service will then create a config object within the Docker Swarm cluster for the deployed proxy services.</li>
+<li>The <strong>Interlock-proxy</strong> is the proxy service. It will use configurations stored in config objects to route and manage HTTP and HTTPS requests.</li>
+</ul>
+<p>Docker Enterprise deploys NGINX as the Interlock-proxy. Docker Swarm cluster changes affecting published services will be updated dynamically.</p>
+<p>Interlock allows DevOps groups to implement <strong>Blue-Green</strong> and <strong>Canary</strong> service deployment. These will help DevOps to deploy application upgrades without impacting access on the part of users.</p>
+<p>The following diagram shows a basic Interlock schema. As mentioned, Interlock looks like an ingress controller. The following schema represents common applications' traffic. User requests will be forwarded by the external load balancer to the Interlock proxy instances. This component will review its rules and forward requests to the configured service's IP address. Then, Docker Swarm will use internal routing and load balancing to forward requests to the service's tasks:</p>
+<div><img src="img/2212ed99-bd4e-4df3-abbb-268953b64c86.png" style=""/></div>
+<p>Interlock's layer 7 routing supports the following features:</p>
+<ul>
+<li class="mce-root">Since Interlock services run as Docker Swarm services, high availability based on resilience is granted.</li>
+<li class="mce-root">Interlock interacts with the Docker API, hence, dynamic and automatic configuration is provided.</li>
+<li class="mce-root">Automatic configuration: Interlock uses the Docker API for configuration. You do not have to manually update or restart anything to make services available. UCP monitors your services and automatically reconfigures proxy services.</li>
+<li class="mce-root">We can scale a proxy service up and down because it is deployed as a separate component.</li>
+<li>Interlock provides TLS tunneling, either for TLS termination or TCP passthrough. Certificates will be stored using Docker Swarm's secret objects.</li>
+<li>Interlock supports request routing by context or paths.</li>
+<li>We can deploy multiple extensions and proxy configurations simultaneously to isolate accesses on multi-tenant or multi-region environments.</li>
+</ul>
+<p>Interlock-proxy and Interlock-extension services' instances run on worker nodes. This will improve security, isolating the control plane from publishing services.</p>
+<p>We can use host mode networking to bypass default routing mesh services' behavior for the Interlock-proxy service. This will improve network performance.</p>
+<p>Publishing services using Interlock are based on label customization. We will require at least the following:</p>
+<ul>
+<li><kbd>com.docker.lb.hosts</kbd>: This label will manage the host header, hence the service's published name.</li>
+<li><kbd>com.docker.lb.port</kbd>: The internal service's port is also required and associated using this label. Remember that this port should not be published.</li>
+<li><kbd>com.docker.lb.network</kbd>: This defines which network the Interlock-proxy service should attach to in order to be able to communicate with the defined service.</li>
+</ul>
+<p>Other labels will allow us to modify configured-proxy behavior and features. This is a list of some other important labels:</p>
+<table style="border-collapse: collapse;width: 100%" border="1">
+<tbody>
+<tr>
+<td style="width: 40.0613%" class="CDPAlignCenter CDPAlign">
+<p><strong>Labels</strong></p>
+</td>
+<td style="width: 59.1651%" class="CDPAlignCenter CDPAlign">
+<p><strong>Description</strong></p>
+</td>
+</tr>
+<tr>
+<td style="width: 40.0613%">
+<p><kbd>com.docker.lb.ssl_cert</kbd> and <kbd>com.docker.lb.ssl_key</kbd></p>
+</td>
+<td style="width: 59.1651%">
+<p>These keys allow us to integrate the backend's certificate and key.</p>
+</td>
+</tr>
+<tr>
+<td style="width: 40.0613%">
+<p><kbd>com.docker.lb.sticky_session_cookie</kbd></p>
+</td>
+<td style="width: 59.1651%">
+<p>We will set a cookie to allow sticky sessions to define a service instance's backends.</p>
+</td>
+</tr>
+<tr>
+<td style="width: 40.0613%">
+<p><kbd>com.docker.lb.backend_mode</kbd></p>
+</td>
+<td style="width: 59.1651%">
+<p>This stipulates how requests reach different backends (it defaults to <kbd>vip</kbd>, which is also the default mode for Docker Swarm services).</p>
+</td>
+</tr>
+<tr>
+<td style="width: 40.0613%">
+<p><kbd>com.docker.lb.ssl_passthrough</kbd></p>
+</td>
+<td style="width: 59.1651%">
+<p>We can close tunnels on application backends, thereby enabling SSL passthrough.</p>
+</td>
+</tr>
+<tr>
+<td style="width: 40.0613%">
+<p><kbd>com.docker.lb.redirects</kbd></p>
+</td>
+<td style="width: 59.1651%">
+<p>This key allows us to redirect requests to different FQDNs using host header definitions.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<p> </p>
+<p>You can review all the available labels in Docker Enterprise's documentation (<a href="https://docs.docker.com/ee/ucp/interlock/usage/labels-reference">https://docs.docker.com/ee/ucp/interlock/usage/labels-reference</a>).</p>
+<p>If a service is isolated on just one network, we don't need to add <kbd>com.docker.lb.network</kbd>, but it will be required if it is combined with <kbd>com.docker.lb.ssl_passthrough</kbd>. If we publish services using stacks, we will use the stack's name.</p>
+<p>There are many options and configurations available for Interlock's described components. We will be allowed to change the proxy's default port, the Docker API socket, and the polling interval, among other things. Extensions will have many features and configurations depending on external load balancing integrations. We recommend that you review all the available keys and configurations in Docker Enterprise's documentation (<a href="https://docs.docker.com/ee/ucp/interlock/config">https://docs.docker.com/ee/ucp/interlock/config</a>).</p>
+<p>We recommend reviewing this link, <a href="https://success.docker.com/article/how-to-troubleshoot-layer-7-loadbalancing">https://success.docker.com/article/how-to-troubleshoot-layer-7-loadbalancing</a>, to get some interesting tips regarding the troubleshooting of Interlock-related issues.</p>
+<p>In the next chapter, we will introduce Docker Trusted Registry. This tool provides a secure image store, integrating image signing features and vulnerability scanning. These features, among others, provide a production-ready image store solution.</p>
+<h1 id="uuid-cb216f86-7244-4ca8-9094-a10615391a72">Reviewing Interlock usage</h1>
+<p class="mce-root">We will now review some examples of Interlock usage. </p>
+<p class="mce-root">We will need to enable Interlock in Docker Enterprise. It is disabled by default and is part of the Admin Settings section. We can change the default ports (<kbd>8080</kbd> for HTTP and <kbd>8443</kbd> for secure access using HTTPS), as shown in the following screenshot:</p>
+<div><img src="img/f588779d-7176-4fe4-b4ab-a1150ce60a0e.jpg" style=""/></div>
+<p>Once enabled, Interlock's services are created, which we can verify by using the admin's UCP bundle and executing <kbd>docker service ls</kbd>:</p>
+<pre><strong>$ docker service ls --filter name=ucp-interlock</strong><br/><strong>ID NAME MODE REPLICAS IMAGE PORTS</strong><br/><strong>onf2z2i5ttng ucp-interlock replicated 1/1 docker/ucp-interlock:3.2.5 </strong><br/><strong>nuq8eagch4in ucp-interlock-extension replicated 1/1 docker/ucp-interlock-extension:3.2.5 </strong><br/><strong>x2554tcxb7kw ucp-interlock-proxy replicated 2/2 docker/ucp-interlock-proxy:3.2.5 *:8080-&gt;80/tcp, *:8443-&gt;443/tcp</strong></pre>
+<p>It is important to observe that, by default, Interlock-proxy will not be isolated on worker nodes if there are not enough nodes to run the required number of instances. We can change this behavior by using simple location constraints (<a href="https://docs.docker.com/ee/ucp/interlock/deploy/production">https://docs.docker.com/ee/ucp/interlock/deploy/production</a>).</p>
+<p>For this example, we will use the <kbd>colors</kbd> application again. We used this simple application in <a href="1c86479c-e4f5-4508-9eca-d29bb3dbaf4b.xhtml">Chapter 5</a>, <em>Deploying Multi-Container Applications</em>. This is a simple <kbd>docker-compose</kbd> file prepared to deploy a <kbd>colors</kbd> service. We will use a random color, leaving the <kbd>COLORS</kbd> variable empty. We will create a <kbd>colors-stack.yml</kbd> file with the following content:</p>
+<pre>version: "3.2"<br/><br/>services:<br/> colors:<br/> image: codegazers/colors:1.16<br/> deploy:<br/> replicas: 3<br/>      labels:<br/>        com.docker.lb.hosts: colors.lab.local<br/>        com.docker.lb.network: colors-network<br/>        com.docker.lb.port: 3000<br/>    networks:<br/>      - colors-network<br/><br/>networks:<br/>  colors-network:<br/>    driver: overlay</pre>
+<p>We will connect to Docker Enterprise with a valid user using their bundle. For this lab, we will use the <kbd>admin</kbd> user that we created during installation. We will download the user's <kbd>ucp</kbd> bundle using any of the procedures described in <a href="1879ea92-ae47-4230-ac84-784d4bc73185.xhtml">Chapter 11</a>, <em>Universal Control Plane</em>. Once downloaded and unzipped, we will just load UCP's environment using <kbd>source env.sh</kbd>:</p>
+<pre><strong>$ source env.sh </strong><br/><strong>Cluster "ucp_&lt;UCP_FQDN&gt;:6443_admin" set.</strong><br/><strong>User "ucp_&lt;UCP_FQDN&gt;:6443_admin" set.</strong><br/><strong>Context "ucp_&lt;UCP_FQDN&gt;:6443_admin" modified.</strong></pre>
+<p>Once the UCP environment is loaded, we will use the book's Git repository (<a href="https://github.com/frjaraur/dca-book-code.git">https://github.com/frjaraur/dca-book-code.git</a>). Interlock's labs can be found under the <kbd>interlock-lab</kbd> directory. We will deploy the <kbd>colors</kbd> stack using <kbd>docker stack deploy -c colors-stack.yml lab</kbd>:</p>
+<pre><strong>interlock-lab$ docker stack deploy -c colors-stack.yml lab</strong><br/><strong>Creating network lab_colors-network</strong><br/><strong>Creating service lab_colors</strong></pre>
+<p class="mce-root">We will review how <kbd>colors</kbd> instances are distributed within the cluster by using <kbd>docker stack ps</kbd>:</p>
+<pre class="mce-root"><strong>$ docker stack ps lab</strong><br/><strong>ID NAME IMAGE NODE DESIRED STATE CURRENT STATE ERROR PORTS</strong><br/><strong>ksoie4oin10e lab_colors.1 codegazers/colors:1.16 node4 Running Running 8 seconds ago </strong><br/><strong>b0dykjgp8ack lab_colors.2 codegazers/colors:1.16 node2 Running Preparing 9 seconds ago </strong><br/><strong>m13tvfbw5cgb lab_colors.3 codegazers/colors:1.16 node3 Running Preparing 9 seconds ago</strong> </pre>
+<p>We enabled Interlock on UCP's Admin Settings section. We used the default port, so we should access our deployed service on the <kbd>8080</kbd> port (because we are using HTTP in this lab). Notice that we have not used any <kbd>port</kbd> key in the <kbd>docker-compose</kbd> file. We have not published any service's port. Let's check whether Interlock is working by specifying the required host header, <kbd>colors.lab.local</kbd>:</p>
+<pre><strong>$ curl -H "host: colors.lab.local" http://&lt;UCP_NODE&gt;:8080/text</strong><br/><strong>APP_VERSION: 1.15</strong><br/><strong>COLOR: black</strong><br/><strong>CONTAINER_NAME: e69a7ca3b74f</strong><br/><strong>CONTAINER_IP: 10.0.5.15 172.18.0.4</strong><br/><strong>CLIENT_IP: 10.0.0.2</strong><br/><strong>CONTAINER_ARCH: linux</strong><br/><strong>$ curl -H "host: colors.lab.local" http://&lt;UCP_NODE&gt;:8080/text</strong><br/><strong>APP_VERSION: 1.15</strong><br/><strong>COLOR: yellow</strong><br/><strong>CONTAINER_NAME: 69ebb6f349f6</strong><br/><strong>CONTAINER_IP: 10.0.5.14 172.18.0.3</strong><br/><strong>CLIENT_IP: 10.0.0.2</strong><br/><strong>CONTAINER_ARCH: linux</strong></pre>
+<p>The output may change and we will launch some requests to ensure that we get different backends (we deployed three instances). If we do not specify any host header, a default one will be used. If none was configured (default behavior), we will get a proxy error. As we are using NGINX (default), we will get a <kbd>503</kbd> error:</p>
+<pre><strong>$ curl -I http://&lt;UCP_NODE&gt;:8080/text</strong><br/><strong>HTTP/1.1 503 Service Temporarily Unavailable</strong><br/><strong>Server: nginx/1.14.2</strong><br/><strong>Date: Tue, 31 Mar 2020 19:51:05 GMT</strong><br/><strong>Content-Type: text/html</strong><br/><strong>Content-Length: 537</strong><br/><strong>Connection: keep-alive</strong><br/><strong>ETag: "5cad421a-219"</strong></pre>
+<p>We can change the default Interlock's backend using the special label <kbd>com.docker.lb.default_backend: "true"</kbd>, associated with one of our services. This will act as a default site when headers don't match any configured service.</p>
+<p>Let's remove this lab before continuing. We will use <kbd>docker stack rm</kbd>. We will probably get an error because stacks will now have to be removed carefully:</p>
+<pre><strong>$ docker stack rm lab</strong><br/><strong>Removing service lab_colors</strong><br/><strong>Removing network lab_colors-network</strong><br/><strong>Failed to remove network 97bgcu0eo445sz8ke10bacbge: Error response from daemon: Error response from daemon: rpc error: code = FailedPrecondition desc = network 97bgcu0eo445sz8ke10bacbge is in use by service x2554tcxb7kwv0wzsasvfjh6dFailed to remove some resources from stack: lab</strong></pre>
+<p>This error is normal. The Interlock-proxy component is attached to our application's network, hence it cannot be removed. Interlock will refresh configurations every few seconds (Docker API polls will be launched every 3 seconds and, after these intervals, Interlock will manage the required changes). If we just wait a few seconds and launch the removal command again, it will delete the stack's remaining components (network):</p>
+<pre><strong>$ docker stack rm lab</strong><br/><strong>Removing network lab_colors-network</strong></pre>
+<p class="mce-root">We will now test a simple redirection using the <kbd>com.docker.lb.redirects</kbd> key.</p>
+<h2 id="uuid-db2b1b3a-d195-40d6-bb85-94a82e4599fe">Simple application redirection</h2>
+<p>In this example, we will review how we can redirect requests from one service to another. This can be interesting when we want to migrate users from an old application to a newer release, at application level. We are not talking about an image upgrade in this case. We will simply create a new overlay network using <kbd>docker network create</kbd>:</p>
+<pre><strong>$ docker network create -d overlay redirect</strong></pre>
+<p>We will now create a simple web server application service (the smallest NGINX image, <kbd>nginx:alpine</kbd>). Notice that we will add to host headers inside the <kbd>com.docker.lb.hosts</kbd> label. We have also added <kbd>com.docker.lb.redirects</kbd> to ensure that all requests sent to <kbd>http://old.lab.local</kbd> will be redirected to <kbd>http://new.lab.local</kbd>. This is how this service definition will appear:</p>
+<pre><strong>$ docker service create --name redirect --network redirect \</strong><br/><strong>--label com.docker.lb.hosts=old.lab.local,new.lab.local \</strong><br/><strong>--label com.docker.lb.port=80 \</strong><br/><strong>--label com.docker.lb.redirects=http://old.lab.local,http://new.lab.local nginx:alpine</strong></pre>
+<p>If we test access to one of our UCP nodes on port <kbd>8080</kbd>, using <kbd>old.lab.local</kbd> as the host header, we will be redirected to <kbd>http://new.lab.local</kbd>. We added <kbd>-L</kbd> to the <kbd>curl</kbd> command to allow the required redirection:</p>
+<pre><strong>$ curl -vL http://&lt;UCP_NODE&gt;:8080/ -H Host:old.lab.local</strong><br/><strong>* Trying &lt;UCP_NODE&gt;...</strong><br/><strong>* TCP_NODELAY set</strong><br/><strong>* Connected to &lt;UCP_NODE&gt; (&lt;UCP_NODE&gt;) port 8080 (#0)</strong><br/><strong>&gt; GET / HTTP/1.1</strong><br/><strong>&gt; Host:old.lab.local</strong><br/><strong>&gt; User-Agent: curl/7.58.0</strong><br/><strong>&gt; Accept: */*</strong><br/><strong>&gt; </strong><br/><strong>&lt; HTTP/1.1 302 Moved Temporarily</strong><br/><strong>&lt; Server: nginx/1.14.2</strong><br/><strong>&lt; Date: Tue, 31 Mar 2020 22:21:26 GMT</strong><br/><strong>&lt; Content-Type: text/html</strong><br/><strong>&lt; Content-Length: 161</strong><br/><strong>&lt; Connection: keep-alive</strong><br/><strong>&lt; Location: http://new.lab.local/</strong><br/><strong>&lt; x-request-id: d4a9735f8880cfdc99e0478b7ea7d583</strong><br/><strong>&lt; x-proxy-id: 1bfde5e3a23e</strong><br/><strong>&lt; x-server-info: interlock/v3.0.0 (27b903b2) linux/amd64</strong><br/><strong>&lt; </strong><br/><strong>* Ignoring the response-body</strong><br/><strong>* Connection #0 to host &lt;UCP_NODE&gt; left intact</strong><br/><strong>* Issue another request to this URL: 'http://new.lab.local/'</strong><br/><strong>* Could not resolve host: new.lab.local</strong><br/><strong>* Closing connection 1</strong><br/><strong>curl: (6) Could not resolve host: new.lab.local</strong></pre>
+<p>Notice that <kbd>new.lab.local</kbd> was a dummy FQDN, hence we cannot resolve it, but the test request was forwarded to this new application site.</p>
+<p>We will now deploy an example service that is protected using TLS certificates. Interlock will manage its certificates and access will be secure.</p>
+<h2 id="uuid-beae880d-e3a9-4642-9a84-f1f3c83b568a">Publishing a service securely using Interlock with TLS</h2>
+<p>In this example, we will deploy a service that should be published securely using TLS. We can create tunnels from users directly to our service, configuring Interlock as a transparent proxy, or we can allow Interlock to manage tunnels. In this case, a service can be deployed using HTTP, but HTTPS will be required from the user's perspective. Users will interact with the Interlock-proxy component before reaching the defined service's backends.</p>
+<p>For this example, we will use the <kbd>colors</kbd> application again with random configuration. We will use the <kbd>colors-stack-https.yml</kbd> file with the following content:</p>
+<pre>version: "3.2"<br/><br/>services:<br/>  colors:<br/>    image: codegazers/colors:1.16<br/>    deploy:<br/>      replicas: 1<br/>      labels:<br/>        com.docker.lb.hosts: colors.lab.local<br/>        com.docker.lb.network: colors-network<br/>        com.docker.lb.port: 3000<br/>        com.docker.lb.ssl_cert: colors_colors.lab.local.cert<br/>        com.docker.lb.ssl_key: colors_colors.lab.local.key<br/>    networks:<br/>     - colors-network<br/><br/>networks:<br/>  colors-network:<br/>    driver: overlay<br/>secrets:<br/>  colors.lab.local.cert:<br/>    file: ./colors-lab-local.cert<br/>  colors.lab.local.key:<br/>    file: ./colors-lab-local.key</pre>
+<p>We will create a sample key and an associated certificate and these will be integrated inside Interlock's configuration automatically.</p>
+<p>It is always relevant to review Interlock's component logs using Docker service logs; for example, we will detect configuration errors using <kbd>docker service logs ucp-interlock</kbd>.</p>
+<p>We will use <kbd>openssl</kbd> to create a certificate that is valid for 365 days:</p>
+<pre><strong>$ openssl req \</strong><br/><strong> -new \</strong><br/><strong> -newkey rsa:4096 \</strong><br/><strong> -days 365 \</strong><br/><strong> -nodes \</strong><br/><strong> -x509 \</strong><br/><strong> -subj "/C=US/ST=CA/L=SF/O=colors/CN=colors.lab.local" \</strong><br/><strong> -keyout colors.lab.local.key \</strong><br/><strong> -out colors.lab.local.cert</strong></pre>
+<p>Once these keys and certificates are created, we will connect to Docker Enterprise using the <kbd>admin</kbd> user again. Although the admin's environment will probably already be loaded (if you are following these labs one by one), we will load the <kbd>ucp</kbd> environment using <kbd>source env.sh</kbd>:</p>
+<pre><strong>$ source env.sh </strong><br/><strong>Cluster "ucp_&lt;UCP_FQDN&gt;:6443_admin" set.</strong><br/><strong>User "ucp_&lt;UCP_FQDN&gt;:6443_admin" set.</strong><br/><strong>Context "ucp_&lt;UCP_FQDN&gt;:6443_admin" modified.</strong></pre>
+<p>Once the UCP environment is loaded, we will use this book's example <kbd>colors-stack-ssl.yaml</kbd> file. We will deploy the <kbd>colors</kbd> stack with HTTPS using <kbd>docker stack deploy -c colors-stack-https.yml lab</kbd>. This directory also contains a prepared certificate and key:</p>
+<pre><strong>interlock-lab$ $ docker stack deploy -c colors-stack-https.yml colors</strong><br/><strong>Creating network colors_colors-network</strong><br/><strong>Creating secret colors_colors.lab.local.cert</strong><br/><strong>Creating secret colors_colors.lab.local.key</strong><br/><strong>Creating service colors_colors</strong></pre>
+<p class="mce-root">We will review how <kbd>colors</kbd> instances are distributed within the cluster using <kbd>docker stack ps</kbd>:</p>
+<pre class="mce-root"><strong>$ docker stack ps colors</strong><br/><strong>ID NAME IMAGE NODE DESIRED STATE CURRENT STATE ERROR PORTS</strong><br/><strong>xexbvl18d454 colors_colors.1 codegazers/colors:1.16 node4 Running Running 4 minutes ago</strong> </pre>
+<p>We enabled Interlock on UCP's Admin Settings section. We used the default port, hence we should access our deployed service on the <kbd>8443</kbd> port (because we are using HTTPS). Notice that we have not used any <kbd>port</kbd> key on the <kbd>docker-compose</kbd> file. We have not published any service's port.</p>
+<p>We can review Interlock's proxy configuration by reading the associated <kbd>com.docker.interlock.proxy.&lt;ID&gt;</kbd> configuration object. We can use <kbd>docker config inspect</kbd> and filter its output. First, we will obtain the current <kbd>ucp-interlock-proxy</kbd> configuration object:</p>
+<pre><strong>$ export CFG=$(docker service inspect --format '{{(index .Spec.TaskTemplate.ContainerSpec.Configs 0).ConfigName}}' ucp-interlock-proxy)</strong></pre>
+<p>Then, we will just inspect this object:</p>
+<pre><strong>$ docker config inspect --pretty ${CFG}</strong></pre>
+<p class="mce-root">Inspecting the Interlock-proxy configuration can be very useful when it comes to troubleshooting Interlock issues. Try to include one service or stack at a time. This will avoid the mixing of configurations and help us to follow incorrect configuration issues.</p>
+<h1 id="uuid-83958a3c-c755-4808-8630-aee634a6f088" class="mce-root">Summary</h1>
+<p class="mce-root">This chapter covered Docker Enterprise's publishing features. We learned different publishing strategies for Docker Swarm and Kubernetes and how these tools can be integrated inside Docker Enterprise.</p>
+<p>We have seen how these methods also improve an application's security by isolating different layers and allowing us to publish only frontend and requisite services.</p>
+<p>The next chapter will teach us how Docker Enterprise implements a fully secure and production-ready image store solution.</p>
+<h1 id="uuid-7c37e32d-d46a-4d9d-88af-95ce3eb3d8da" class="mce-root">Questions</h1>
+<ol>
+<li class="mce-root">Which labels are required to publish a service using Interlock?</li>
+</ol>
+<p style="padding-left: 90px" class="mce-root">a) <kbd>com.docker.lb.backend_mode</kbd><br/>
+b) <kbd>com.docker.lb.port</kbd><br/>
+c) <kbd>com.docker.lb.hosts</kbd><br/>
+d) <kbd>com.docker.lb.network</kbd></p>
+<ol start="2">
+<li class="mce-root">Which one of these processes is not part of Interlock?</li>
+</ol>
+<p style="padding-left: 90px" class="mce-root">a) <kbd>ucp-interlock</kbd><br/>
+b) <kbd>ucp-interlock-controller</kbd><br/>
+c) <kbd>ucp-interlock-extension</kbd><br/>
+d) <kbd>ucp-interlock-proxy</kbd></p>
+<ol start="3">
+<li>Where do Interlock processes run within Docker Enterprise nodes?</li>
+</ol>
+<p style="padding-left: 90px" class="mce-root">a) <kbd>ucp-interlock</kbd> runs on Docker Swarm's leader.<br/>
+b) <kbd>ucp-interlock-extension</kbd> runs on any manager.<br/>
+c) <kbd>ucp-interlock-proxy</kbd> runs only on workers.<br/>
+d) None of the above answers are correct.</p>
+<ol start="4">
+<li>Which features does Interlock support?</li>
+</ol>
+<p style="padding-left: 90px">a) SSL/TLS endpoint management<br/>
+b) Transparent proxy or SSL/TLS passthrough<br/>
+c) Dynamic configuration using the Docker API<br/>
+d) TCP/UDP publishing</p>
+<ol start="5">
+<li>Which of the following statements regarding the publishing of applications on container-orchestrated environments are true?</li>
+</ol>
+<p style="padding-left: 90px">a) Ingress controllers and Interlock have a common logic using reverse proxy services for publishing applications.<br/>
+b) Ingress controllers help us to publish applications securely by exposing only required services.<br/>
+c) Interlock requires access to an application's front service networks.<br/>
+d) None of these premises are true.</p>
+<h1 id="uuid-43a54ad6-cb3e-401a-8712-cadb9c1e1ed5">Further reading</h1>
+<p>Refer to the following links for more information regarding the topics covered in this chapter:</p>
+<ul>
+<li>Docker Interlock documentation: <a href="https://docs.docker.com/ee/ucp/interlock/">https://docs.docker.com/ee/ucp/interlock/</a></li>
+<li>Universal Control Plane Service Discovery and Load Balancing for Swarm: <a href="https://success.docker.com/article/ucp-service-discovery-swarm">https://success.docker.com/article/ucp-service-discovery-swarm</a></li>
+<li>Universal Control Plane Service Discovery and Load Balancing for Kubernetes: <a href="https://success.docker.com/article/ucp-service-discovery-k8s">https://success.docker.com/article/ucp-service-discovery-k8s</a></li>
+</ul>
+
+
+            
+
+            
+        
+    </body></html>
