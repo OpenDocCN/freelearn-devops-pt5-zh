@@ -1,4 +1,4 @@
-# 使用 Web API 开发应用程序
+# 第七章：使用 Web API 开发应用程序
 
 Web API 是一项新功能，首次在 Dynamics CRM 2016 中引入。你可以使用 Dynamics 365 Web API，结合不同的编程语言、多个平台和设备。Dynamics 365 中的 Web API 使用 **开放数据协议**（**OData**），也称为 OData 版本 4。由于 Dynamics 365 Web API 基于开放标准构建，因此不需要使用任何程序集。
 

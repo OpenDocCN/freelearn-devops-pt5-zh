@@ -1,4 +1,4 @@
-# OpenShift 安装
+# 第六章：OpenShift 安装
 
 在上一章中，我们讨论了如何使用`oc cluster up`、MiniShift 和 Vagrant 在 CentOS7、macOS 和 Windows 操作系统上快速轻松地设置 OpenShift 实验环境。
 

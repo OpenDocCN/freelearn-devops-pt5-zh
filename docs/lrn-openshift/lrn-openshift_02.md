@@ -1,4 +1,4 @@
-# Kubernetes 概述
+# 第二章：Kubernetes 概述
 
 在上一章中，我们讨论了容器架构，使用了 Docker 镜像和容器，查看了不同的 Docker 注册表，学习了如何管理容器的持久存储，最后，学习了如何使用 Dockerfile 构建自己的 Docker 镜像。所有这些技能将在 第三章，“*CRI-O 概述*”中使用到，届时我们将开始使用 Kubernetes。Kubernetes 是 OpenShift 中的一个关键组件。一切就像滚雪球一样：Kubernetes 需要 Docker 技能，OpenShift 需要 Kubernetes 技能。
 

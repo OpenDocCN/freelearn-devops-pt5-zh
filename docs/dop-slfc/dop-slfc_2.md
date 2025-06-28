@@ -1,4 +1,4 @@
-# 将 DevOps 应用于 Salesforce 应用程序
+# 第二章：将 DevOps 应用于 Salesforce 应用程序
 
 在上一章中，我们学习了关于 Salesforce 开发流程的一些基础知识，了解了什么是沙箱，沙箱的不同类型，以及如何根据我们的需求选择沙箱。我们使用 Salesforce 开发了自己的招聘应用程序，随后学习了 Salesforce 部署的传统方式。我们还了解了在传统的 Salesforce 应用部署过程中遇到的问题。我们学习了如何通过 Eclipse 设置 Salesforce 开发环境，并讨论了如何将 DevOps 应用于 Salesforce 应用程序。
 

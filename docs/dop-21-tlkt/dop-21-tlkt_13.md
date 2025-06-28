@@ -1,4 +1,4 @@
-# 在 DigitalOcean 中创建和管理 Docker Swarm 集群
+# 第十三章：在 DigitalOcean 中创建和管理 Docker Swarm 集群
 
 *                               计划将一个（实现）抛弃；反正你会的。**–弗雷德·布鲁克斯*
 

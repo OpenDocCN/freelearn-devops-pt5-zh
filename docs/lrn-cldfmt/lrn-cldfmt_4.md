@@ -1,4 +1,4 @@
-# AWS CloudFormation StackSets
+# 第四章：AWS CloudFormation StackSets
 
 为全球客户提供来自多个区域的服务需要更多关注在设计应用程序和基础设施时。有时，将基础设施部署到某些区域并不容易。此外，我们还应该在多个区域执行基础设施变更。本章将探讨如何通过应用 CloudFormation StackSets 来设计和构建多区域基础设施。
 

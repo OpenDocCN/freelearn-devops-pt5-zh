@@ -1,4 +1,4 @@
-# OpenShift 核心概念
+# 第八章：OpenShift 核心概念
 
 在前几章中，我们介绍了 Docker 和 Kubernetes 的基础知识，并讲解了 OpenShift 的架构。我们已经知道如何构建 OpenShift 实验环境，现在是时候动手操作，看看如何处理 OpenShift 的主要资源了。
 

@@ -1,4 +1,4 @@
-# AWS CloudFormation 安全
+# 第六章：AWS CloudFormation 安全
 
 设计和部署基础设施时，涉及安全问题时需要特别小心。在本章中，我们探讨了如何构建符合安全要求的基础设施即代码（IaC）。我们还探讨了一些安全最佳实践和建议，以便应用于安全的 AWS CloudFormation。
 

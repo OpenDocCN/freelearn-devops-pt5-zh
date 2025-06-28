@@ -1,4 +1,4 @@
-# 利用 Dynamics 365 中的 Azure 扩展
+# 第八章：利用 Dynamics 365 中的 Azure 扩展
 
 在上一章中，我们学习了如何在 Dynamics 365 中使用新的 REST Web API 端点执行各种操作，并如何利用它来开发自定义的业务应用程序。在本章中，我们将学习 Dynamics 365 如何原生支持与 Microsoft Azure 的集成。本章假定你已经对 Microsoft Azure 的基础知识有基本的了解。
 

@@ -1,4 +1,4 @@
-# OpenShift 中的 CI/CD 流水线
+# 第十七章：OpenShift 中的 CI/CD 流水线
 
 在上一章中，你学习了如何从自定义模板构建和部署 WordPress 应用程序。你还学习了如何创建和部署 OpenShift 模板，以及如何从 OpenShift 模板部署应用程序。
 

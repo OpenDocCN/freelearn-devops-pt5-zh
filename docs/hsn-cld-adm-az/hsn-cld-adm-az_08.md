@@ -1,4 +1,4 @@
-# Azure Active Directory - 云中的身份
+# 第八章：Azure Active Directory - 云中的身份
 
 我们已经在 Azure 中有了应用程序和数据，本地网络与 Azure 之间的连接也已建立。但是身份验证和授权怎么办？我们如何管理用户的权限和访问？所有这些问题的答案是 **Azure Active Directory** (**AAD**)，它允许我们设置基于云的身份认证，并且结合 **Azure 基于角色的访问控制** (**RBAC**)，可以进行用户身份验证并允许他们访问特定资源。
 

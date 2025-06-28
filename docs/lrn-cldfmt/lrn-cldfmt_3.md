@@ -1,4 +1,4 @@
-# 开发 AWS CloudFormation 模板
+# 第三章：开发 AWS CloudFormation 模板
 
 构建 AWS CloudFormation 需要了解如何为 AWS 编写 IaC（基础设施即代码）。在本章中，我们将探索如何使用 JSON 和 YAML 开发 IaC 脚本。我们还将回顾如何通过 IaC 脚本访问 AWS 资源。
 

@@ -1,4 +1,4 @@
-## 自适应应用于仪表化服务
+## 第十六章：自适应应用于仪表化服务
 
 [仪表化服务](https://prometheus.io/docs/practices/instrumentation/)提供比我们从[exporters](https://prometheus.io/docs/instrumenting/exporters/)抓取的更多详细指标。添加我们可能需要的所有指标的能力打开了通常由 exporters 关闭的大门。这并不意味着 exporters 就不那么有用，而是我们需要考虑我们观察的资源的性质。
 

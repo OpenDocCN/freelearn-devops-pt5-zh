@@ -1,4 +1,4 @@
-# 在 Salesforce 中的部署
+# 第三章：在 Salesforce 中的部署
 
 在上一章中，我们讨论了在 Salesforce 应用程序部署中需要 DevOps，以及 DevOps 如何帮助大量开发人员在同一项目中协同工作。我们看到 DevOps 能够提供精简的交付，帮助我们使用开源工具跟踪应用程序问题。我们还看到了 Salesforce 与其他技术栈的不同之处。我们讲解了如何使用 Git 和 Jenkins 为 Java 开发栈设置 DevOps 的过程。
 

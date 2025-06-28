@@ -1,4 +1,4 @@
-# 使用 ReplicaSets 扩展 Pods
+# 第四章：使用 ReplicaSets 扩展 Pods
 
 大多数应用程序应该是可扩展的，所有应用程序都必须具备容错性。Pods 本身并不提供这些功能，而 ReplicaSets 提供了这些功能。
 

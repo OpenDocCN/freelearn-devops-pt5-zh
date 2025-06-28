@@ -1,4 +1,4 @@
-## 部署和配置 Prometheus
+## 第七章：部署和配置 Prometheus
 
 初看之下，部署 Prometheus 很简单。创建一个 Compose 文件并执行`docker stack deploy`命令。复杂性出现在我们开始将服务与 Prometheus 集成时。很快，你将亲身体验到集成问题。
 

@@ -1,4 +1,4 @@
-# OpenShift 中的安全性
+# 第十章：OpenShift 中的安全性
 
 之前，我们使用了高级 OpenShift 资源，如 ImageStreams、ConfigMaps 和模板。这些资源可以简化 OpenShift 资源管理和应用交付过程。
 

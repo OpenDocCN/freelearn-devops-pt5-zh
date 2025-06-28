@@ -1,4 +1,4 @@
-# 使用 Docker Stack 和 Compose YAML 文件来部署 Swarm 服务
+# 第八章：使用 Docker Stack 和 Compose YAML 文件来部署 Swarm 服务
 
 复制和粘贴是一个设计错误。
 

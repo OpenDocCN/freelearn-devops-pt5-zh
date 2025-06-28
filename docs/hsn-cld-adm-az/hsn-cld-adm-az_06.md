@@ -1,4 +1,4 @@
-# Azure Storage、备份和站点恢复 - 将数据迁移到 Azure
+# 第六章：Azure Storage、备份和站点恢复 - 将数据迁移到 Azure
 
 本章将重点讨论将数据迁移到 Azure。我们将从 Azure Storage 开始，因为它是 Azure 中最重要的服务之一。一切从 Storage 开始，了解它的使用非常重要。我们将讨论如何使用 Azure Storage 进行备份，以及如何将工作负载迁移到云端。此外，我们还将讨论如何使用**Azure 备份**和**Azure 站点恢复**（**ASR**）加快迁移过程，并将数据迁移到 Azure。
 

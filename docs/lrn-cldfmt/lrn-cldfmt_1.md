@@ -1,4 +1,4 @@
-# 介绍 AWS CloudFormation
+# 第一章：介绍 AWS CloudFormation
 
 云技术使 IT 人员能够轻松构建虚拟数据中心，从而能够根据特定配置设置虚拟机。现在，**基础设施即代码**（**IaC**）通过脚本化方式构建虚拟数据中心。在本章中，我们将简要介绍 IaC 和 AWS CloudFormation 中的一些术语。
 

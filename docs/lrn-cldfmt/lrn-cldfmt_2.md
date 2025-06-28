@@ -1,4 +1,4 @@
-# 构建您的第一个 AWS CloudFormation 项目
+# 第二章：构建您的第一个 AWS CloudFormation 项目
 
 我们可以使用 AWS CloudFormation 构建各种基础设施模型。我们可以在我们的基础设施设计中作为 IaC 添加、更新和删除 AWS 资源，然后将我们的 IaC 脚本部署到 AWS CloudFormation。在本节中，我们将构建一个简单的项目，展示如何使用 AWS CloudFormation 开发 IaC。
 

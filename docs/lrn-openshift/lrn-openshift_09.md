@@ -1,4 +1,4 @@
-# 高级 OpenShift 概念
+# 第九章：高级 OpenShift 概念
 
 在上一章中，我们简要描述了基本的 OpenShift 对象，如 pod、服务和路由。我们还让您了解了如何使用命名空间进行资源隔离，以及如何管理 OpenShift 中的用户。
 
