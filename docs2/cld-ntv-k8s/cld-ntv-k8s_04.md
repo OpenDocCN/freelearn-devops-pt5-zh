@@ -1,4 +1,4 @@
-# *第三章*: 在 Kubernetes 上运行应用容器
+# 第三章：*第三章*: 在 Kubernetes 上运行应用容器
 
 本章包含了 Kubernetes 提供的最小乐高模块——Pod 的全面概述。包括对 PodSpec YAML 格式及其可能配置的解释，以及 Kubernetes 如何处理和调度 Pod 的简要讨论。Pod 是 Kubernetes 上运行应用程序的最基本方式，并且在所有高级应用程序控制器中都有使用。
 

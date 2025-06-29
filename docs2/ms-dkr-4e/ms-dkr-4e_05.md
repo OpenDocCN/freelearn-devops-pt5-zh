@@ -1,6 +1,6 @@
 *第五章*
 
-# Docker Compose
+# 第五章：Docker Compose
 
 在这一章中，我们将介绍另一个核心 Docker 工具，名为 Docker Compose，同时也会涉及当前正在开发中的 Docker App。
 

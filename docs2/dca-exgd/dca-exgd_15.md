@@ -20,7 +20,7 @@
 
 本章将从回顾与 Docker Swarm 和 Kubernetes 部署相关的一些概念开始。
 
-# 技术要求
+# 第十六章：技术要求
 
 你可以在 GitHub 仓库中找到本章的代码：[`github.com/PacktPublishing/Docker-Certified-Associate-DCA-Exam-Guide.git`](https://github.com/PacktPublishing/Docker-Certified-Associate-DCA-Exam-Guide.git)
 

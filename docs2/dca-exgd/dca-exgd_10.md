@@ -18,7 +18,7 @@
 
 让我们开始吧！
 
-# 技术要求
+# 第十一章：技术要求
 
 在本章中，我们将学习 Docker Swarm 的编排器功能。我们将在本章末尾提供一些实验，供你测试理解并展示你学到的概念。这些实验可以在你的笔记本电脑或个人电脑上使用提供的 Vagrant “Docker Swarm”环境运行，或者使用你自己已经部署的 Docker Swarm 集群。请查看本书的 GitHub 代码库，获取我们将在本章中使用的代码以及更多信息，地址是 [`github.com/PacktPublishing/Docker-Certified-Associate-DCA-Exam-Guide.git`](https://github.com/PacktPublishing/Docker-Certified-Associate-DCA-Exam-Guide.git)。
 

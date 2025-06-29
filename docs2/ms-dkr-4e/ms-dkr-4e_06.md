@@ -1,6 +1,6 @@
 *第六章*
 
-# Docker Machine、Vagrant 和 Multipass
+# 第六章：Docker Machine、Vagrant 和 Multipass
 
 本章中，我们将深入探讨 Docker Machine。它可以用于轻松启动并引导目标平台的 Docker 主机，包括本地或云环境。我们还将讨论 Vagrant 和 Multipass，它们是可以用来启动本地 Docker 主机的替代工具。
 

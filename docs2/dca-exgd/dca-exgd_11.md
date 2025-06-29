@@ -22,7 +22,7 @@
 
 Kubernetes 目前还不包括在 Docker Certified Associate 考试中，但它可能会在下一个版本中加入，因为 Docker Enterprise 包含了一个完全兼容的 Kubernetes 平台，并且部署在 Docker Swarm 编排工具之上。Docker Enterprise 是唯一同时提供这两种编排工具的容器平台。我们将在本书的第三部分学习 Docker Enterprise 的组件和功能，每个组件都有独立的章节。
 
-# 技术要求
+# 第十二章：技术要求
 
 在本章中，我们将了解 Docker Swarm 编排工具的功能。我们还将在章末提供一些实验室，帮助你理解和学习我们将要覆盖的概念。这些实验可以在你的笔记本电脑或个人电脑上运行，使用提供的 Vagrant *Kubernetes 环境* 或自行部署的任何 Docker Swarm 集群。你可以在本书的 GitHub 代码库中查看更多信息，地址为 [`github.com/PacktPublishing/Docker-Certified-Associate-DCA-Exam-Guide.git`](https://github.com/PacktPublishing/Docker-Certified-Associate-DCA-Exam-Guide.git)。
 

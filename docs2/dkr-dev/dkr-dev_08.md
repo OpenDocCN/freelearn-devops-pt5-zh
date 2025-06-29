@@ -1,4 +1,4 @@
-# *第六章*：使用 Docker Compose 部署应用
+# 第六章：*第六章*：使用 Docker Compose 部署应用
 
 使用 Docker 部署应用的最简单实用场景是通过在单主机上运行 Docker Compose。你作为开发人员使用的许多命令，例如 `docker-compose up -d`，同样适用于在单主机上部署 Docker 应用。
 

@@ -1,6 +1,6 @@
 *第七章*
 
-# 从 Linux 转向 Windows 容器
+# 第七章：从 Linux 转向 Windows 容器
 
 在本章中，我们将讨论并深入了解 Windows 容器。微软已经将容器作为在新硬件上部署旧应用程序的一种方式。与 Linux 容器不同，Windows 容器仅在基于 Windows 的 Docker 主机上可用。
 

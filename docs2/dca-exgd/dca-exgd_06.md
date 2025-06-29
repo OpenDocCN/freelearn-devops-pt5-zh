@@ -20,7 +20,7 @@
 
 让我们开始吧！
 
-# 技术要求
+# 第七章：技术要求
 
 在本章中，我们将学习 Docker 化的多容器应用程序。我们将在本章的最后提供一些实验室练习，帮助你理解和学习所涵盖的概念。这些实验室可以在你的笔记本电脑或 PC 上运行，使用提供的 Vagrant 独立环境或你自己已经部署的 Docker 主机。查看本书 GitHub 代码库中的额外信息：[`github.com/PacktPublishing/Docker-Certified-Associate-DCA-Exam-Guide.git`](https://github.com/PacktPublishing/Docker-Certified-Associate-DCA-Exam-Guide.git)。
 

@@ -1,4 +1,4 @@
-# 发布镜像
+# 第一章：发布镜像
 
 在上一章中，你学习了如何构建 Docker 镜像。下一步就是将这些镜像发布到公共仓库，供公众发现和使用。因此，本章将重点介绍如何在 Docker Hub 上发布镜像，以及如何充分利用 Docker Hub。我们将创建一个新的 Docker 镜像，使用`commit`命令和`Dockerfile`进行构建，并将其推送到 Docker Hub。本章还会讨论 Docker 可信仓库的概念。这个 Docker 可信仓库是从 GitHub 或 Bitbucket 创建的，可以与 Docker Hub 集成，自动构建镜像，从而随着仓库更新而生成镜像。这个 GitHub 上的仓库用于存储之前创建的`Dockerfile`。此外，我们将展示全球各地的组织如何使其开发团队能够设计和贡献多种 Docker 镜像，并将它们存储在 Docker Hub 中。Docker Hub 的 REST API 可以用于用户管理和通过编程方式操作仓库。
 

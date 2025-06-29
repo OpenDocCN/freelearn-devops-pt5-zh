@@ -32,7 +32,7 @@
 
 让我们开始吧！
 
-# 技术要求
+# 第三章：技术要求
 
 本章我们将学习各种 Docker 引擎的概念。我们将在本章末尾提供一些实验室，这些实验室将帮助你理解和学习所展示的概念。这些实验室可以在你的笔记本电脑或 PC 上运行，使用提供的 Vagrant 独立环境或你拥有的任何已部署的 Docker 主机。你可以在本书的 GitHub 仓库中找到更多信息：[`github.com/PacktPublishing/Docker-Certified-Associate-DCA-Exam-Guide.git`](https://github.com/PacktPublishing/Docker-Certified-Associate-DCA-Exam-Guide.git)
 

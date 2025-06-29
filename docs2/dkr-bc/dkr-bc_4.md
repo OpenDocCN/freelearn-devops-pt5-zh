@@ -1,4 +1,4 @@
-# 第四章 Docker Swarm
+# 第四章：Docker Swarm
 
 到目前为止，我们已经学会了如何使用 Docker for Mac、Docker for Windows 和 Docker Machine 在本地启动单个 Docker 主机，以及在 Linux 上本地使用 Docker。单个 Docker 主机非常适合本地开发，或启动一些测试实例，但随着你向生产环境推进，你需要减少单点故障的风险。
 

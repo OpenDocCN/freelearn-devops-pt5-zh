@@ -26,7 +26,7 @@ Universal Control Plane
 
 让我们开始吧！
 
-# 技术要求
+# 第十五章：技术要求
 
 您可以在 GitHub 仓库中找到本章的代码：[`github.com/PacktPublishing/Docker-Certified-Associate-DCA-Exam-Guide.git`](https://github.com/PacktPublishing/Docker-Certified-Associate-DCA-Exam-Guide.git)
 

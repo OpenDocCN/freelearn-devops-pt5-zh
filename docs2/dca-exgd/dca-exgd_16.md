@@ -20,7 +20,7 @@ Docker 企业版是一个完整的 **容器即服务** (**CaaS**) 平台。在�
 
 +   更新、健康检查和故障排除
 
-# 技术要求
+# 第十七章：技术要求
 
 你可以在 GitHub 仓库中找到本章的代码：[`github.com/PacktPublishing/Docker-Certified-Associate-DCA-Exam-Guide.git`](https://github.com/PacktPublishing/Docker-Certified-Associate-DCA-Exam-Guide.git)
 

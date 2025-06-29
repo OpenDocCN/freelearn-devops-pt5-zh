@@ -16,7 +16,7 @@ Docker 内容信任简介
 
 让我们开始吧！
 
-# 技术要求
+# 第八章：技术要求
 
 在本章中，我们将学习关于各种 Docker 内容信任的概念。在本章末尾，我们将提供一些实验，帮助你理解并学习所展示的概念。这些实验可以在你的笔记本电脑或 PC 上运行，使用提供的 Vagrant 独立环境，或者使用你自己部署的任何 Docker 主机。你可以在本书的 GitHub 代码仓库中找到更多信息：[`github.com/PacktPublishing/Docker-Certified-Associate-DCA-Exam-Guide.git`](https://github.com/PacktPublishing/Docker-Certified-Associate-DCA-Exam-Guide.git)。
 

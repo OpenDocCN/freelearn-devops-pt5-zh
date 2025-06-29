@@ -6,7 +6,7 @@
 
 通过这些问题，你将对考试的格式、你将遇到的题目类型以及哪些主题更为相关有一个清晰的了解。
 
-# Docker 认证工程师考试详情
+# 第二十章：Docker 认证工程师考试详情
 
 撰写本书时，考试基于 Docker Enterprise 平台。请参考 Docker 官网，[`success.docker.com/certification`](https://success.docker.com/certification)，以获取最新的信息。
 

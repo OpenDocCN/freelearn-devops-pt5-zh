@@ -1,6 +1,6 @@
 *第十二章*
 
-# 探索其他 Kubernetes 选项
+# 第十二章：探索其他 Kubernetes 选项
 
 在这一章中，我们将讨论使用 Docker 内建支持来运行您自己的本地 Kubernetes 单节点和多节点集群的替代方案。
 

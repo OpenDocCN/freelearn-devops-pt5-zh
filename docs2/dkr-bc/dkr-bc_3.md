@@ -1,4 +1,4 @@
-# 第三章 Docker 在云中
+# 第三章：Docker 在云中
 
 第三个工具是 Docker 和 Docker Compose，两个我们在 第一章 *安装 Docker* 时安装的工具，就是 Docker Machine；这是一个命令行工具，允许你管理本地和远程的 Docker 主机。
 

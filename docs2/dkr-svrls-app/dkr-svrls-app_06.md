@@ -1,4 +1,4 @@
-# OpenWhisk on Docker
+# 第六章：OpenWhisk on Docker
 
 本章将讨论服务器无关平台中的另一个角色——OpenWhisk。首先将概述 OpenWhisk 平台、其设计原理和功能，之后本章将介绍如何部署本地 OpenWhisk 实例以进行函数开发，如何使用其命令行界面，OpenWhisk 的组件和架构，以及如何准备函数以部署到该平台。
 
