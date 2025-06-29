@@ -1,4 +1,4 @@
-# 第五章：*第五章*：服务和 Ingress——与外界通信
+# 第五章：服务和 Ingress——与外界通信
 
 本章包含了 Kubernetes 提供的允许应用程序彼此通信，以及与集群外部资源通信的方法的全面讨论。你将学习到 Kubernetes 服务资源及其所有可能的类型——ClusterIP、NodePort、LoadBalancer 和 ExternalName——以及如何实现它们。最后，你将学习如何使用 Kubernetes Ingress。
 

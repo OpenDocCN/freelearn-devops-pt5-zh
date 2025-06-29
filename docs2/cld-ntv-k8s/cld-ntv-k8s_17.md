@@ -1,4 +1,4 @@
-# 第十三章：*第十三章*：通过 CRD 扩展 Kubernetes
+# 第十三章：通过 CRD 扩展 Kubernetes
 
 本章解释了扩展 Kubernetes 功能的多种可能性。首先讨论了`kubectl`命令，如`get`、`create`、`describe`和`apply`。接着讨论了 Operator 模式，它是 CRD 的一种扩展。然后详细介绍了一些云服务提供商在其 Kubernetes 实现中附加的钩子，最后简要介绍了更广泛的云原生生态系统。通过本章学到的概念，你将能够设计和开发扩展你的 Kubernetes 集群的功能，解锁高级使用模式。
 

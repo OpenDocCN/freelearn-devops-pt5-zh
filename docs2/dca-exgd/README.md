@@ -1,6 +1,6 @@
-# Github DevOps 加速指南
+# Docker 认证助理（DCA）备考指南
 
-> 原文：[`annas-archive.org/md5/677f27c30764b3701bc2b6cf6de3a30e`](https://annas-archive.org/md5/677f27c30764b3701bc2b6cf6de3a30e)
+> 原文：[`annas-archive.org/md5/c839bc0020dc04c2f8382aac5304c3b7`](https://annas-archive.org/md5/c839bc0020dc04c2f8382aac5304c3b7)
 > 
 > 译者：[飞龙](https://github.com/wizardforcel)
 > 

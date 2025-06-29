@@ -1,4 +1,4 @@
-# 第四章：*第四章*：扩展和部署您的应用程序
+# 第四章：扩展和部署您的应用程序
 
 本章中，我们将学习用于运行应用程序和控制 Pods 的高级 Kubernetes 资源。首先，我们将讨论 Pod 的缺点，然后介绍最简单的 Pod 控制器 —— ReplicaSets。接下来，我们将介绍 Deployments，这是最流行的 Kubernetes 应用程序部署方法。然后，我们将介绍一些特殊资源，帮助您部署特定类型的应用程序 —— 水平 Pod 自动扩展器、DaemonSets、StatefulSets 和 Jobs。最后，我们将通过一个完整的示例展示如何在 Kubernetes 上运行一个复杂的应用程序。
 

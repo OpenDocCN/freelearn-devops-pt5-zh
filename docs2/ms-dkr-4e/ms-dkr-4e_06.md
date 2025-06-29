@@ -1,4 +1,4 @@
-*第六章*
+
 
 # 第六章：Docker Machine、Vagrant 和 Multipass
 

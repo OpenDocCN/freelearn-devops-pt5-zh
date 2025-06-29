@@ -1,4 +1,4 @@
-# 第八章：*第八章*：将 Docker 应用程序部署到 Kubernetes
+# 第八章：将 Docker 应用程序部署到 Kubernetes
 
 最近，很多容器编排工具如雨后春笋般涌现，但有一个编排工具准备主导市场：Kubernetes，来自云原生计算基金会。Google 最初发布 Kubernetes 的目的是将其内部使用的 Borg 集群系统的复杂性引入开源容器运行时世界。
 

@@ -1,4 +1,4 @@
-# 第九章：*第九章*：使用 Spinnaker 进行云原生持续部署
+# 第九章：使用 Spinnaker 进行云原生持续部署
 
 将 Docker 容器作为云原生应用程序部署到 Kubernetes 面临着挑战，这些挑战可以通过专门的容器中心持续部署系统来解决。与我们之前在部署到单一主机时通过 Jenkins 运行自定义部署逻辑不同，我们可以使用 Spinnaker 来部署到 Kubernetes。因为 Spinnaker 可以与 Jenkins 配合使用，我们可以继续使用已经设置好的 Jenkins 服务器来构建 Docker 容器并准备部署的 Helm Charts。通过 Spinnaker，我们将使用其内置的 Helm Charts 和 Kubernetes 部署支持来部署应用程序。我们还将探讨 Spinnaker 的一些专门部署策略，看看它们如何应用于以 Kubernetes 为中心的环境。
 
