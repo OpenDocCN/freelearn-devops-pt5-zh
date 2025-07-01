@@ -1,0 +1,186 @@
+<html><head></head><body><div><div><div><div><h1 class="title"><a id="ch07"/>Chapter 7. Advanced Access Control and Configuration</h1></div></div></div><p>The basic access control methods described in the previous chapter are sufficient for most sites, and there are many that do not go further than that. However, Gitolite has a lot more features waiting for people who need them. We'll go through some of these advanced features in this chapter. In each case, we'll attempt to describe a practical scenario that demonstrates a need and then explain how the feature fulfills that need.</p><div><div><div><div><h1 class="title"><a id="ch07lvl1sec46"/>Making changes to the rc file</h1></div></div></div><p>Many of Gitolite's<a id="id136" class="indexterm"/> advanced features and configuration options are managed by editing the <em>rc file</em>. This is a file named <code class="literal">.gitolite.rc</code>, which is present in the home directory of the Gitolite hosting user.</p><p>The file is liberally commented and it is generally easy to see where things go.</p><p>The bulk of the file is within a top-level definition that looks as follows:</p><div><pre class="programlisting">
+<strong>%RC = (</strong>
+<strong>...several variables defined...</strong>
+<strong>)</strong>
+</pre></div><p>If you're familiar with Perl, you might realize that this is a Perl hash, but it is not necessary to know Perl in order to edit this file.</p><p>The file has several simple variables defined, for example:</p><div><pre class="programlisting">
+<strong>    UMASK                           =&gt;  0077,</strong>
+</pre></div><p>When the Gitolite documentation (or this book) tells you to edit a variable in the rc file, it's best to look for such a variable first—most of the important ones are already in the file but may be commented out, waiting to be un-commented and the value edited as needed.</p><p>One of the variables within the <code class="literal">%RC</code> block is a list variable called <code class="literal">ENABLE</code>, whose definition looks as follows:</p><div><pre class="programlisting">
+<strong>    ENABLE =&gt; [</strong>
+<strong>    ...several features listed...</strong>
+<strong>    ]</strong>
+</pre></div><p>An example feature is as follows:</p><div><pre class="programlisting">
+<strong>            'info',</strong>
+</pre></div><p>This enables the <code class="literal">info</code> command.</p><p>Again, most<a id="id137" class="indexterm"/> features are already listed here, but may be commented out.</p></div></div>
+<div><div><div><div><h1 class="title"><a id="ch07lvl1sec47"/>Giving users their own branches</h1></div></div></div><p>When there <a id="id138" class="indexterm"/>are more than a few developers in a project, it is often necessary for them to share code that is still under development, for comments, discussion, preliminary testing, and so on. The obvious solution is for each developer to push to a branch on the Gitolite server and inform his colleagues of the branch name. A branch namespace dedicated to this can be created, giving all developers access to it, as follows:</p><div><pre class="programlisting">
+<strong>repo foo</strong>
+<strong>    RW+    sandbox/  =  @developers</strong>
+</pre></div><p>This works fine, but it could lead to a situation where one developer accidentally overwrites or deletes another developer's branch if the branch naming within the <em>sandbox</em> namespace is not strictly controlled.</p><p>What is required, ideally, is something as follows:</p><div><pre class="programlisting">
+<strong>    RW+    sandbox/alice/  =  alice</strong>
+<strong>    RW+    sandbox/bob/    =  bob</strong>
+</pre></div><p>and so on, for each user who should be given access to the repository.</p><p>Clearly, this is not at all scalable—you'd have to add one line for each user if you did this. In fact, it's a step backward because we've suddenly lost all the advantages of managing users in groups, since we are forced to use a separate rule for each developer.</p><p>This situation is what led to the development of what are called <strong>personal branches</strong>
+<a id="id139" class="indexterm"/> in Gitolite. This feature works on a simple idea, and is best described with the following example rule:</p><div><pre class="programlisting">
+<strong>    RW+    sandbox/USER/  =  @developers</strong>
+</pre></div><p>The idea is that the word <code class="literal">USER</code>, surrounded by slashes, stands for the authenticated username from the connection information, as long as the user is listed on the right-hand side (or a group he/she belongs to is listed). Thus, if the user ID <code class="literal">alice</code> is a member of the <code class="literal">@developers</code> group, and Alice attempts to access the repository, this rule effectively becomes the following:</p><div><pre class="programlisting">
+<strong>    RW+    sandbox/alice/    =  alice</strong>
+</pre></div><p>This allows<a id="id140" class="indexterm"/> Alice to write to her own sandbox branches; that is, branches whose names start with <code class="literal">sandbox/alice/</code>. Note that this does not allow a branch called <code class="literal">sandbox/alice</code>—the sandbox is meant to be a set of branches not just one branch.</p><p>Since Gitolite does not allow limiting read access by branch, every user who is a member of the <code class="literal">@developers</code> group has read access to the repository, which means they can read each other's development branches, but only write (push to) their own sandbox branches.</p></div>
+<div><div><div><div><h1 class="title"><a id="ch07lvl1sec48"/>Types of write operations</h1></div></div></div><p>So far,<a id="id141" class="indexterm"/> we have restricted ourselves to the <code class="literal">RW</code> and <code class="literal">RW+</code> permissions while talking about permissions. The former gives users permission to create new branches and tags, and make <strong>fast forward</strong> pushes<a id="id142" class="indexterm"/> to the branches, while the latter allows users to also make non-fast forward pushes and rewrite tags, as well as delete branches and tags.</p><div><div><h3 class="title"><a id="tip19"/>Tip</h3><p>This is by far the most common situation, and this syntax serves for the vast majority of access control needs. A push to an existing tag, even if the new commit is a descendent of the current commit the tag is pointing to, is still considered a non-fast forward push. This is because, unlike branches, tags are not <em>meant</em> to be moved; once written, they're supposed to be fixed and never change.</p></div></div><p>However, in some situations, you may need to explicitly specify the ability to <em>create</em> a branch, separating it from that of pushing a new commit to it. Similarly, you may want to explicitly specify permission to <em>delete</em> a branch or tag, separating it from that of pushing a non-fast forward commit; or, you may want to do both.</p><p>In order to achieve this, Gitolite has an extended syntax for the permissions field to let you specify explicit create and/or delete permissions. Using these extended permissions in any rule applicable to a repository has the effect of limiting the power of the normal <code class="literal">RW</code> and <code class="literal">RW+</code> permissions, in terms of creating or deleting refs.</p><p>This extended syntax consists of the following <em>new permissions</em>: <code class="literal">RWC</code>, <code class="literal">RW+C</code>, <code class="literal">RWD</code>, <code class="literal">RW+D</code>, <code class="literal">RWCD</code>, and <code class="literal">RW+CD</code>. When a rule specifying a permission containing a <code class="literal">C</code> is added to a repository, the <code class="literal">RW</code> and <code class="literal">RW+</code> rules for that repository no longer permit <em>creating</em> a branch or a tag. Similarly, when any rule specifies a permission containing a <code class="literal">D</code>, the <code class="literal">RW+</code> rules for that repository no longer allow <em>deleting</em> a ref. For ease of discussion, we can call these the <em>explicit create</em> and <em>explicit delete</em> modes, respectively.</p><p>It is useful to <a id="id143" class="indexterm"/>summarize these rules in a tabular form, for ready reference in case you ever need to use these special permission modes. The following table shows you the minimum required permission "characters" to allow a given operation, in each of the three modes (strictly speaking, there is a fourth mode, where both explicit create and explicit delete are used, but that is just a combination of the two):</p><div><table border="1"><colgroup><col style="text-align: left"/><col style="text-align: left"/><col style="text-align: left"/><col style="text-align: left"/></colgroup><thead><tr><th style="text-align: left" valign="bottom"> </th><th style="text-align: left" valign="bottom">
+<p>Default mode</p>
+</th><th style="text-align: left" valign="bottom">
+<p>Explicit create mode</p>
+</th><th style="text-align: left" valign="bottom">
+<p>Explicit delete mode</p>
+</th></tr></thead><tbody><tr><td style="text-align: left" valign="top">
+<p>Create new branch</p>
+</td><td style="text-align: left" valign="top">
+<p>
+<code class="literal">RW</code>
+</p>
+</td><td style="text-align: left" valign="top">
+<p>
+<code class="literal">RW</code> and <code class="literal">C</code>
+</p>
+</td><td style="text-align: left" valign="top">
+<p>
+<code class="literal">RW</code>
+</p>
+</td></tr><tr><td style="text-align: left" valign="top">
+<p>Create new tag</p>
+</td><td style="text-align: left" valign="top">
+<p>
+<code class="literal">RW</code>
+</p>
+</td><td style="text-align: left" valign="top">
+<p>
+<code class="literal">RW</code> and <code class="literal">C</code>
+</p>
+</td><td style="text-align: left" valign="top">
+<p>
+<code class="literal">RW</code>
+</p>
+</td></tr><tr><td style="text-align: left" valign="top">
+<p>Fast forward push existing branch</p>
+</td><td style="text-align: left" valign="top">
+<p>
+<code class="literal">RW</code>
+</p>
+</td><td style="text-align: left" valign="top">
+<p>
+<code class="literal">RW</code>
+</p>
+</td><td style="text-align: left" valign="top">
+<p>
+<code class="literal">RW</code>
+</p>
+</td></tr><tr><td style="text-align: left" valign="top">
+<p>Non-fast forward push a branch</p>
+</td><td style="text-align: left" valign="top">
+<p>
+<code class="literal">RW+</code>
+</p>
+</td><td style="text-align: left" valign="top">
+<p>
+<code class="literal">RW+</code>
+</p>
+</td><td style="text-align: left" valign="top">
+<p>
+<code class="literal">RW+</code>
+</p>
+</td></tr><tr><td style="text-align: left" valign="top">
+<p>Overwrite an existing tag</p>
+</td><td style="text-align: left" valign="top">
+<p>
+<code class="literal">RW+</code>
+</p>
+</td><td style="text-align: left" valign="top">
+<p>
+<code class="literal">RW+</code>
+</p>
+</td><td style="text-align: left" valign="top">
+<p>
+<code class="literal">RW+</code>
+</p>
+</td></tr><tr><td style="text-align: left" valign="top">
+<p>Delete branch</p>
+</td><td style="text-align: left" valign="top">
+<p>
+<code class="literal">RW+</code>
+</p>
+</td><td style="text-align: left" valign="top">
+<p>
+<code class="literal">RW+</code>
+</p>
+</td><td style="text-align: left" valign="top">
+<p>
+<code class="literal">RW</code> and <code class="literal">D</code>
+</p>
+</td></tr><tr><td style="text-align: left" valign="top">
+<p>Delete tag</p>
+</td><td style="text-align: left" valign="top">
+<p>
+<code class="literal">RW+</code>
+</p>
+</td><td style="text-align: left" valign="top">
+<p>
+<code class="literal">RW+</code>
+</p>
+</td><td style="text-align: left" valign="top">
+<p>
+<code class="literal">RW</code> and <code class="literal">D</code>
+</p>
+</td></tr></tbody></table></div></div>
+<div><div><div><div><h1 class="title"><a id="ch07lvl1sec49"/>Allowing Gitweb and Git-daemon access</h1></div></div></div><p>
+<strong>Gitweb</strong> (and, to a lesser extent, <strong>git-daemon</strong>) <a id="id144" class="indexterm"/>are popular tools that provide alternative, read-only access to Git repositories. Git-daemon<a id="id145" class="indexterm"/> provides <a id="id146" class="indexterm"/>completely unauthenticated access to Git repositories, suitable for open source or similar projects. Gitweb displays repositories, their branches,<a id="id147" class="indexterm"/> commit history, and many more details on a web browser. Gitweb itself does not do any authentication, but relies on the web server to authenticate users.</p><p>Gitweb and git-daemon have ways to determine which repositories are allowed to be made available to clients. For gitweb, the list of permitted repositories is placed in a specific format (at its simplest, one repository name per line) in a specific file at a configurable location (see the documentation for gitweb for details). On the other hand, git-daemon looks inside each individual repository for a file called <code class="literal">git-daemon-export-ok</code>
+<a id="id148" class="indexterm"/>, to determine if the repository should be made accessible to clients. Of course, both tools have other one-time configuration that needs to be handled and set up before they can be used. Gitweb, in particular, may not even run as the Gitolite hosting user, and the one-time setup will probably involve allowing it to read files owned by the Gitolite hosting user.</p><p>Although Gitolite <a id="id149" class="indexterm"/>cannot help in the one-time configuration of these <a id="id150" class="indexterm"/>tools, it can certainly help in managing the access list. It does this by designating two special Gitolite usernames: <code class="literal">gitweb</code> and <code class="literal">daemon</code>. These users do not have public keys, so they're not actual users in the same sense as Adam, Alice, or Bob in our examples. However, they determine which repositories are accessible by gitweb and git-daemon.</p><p>The idea is very simple. If you want a repository to be readable by gitweb, you give the <code class="literal">gitweb</code> user <em>read</em> access. Similarly, if you want the repository to be accessible via git-daemon, you give the <code class="literal">daemon</code> user <em>read</em> access. Here's an example that does both:</p><div><pre class="programlisting">
+<strong>repo foo</strong>
+<strong>    R  =  gitweb  daemon</strong>
+</pre></div><p>Of course, instead of specifying each repository, you can use any repository group name that you may have defined, or even the special group name <code class="literal">@all</code>.</p><p>When the gitolite-admin repository is pushed, Gitolite checks each repository to see if these special users have been given read access. For each such repository, Gitolite adds the name to the projects list file mentioned previously if the <code class="literal">gitweb</code> user can read it, and creates a file called <code class="literal">git-daemon-export-ok</code> if the <code class="literal">daemon</code> user can. Also, if you previously allowed access and then decided to remove it, Gitolite will delete the entry from the projects list file, and/or remove the <code class="literal">git-daemon-export-ok</code> file, as applicable.</p><div><div><div><div><h2 class="title"><a id="ch07lvl2sec34"/>Locating the projects list file</h2></div></div></div><p>We mentioned<a id="id151" class="indexterm"/> earlier that Gitweb consults a file containing a list of permitted repositories, and that Gitolite creates this file. Of course, Gitweb and Gitolite must agree on where this file is. Gitolite places it, by default, in <code class="literal">$HOME/projects.list</code>, but this can be changed to any other location if needed; simply add a line like the following to the <code class="literal">$HOME/.gitolite.rc</code> file, substituting whatever path you want of course.</p><div><pre class="programlisting">
+<strong>GITWEB_PROJECTS_LIST =&gt; "/path/to/projects.list",</strong>
+</pre></div><div><div><h3 class="title"><a id="note03"/>Note</h3><p>The syntax of the preceding statement includes the trailing comma. This line must be placed in the section marked <code class="literal">rc variables used by various features</code>.</p></div></div></div><div><div><div><div><h2 class="title"><a id="ch07lvl2sec35"/>Unix permissions and the umask</h2></div></div></div><p>Gitweb is invoked by<a id="id152" class="indexterm"/> your web server (such as Apache), which is almost certainly running under a different user ID than your Gitolite hosting user. Depending on your OS and your web server, this could be a user called <code class="literal">apache</code>, <code class="literal">www-data</code>, or something else.</p><p>This means you need to make sure that this user can read the files it needs (mainly the projects list file, and everything under <code class="literal">$HOME/repositories</code>). There are usually two ways of doing this. The simplest way is to do the following:</p><div><ol class="orderedlist arabic"><li class="listitem">Identify the primary group that your Gitolite hosting user belongs to (usually the same as the username). You can find this by running the <code class="literal">id</code> command after logging in to the server as the Gitolite hosting user. On most systems, it is the same as the user ID, so for our discussion let's say it is <code class="literal">git</code>.</li><li class="listitem">Identify the Unix user ID under which your web server is running. For our discussion, let's say it is <code class="literal">apache</code>.</li><li class="listitem">Add the <code class="literal">apache</code> user to the <code class="literal">git</code> group using the <code class="literal">usermod</code> command. (You need to run this as root on your server.) The exact syntax may vary depending on your OS and OS version. As an example, the command on a Red Hat system is <code class="literal">usermod -G git apache</code>.</li><li class="listitem">Change the <code class="literal">UMASK</code> value in <code class="literal">$HOME/.gitolite.rc</code> from the default <code class="literal">0077</code> to <code class="literal">0027</code>.</li><li class="listitem">Fix up existing files manually. This is a one-time operation, required because <code class="literal">umask</code> only affects permissions on newly created files, not existing ones. Log in as the Gitolite hosting user and run the command <code class="literal">chmod -R g+rX $HOME/projects.list $HOME/repositories</code>.</li></ol></div><p>The second method to<a id="id153" class="indexterm"/> deal with this involves running gitweb as the Gitolite hosting user. Most web servers provide mechanisms to run specific programs under some other user ID than the user ID under which the web server is running, such as the <code class="literal">suexec</code> feature in the Apache web server. Configuring these features is out of scope for this book; please check the documentation of your web server for more information.</p></div></div>
+<div><div><div><div><h1 class="title"><a id="ch07lvl1sec50"/>Specifying Git config values and Gitolite options</h1></div></div></div><p>If you're familiar with Git,<a id="id154" class="indexterm"/> you probably know the <code class="literal">git config</code> command, which allows you to set repository options. Example of config variables that may be useful for server-side (bare) repositories are <code class="literal">core.logAllRefUpdates</code>, <code class="literal">receive.fsckObjects</code>, and various performance-related config variables. (Please see the man page for <code class="literal">git-config</code> for details)</p><p>Gitolite aims to allow almost all administration remotely, so it would be unreasonable to expect the admin to log on to the server and run the <code class="literal">git</code> <code class="literal">config</code> command. Therefore, Gitolite allows the admin to specify config settings within the conf file, as follows:</p><div><pre class="programlisting">
+<strong>repo foo</strong>
+<strong>    RW+                            =  adam</strong>
+<strong>    config    receive.fsckObjects  =  true</strong>
+</pre></div><div><div><h3 class="title"><a id="note020"/>Note</h3><p>However, before you can use this feature, you need to enable the config keys you wish to use in the <em>rc</em> file <code class="literal">($HOME/.gitolite.rc</code>). Look in this file for a line that contains the word <code class="literal">GIT_CONFIG_KEYS</code> and edit the value, which is empty by default, to contain a space separated list of the config keys you are planning to use.</p></div></div><p>In general,<a id="id155" class="indexterm"/> the syntax is <code class="literal">config sectionname.keyname = value</code>. On the server, this is executed as <code class="literal">git config sectionname.keyname value</code>. Gitolite does <em>not</em> support any of the other forms of the <code class="literal">git config</code> command, especially keys with multiple values.</p><div><div><div><div><h2 class="title"><a id="ch07lvl2sec36"/>Deleting a git-config key</h2></div></div></div><p>Unfortunately, <a id="id156" class="indexterm"/>once a git <code class="literal">config</code> key has been created by Gitolite, simply removing the line from the conf file will not, on the next push, delete the key from the repository config file. This is because you <em>are</em> permitted to add keys directly on the server if you choose to (or your repository may have inherited some useful settings when you migrated it into Gitolite's control). Gitolite has no simple way of distinguishing <code class="literal">config</code> keys you created manually from those that were deleted in the conf file; that is, it can be done but it's complicated and potentially error-prone.</p><p>Therefore, Gitolite requires the following syntax in order to explicitly delete a <code class="literal">config</code> key from the repository config file on the server:</p><div><pre class="programlisting">
+<strong>    config  sectionname.keyname  =  ""</strong>
+</pre></div><p>This is the only way to delete a <code class="literal">config</code> key using Gitolite.</p></div><div><div><div><div><h2 class="title"><a id="ch07lvl2sec37"/>Substituting the repository name</h2></div></div></div><p>Sometimes <a id="id157" class="indexterm"/>you need the same config setting for multiple repositories, but you only need to vary the repository name itself. The obvious way seems to be to do the following:</p><div><pre class="programlisting">
+<strong>repo foo</strong>
+<strong>    config hooks.mailinglist = foo-commits@example.tld</strong>
+<strong>    config hooks.emailprefix = "[foo] "</strong>
+<strong>repo bar</strong>
+<strong>    config hooks.mailinglist = bar-commits@example.tld</strong>
+<strong>    config hooks.emailprefix = "[bar] "</strong>
+</pre></div><p>But, of course, this does not scale at all!</p><p>Gitolite allows you to do the following instead:</p><div><pre class="programlisting">
+<strong>repo foo bar</strong>
+<strong>    config hooks.mailinglist = %GL_REPO-commits@example.tld</strong>
+<strong>    config hooks.emailprefix = "[%GL_REPO] "</strong>
+</pre></div><p>Gitolite <a id="id158" class="indexterm"/>expands the token <code class="literal">%GL_REPO</code> into each repository's name when actually applying the config lines.</p><div><div><h3 class="title"><a id="tip21"/>Tip</h3><p>Don't forget that in the <code class="literal">repo</code> line, you can have one or more repository groups, or a combination of repositories and groups. You can also use <code class="literal">@all</code> if you wish.</p></div></div></div><div><div><div><div><h2 class="title"><a id="ch07lvl2sec38"/>Overriding config values</h2></div></div></div><p>Sometimes, <a id="id159" class="indexterm"/>you want to add a config value to all the repositories, except one or two. For example, consider the <code class="literal">hooks.mailinglist config</code> variable shown earlier, and imagine that, while the setting is correct for most repositories, one specific repository needs a completely different mailing list.</p><p>Gitolite allows you to do this as follows. First the general setting applicable to all repositories is added. Then, specific settings for specific repositories are added. Gitolite will ensure that for any repository, the last seen config setting will be the one used (and therefore, the order of these statements matters):</p><div><pre class="programlisting">
+<strong>repo @all</strong>
+<strong>    config hooks.mailinglist = %GL_REPO-commits@example.tld</strong>
+<strong>    config hooks.emailprefix = "[%GL_REPO] "</strong>
+<strong>repo foo</strong>
+<strong>    config hooks.mailinglist = foo-list@users.example.tld</strong>
+</pre></div><p>You can even use an empty value for the last line, if you wish that the special repository mentioned does not even have the corresponding entry in its config file.</p></div><div><div><div><div><h2 class="title"><a id="ch07lvl2sec39"/>Gitolite options</h2></div></div></div><p>Similar to Git's config <a id="id160" class="indexterm"/>keys and values, Gitolite also has its own set of internal options, which are used to modify its default behavior in some way or provide additional information that some feature may need. For example, if you use Gitolite's mirroring feature (discussed in <a class="link" href="ch11.html" title="Chapter 11. Mirroring">Chapter 11</a>, <em>Mirroring</em>), you will need to specify, for each repository, which server is the master server and which are the slaves. These server names are specified using Gitolite options, as follows:</p><div><pre class="programlisting">
+<strong>repo foo</strong>
+<strong>    option mirror.master    =   mars </strong>
+<strong>    option mirror.slaves    =   phobos </strong>
+</pre></div><p>When the <a id="id161" class="indexterm"/>mirroring code runs, it interrogates Gitolite for the value of these options in order to do its job.</p><p>Gitolite options behave just like the <code class="literal">config</code> entries, shown earlier, do in terms of later entries overriding earlier values.</p></div></div>
+<div><div><div><div><h1 class="title"><a id="ch07lvl1sec51"/>Applying deny rules to read access</h1></div></div></div><p>In the<a id="id162" class="indexterm"/> previous chapter, when we looked at the <code class="literal">deny</code> rules, we showed them only in the context of a write operation, controlling whether a certain branch or tag can be pushed or not.</p><p>By default, the <a id="id163" class="indexterm"/>deny rules are not examined when checking read access. So something like the following:</p><div><pre class="programlisting">
+<strong>@junior-devs = alice bob carol</strong>
+<strong>repo foo</strong>
+<strong>    -             =  bob</strong>
+<strong>    RW+           =  @junior-devs</strong>
+</pre></div><p>will not prevent Bob from at least reading the repository (that is, using <code class="literal">git clone</code> or <code class="literal">git fetch</code>), even though the deny rule appears first.</p><p>However, it is possible to make Gitolite act on deny rules in this case also. This is achieved by specifying a Gitolite option called <code class="literal">deny-rules</code>, as follows:</p><div><pre class="programlisting">
+<strong>repo foo</strong>
+<strong>    -                   =  bob</strong>
+<strong>    RW+                 =  @junior-devs</strong>
+<strong>    option deny-rules   =   1</strong>
+</pre></div><p>Now Bob will not even be able to clone the repository.</p><div><div><h3 class="title"><a id="note04"/>Note</h3><p>It is also important to understand that, for read access, specifying an actual branch in the deny rule, shown as follows:</p><div><pre class="programlisting">
+<strong>    -          master    =  bob</strong>
+<strong>    RW+                  =  @junior-devs</strong>
+</pre></div><p>is the same as not having a branch in the rule. This is because Git (and therefore Gitolite) does not distinguish between branches for read access control, so any specified refex is ignored.</p></div></div><p>The <code class="literal">deny-rules</code> option <a id="id164" class="indexterm"/>will prevent write access the same <a id="id165" class="indexterm"/>way it prevents read access. It does not make sense to allow a user to write what they cannot read!</p></div>
+<div><div><div><div><h1 class="title"><a id="ch07lvl1sec52"/>Understanding VREFs</h1></div></div></div><p>The previous chapter <a id="id166" class="indexterm"/>introduced us to the concept of a <em>refex</em>, which is a regular expression that is used to match the ref being pushed. This allows us to make decisions on allowing or rejecting the push based on the name of the ref (branch or tag) being pushed.</p><p>However, we might have other criteria for deciding whether to allow or deny the push. The most common example is whether specific files have been changed, and if they have, to disallow the push.</p><p>A <em>VREF</em> is a special kind of refex; the "V" stands for "Virtual". This is a refex that will not match the ref that Git knows about (which is a branch name or a tag name). Rather, it will attempt to match against some other characteristic of the commit or series of commits being pushed.</p><p>Here's an <a id="id167" class="indexterm"/>example. Let's say you are running a project where the build system, and in particular the <code class="literal">Makefile</code>, is a rather critical component and has been finely tuned to play nicely with all the environments for which your product is built and sold. As a result, you really don't want anyone but the most experienced people messing with that file (and perhaps others related to it). You would, therefore, like to prevent your junior developers from being able to push changes to it. Here's how you would do that:</p><div><pre class="programlisting">
+<strong>repo foo</strong>
+<strong>    RW+                      =  @developers</strong>
+<strong>    -  VREF/NAME/Makefile    =  @junior-developers</strong>
+</pre></div><p>That is basically all you have to do. First, the ruleset is checked for the ref that is being pushed (in this example, we simplified all that by allowing all developers—which includes junior developers—to push any branch). Once this succeeds, the <em>VREFs</em> specified are checked in the order they appear in the list of rules.</p><p>A VREF rule <a id="id168" class="indexterm"/>has a simple structure, consisting of the word <code class="literal">VREF</code>, followed by the name of the VREF (in this case, <code class="literal">NAME</code>, which is a VREF that checks the names of changed files and directories), followed by an argument of some kind. The list of changed file names is matched against that argument, and if a match is found, it is just as if you were trying to push a branch and the refex matched, which is to say the permission in the rule line drives what happens next. In this example, that results in the push being denied.</p><p>This gives you a simple preview of the VREF feature. <a class="link" href="ch10.html" title="Chapter 10. Understanding VREFs">Chapter 10</a>, <em>Understanding VREFs</em>, will go into much more detail about this powerful feature of Gitolite.</p></div>
+<div><div><div><div><h1 class="title"><a id="ch07lvl1sec53"/>Summary</h1></div></div></div><p>In this chapter, we looked at some of Gitolite's advanced features, such as personal branches, Git config variables, Gitolite options, and so on. The next chapter will focus on another very powerful and popular feature of Gitolite, allowing your users to create their own repositories without having to add anything new to the conf file.</p></div></body></html>

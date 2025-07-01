@@ -1,0 +1,352 @@
+<html><head></head><body><div><div><div><div><h1 class="title"><a id="ch03"/>Chapter 3. Scaling to Multiple Hosts</h1></div></div></div><p>In the previous chapters, we have specified the hosts in the command line. This worked fine while having a single host to work on, but will not work very well when managing multiple servers. In this chapter, we will see exactly how to manage multiple servers.</p><p>We'll explore the following topics:</p><div><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">Ansible inventories</li><li class="listitem" style="list-style-type: disc">Ansible host/group variables</li><li class="listitem" style="list-style-type: disc">Ansible loops</li></ul></div><div><div><div><div><h1 class="title"><a id="ch03lvl1sec27"/>Working with inventory files</h1></div></div></div><p>An inventory file is the source of truth for Ansible (there is also an advanced concept called <strong>dynamic inventory</strong>, which we will cover later). It follows the <strong>Initialization</strong> (<strong>INI</strong>) format and tells Ansible whether the remote host or hosts provided by the user are genuine.</p><p>Ansible can run its tasks against multiple hosts in parallel. To do this, you can directly pass the list of hosts to Ansible using an inventory file. For such parallel execution, Ansible allows you to group your hosts in the inventory file; the file passes the group name to Ansible. Ansible will search for that group in the inventory file and run its tasks against all the hosts listed in that group.</p><p>You can pass the inventory file to Ansible using the <code class="literal">-i</code> or <code class="literal">--inventory-file</code> option followed by the path to the file. If you do not explicitly specify any inventory file to Ansible, it will take the default path from the <code class="literal">host_file</code> parameter of <code class="literal">ansible.cfg</code>, which defaults to <code class="literal">/etc/ansible/hosts</code>.</p><div><div><h3 class="title"><a id="tip14"/>Tip</h3><p>When using the <code class="literal">-i</code> parameter, if the value is a <code class="literal">list</code> (it contains at least one comma) it will be used as the inventory list, while if the variable is a string, it will be used as the inventory file path.</p></div></div><div><div><div><div><h2 class="title"><a id="ch03lvl2sec25"/>The basic inventory file</h2></div></div></div><p>Before diving into the concept, let's first look at a basic inventory file called <strong>hosts</strong> that we can use instead of the list we used in the previous examples:</p><pre class="programlisting">test01.fale.io &#13;
+</pre><div><div><h3 class="title"><a id="tip15"/>Tip</h3><p>Ansible can take either a FQDN or an IP address within the inventory file.</p></div></div><p>We can now perform the same operations that we did in the previous chapter, tweaking the Ansible command parameters. For instance, to install the web server, we used this command:</p><pre class="programlisting">
+<strong>$ ansible-playbook -i test01.fale.io, webserver.yaml</strong>
+</pre><p>Instead, we can use the following:</p><pre class="programlisting">
+<strong>$ ansible-playbook -i hosts webserver.yaml</strong>
+</pre><p>As you can see, we have substituted the list of hosts with the inventory file name.</p></div><div><div><div><div><h2 class="title"><a id="ch03lvl2sec26"/>Groups in an inventory file</h2></div></div></div><p>The advantages of inventory files are noticeable when we have more complex situations. Let's say our website is getting more complicated and we now need a more complex environment. In our example, our website will require a MySQL database. Also we decide to have two web servers. In this scenario it makes sense to group different machines based on their role in our infrastructure. Our <code class="literal">hosts</code> file would change to:</p><pre class="programlisting">[webserver] &#13;
+ws01.fale.io &#13;
+ws02.fale.io &#13;
+ &#13;
+[database] &#13;
+db01.fale.io &#13;
+</pre><p>Now we can instruct playbooks to run only on hosts in a certain group. We have created three different playbooks for our website example:</p><div><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc"><code class="literal">firstrun.yaml</code> is generic and will have to be run on every machine</li><li class="listitem" style="list-style-type: disc"><code class="literal">common_tasks.yaml</code> is generic and will have to be run on every machine</li><li class="listitem" style="list-style-type: disc"><code class="literal">webserver.yaml</code> is specific for web servers and therefore should not be run on any other machines</li></ul></div><p>We need to change only the <code class="literal">webserver.yaml</code> file which, at the moment, specifies that it has to be run on all machines and should become web server only. To do so, let's open the <code class="literal">webserver.yaml</code> file and change content from:</p><pre class="programlisting">- hosts: all &#13;
+</pre><p>to:</p><pre class="programlisting">- hosts: webserver &#13;
+</pre><p>With only those three playbooks, we cannot proceed to create our environment with three servers. Since we don't have a playbook to set up the database yet (we will see it in the next chapter), we will provision the two web servers completely and for the database server we will only provision the base system.</p><p>We can run the <code class="literal">firstrun</code> playbook with the following:</p><pre class="programlisting">
+<strong>$ ansible-playbook -i hosts firstrun.yaml</strong>
+</pre><p>The following would be the result:</p><pre class="programlisting">
+<strong>PLAY [all] *******************************************************</strong>
+<strong>TASK [setup] *****************************************************</strong>
+<strong>ok: [ws02.fale.io]</strong>
+<strong>ok: [db01.fale.io]</strong>
+<strong>ok: [ws01.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [Ensure ansible user exists] ********************************</strong>
+<strong>changed: [ws01.fale.io]</strong>
+<strong>changed: [db01.fale.io]</strong>
+<strong>changed: [ws02.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [Ensure ansible user accepts the SSH key] *******************</strong>
+<strong>changed: [ws02.fale.io]</strong>
+<strong>changed: [ws01.fale.io]</strong>
+<strong>changed: [db01.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [Ensure the ansible user is sudoer with no password required]</strong>
+<strong>changed: [ws01.fale.io]</strong>
+<strong>changed: [db01.fale.io]</strong>
+<strong>changed: [ws02.fale.io]&#13;
+&#13;
+</strong>
+<strong>PLAY RECAP *******************************************************</strong>
+<strong>db01.fale.io      : ok=4    changed=3    unreachable=0    failed=0</strong>
+<strong>ws01.fale.io      : ok=4    changed=3    unreachable=0    failed=0</strong>
+<strong>ws02.fale.io      : ok=4    changed=3    unreachable=0    failed=0</strong>
+</pre><p>As you can see, the output is very similar to what we received with a single host, but with one line per host at each step. In this case, all the machines were in the same state and the same steps have been performed, so we see that they all acted the same, but with more complex scenarios, you can have different machines returning different states on the same step. We can also execute the other two playbooks with similar results.</p></div><div><div><div><div><h2 class="title"><a id="ch03lvl2sec27"/>Regular expressions in the inventory file</h2></div></div></div><p>When you have a large number of servers, it is common and helpful to give them predictable names, for instance, call all web servers <code class="literal">wsXY</code> or <code class="literal">webXY</code>, or call the database servers <code class="literal">dbXY</code>. If you do so, you can reduce the number of lines in your <code class="literal">hosts</code> file increasing its readability. For instance, our <code class="literal">hosts</code> file can be simplified as:</p><pre class="programlisting">[webserver] &#13;
+ws[01:02].fale.io &#13;
+ &#13;
+[database] &#13;
+db01.fale.io &#13;
+</pre><p>In this example, we have used <code class="literal">[01:02]</code> that will match for all occurrences between the first number (<code class="literal">01</code> in our case) and the last (<code class="literal">02</code> in our case). In our case, the gain is not huge, but if you have 40 web servers, you can cut 39 lines from your <code class="literal">hosts</code> file.</p></div></div></div>
+<div><div><div><div><h1 class="title"><a id="ch03lvl1sec28"/>Working with variables</h1></div></div></div><p>Ansible allows you to define variables in many ways, from a variable file within a playbook, by passing it from the Ansible command using the <code class="literal">-e / --extra-vars</code> option, or by passing it to an inventory file. You can define variables in an inventory file either on a per-host basis, for an entire group, or by creating a variable file in the directory where your inventory file exists.</p><div><div><div><div><h2 class="title"><a id="ch03lvl2sec28"/>Host variables</h2></div></div></div><p>It's possible to declare variables for a specific host, declaring them in the <code class="literal">hosts</code> file. For instance, we may want to specify different engines for our web servers. Let's suppose that one needs to reply to a specific domain, while the other to a different domain name. In this case, we would do it with the following <code class="literal">hosts</code> file:</p><pre class="programlisting">[webserver] &#13;
+ws01.fale.io domainname=example1.fale.io &#13;
+ws02.fale.io domainname=example2.fale.io &#13;
+ &#13;
+[database] &#13;
+db01.fale.io &#13;
+</pre><p>In this way, all playbooks running on web servers will be able to refer to the domain name variable.</p></div><div><div><div><div><h2 class="title"><a id="ch03lvl2sec29"/>Group variables</h2></div></div></div><p>There are other cases where you want to set a variable that is valid for the whole group. Let's suppose that we want to declare the variable <code class="literal">https_enabled</code> to <code class="literal">True</code> and its value has to be equal for all web servers. In this case, we can create a <code class="literal">[webserver:vars]</code> section, so we will use the following <code class="literal">hosts</code> file:</p><pre class="programlisting">[webserver] &#13;
+ws01.fale.io &#13;
+ws02.fale.io &#13;
+ &#13;
+[webserver:vars] &#13;
+https_enabled=True &#13;
+ &#13;
+[database] &#13;
+db01.fale.io &#13;
+</pre><div><div><h3 class="title"><a id="note16"/>Note</h3><p>Remember that <code class="literal">host</code> variables will override <code class="literal">group</code> variables in case the same variable is declared in both spaces.</p></div></div></div><div><div><div><div><h2 class="title"><a id="ch03lvl2sec30"/>Variable files</h2></div></div></div><p>Sometimes, you have a lot of variables to declare for each <code class="literal">host</code> and <code class="literal">group</code>, and the <code class="literal">hosts</code> file gets hard to read. In those cases, you can move the variables to specific files. For host level variables, you'll need to create a file named the same as your host in the <code class="literal">host_vars</code> folder, while for <code class="literal">group</code> variables you'll have to use the group name for the file name and place them in the <code class="literal">group_vars</code> folder.</p><p>So, if we want to replicate the previous example of host-based variables using files, we will need to create the <code class="literal">host_vars/ws01.fale.io</code> file with the following content:</p><pre class="programlisting">domainname=example1.fale.io &#13;
+</pre><p>Create the <code class="literal">host_vars/ws02.fale.io</code> file with the following content:</p><pre class="programlisting">domainname=example2.fale.io &#13;
+</pre><p>While if we want to replicate the group based variables example, we will need to have the <code class="literal">group_vars/webserver</code> file with the following content:</p><pre class="programlisting">https_enabled=True &#13;
+</pre><div><div><h3 class="title"><a id="note17"/>Note</h3><p>Inventory variables follow a hierarchy; at the top of this is the common variable file (we discussed this in the previous section, <em>Working with inventory files</em>) that will override any of the host variables, group variables, and inventory variable files. After this comes the host variables, which will override group variables; lastly, group variables will override inventory variable files.</p></div></div></div><div><div><div><div><h2 class="title"><a id="ch03lvl2sec31"/>Overriding configuration parameters with an inventory file</h2></div></div></div><p>You can override some of Ansible's configuration parameters directly through the inventory file. These configuration parameters will override all the other parameters that are set either through <code class="literal">ansible.cfg</code>, environment variables, or set in the playbooks themselves. Variable passed to the <code class="literal">ansible-playbook/ansible</code> command have priority over any other variable, including the ones set in the inventory file.</p><p>The following is the list of parameters you can override from an inventory file:</p><div><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc"><code class="literal">ansible_user</code>: This parameter is used to override the user that is used for communicating with the remote host. Sometimes, a certain machine needs a different user, in those cases this variable will help you.</li><li class="listitem" style="list-style-type: disc"><code class="literal">ansible_port</code>: This parameter will override the default SSH port with the user-specified port. Sometimes sysadmin chooses to run SSH on a non-standard port. In this case, you'll need to instruct Ansible about the change.</li><li class="listitem" style="list-style-type: disc"><code class="literal">ansible_host</code>: This parameter is used to override the host for an alias.</li><li class="listitem" style="list-style-type: disc"><code class="literal">ansible_connection</code>: This specifies the connection type to the remote host. The values are SSH, Paramiko, or local.</li><li class="listitem" style="list-style-type: disc"><code class="literal">ansible_private_key_file</code>: This parameter will override the private key used for SSH; this will be useful if you want to use specific keys for a specific host. A common use case is if you have hosts spread across multiple data centers, multiple AWS regions, or different kinds of applications. Private keys can potentially be different in such scenarios.</li><li class="listitem" style="list-style-type: disc"><code class="literal">ansible__type</code>: By default, Ansible uses the <strong>sh shell</strong>; you can override this using the <code class="literal">ansible_shell_type</code> parameter. Changing this to <code class="literal">csh</code>, <code class="literal">ksh</code>, and so on will make Ansible use the commands of that shell.</li></ul></div></div></div>
+<div><div><div><div><h1 class="title"><a id="ch03lvl1sec29"/>Working with dynamic inventory</h1></div></div></div><p>There are environments where you have a system that creates and destroys machines automatically. We will see how to do this with Ansible in <a class="link" href="ch05.html" title="Chapter 5.  Going Cloud">Chapter 5</a>, <em>Going Cloud</em>. In such environments, the list of machines changes very quickly and keeping the <code class="literal">hosts</code> file becomes complicated. In this case, we can use dynamic inventories to solve the problem.</p><p>The idea behind dynamic inventories is that Ansible will not read the <code class="literal">hosts</code> file, but instead execute a script that will return the list of hosts to Ansible in JSON format. This allows you, for instance, to query your cloud provider and ask it directly, what machines in your entire infrastructure are running at any given moment.</p><p>Many scripts for the most common cloud providers are already present in Ansible at: <a class="ulink" href="https://github.com/ansible/ansible/tree/devel/contrib/inventory">https://github.com/ansible/ansible/tree/devel/contrib/inventory</a> but you can create a custom script if you have different needs. The Ansible inventory scripts can be written in any language but, for consistency reasons, dynamic inventory scripts should be written in Python. Remember that these scripts need to be executable directly, so please remember to set them with the executable flag (<code class="literal">chmod + x inventory.py</code>).</p><p>In this chapter, we will take a look at Amazon Web Services and DigitalOcean scripts that can be downloaded from the official Ansible repository.</p><div><div><div><div><h2 class="title"><a id="ch03lvl2sec32"/>Amazon Web Services</h2></div></div></div><p>To allow Ansible to gather data from <strong>Amazon Web Services</strong> (<strong>AWS</strong>) about your EC2 instances, you need to download the following two files from Ansible's GitHub repository at <a class="ulink" href="https://github.com/ansible/ansible">https://github.com/ansible/ansible</a>:</p><div><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">The <code class="literal">ec2.py</code> inventory script</li><li class="listitem" style="list-style-type: disc">The <code class="literal">ec2.ini</code> file, which contains the configuration for your EC2 inventory script</li></ul></div><p>Ansible uses AWS Python library <code class="literal">boto</code> to communicate with AWS using APIs. To allow this communication, you need to export the <code class="literal">AWS_ACCESS_KEY_ID</code> and <code class="literal">AWS_SECRET_ACCESS_KEY</code> variables.</p><p>You can use the inventory in two ways:</p><div><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">Pass it directly to an <code class="literal">ansible-playbook</code> command using the <code class="literal">-i</code> option and copy the <code class="literal">ec2.ini</code> file to your current directory where you are running the Ansible commands</li><li class="listitem" style="list-style-type: disc">Copy the <code class="literal">ec2.py</code> file to <code class="literal">/etc/ansible/hosts</code>, make it executable using <code class="literal">chmod +x</code>, and copy the <code class="literal">ec2.ini</code> file to <code class="literal">/etc/ansible/ec2.ini</code></li></ul></div><p>The <code class="literal">ec2.py</code> file will create multiple groups based on the region, availability zone, tags, and so on. You can check the contents of the inventory file by running <code class="literal">./ec2.py --list</code>.</p><p>Let's see an example playbook with EC2 dynamic inventory, which will simply ping all machines in my account.</p><pre class="programlisting">
+<strong>ansible -i ec2.py all -m ping</strong>
+</pre><p>As expected, the two droplets I have on my account respond with the following:</p><pre class="programlisting">52.28.138.231 | SUCCESS =&gt; { &#13;
+    "changed": false, &#13;
+    "ping": "pong" &#13;
+} &#13;
+</pre><p>In the preceding example, we're using the <code class="literal">ec2.py</code> script instead of a static inventory file with the <code class="literal">-i</code> option and the <code class="literal">ping</code> command.</p><p>Similarly, you can use these inventory scripts to perform various types of operations. For example, you can integrate it with your deployment script to figure out all the nodes in a single zone and deploy to them if you're performing your deployment zone-wise (a zone represents a data center) in AWS.</p><p>If you simply want to know what the web servers in the cloud are and you've tagged them using a certain convention, you can do that by using the dynamic inventory script by filtering out the tags. Furthermore, if you have special scenarios that are not covered by your present script, you can enhance it to provide the required set of nodes in JSON format and then act on those nodes from the playbooks. If you're using a database to manage your inventory, your inventory script can query the database and dump a JSON. It could even sync with your cloud and update your database on a regular basis.</p></div><div><div><div><div><h2 class="title"><a id="ch03lvl2sec33"/>DigitalOcean</h2></div></div></div><p>As we used the EC2 files in <a class="ulink" href="https://github.com/ansible/ansible/tree/devel/contrib/inventory">https://github.com/ansible/ansible/tree/devel/contrib/inventory</a> to pull data from AWS, we can do the same for DigitalOcean. The only difference will be that we have to fetch the <code class="literal">digital_ocean.ini</code> and the <code class="literal">digital_ocean.py</code> files.</p><p>As before, we will need to tweak the <code class="literal">digital_ocean.ini</code> options, if needed and to make the Python file executable. The only option that you'll probably need to change is the <code class="literal">api_token</code>.</p><p>Now we can try to ping all machines available on <code class="literal">digital_ocean</code> with:</p><pre class="programlisting">
+<strong>ansible -i digital_ocean.py all -m ping</strong>
+</pre><p>As expected, the two droplets I have on my account respond with the following:</p><pre class="programlisting">188.166.150.79 | SUCCESS =&gt; { &#13;
+    "changed": false, &#13;
+    "ping": "pong" &#13;
+} &#13;
+46.101.77.55 | SUCCESS =&gt; { &#13;
+    "changed": false, &#13;
+    "ping": "pong" &#13;
+} &#13;
+</pre><p>We have now seen how easy it is to retrieve data from many different cloud providers.</p></div></div>
+<div><div><div><div><h1 class="title"><a id="ch03lvl1sec30"/>Working with iterates in Ansible</h1></div></div></div><p>You may have noticed that up to now we have never used cycles, so every time we had to do multiple, similar operations, we wrote the code multiple times. An example of this is the <code class="literal">webserver.yaml</code> code.</p><p>In fact, this was the content of the <code class="literal">webserver.yaml</code> file:</p><pre class="programlisting">--- &#13;
+- hosts: webserver &#13;
+  remote_user: ansible &#13;
+  tasks: &#13;
+  - name: Ensure the HTTPd package is installed &#13;
+    yum: &#13;
+      name: httpd &#13;
+      state: present &#13;
+    become: True &#13;
+  - name: Ensure the HTTPd service is enabled and running &#13;
+    service: &#13;
+      name: httpd &#13;
+      state: started &#13;
+      enabled: True &#13;
+    become: True &#13;
+  - name: Ensure HTTP can pass the firewall &#13;
+    firewalld: &#13;
+      service: http &#13;
+      state: enabled &#13;
+      permanent: True &#13;
+      immediate: True &#13;
+    become: True &#13;
+  - name: Ensure HTTPS can pass the firewall &#13;
+    firewalld: &#13;
+      service: https &#13;
+      state: enabled &#13;
+      permanent: True &#13;
+      immediate: True &#13;
+    become: True &#13;
+</pre><p>As you can see, the last two blocks do the same operation (ensure that a certain port of the firewall is open).</p><div><div><div><div><h2 class="title"><a id="ch03lvl2sec34"/>Standard iteration - with_items</h2></div></div></div><p>To improve the above code, we can use a simple iteration: <code class="literal">with_items</code>.</p><p>This allows us to iterate in a list of item, and at every iteration, the designated item of the list will be available to us in the item variable.</p><p>We can therefore change that code to the following:</p><pre class="programlisting">--- &#13;
+- hosts: webserver &#13;
+  remote_user: ansible &#13;
+  tasks: &#13;
+  - name: Ensure the HTTPd package is installed &#13;
+    yum: &#13;
+      name: httpd &#13;
+      state: present &#13;
+    become: True &#13;
+  - name: Ensure the HTTPd service is enabled and running &#13;
+    service: &#13;
+      name: httpd &#13;
+      state: started &#13;
+      enabled: True &#13;
+    become: True &#13;
+  - name: Ensure HTTP and HTTPS can pass the firewall &#13;
+    firewalld: &#13;
+      service: '{{ item }}' &#13;
+      state: enabled &#13;
+      permanent: True &#13;
+      immediate: True &#13;
+    become: True &#13;
+    with_items: &#13;
+    - http &#13;
+    - https &#13;
+</pre><p>We can execute it as the following:</p><pre class="programlisting">
+<strong>ansible-playbook -i hosts webserver.yaml</strong>
+</pre><p>We receive the following:</p><pre class="programlisting">
+<strong>PLAY [webserver] *************************************************</strong>
+<strong>TASK [setup] *****************************************************</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [Ensure the HTTPd package is installed] *********************</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [Ensure the HTTPd service is enabled and running] ***********</strong>
+<strong>ok: [ws02.fale.io]</strong>
+<strong>ok: [ws01.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [Ensure HTTP can pass the firewall] *************************</strong>
+<strong>ok: [ws02.fale.io]</strong>
+<strong>ok: [ws01.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [Ensure HTTP and HTTPS can pass the firewall] ***************</strong>
+<strong>ok: [ws02.fale.io] =&gt; (item=http)</strong>
+<strong>ok: [ws01.fale.io] =&gt; (item=http)</strong>
+<strong>ok: [ws02.fale.io] =&gt; (item=https)</strong>
+<strong>ok: [ws01.fale.io] =&gt; (item=https)&#13;
+&#13;
+</strong>
+<strong>PLAY RECAP *******************************************************</strong>
+<strong>ws01.fale.io      : ok=5    changed=0    unreachable=0    failed=0   </strong>
+<strong>ws02.fale.io      : ok=5    changed=0    unreachable=0    failed=0  </strong>
+</pre><p>As you can see, the output is slightly different from the previous execution, in fact on the lines for operations with loops we can see the item that was processed the "Ensure HTTP and HTTPS can pass the firewall" block</p><p>We have now seen that we can iterate on a list of items, but Ansible allows us other kind of iterations as well.</p></div><div><div><div><div><h2 class="title"><a id="ch03lvl2sec35"/>Nested loops - with_nested</h2></div></div></div><p>There are cases where you have to iterate all elements of a list with all items from other lists (<strong>Cartesian product</strong>). One case that is very common is when you have to create multiple folders in multiple paths. In our example, we will create the folders <code class="literal">mail</code> and <code class="literal">public_html</code> in the <code class="literal">home</code> folders of the users <code class="literal">alice</code> and <code class="literal">bob</code>.</p><p>We can do so with the following code from the <code class="literal">with_nested.yaml</code> file:</p><pre class="programlisting">--- &#13;
+- hosts: all &#13;
+  remote_user: ansible &#13;
+  vars: &#13;
+    users: &#13;
+    - alice &#13;
+    - bob &#13;
+    folders: &#13;
+    - mail &#13;
+    - public_html &#13;
+  tasks: &#13;
+  - name: Ensure the users exist &#13;
+    user: &#13;
+      name: '{{ item }}' &#13;
+    become: True &#13;
+    with_items: &#13;
+    - '{{ users }}' &#13;
+  - name: Ensure the folders exist &#13;
+    file: &#13;
+      path: '/home/{{ item.0 }}/{{ item.1 }}' &#13;
+      state: directory &#13;
+    become: True &#13;
+    with_nested: &#13;
+    - '{{ users }}' &#13;
+    - '{{ folders }}' &#13;
+</pre><p>Running this with the following:</p><pre class="programlisting">
+<strong>ansible-playbook -i hosts with_nested.yaml</strong>
+</pre><p>We receive the following result:</p><pre class="programlisting">
+<strong>PLAY [all] *******************************************************</strong>
+<strong>TASK [setup] *****************************************************</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [db01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [Ensure the users exist] ************************************</strong>
+<strong>changed: [db01.fale.io] =&gt; (item=alice)</strong>
+<strong>changed: [ws01.fale.io] =&gt; (item=alice)</strong>
+<strong>changed: [ws02.fale.io] =&gt; (item=alice)</strong>
+<strong>changed: [db01.fale.io] =&gt; (item=bob)</strong>
+<strong>changed: [ws01.fale.io] =&gt; (item=bob)</strong>
+<strong>changed: [ws02.fale.io] =&gt; (item=bob)&#13;
+&#13;
+</strong>
+<strong>TASK [Ensure the folders exist] **********************************</strong>
+<strong>changed: [ws02.fale.io] =&gt; (item=[u'alice', u'mail'])</strong>
+<strong>changed: [ws01.fale.io] =&gt; (item=[u'alice', u'mail'])</strong>
+<strong>changed: [db01.fale.io] =&gt; (item=[u'alice', u'mail'])</strong>
+<strong>changed: [ws01.fale.io] =&gt; (item=[u'alice', u'public_html'])</strong>
+<strong>changed: [ws02.fale.io] =&gt; (item=[u'alice', u'public_html'])</strong>
+<strong>changed: [db01.fale.io] =&gt; (item=[u'alice', u'public_html'])</strong>
+<strong>changed: [ws02.fale.io] =&gt; (item=[u'bob', u'mail'])</strong>
+<strong>changed: [ws01.fale.io] =&gt; (item=[u'bob', u'mail'])</strong>
+<strong>changed: [db01.fale.io] =&gt; (item=[u'bob', u'mail'])</strong>
+<strong>changed: [ws02.fale.io] =&gt; (item=[u'bob', u'public_html'])</strong>
+<strong>changed: [ws01.fale.io] =&gt; (item=[u'bob', u'public_html'])</strong>
+<strong>changed: [db01.fale.io] =&gt; (item=[u'bob', u'public_html'])&#13;
+&#13;
+</strong>
+<strong>PLAY RECAP *******************************************************</strong>
+<strong>db01.fale.io      : ok=3    changed=2    unreachable=0    failed=0   </strong>
+<strong>ws01.fale.io      : ok=3    changed=2    unreachable=0    failed=0   </strong>
+<strong>ws02.fale.io      : ok=3    changed=2    unreachable=0    failed=0   </strong>
+</pre></div><div><div><div><div><h2 class="title"><a id="ch03lvl2sec36"/>Fileglobs loop - with_fileglobs</h2></div></div></div><p>Sometimes, we want to do some kind of action on every file present in a certain folder. This could be handy if you want to copy multiple files with similar names from a folder to another. To do so, you can create a file called <code class="literal">with_fileglobs.yaml</code> with the following code:</p><pre class="programlisting">--- &#13;
+- hosts: all &#13;
+  remote_user: ansible &#13;
+  tasks: &#13;
+  - name: Ensure the folder /tmp/iproute2 is present &#13;
+    file: &#13;
+      dest: '/tmp/iproute2' &#13;
+      state: directory &#13;
+    become: True &#13;
+  - name: Copy files that start with rt to the tmp folder &#13;
+    copy: &#13;
+      src: '{{ item }}' &#13;
+      dest: '/tmp/iproute2' &#13;
+      remote_src: True &#13;
+    become: True &#13;
+    with_fileglob: &#13;
+    - '/etc/iproute2/rt_*' &#13;
+</pre><p>We can execute it with the following:</p><pre class="programlisting">
+<strong>ansible-playbook -i hosts with_fileglobs.yaml</strong>
+</pre><p>To receive an output like the following:</p><pre class="programlisting">
+<strong>PLAY [all] *******************************************************</strong>
+<strong>TASK [setup] *****************************************************</strong>
+<strong>ok: [ws02.fale.io]</strong>
+<strong>ok: [db01.fale.io]</strong>
+<strong>ok: [ws01.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [Ensure the folder /tmp/iproute2 is present] ****************</strong>
+<strong>changed: [db01.fale.io]</strong>
+<strong>changed: [ws01.fale.io]</strong>
+<strong>changed: [ws02.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [Copy files that start with rt to the tmp folder] ***********</strong>
+<strong>changed: [db01.fale.io] =&gt; (item=/etc/iproute2/rt_dsfield)</strong>
+<strong>changed: [ws02.fale.io] =&gt; (item=/etc/iproute2/rt_dsfield)</strong>
+<strong>changed: [ws01.fale.io] =&gt; (item=/etc/iproute2/rt_dsfield)</strong>
+<strong>changed: [db01.fale.io] =&gt; (item=/etc/iproute2/rt_protos)</strong>
+<strong>changed: [ws01.fale.io] =&gt; (item=/etc/iproute2/rt_protos)</strong>
+<strong>changed: [ws02.fale.io] =&gt; (item=/etc/iproute2/rt_protos)</strong>
+<strong>changed: [db01.fale.io] =&gt; (item=/etc/iproute2/rt_tables)</strong>
+<strong>changed: [ws01.fale.io] =&gt; (item=/etc/iproute2/rt_tables)</strong>
+<strong>changed: [ws02.fale.io] =&gt; (item=/etc/iproute2/rt_tables)</strong>
+<strong>changed: [db01.fale.io] =&gt; (item=/etc/iproute2/rt_scopes)</strong>
+<strong>changed: [ws01.fale.io] =&gt; (item=/etc/iproute2/rt_scopes)</strong>
+<strong>changed: [ws02.fale.io] =&gt; (item=/etc/iproute2/rt_scopes)</strong>
+<strong>changed: [db01.fale.io] =&gt; (item=/etc/iproute2/rt_realms)</strong>
+<strong>changed: [ws01.fale.io] =&gt; (item=/etc/iproute2/rt_realms)</strong>
+<strong>changed: [ws02.fale.io] =&gt; (item=/etc/iproute2/rt_realms)&#13;
+&#13;
+</strong>
+<strong>PLAY RECAP *******************************************************</strong>
+<strong>db01.fale.io      : ok=3    changed=2    unreachable=0    failed=0   </strong>
+<strong>ws01.fale.io      : ok=3    changed=2    unreachable=0    failed=0   </strong>
+<strong>ws02.fale.io      : ok=3    changed=2    unreachable=0    failed=0   </strong>
+</pre></div><div><div><div><div><h2 class="title"><a id="ch03lvl2sec37"/>Integer loop - with_sequence</h2></div></div></div><p>Many times you'll need to iterate over the integer numbers. An example could be to create ten folders called <code class="literal">fileXY</code>, where <code class="literal">XY</code> is the sequential numbers from <code class="literal">1</code> to <code class="literal">10</code>. To do so, we can create a file called <code class="literal">with_sequence.yaml</code> with the following code in it:</p><pre class="programlisting">--- &#13;
+- hosts: all &#13;
+  remote_user: ansible &#13;
+  tasks: &#13;
+  - name: Create the folders /tmp/dirXY with XY from 1 to 10 &#13;
+    file: &#13;
+      dest: '/tmp/dir{{ item }}' &#13;
+      state: directory &#13;
+    with_sequence: start=1 end=10 &#13;
+    become: True &#13;
+</pre><div><div><h3 class="title"><a id="note18"/>Note</h3><p>In the case of <code class="literal">with_sequence</code>, we must use the single line notation.</p></div></div><p>We can then execute it with:</p><pre class="programlisting">
+<strong>ansible-playbook -i hosts with_sequence.yaml</strong>
+</pre><p>We will receive:</p><pre class="programlisting">
+<strong>PLAY [all] *******************************************************</strong>
+<strong>TASK [setup] *****************************************************</strong>
+<strong>ok: [db01.fale.io]</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [Create the folders /tmp/dirXY with XY from 1 to 10] ********</strong>
+<strong>changed: [ws02.fale.io] =&gt; (item=1)</strong>
+<strong>changed: [ws01.fale.io] =&gt; (item=1)</strong>
+<strong>changed: [db01.fale.io] =&gt; (item=1)</strong>
+<strong>changed: [db01.fale.io] =&gt; (item=2)</strong>
+<strong>changed: [ws02.fale.io] =&gt; (item=2)</strong>
+<strong>changed: [ws01.fale.io] =&gt; (item=2)</strong>
+<strong>changed: [db01.fale.io] =&gt; (item=3)</strong>
+<strong>changed: [ws01.fale.io] =&gt; (item=3)</strong>
+<strong>changed: [ws02.fale.io] =&gt; (item=3)</strong>
+<strong>changed: [db01.fale.io] =&gt; (item=4)</strong>
+<strong>changed: [ws01.fale.io] =&gt; (item=4)</strong>
+<strong>changed: [ws02.fale.io] =&gt; (item=4)</strong>
+<strong>changed: [db01.fale.io] =&gt; (item=5)</strong>
+<strong>changed: [ws01.fale.io] =&gt; (item=5)</strong>
+<strong>changed: [ws02.fale.io] =&gt; (item=5)</strong>
+<strong>changed: [db01.fale.io] =&gt; (item=6)</strong>
+<strong>changed: [ws01.fale.io] =&gt; (item=6)</strong>
+<strong>changed: [ws02.fale.io] =&gt; (item=6)</strong>
+<strong>changed: [db01.fale.io] =&gt; (item=7)</strong>
+<strong>changed: [ws01.fale.io] =&gt; (item=7)</strong>
+<strong>changed: [ws02.fale.io] =&gt; (item=7)</strong>
+<strong>changed: [db01.fale.io] =&gt; (item=8)</strong>
+<strong>changed: [ws01.fale.io] =&gt; (item=8)</strong>
+<strong>changed: [ws02.fale.io] =&gt; (item=8)</strong>
+<strong>changed: [db01.fale.io] =&gt; (item=9)</strong>
+<strong>changed: [ws01.fale.io] =&gt; (item=9)</strong>
+<strong>changed: [ws02.fale.io] =&gt; (item=9)</strong>
+<strong>changed: [db01.fale.io] =&gt; (item=10)</strong>
+<strong>changed: [ws01.fale.io] =&gt; (item=10)</strong>
+<strong>changed: [ws02.fale.io] =&gt; (item=10)&#13;
+&#13;
+</strong>
+<strong>PLAY RECAP *******************************************************</strong>
+<strong>db01.fale.io      : ok=2    changed=1    unreachable=0    failed=0   </strong>
+<strong>ws01.fale.io      : ok=2    changed=1    unreachable=0    failed=0   </strong>
+<strong>ws02.fale.io      : ok=2    changed=1    unreachable=0    failed=0   </strong>
+</pre><p>Ansible supports many more types of loop, but since they are used far less, you can refer directly to the official documentation about loops at <a class="ulink" href="http://docs.ansible.com/ansible/playbooks_loops.html">http://docs.ansible.com/ansible/playbooks_loops.html</a>.</p></div></div>
+<div><div><div><div><h1 class="title"><a id="ch03lvl1sec31"/>Summary</h1></div></div></div><p>In this chapter, we have seen a large number of concepts that will help scale your infrastructure beyond the single node. We started with inventories files used to instruct Ansible about our machines, then how to have host-specific and group-specific variables while running the same command on multiple heterogeneous hosts. We then moved on to dynamics inventories that are populated directly by some other system (usually a cloud provider). In the end, we analyzed multiple kinds of iteration in the Ansible playbooks.</p><p>In the next chapter, we will structure our Ansible files in a saner way to ensure maximum readability. To do this, we introduce roles which simplify the management of complex environments even more .</p></div></body></html>

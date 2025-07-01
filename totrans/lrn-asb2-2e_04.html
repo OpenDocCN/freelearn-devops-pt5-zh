@@ -1,0 +1,868 @@
+<html><head></head><body><div><div><div><div><h1 class="title"><a id="ch04"/>Chapter 4.  Handling Complex Deployment </h1></div></div></div><p>You must be wondering why the chapter is named the way it is. The reason for this is so far, we've not yet reached a stage where you can deploy the playbooks in production, especially in complex situations. Complex situations include those where you have to interact with several (hundred or thousand) machines where each group of machines is dependent on another group or groups of machines. These groups may be dependent on each other for all or some transactions, to perform secure complex data backups and replications with master and slaves. In addition, there are several interesting and rather compelling features of Ansible that we've not yet looked at. In this chapter, we will cover all of them with examples. Our aim is that, by the end of this chapter, you should have a clear idea of how to write playbooks that can be deployed in production from a configuration management perspective. The following chapters will add to what we've learned to enhance the experience of using Ansible.</p><p>To do so, we'll start with a feature that can come in handy for some occasions: the <code class="literal">local_action</code>.</p><div><div><div><div><h1 class="title"><a id="ch04lvl1sec32"/>Working with the local_action feature</h1></div></div></div><p>The <code class="literal">local_action</code> feature of Ansible is a powerful one, especially when we think of Orchestration. This feature allows you to run certain tasks locally on the machine that runs Ansible.</p><p>Consider the following situations:</p><div><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">Spawning a new machine or creating a JIRA ticket</li><li class="listitem" style="list-style-type: disc">Managing your command center(s) in terms of installing packages and setting up configurations</li><li class="listitem" style="list-style-type: disc">Calling a load balancer API to disable a certain web server entry from the load balancer</li></ul></div><p>These are tasks that can be run on the same machine that runs the <code class="literal">ansible-playbook</code> command rather than logging in to a remote box and running these commands.</p><p>Let's look at an example. Suppose you want to run a shell module on your local system where you are running your Ansible playbook. The <code class="literal">local_action</code> option comes into the picture in such situations. If you pass the module name and the module argument to <code class="literal">local_action</code>, it will run that module locally. Let's see how this option works with the <code class="literal">shell</code> module. Consider the following code that shows the output of the <code class="literal">local_action</code> option:</p><pre class="programlisting">    --- 
+    - hosts: database 
+      remote_user: ansible 
+      tasks: 
+      - name: Count processes running on the remote system 
+        shell: ps | wc -l 
+        register: remote_processes_number 
+      - name: Print remote running processes 
+        debug: 
+          msg: '{{ remote_processes_number.stdout }}' 
+      - name: Count processes running on the local system 
+        local_action: shell ps | wc -l 
+        register: local_processes_number 
+      - name: Print local running processes 
+        debug: 
+          msg: '{{ local_processes_number.stdout }}' 
+</pre><p>We can now save it as <code class="literal">local_action.yaml</code> and run it with the following:</p><pre class="programlisting">
+<strong>ansible-playbook -i hosts local_action.yaml</strong>
+</pre><p>We receive the following result:</p><pre class="programlisting">
+<strong>PLAY [database] **************************************************</strong>
+<strong>TASK [setup] *****************************************************</strong>
+<strong>ok: [db01.fale.io]
+
+</strong>
+<strong>TASK [Count processes running on the remote system] **************</strong>
+<strong>changed: [db01.fale.io]
+
+</strong>
+<strong>TASK [Print remote running processes] ****************************</strong>
+<strong>ok: [db01.fale.io] =&gt; {</strong>
+<strong>    "msg": "7"</strong>
+<strong>}
+
+</strong>
+<strong>TASK [Count processes running on the local system] ***************</strong>
+<strong>changed: [db01.fale.io -&gt; localhost]
+
+</strong>
+<strong>TASK [Print local running processes] *****************************</strong>
+<strong>ok: [db01.fale.io] =&gt; {</strong>
+<strong>    "msg": "11"</strong>
+<strong>}
+
+</strong>
+<strong>PLAY RECAP *******************************************************</strong>
+<strong>db01.fale.io      : ok=5    changed=2    unreachable=0    failed=0   </strong>
+</pre><p>As you can see, the two commands provided us different numbers since they have been executed on different hosts. You can run any module with <code class="literal">local_action</code>, and Ansible will make sure that the module is run locally on the box where the <code class="literal">ansible-playbook</code> command is run. Another simple example you can (and should!) try is running two tasks:</p><div><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc"><code class="literal">uname</code> on the remote machine (<code class="literal">db01</code> in the preceding case)</li><li class="listitem" style="list-style-type: disc"><code class="literal">uname</code> on the local machine but with local_action enabled</li></ul></div><p>This will crystallize the idea of <code class="literal">local_action</code> further.</p><p>Ansible provides another method to delegate certain actions to a specific (or different) machine: the <code class="literal">delegate_to</code> system.</p></div></div>
+<div><div><div><div><h1 class="title"><a id="ch04lvl1sec33"/>Delegating a task</h1></div></div></div><p>Sometimes you want to execute an action on a different system. This could be, for instance, a database node while you are deploying something on an application server node or to the local host. To do so, you can just add the '<code class="literal">delegate_to: HOST</code>' property to your task and it will be run on the proper node. Let's rework the previous example to achieve this:</p><pre class="programlisting">    --- 
+    - hosts: database 
+      remote_user: ansible 
+      tasks: 
+      - name: Count processes running on the remote system 
+        shell: ps | wc -l 
+        register: remote_processes_number 
+      - name: Print remote running processes 
+        debug: 
+          msg: '{{ remote_processes_number.stdout }}' 
+      - name: Count processes running on the local system 
+        shell: ps | wc -l 
+        delegate_to: localhost 
+        register: local_processes_number 
+      - name: Print local running processes 
+        debug: 
+          msg: '{{ local_processes_number.stdout }}' 
+</pre><p>Saving it as <code class="literal">delegate_to.yaml</code>, we can run it with the following:</p><pre class="programlisting">
+<strong>ansible-playbook -i hosts delegate_to.yaml</strong>
+</pre><p>We will receive the same output as the previous example:</p><pre class="programlisting">
+<strong>PLAY [database] **************************************************</strong>
+<strong>TASK [setup] *****************************************************</strong>
+<strong>ok: [db01.fale.io]
+
+</strong>
+<strong>TASK [Count processes running on the remote system] **************</strong>
+<strong>changed: [db01.fale.io]
+
+</strong>
+<strong>TASK [Print remote running processes] ****************************</strong>
+<strong>ok: [db01.fale.io] =&gt; {</strong>
+<strong>    "msg": "7"</strong>
+<strong>}
+
+</strong>
+<strong>TASK [Count processes running on the local system] ***************</strong>
+<strong>changed: [db01.fale.io -&gt; localhost]
+
+</strong>
+<strong>TASK [Print local running processes] *****************************</strong>
+<strong>ok: [db01.fale.io] =&gt; {</strong>
+<strong>    "msg": "11"</strong>
+<strong>}
+
+</strong>
+<strong>PLAY RECAP *******************************************************</strong>
+<strong>db01.fale.io      : ok=5    changed=2    unreachable=0    failed=0   </strong>
+</pre></div>
+<div><div><div><div><h1 class="title"><a id="ch04lvl1sec34"/>Working with conditionals</h1></div></div></div><p>Until now, we have only seen how playbooks work and how tasks are executed. We also saw that Ansible executes all these tasks sequentially. However, this would not help you while writing an advanced playbook that contains tens of tasks and have to execute only a subset of these tasks. For example, let's say you have a playbook that will install Apache HTTPd server on the remote host. Now, the Apache HTTPd server has a different package name for a Debian-based operating system, and it's called <code class="literal">apache2</code>; for a Red-Hat-based operating system, it's called <code class="literal">httpd</code>.</p><p>Having two tasks, one for the <code class="literal">httpd</code> package (for Red-Hat-based systems) and the other for the <code class="literal">apache2</code> package (for Debian-based systems) in a playbook, will make Ansible install both packages, and this execution will fail, as <code class="literal">apache2</code> will not be available if you're installing on a Red-Hat-based operating system. To overcome such problems, Ansible provides conditional statements that help run a task only when a specified condition is met. In this case, we do something similar to the following pseudocode:</p><pre class="programlisting">    If os = "redhat" 
+      Install httpd 
+    Else if os = "debian" 
+      Install apache2 
+    End 
+</pre><p>While installing <code class="literal">httpd</code> on a Red-Hat-based operating system, we first check whether the remote system is running a Red-Hat-based operating system, and if it is, we then install the <code class="literal">httpd</code> package; otherwise, we skip the task. Without wasting your time, let's dive into an example playbook called <code class="literal">conditional_httpd.yaml</code> with the following content:</p><pre class="programlisting">    --- 
+    - hosts: webserver 
+      remote_user: ansible 
+      tasks: 
+      - name: Print the ansible_os_family value 
+        debug: 
+          msg: '{{ ansible_os_family }}' 
+      - name: Ensure the httpd package is updated 
+        yum: 
+          name: httpd 
+          state: latest 
+        become: True 
+        when: ansible_os_family == 'RedHat' 
+      - name: Ensure the apache2 package is updated 
+        apt: 
+          name: apache2 
+          state: latest 
+        become: True 
+        when: ansible_os_family == 'Debian' 
+</pre><p>Run it with the following:</p><pre class="programlisting">
+<strong>ansible-playbook -i hosts conditional_httpd.yaml</strong>
+</pre><p>This is the result:</p><pre class="programlisting">
+<strong>PLAY [webserver] *************************************************</strong>
+<strong>TASK [setup] *****************************************************</strong>
+<strong>ok: [ws03.fale.io]</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]
+
+</strong>
+<strong>TASK [Print the ansible_os_family value] *************************</strong>
+<strong>ok: [ws01.fale.io] =&gt; {</strong>
+<strong>    "msg": "RedHat"</strong>
+<strong>}</strong>
+<strong>ok: [ws02.fale.io] =&gt; {</strong>
+<strong>    "msg": "RedHat"</strong>
+<strong>}</strong>
+<strong>ok: [ws03.fale.io] =&gt; {</strong>
+<strong>    "msg": "Debian"</strong>
+<strong>}
+
+</strong>
+<strong>TASK [Ensure the httpd package is updated] ***********************</strong>
+<strong>skipping: [ws03.fale.io]</strong>
+<strong>changed: [ws01.fale.io]</strong>
+<strong>changed: [ws02.fale.io]
+
+</strong>
+<strong>TASK [Ensure the apache2 package is updated] *********************</strong>
+<strong>skipping: [ws02.fale.io]</strong>
+<strong>skipping: [ws01.fale.io]</strong>
+<strong>changed: [ws03.fale.io]
+
+</strong>
+<strong>PLAY RECAP *******************************************************</strong>
+<strong>ws01.fale.io      : ok=3    changed=1    unreachable=0    failed=0   </strong>
+<strong>ws02.fale.io      : ok=3    changed=1    unreachable=0    failed=0   </strong>
+<strong>ws03.fale.io      : ok=3    changed=1    unreachable=0    failed=0   </strong>
+</pre><p>As you can see, I've created a new server (<code class="literal">ws03</code>) for this example that is Debian-based. As expected, the installation of the <code class="literal">httpd</code> package was performed on the two CentOS nodes, while the installation of the <code class="literal">apache2</code> package was performed on the Debian node.</p><div><div><h3 class="title"><a id="tip19"/>Tip</h3><p>Ansible only distinguishes between a few families (AIX, Alpine, Altlinux, Archlinux, Darwin, Debian, FreeBSD, Gentoo, HP-UX, Mandrake, Red Hat, Slackware, Solaris, and Suse at the time of writing this book), for this reason a CentOS machine has an <code class="literal">ansible_os_family</code> value; '<code class="literal">RedHat</code>'.</p></div></div><p>Likewise, you can match for different conditions as well. Ansible supports equal to (<code class="literal">==</code>), different than (<code class="literal">!=</code>), bigger than (<code class="literal">&gt;</code>), smaller than (<code class="literal">&lt;</code>), bigger than or equal to (<code class="literal">&gt;=</code>), and smaller than or equal to (<code class="literal">&lt;=</code>).</p><p>The operators we have seen so far will match the entire content of the variable, but what if you just want to check whether a particular character or a string is present in a variable? To perform these kinds of checks, Ansible provides the in and not operators. You can also match multiple conditions using the <code class="literal">AND</code> and <code class="literal">OR</code> operators. The <code class="literal">AND</code> operator will make sure that all conditions are matched before executing this task, whereas the <code class="literal">OR</code> operator will make sure that at least one of the conditions there is a match for at least one of the conditions, for example, you can use <code class="literal">foo &gt;= 0</code> and <code class="literal">foo &lt;= 5</code>.</p><div><div><div><div><h2 class="title"><a id="ch04lvl2sec38"/>Boolean conditionals</h2></div></div></div><p>Apart from string matching, you can also check whether a variable is <code class="literal">True</code>. This type of validation will be useful when you want to check whether a variable was assigned a value or not. You can even execute a task based on the Boolean value of a variable.</p><p>For example, let's put the following code in a file called <code class="literal">crontab_backup.yaml</code>:</p><pre class="programlisting">    --- 
+    - hosts: all 
+      remote_user: ansible 
+      vars: 
+        backup: True 
+      tasks: 
+      - name: Copy the crontab in tmp if the backup variable is true 
+        copy: 
+          src: /etc/crontab 
+          dest: /tmp/crontab 
+          remote_src: True 
+        when: backup 
+</pre><p>If we execute it with the following:</p><pre class="programlisting">
+<strong>ansible-playbook -i hosts crontab_backup.yaml</strong>
+</pre><p>We will obtain the following:</p><pre class="programlisting">
+<strong>PLAY [all] *******************************************************</strong>
+<strong>TASK [setup] *****************************************************</strong>
+<strong>ok: [db01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]</strong>
+<strong>ok: [ws01.fale.io]
+
+</strong>
+<strong>TASK [Copy the crontab in tmp if the backup variable is true] ****</strong>
+<strong>changed: [ws02.fale.io]</strong>
+<strong>changed: [db01.fale.io]</strong>
+<strong>changed: [ws01.fale.io]
+
+</strong>
+<strong>PLAY RECAP *******************************************************</strong>
+<strong>db01.fale.io      : ok=2    changed=1    unreachable=0    failed=0   </strong>
+<strong>ws01.fale.io      : ok=2    changed=1    unreachable=0    failed=0   </strong>
+<strong>ws02.fale.io      : ok=2    changed=1    unreachable=0    failed=0   </strong>
+</pre><p>But if we change the command slightly, to:</p><pre class="programlisting">
+<strong>ansible-playbook -i hosts crontab_backup.yaml --extra-vars="backup=False"</strong>
+</pre><p>We will receive this output:</p><pre class="programlisting">
+<strong>PLAY [all] *******************************************************</strong>
+<strong>TASK [setup] *****************************************************</strong>
+<strong>ok: [db01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]</strong>
+<strong>ok: [ws01.fale.io]
+
+</strong>
+<strong>TASK [Copy the crontab in tmp if the backup variable is true] ****</strong>
+<strong>skipping: [ws01.fale.io]</strong>
+<strong>skipping: [ws02.fale.io]</strong>
+<strong>skipping: [db01.fale.io]
+
+</strong>
+<strong>PLAY RECAP *******************************************************</strong>
+<strong>db01.fale.io      : ok=1    changed=0    unreachable=0    failed=0   </strong>
+<strong>ws01.fale.io      : ok=1    changed=0    unreachable=0    failed=0   </strong>
+<strong>ws02.fale.io      : ok=1    changed=0    unreachable=0    failed=0   </strong>
+</pre><p>As you can see, in the first case the operation has been executed, while in the second case it was skipped. We could have overwritten the backup value using a configuration file, a <code class="literal">host</code> variable, or a <code class="literal">group</code> variable.</p><div><div><h3 class="title"><a id="tip20"/>Tip</h3><p>If checked in this way and if the variable is not set, Ansible will assume it to be <code class="literal">False</code>.</p></div></div></div><div><div><div><div><h2 class="title"><a id="ch04lvl2sec39"/>Checking if a variable is set</h2></div></div></div><p>Sometimes you find yourself having to use a variable in a command. Every time you do so, you have to ensure that the variable is <em>set</em>. This is because some commands could be catastrophic if called with an <em>unset</em> variable (that is: if you execute <code class="literal">rm -rf $VAR/*</code> and <code class="literal">$VAR</code> is not set or empty, it will nuke your machine). To do so, Ansible provides a way to check whether a variable is defined or not.</p><p>We could improve the previous example in the following way:</p><pre class="programlisting">    --- 
+    - hosts: all 
+      remote_user: ansible 
+      vars: 
+        backup: True 
+      tasks: 
+      - name: Check if the backup_folder is set 
+        fail: 
+          msg: 'The backup_folder needs to be set' 
+        when: backup_folder is not defined 
+      - name: Copy the crontab in tmp if the backup variable is true 
+        copy: 
+          src: /etc/crontab 
+          dest: '{{ backup_folder }}/crontab' 
+          remote_src: True 
+        when: backup 
+</pre><p>As you can see, we have used the <code class="literal">fail</code> module that allows us to put the Ansible playbook in a failure state in case the <code class="literal">backup_folder</code> variable is not set.</p></div></div>
+<div><div><div><div><h1 class="title"><a id="ch04lvl1sec35"/>Working with include</h1></div></div></div><p>The <code class="literal">include</code> feature helps you to reduce duplicity while writing tasks. This also allows us to have smaller playbooks by including reusable code in separate tasks using the <strong>Don't Repeat Yourself</strong> (<strong>DRY</strong>) principle.</p><p>To trigger the inclusion of another file, you need to put the following under the tasks object:</p><pre class="programlisting">
+<strong>- include: FILENAME.yaml</strong>
+</pre><p>You can also pass some variables to the included file. To do so, we can specify them in the following way:</p><pre class="programlisting">
+<strong>- include: FILENAME.yaml variable1="value1" variable2="value2"</strong>
+</pre><p>In addition of passing variables, you can also use conditionals to include a file only when certain conditions are matched, for instance to include the <code class="literal">redhat.yaml</code>  file only if the machine is running an OS in the Red Hat family using the following code:</p><pre class="programlisting">
+<strong>    - name: Include the file only for Red Hat OSes
+    include: redhat.yaml
+    when: ansible_os_family == "RedHat"</strong>
+</pre></div>
+<div><div><div><div><h1 class="title"><a id="ch04lvl1sec36"/>Working with handlers</h1></div></div></div><p>In many situations, you will have a task or a group of tasks that change certain resources on the remote machines, which need to trigger an event to become effective. For example, when you change a service configuration, you will need to restart or reload the service itself. In Ansible you can trigger this event using the <code class="literal">notify</code> action.</p><p>Every handler task will run at the end of the playbook if notified. For example, you changed your HTTPd server configuration multiple times and you want to restart the HTTPd service so that the changes are applied. Now, restarting HTTPd every single time you make a configuration change is not a good practice; it is not a good practice to restart the server even if no changes has been made to its configurations. To deal with such a situation, you can notify Ansible to restart the HTTPd service on every configuration change, but Ansible will make sure that no matter how many times you notify it for the HTTPd restart, it will call that task just once after all other tasks complete. Let's change the <code class="literal">webserver.yaml</code> file we created in the previous chapters a little bit, in the following way:</p><pre class="programlisting">--- 
+- hosts: webserver 
+  remote_user: ansible 
+  tasks: 
+  - name: Ensure the HTTPd package is installed 
+    yum: 
+      name: httpd 
+      state: present 
+    become: True 
+  - name: Ensure the HTTPd service is enabled and running 
+    service: 
+      name: httpd 
+      state: started 
+      enabled: True 
+    become: True 
+  - name: Ensure HTTP can pass the firewall 
+    firewalld: 
+      service: http 
+      state: enabled 
+      permanent: True 
+      immediate: True 
+    become: True 
+  - name: Ensure HTTPd configuration is updated 
+    copy: 
+      src: website.conf 
+      dest: /etc/httpd/conf.d 
+    become: True 
+    notify: Restart HTTPd 
+  handlers: 
+  - name: Restart HTTPd 
+    service: 
+      name: httpd 
+      state: restarted 
+    become: True 
+</pre><p>Run this script with:</p><pre class="programlisting">
+<strong>ansible-playbook -i hosts webserver.yaml</strong>
+</pre><p>We will have the following output:</p><pre class="programlisting">
+<strong>PLAY [webserver] *************************************************</strong>
+<strong>TASK [setup] *****************************************************</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]
+
+</strong>
+<strong>TASK [Ensure the HTTPd package is installed] *********************</strong>
+<strong>ok: [ws02.fale.io]</strong>
+<strong>ok: [ws01.fale.io]
+
+</strong>
+<strong>TASK [Ensure the HTTPd service is enabled and running] ***********</strong>
+<strong>ok: [ws02.fale.io]</strong>
+<strong>ok: [ws01.fale.io]
+
+</strong>
+<strong>TASK [Ensure HTTP can pass the firewall] *************************</strong>
+<strong>ok: [ws02.fale.io]</strong>
+<strong>ok: [ws01.fale.io]
+
+</strong>
+<strong>TASK [Ensure HTTPd configuration is updated] *********************</strong>
+<strong>changed: [ws02.fale.io]</strong>
+<strong>changed: [ws01.fale.io]
+
+</strong>
+<strong>RUNNING HANDLER [Restart HTTPd] **********************************</strong>
+<strong>changed: [ws02.fale.io]</strong>
+<strong>changed: [ws01.fale.io]
+
+</strong>
+<strong>PLAY RECAP *******************************************************</strong>
+<strong>ws01.fale.io      : ok=6    changed=2    unreachable=0    failed=0   </strong>
+<strong>ws02.fale.io      : ok=6    changed=2    unreachable=0    failed=0   </strong>
+</pre><p>In this case, the handler has been triggered from the configuration file change. But if we run it a second time, the configuration will not change and therefore we will have the following result:</p><pre class="programlisting">
+<strong>PLAY [webserver] *************************************************</strong>
+<strong>TASK [setup] *****************************************************</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]
+
+</strong>
+<strong>TASK [Ensure the HTTPd package is installed] *********************</strong>
+<strong>ok: [ws02.fale.io]</strong>
+<strong>ok: [ws01.fale.io]
+
+</strong>
+<strong>TASK [Ensure the HTTPd service is enabled and running] ***********</strong>
+<strong>ok: [ws02.fale.io]</strong>
+<strong>ok: [ws01.fale.io]
+
+</strong>
+<strong>TASK [Ensure HTTP can pass the firewall] *************************</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]
+
+</strong>
+<strong>TASK [Ensure HTTPd configuration is updated] *********************</strong>
+<strong>ok: [ws02.fale.io]</strong>
+<strong>ok: [ws01.fale.io]
+
+</strong>
+<strong>PLAY RECAP *******************************************************</strong>
+<strong>ws01.fale.io      : ok=5    changed=0    unreachable=0    failed=0   </strong>
+<strong>ws02.fale.io      : ok=5    changed=0    unreachable=0    failed=0</strong>
+</pre><div><div><h3 class="title"><a id="note21"/>Note</h3><p>When using handlers, those are triggered only a single time, even if they are called multiple times during the playbook execution. By default, handlers are executed at the end of the playbook execution, but you can force them to be run when you want using the <code class="literal">meta</code> task with the <code class="literal">flush_handlers</code> option like: <code class="literal">- meta: flush_handlers</code>
+</p></div></div></div>
+<div><div><div><div><h1 class="title"><a id="ch04lvl1sec37"/>Working with roles</h1></div></div></div><p>We have seen how we can automate simple tasks, but what we have seen up till now will not solve all your problems. This is because playbooks are very good at executing operations, but are not very good for configuring huge amounts of machines, because they will soon become messy. To solve this, Ansible has roles.</p><p>My definition of a role is a set of playbooks, templates, files, or variables to achieve a specific goal. For instance, we could have a database role and a web server role so that those configurations stay cleanly separated.</p><p>Before starting to look inside a role, let's talk about a project organization.</p><div><div><div><div><h2 class="title"><a id="ch04lvl2sec40"/>Project organization</h2></div></div></div><p>In the last few years, I've worked on multiple Ansible repositories for multiple organizations and many of them were very chaotic. To ensure that your repository is easy to manage, I'm going to give you a template that I always use.</p><p>First of all, I always create three files in the <code class="literal">root</code> folder:</p><div><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc"><code class="literal">ansible.cfg</code>: A small configuration file to explain to Ansible where to find the files in our folder structure</li><li class="listitem" style="list-style-type: disc"><code class="literal">hosts</code>: The hosts file we have already seen in the previous chapters</li><li class="listitem" style="list-style-type: disc"><code class="literal">master.yaml</code>: A playbook that aligns the whole infrastructure</li></ul></div><p>In addition to those three files, I create two folders:</p><div><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc"><code class="literal">playbooks</code>: This will contain the playbooks and a folder called <em>groups</em> for groups management</li><li class="listitem" style="list-style-type: disc"><code class="literal">roles</code>: This will contain all the roles we need</li></ul></div><p>To clarify this, let's use the Linux <code class="literal">tree</code> command to see the structure of an Ansible repository for a simple web application needing web servers and database servers:</p><pre class="programlisting">
+<strong>    ansible.cfg
+    hosts
+    master.yaml
+    playbooks
+        firstrun.yaml
+        groups
+            database.yaml
+            webserver.yaml
+    roles
+         common
+         database
+         webserver
+</strong>
+</pre><p>As you can see, I've added a <code class="literal">common</code> role as well. This is very useful for putting in all the things that should be performed for every server. Usually, I configure NTP, motd, and other similar services in this role, as well as the machine hostname.</p><p>We will now see how to structure a role.</p></div><div><div><div><div><h2 class="title"><a id="ch04lvl2sec41"/>Anatomy of a role</h2></div></div></div><p>The structure of folders in a role is standard and you cannot change it much.</p><p>The most important folder within the role is the <code class="literal">tasks</code> folder because this is the only mandatory folder in it. It has to contain a <code class="literal">main.yaml</code> file that will be the list of tasks to be executed. Other folders that are often present in the roles are templates and files. The first one will be used to store templates used by the <strong>template task</strong>, while the second will be used to store files that are used by the <strong>copy task</strong>.</p></div><div><div><div><div><h2 class="title"><a id="ch04lvl2sec42"/>Transforming your playbooks in a full Ansible project</h2></div></div></div><p>Let's see how to transform the three playbooks we used to set up our web infrastructure (<code class="literal">common_tasks.yaml</code>, <code class="literal">firstrun.yaml</code>, and <code class="literal">webserver.yaml</code>) to fit this file organization. We have to remember that we also used two files (<code class="literal">index.html.j2</code> and <code class="literal">motd</code>) in those roles, so we have to place these files properly too.</p><p>First, we are going to create the folder structure we have seen in the previous paragraph.</p><p>The easiest playbook to port is the <code class="literal">firstrun.yaml</code> since we only need to copy it into the playbooks folder. This playbook will remain a playbook because it's a set of operations that will have to be run just one time for each server.</p><p>We now move to the <code class="literal">common_tasks.yaml</code> playbook, which will need a little bit of rework to match the role paradigm.</p><div><div><div><div><h3 class="title"><a id="ch04lvl3sec10"/>Transforming a playbook into a role</h3></div></div></div><p>The first thing we need is to create the <code class="literal">roles/common/tasks</code> and <code class="literal">roles/common/templates</code> folders. In the first one we will add the following <code class="literal">main.yaml</code> file:</p><pre class="programlisting">    --- 
+    - name: Ensure EPEL is enabled 
+      yum: 
+        name: epel-release 
+        state: present 
+      become: True 
+    - name: Ensure libselinux-python is present 
+      yum: 
+        name: libselinux-python 
+        state: present 
+      become: True 
+    - name: Ensure libsemanage-python is present 
+      yum: 
+        name: libsemanage-python 
+        state: present 
+      become: True 
+    - name: Ensure we have last version of every package 
+      yum: 
+        name: "*" 
+        state: latest 
+      become: True 
+    - name: Ensure NTP is installed 
+      yum: 
+        name: ntp 
+        state: present 
+      become: True 
+    - name: Ensure the timezone is set to UTC 
+      file: 
+        src: /usr/share/zoneinfo/GMT 
+        dest: /etc/localtime 
+        state: link 
+      become: True 
+    - name: Ensure the NTP service is running and enabled 
+      service: 
+        name: ntpd 
+        state: started 
+        enabled: True 
+      become: True 
+    - name: Ensure FirewallD is installed 
+      yum: 
+        name: firewalld 
+        state: present 
+      become: True 
+    - name: Ensure FirewallD is running 
+      service: 
+        name: firewalld 
+        state: started 
+        enabled: True 
+      become: True 
+    - name: Ensure SSH can pass the firewall 
+      firewalld: 
+        service: ssh 
+        state: enabled 
+        permanent: True 
+        immediate: True 
+      become: True 
+    - name: Ensure the MOTD file is present and updated 
+      template: 
+        src: motd 
+        dest: /etc/motd 
+        owner: root 
+        group: root 
+        mode: 0644 
+      become: True 
+    - name: Ensure the hostname is the same of the inventory 
+      hostname: 
+        name: "{{ inventory_hostname }}" 
+      become: True 
+</pre><p>As you can see, this is very similar to our <code class="literal">common_tasks.yaml</code> playbooks. In fact, there are only two differences:</p><div><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">The lines; <code class="literal">hosts</code>, <code class="literal">remote_user</code>, and <code class="literal">tasks</code> (lines 2,3, and 4) have been deleted</li><li class="listitem" style="list-style-type: disc">The indentation of the rest of the file has been fixed accordingly</li></ul></div><p>In this role, we used the template task to create a <code class="literal">motd</code> file on the server with the IP of the machine and other interesting information. For this reason, we need to create <code class="literal">roles/common/templates</code> and put the <code class="literal">motd</code> template in it.</p><p>At this point, our common task will have this structure:</p><pre class="programlisting">    common/ 
+        tasks 
+            main.yaml 
+        templates 
+            motd 
+</pre><p>We now need to instruct Ansible on the machines that will need to perform all the tasks specified in the <code class="literal">common</code> role. To do so, we should look at the <code class="literal">playbooks/groups</code> directory. In this directory, it is handy to have one file for each group of logically similar machines (that is, machines that are performing the same kind of operation). In our case, database and web server.</p><p>So, let's create a <code class="literal">database.yaml</code> file in <code class="literal">playbooks/groups</code> with the following content:</p><pre class="programlisting">    --- 
+    - hosts: database 
+      user: ansible 
+      roles: 
+      - common 
+</pre><p>Create a <code class="literal">webserver.yaml</code> file in the same folder with the following content:</p><pre class="programlisting">    --- 
+    - hosts: webserver 
+      user: ansible 
+      roles: 
+      - common 
+</pre><p>As you can see, those files specify the group of hosts that we want to operate on, the remote user to use on those hosts, and the roles that we want to execute.</p></div><div><div><div><div><h3 class="title"><a id="ch04lvl3sec11"/>Helper files</h3></div></div></div><p>When we created the <code class="literal">hosts</code> file in the previous chapter, we noticed that it helps to simplify our command lines. So, let's start copying the hosts files we previously used in the <code class="literal">root</code> folder of our Ansible repository. Up to now, we have always specified the path of this file on the command line. This is no longer necessary if we create an <code class="literal">ansible.cfg</code> file that tells Ansible the location of our <code class="literal">hosts</code> file. For this reason, let's create an <code class="literal">ansible.cfg</code> file in the root of our Ansible repository with the following content:</p><pre class="programlisting">    [defaults] 
+    hostfile = hosts 
+    host_key_checking = False 
+    roles_path = roles 
+</pre><p>In this file, we have also specified another two variables in addition to the <code class="literal">hostfile</code> one that we already talk about, and those are <code class="literal">host_key_checking</code> and <code class="literal">roles_path</code>.</p><p>The <code class="literal">host_key_checking</code> flag is useful to not require the verification of the remote system SSH key. This is not suggested for use in production, since the usage of a public key propagation system is suggested for such environments, but is very handy in testing environments since it will help you to reduce the time Ansible hangs waiting for user input.</p><p>The <code class="literal">roles_path</code> is used to tell Ansible where to find the roles for our playbooks.</p><p>I usually add one additional file, which is <code class="literal">master.yaml</code>. I find it very useful as you will often need to keep your infrastructure aligned with your Ansible code. To do it in a single command, you'll need a file that will run all of the files in <code class="literal">playbooks/groups</code>. So, let's create a <code class="literal">master.yaml</code> file in the Ansible repository <code class="literal">root</code> folder with the following content:</p><pre class="programlisting">    --- 
+    - include: playbooks/groups/database.yaml 
+    - include: playbooks/groups/webserver.yaml 
+</pre><p>At this point, we can execute the following:</p><pre class="programlisting">
+<strong>ansible-playbook master.yaml</strong>
+</pre><p>The result will be the following:</p><pre class="programlisting">
+<strong>PLAY [database] **************************************************</strong>
+<strong>TASK [setup] *****************************************************</strong>
+<strong>ok: [db01.fale.io]
+
+</strong>
+<strong>TASK [common : Ensure EPEL is enabled] ***************************</strong>
+<strong>ok: [db01.fale.io]
+
+</strong>
+<strong>TASK [common : Ensure libselinux-python is present] **************</strong>
+<strong>ok: [db01.fale.io]
+
+</strong>
+<strong>TASK [common : Ensure libsemanage-python is present] *************</strong>
+<strong>ok: [db01.fale.io]
+
+</strong>
+<strong>TASK [common : Ensure we have last version of every package] *****</strong>
+<strong>changed: [db01.fale.io]
+
+</strong>
+<strong>TASK [common : Ensure NTP is installed] **************************</strong>
+<strong>ok: [db01.fale.io]
+
+</strong>
+<strong>TASK [common : Ensure the timezone is set to UTC] ****************</strong>
+<strong>ok: [db01.fale.io]
+
+</strong>
+<strong>TASK [common : Ensure the NTP service is running and enabled] ****</strong>
+<strong>ok: [db01.fale.io]
+
+</strong>
+<strong>TASK [common : Ensure FirewallD is installed] ********************</strong>
+<strong>ok: [db01.fale.io]
+
+</strong>
+<strong>TASK [common : Ensure FirewallD is running] **********************</strong>
+<strong>ok: [db01.fale.io]
+
+</strong>
+<strong>TASK [common : Ensure SSH can pass the firewall] *****************</strong>
+<strong>ok: [db01.fale.io]
+
+</strong>
+<strong>TASK [common : Ensure the MOTD file is present and updated] ******</strong>
+<strong>ok: [db01.fale.io]
+
+</strong>
+<strong>TASK [common : Ensure the hostname is the same of the inventory] *</strong>
+<strong>ok: [db01.fale.io]
+
+</strong>
+<strong>PLAY [webserver] *************************************************</strong>
+<strong>TASK [setup] *****************************************************</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]
+
+</strong>
+<strong>TASK [common : Ensure EPEL is enabled] ***************************</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]
+
+</strong>
+<strong>TASK [common : Ensure libselinux-python is present] **************</strong>
+<strong>ok: [ws02.fale.io]</strong>
+<strong>ok: [ws01.fale.io]
+
+</strong>
+<strong>TASK [common : Ensure libsemanage-python is present] *************</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]
+
+</strong>
+<strong>TASK [common : Ensure we have last version of every package] *****</strong>
+<strong>changed: [ws01.fale.io]</strong>
+<strong>changed: [ws02.fale.io]
+
+</strong>
+<strong>TASK [common : Ensure NTP is installed] **************************</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]
+
+</strong>
+<strong>TASK [common : Ensure the timezone is set to UTC] ****************</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]
+
+</strong>
+<strong>TASK [common : Ensure the NTP service is running and enabled] ****</strong>
+<strong>ok: [ws02.fale.io]</strong>
+<strong>ok: [ws01.fale.io]
+
+</strong>
+<strong>TASK [common : Ensure FirewallD is installed] ********************</strong>
+<strong>ok: [ws02.fale.io]</strong>
+<strong>ok: [ws01.fale.io]
+
+</strong>
+<strong>TASK [common : Ensure FirewallD is running] **********************</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]
+
+</strong>
+<strong>TASK [common : Ensure SSH can pass the firewall] *****************</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]
+
+</strong>
+<strong>TASK [common : Ensure the MOTD file is present and updated] ******</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]
+
+</strong>
+<strong>TASK [common : Ensure the hostname is the same of the inventory] *</strong>
+<strong>ok: [ws02.fale.io]</strong>
+<strong>ok: [ws01.fale.io]
+
+</strong>
+<strong>PLAY RECAP *******************************************************</strong>
+<strong>db01.fale.io      : ok=13   changed=1    unreachable=0    failed=0   </strong>
+<strong>ws01.fale.io      : ok=13   changed=1    unreachable=0    failed=0   </strong>
+<strong>ws02.fale.io      : ok=13   changed=1    unreachable=0    failed=0</strong>
+</pre><p>As you can see, the actions listed in the <code class="literal">common</code> role have been executed on the node in the <code class="literal">database</code> group first and then on the nodes in the <code class="literal">webserver</code> group.</p></div><div><div><div><div><h3 class="title"><a id="ch04lvl3sec12"/>Transforming the webserver role</h3></div></div></div><p>As we transformed the <code class="literal">common</code> playbook into the <code class="literal">common</code> role, we can do the same for the <code class="literal">webserver</code> role.</p><p>In roles, we need to have the <code class="literal">webserver</code> folder with the <code class="literal">tasks</code> subfolder inside it. In this folder, we have to put the <code class="literal">main.yaml</code> file containing the <code class="literal">tasks</code> copied from the playbooks, that should look like:</p><pre class="programlisting">    --- 
+    - name: Ensure the HTTPd package is installed 
+      yum: 
+        name: httpd 
+        state: present 
+      become: True 
+    - name: Ensure the HTTPd service is enabled and running 
+      service: 
+        name: httpd 
+        state: started 
+        enabled: True 
+      become: True 
+    - name: Ensure HTTP can pass the firewall 
+      firewalld: 
+        service: http 
+        state: enabled 
+        permanent: True 
+        immediate: True 
+      become: True 
+    - name: Ensure HTTPd configuration is updated 
+      copy: 
+        src: website.conf 
+        dest: /etc/httpd/conf.d 
+      become: True 
+      notify: Restart HTTPd 
+    - name: Ensure the website is present and updated 
+      template: 
+        src: index.html.j2 
+        dest: /var/www/html/index.html 
+        owner: root 
+        group: root 
+        mode: 0644 
+      become: True 
+</pre><p>In this role, we have used multiple tasks that will need additional resources to work properly, more specifically we need to:</p><div><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">Put the <code class="literal">website.conf</code> file in <code class="literal">roles/webserver/files</code></li><li class="listitem" style="list-style-type: disc">Put the <code class="literal">index.html.j2</code> template in <code class="literal">roles/webserver/templates</code></li><li class="listitem" style="list-style-type: disc">Create the <code class="literal">Restart HTTPd</code> handler</li></ul></div><p>The first two should be pretty straightforward. The first one, in fact, is an empty file (we have not yet put anything in it since the default configuration was good enough for our use) and the <code class="literal">index.html.j2</code> file should contain the following content:</p><pre class="programlisting">    &lt;html&gt; 
+        &lt;body&gt; 
+            &lt;h1&gt;Hello World!&lt;/h1&gt; 
+            &lt;p&gt;This page was created on {{ ansible_date_time.date }}.&lt;/p&gt; 
+            &lt;p&gt;This machine can be reached on the following IP addresses&lt;/p&gt; 
+            &lt;ul&gt; 
+    {% for address in ansible_all_ipv4_addresses %} 
+                &lt;li&gt;{{ address }}&lt;/li&gt; 
+    {% endfor %} 
+            &lt;/ul&gt; 
+        &lt;/body&gt; 
+    &lt;/html&gt; 
+</pre></div><div><div><div><div><h3 class="title"><a id="ch04lvl3sec13"/>Handlers in roles</h3></div></div></div><p>The last thing we need to do to complete this role is to create the handler for the <code class="literal">Restart HTTPd</code> notification. To do so, we will need to create a <code class="literal">main.yaml</code> file in <code class="literal">roles/webserver/handlers</code> with the following content:</p><pre class="programlisting">    --- 
+    - name: Restart HTTPd 
+      service: 
+        name: httpd 
+        state: restarted 
+      become: True 
+</pre><p>As you may notice, this is very similar to the handler we used in the playbook if not for the file location and indentation.</p><p>The only thing that we still need to do to make our role applicable is to add the entry in the <code class="literal">playbooks/groups/webserver.yaml</code> file so that Ansible is informed that the servers in the <code class="literal">webserver</code> group should apply the <code class="literal">webserver</code> role as well as the common role. Our <code class="literal">playbooks/groups/webserver.yaml</code> will need to be like the following:</p><pre class="programlisting">    --- 
+    - hosts: webserver 
+      user: ansible 
+      roles: 
+      - common 
+      - webserver 
+</pre><p>We could now execute the <code class="literal">master.yaml</code> again to apply the <code class="literal">webserver</code> role to the relevant servers, but we can also just execute the <code class="literal">playbooks/groups/webserver.yaml</code>, since the change we just did is relevant only to this group of servers. To do so we run:</p><pre class="programlisting">
+<strong>    ansible-playbook playbooks/groups/webserver.yaml</strong>
+</pre><p>We should receive an output similar to the following:</p><pre class="programlisting">
+<strong>PLAY [webserver] *************************************************</strong>
+<strong>TASK [setup] *****************************************************</strong>
+<strong>ok: [ws02.fale.io]</strong>
+<strong>ok: [ws01.fale.io]
+
+</strong>
+<strong>TASK [common : Ensure EPEL is enabled] ***************************</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]
+
+</strong>
+<strong>TASK [common : Ensure libselinux-python is present] **************</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]
+
+</strong>
+<strong>TASK [common : Ensure libsemanage-python is present] *************</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]
+
+</strong>
+<strong>TASK [common : Ensure we have last version of every package] *****</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]
+
+</strong>
+<strong>TASK [common : Ensure NTP is installed] **************************</strong>
+<strong>ok: [ws02.fale.io]</strong>
+<strong>ok: [ws01.fale.io]
+
+</strong>
+<strong>TASK [common : Ensure the timezone is set to UTC] ****************</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]
+
+</strong>
+<strong>TASK [common : Ensure the NTP service is running and enabled] ****</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]
+
+</strong>
+<strong>TASK [common : Ensure FirewallD is installed] ********************</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]
+
+</strong>
+<strong>TASK [common : Ensure FirewallD is running] **********************</strong>
+<strong>ok: [ws02.fale.io]</strong>
+<strong>ok: [ws01.fale.io]
+
+</strong>
+<strong>TASK [common : Ensure SSH can pass the firewall] *****************</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]
+
+</strong>
+<strong>TASK [common : Ensure the MOTD file is present and updated] ******</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]
+
+</strong>
+<strong>TASK [common : Ensure the hostname is the same of the inventory] *</strong>
+<strong>ok: [ws02.fale.io]</strong>
+<strong>ok: [ws01.fale.io]
+
+</strong>
+<strong>TASK [webserver : Ensure the HTTPd package is installed] *********</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]
+
+</strong>
+<strong>TASK [webserver : Ensure the HTTPd service is enabled and running]</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]
+
+</strong>
+<strong>TASK [webserver : Ensure HTTP can pass the firewall] *************</strong>
+<strong>ok: [ws02.fale.io]</strong>
+<strong>ok: [ws01.fale.io]
+
+</strong>
+<strong>TASK [webserver : Ensure HTTPd configuration is updated] *********</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]
+
+</strong>
+<strong>TASK [webserver : Ensure the website is present and updated] *****</strong>
+<strong>changed: [ws01.fale.io]</strong>
+<strong>changed: [ws02.fale.io]
+
+</strong>
+<strong>PLAY RECAP *******************************************************</strong>
+<strong>ws01.fale.io      : ok=18   changed=1    unreachable=0    failed=0   </strong>
+<strong>ws02.fale.io      : ok=18   changed=1    unreachable=0    failed=0</strong>
+</pre><p>As you can see, both the <code class="literal">common</code> and the <code class="literal">webserver</code> roles has been applied to the <code class="literal">webserver</code> nodes.</p><p>It's very important to apply all roles concerning a specific node and not just the one you changed because more often than not, when there is a problem on one or more nodes in a group but not on other nodes of the same group, the problem is some roles have been applied unequally in the group. Only by applying all concerned roles to a group, will it grant you the equality of the nodes of that group.</p></div></div></div>
+<div><div><div><div><h1 class="title"><a id="ch04lvl1sec38"/>Execution strategies</h1></div></div></div><p>Before Ansible 2, every task needed to be executed (and completed) on each machine before Ansible issued a new task to all machines. This meant that if you are performing tasks on a hundred machines and one of them is under-performing, all machines will go at the under-performing machine's speed.</p><p>With Ansible 2, the execution strategies have been made modular and therefore you can now choose which execution strategy you prefer for your playbooks. You can also write custom execution strategies, but this is beyond the scope of this book. At the moment (in Ansible 2.1) there are only three execution strategies: <strong>linear</strong>, <strong>serial</strong>, and <strong>free</strong>:</p><div><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc"><strong>Linear execution</strong>: This strategy behaves exactly as Ansible did prior to version 2. This is the default strategy.</li><li class="listitem" style="list-style-type: disc"><strong>Serial execution</strong>: This strategy will take a subset of hosts (the default is five) and execute all tasks against those hosts before moving to the next subset and starting from the beginning. This kind of execution strategy could help you to work on a limited number of hosts so that you always have some hosts that are available to your users. If you are looking for this kind of deployment, you will need a load balancer in front of your hosts that needs to be informed about which nodes are in maintenance at every given moment.</li><li class="listitem" style="list-style-type: disc"><strong>Free execution</strong>: This strategy will serve a new task to each host as soon as that host has completed the previous task. This will allow faster hosts to complete the playbook before slower nodes. If you choose this execution strategy you have to remember that some tasks could require a previous task to be completed on all nodes (for instance, clustering databases require all database nodes to have the database installed and running) and in this case they will probably fail.</li></ul></div></div>
+<div><div><div><div><h1 class="title"><a id="ch04lvl1sec39"/>Tasks blocks</h1></div></div></div><p>In Ansible 2.0 blocks have been made available. Blocks allow you to group tasks in a logical way and they can also help for a better error handling.
+The majority of properties you can add to a standard task, you can also add it to the blocks. You may need to perform a yum task to install NTPd and enable of the service only if the machine is CentOS. To do so, the following code can be used:</p><pre class="programlisting">    tasks:
+    - block:
+       - name: Ensure NTPd is present
+       yum:
+         name: ntpd
+         state: present
+       - name: Ensure NTPd is running
+       service:
+         name: ntpd
+         state: started
+       enabled: True
+     when: ansible_distribution == 'CentOS'</pre><p>As you can notice, the when clause has been applied to the block so all tasks within the block will be performed only if the when clause will be true.</p></div>
+<div><div><div><div><h1 class="title"><a id="ch04lvl1sec40"/>The Ansible template - Jinja filters</h1></div></div></div><p>We have seen in the second chapter that templates allow you to dynamically complete your playbook and place files on servers based on dynamic data such as <code class="literal">host</code> and <code class="literal">group</code> variables. In this section, we will move forward and see how Jinja2 filters work with Ansible.</p><p>Jinja2 filters are simple Python functions that take some arguments, process them, and return the result. For example, consider the following command:</p><pre class="programlisting">
+<strong>{{ myvar | filter }}</strong>
+</pre><p>In the preceding example, <code class="literal">myvar</code> is a variable; Ansible will pass <code class="literal">myvar</code> to the Jinja2 filter as an argument. The Jinja2 filter will then process it and return the resulting data. Jinja2 filters even accept additional arguments as follows:</p><pre class="programlisting">
+<strong>{{ myvar | filter(2) }}</strong>
+</pre><p>In this example, Ansible will now pass two arguments, that is, <code class="literal">myvar</code> and <code class="literal">2</code>. Likewise, you can pass multiple arguments to filters separated by commas.</p><p>Ansible supports a wide variety of Jinja2 filters, we will see some of the important Jinja2 filters that you might need to use while writing your playbook.</p><div><div><div><div><h2 class="title"><a id="ch04lvl2sec43"/>Formatting data using filters</h2></div></div></div><p>Ansible supports Jinja2 filters to format data to JSON or YAML. You pass a dictionary variable to this filter, and it will format your data into JSON or YAML. For example, consider the following command-line:</p><pre class="programlisting">
+<strong>{{ users | to_nice_json }}</strong>
+</pre><p>In the preceding example, <code class="literal">users</code> is the variable and <code class="literal">to_nice_json</code> is the Jinja2 filter. As we saw earlier, Ansible will internally pass <code class="literal">users</code> as an argument to the Jinja2 filter <code class="literal">to_nice_json</code>. Likewise, you can format your data into YAML as well by using the following command:</p><pre class="programlisting">
+<strong>{{ users | to_nice_yaml }}</strong>
+</pre></div><div><div><div><div><h2 class="title"><a id="ch04lvl2sec44"/>Using filters with conditionals</h2></div></div></div><p>You can use Jinja2 filters with conditionals for checking if the status of a task is failed, changed, success, or skipped. Let's start creating a file in our <code class="literal">playbooks</code> folder with the following content:</p><pre class="programlisting">    --- 
+    - hosts: webserver 
+      remote_user: ansible 
+      tasks: 
+      - name: Checking HTTPd service status 
+        service: 
+          name: httpd 
+          state: running 
+        register: httpd_result 
+        ignore_errors: true 
+      - debug: 
+          msg: Previous task failed 
+        when: httpd_result|failed 
+</pre><p>In the preceding example, we first checked whether the <code class="literal">httpd</code> service was running and stored the output of that module in the <code class="literal">httpd_result</code> variable. We then checked whether the previous task failed using the Jinja2 filter, <code class="literal">httpd_result|failed</code>. Ansible will skip this task if the when condition fails, that is, if the previous task passed. Likewise, you can use changed, success, or skipped filters.</p><p>We can now check that the previous <code class="literal">playbook</code> executed as expected, running it as:</p><pre class="programlisting">
+<strong>ansible-playbook playbooks/http_status.yaml</strong>
+</pre><p>I've stopped HTTPd on the <code class="literal">ws01.fale.io</code> server with the command, <code class="literal">systemctl stop httpd</code> and running it will give me the following result:</p><pre class="programlisting">
+<strong>PLAY [webserver] *************************************************</strong>
+<strong>TASK [setup] *****************************************************</strong>
+<strong>ok: [ws02.fale.io]</strong>
+<strong>ok: [ws01.fale.io]
+
+</strong>
+<strong>TASK [Checking HTTPd service status] *****************************</strong>
+<strong>ok: [ws02.fale.io]</strong>
+<strong>fatal: [ws01.fale.io]: FAILED! =&gt; {"changed": false, "failed": true, "msg": "Failed to start httpd.service: Interactive authentication required.\n"}</strong>
+<strong>...ignoring
+
+</strong>
+<strong>TASK [debug] *****************************************************</strong>
+<strong>skipping: [ws02.fale.io]</strong>
+<strong>ok: [ws01.fale.io] =&gt; {</strong>
+<strong>    "msg": "Previous task failed"</strong>
+<strong>}
+
+</strong>
+<strong>PLAY RECAP *******************************************************</strong>
+<strong>ws01.fale.io      : ok=3    changed=0    unreachable=0    failed=0   </strong>
+<strong>ws02.fale.io      : ok=2    changed=0    unreachable=0    failed=0  </strong>
+</pre></div><div><div><div><div><h2 class="title"><a id="ch04lvl2sec45"/>Defaulting undefined variables</h2></div></div></div><p>We have seen in the previous sections, that it is always wise to check if a variable is defined before using it. We can set a <code class="literal">default</code> value for the variable so that instead of failing, Ansible will use that value if the variable is not defined. To do so, we use:</p><pre class="programlisting">
+<strong>{{ backup_disk | default("/dev/sdf") }}</strong>
+</pre><p>This filter will not assign the <code class="literal">default</code> value to the variable; it will only pass the <code class="literal">default</code> value to the current task where it is being used. Let's look at a few more examples of Jinja filters themselves before closing this section:</p><p>Using random number filters: To find a random number, character, or string out of a list, you can use the random filter:</p><div><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">Execute this to get a random character from a list:</li></ul></div><pre class="programlisting">
+<strong>{{['a', 'b', 'c', 'd'] | random}}</strong>
+</pre><div><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">Execute this to get a random number from 0 to 100:</li></ul></div><pre class="programlisting">
+<strong>{{100 | random}}</strong>
+</pre><div><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">Execute this to get a random number from 10 to 50:</li></ul></div><pre class="programlisting">
+<strong>{{50 | random(10)}}</strong>
+</pre><div><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">Execute this to get a random number from 20 to 50 in steps of 10:</li></ul></div><pre class="programlisting">
+<strong>{{50 | random(20, 10)}}</strong>
+</pre><p>Concatenating a list to the string using filters: Jinja2 filters allow you to concatenate a list to a string using the join filter. This filter takes a separator as an extra argument. If you do not specify a separator, then the filter will combine all elements of the list together without any separation. Consider the following example:</p><pre class="programlisting">
+<strong>{{["This", "is", "a", "string"] | join(" ")}}</strong>
+</pre><div><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">The preceding filter will result in a This is a string output. You can specify any separator you want instead of a white space.</li><li class="listitem" style="list-style-type: disc">Encoding or decoding data using filters: You can encode or decode data using filters as follows:</li><li class="listitem" style="list-style-type: disc">Encode your data to <code class="literal">base64</code> using the <code class="literal">b64encode</code> filter:</li></ul></div><pre class="programlisting">
+<strong>      {{variable | b64encode}}</strong>
+</pre><div><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">Decode an encoded <code class="literal">base64</code> string using the <code class="literal">b64decode</code> filter:</li></ul></div><pre class="programlisting">
+<strong>      {{"aGFoYWhhaGE=" | b64decode}}</strong>
+</pre></div></div>
+<div><div><div><div><h1 class="title"><a id="ch04lvl1sec41"/>Security management</h1></div></div></div><p>The last section in this chapter is about security management. If you tell your sysadmin that you want to introduce a new feature or a tool, one of the first questions they would ask you would be; "what security feature(s) are present with your tool?". We'll try to answer these questions from an Ansible perspective in this section. Let's look at them in greater detail.</p><div><div><div><div><h2 class="title"><a id="ch04lvl2sec46"/>Using Ansible vault</h2></div></div></div><p>Ansible vault is an exciting feature of Ansible that was introduced in Ansible version 1.5. This allows you to have encrypted passwords as part of your source code. A recommended practice is to NOT have passwords (as well as any other sensitive information such as private keys, SSL certificates, and so on.) in plain text as part of your repository because anyone who checks out your repository can view your passwords. Ansible vault can help you to secure your confidential information by encrypting and decrypting them on your behalf.</p><p>Ansible vault supports an interactive mode in which it will ask you for the password, or a non-interactive mode where you will have to specify the file containing the password and Ansible vault will read it directly.</p><p>For these examples, we will use the password <code class="literal">ansible</code>, so let's start creating a hidden file called <code class="literal">.password</code> with the string <code class="literal">ansible</code> in it. To do so, let's execute:</p><pre class="programlisting">
+<strong>echo 'ansible' &gt; .password</strong>
+</pre><p>We can now create an <code class="literal">ansible-vault</code> both in the interactive and non-interactive modes. If we want to do it in interactive mode, we will need to execute:</p><pre class="programlisting">
+<strong>ansible-vault create secret.yaml</strong>
+</pre><p>Ansible will ask us for the vault password and then confirm it. Later it will open the default text editor (in my case <strong>vi</strong>) to add the content in clear. I have used the password <code class="literal">ansible</code> and the text is This is a password protected file. We can now save and close the editor and check that <code class="literal">ansible-vault</code> has encrypted our content, in fact if we run:</p><pre class="programlisting">
+<strong>cat secret.yaml</strong>
+</pre><p>This will output the following:</p><pre class="programlisting">
+<strong>$ANSIBLE_VAULT;1.1;AES256</strong>
+<strong>66346431333933663461383331393763666538373163336536353335646532323135383630646366</strong>
+<strong>3432353561393533623764323961666639326132323331370a636363613032616664333039356565</strong>
+<strong>64643735626162646166313861366532323161646137333634333336393062303461343638333737</strong>
+<strong>6534326135326430390a643739336461616334313833313363343030666662653864353138666233</strong>
+<strong>38386266383866353836373036303339383962363362333364346432613062363830316330653866</strong>
+<strong>6431343764386132663066303761346532643632633432643861</strong>
+</pre><p>In the same way, we can invoke the <code class="literal">ansible-vault</code> command with the - <code class="literal">vault-password-file=VAULT_PASSWORD_FILE</code> option to specify our <code class="literal">.password</code> file. We can, for instance, edit our <code class="literal">secret.yaml</code> file with the command:</p><pre class="programlisting">
+<strong>ansible-vault --vault-password-file=.password edit secret.yaml</strong>
+</pre><p>This will open your default text editor where you'll be able to change the file as if it was a plain file. When you save the file, Ansible vault will perform the encryption before saving it, assuring the confidentiality of your content.</p><p>Sometimes you need to look at the content of a file but you don't want to open it in a text editor, so you usually use <code class="literal">cat</code> command. Ansible vault has a similar feature called <code class="literal">view</code>, so you can run:</p><pre class="programlisting">
+<strong>ansible-vault --vault-password-file=.password view secret.yaml</strong>
+</pre><p>Ansible vault allows you to decrypt a file, replacing its encrypted content with its plain text content. To do so, you can execute:</p><pre class="programlisting">
+<strong>ansible-vault --vault-password-file=.password decrypt secret.yaml</strong>
+</pre><p>At this point, we can the <code class="literal">cat</code> command on the <code class="literal">secret.yaml</code> file and the result is the following:</p><pre class="programlisting">
+<strong>This is a password protected file</strong>
+</pre><p>Ansible vault also gives you the capability to encrypt files that already exist. This is particularly useful if you want to develop all your files on a trusted machine (for instance your own local machine) in a clear text to improve your efficiency and then encrypt all sensible files afterward. To do so, you can execute:</p><pre class="programlisting">
+<strong>ansible-vault --vault-password-file=.password encrypt secret.yaml</strong>
+</pre><p>You can now check that the <code class="literal">secret.yaml</code> file is now encrypted again.</p><p>The last option of the Ansible vault is very important since it's a <code class="literal">rekey</code> function. This function will allow you to change the encryption key in a single command. You could perform the same operation with two commands (decrypt the <code class="literal">secret.yaml</code> file with the <strong>old key</strong> and then encrypt it with the <strong>new key</strong>) but being able to perform it in a single step has major advantages since the file in its clear-text form will not be stored on the disk at any moment of the process. To do so we need a file containing the new password (in our case, the file called <code class="literal">.newpassword</code> and containing the string <code class="literal">ansible2</code>), and you need to execute the following command:</p><pre class="programlisting">
+<strong>ansible-vault --vault-password-file=.password --new-vault-password-file=.newpassword rekey secret.yaml</strong>
+</pre><p>We can now use the <code class="literal">cat</code> command on to the <code class="literal">secret.yaml</code> file and we will see the following output:</p><pre class="programlisting">
+<strong>$ANSIBLE_VAULT;1.1;AES256</strong>
+<strong>63313864643434663939333132333537336362313133616430376463613833353366326662303832</strong>
+<strong>6431316131613033343266373137356166383564326234300a386236633635333939333234643435</strong>
+<strong>64353932383930613934343730386635333030373663313631646462613566313362313363393135</strong>
+<strong>3935613661373263330a316634333536653461356535383662376464656466623536363537386462</strong>
+<strong>31636637346538636161616632313866366365666361633138666134303433316665376237326162</strong>
+<strong>3638653738383830323430313161336465323264613634323434</strong>
+</pre><p>This is very different from the previous one we had.</p></div><div><div><div><div><h2 class="title"><a id="ch04lvl2sec47"/>Vaults and playbooks</h2></div></div></div><p>You can also use vaults with <code class="literal">ansible-playbook</code>. You'll need to decrypt the file on-the-fly using a command such as the following:</p><pre class="programlisting">
+<strong>$ ansible-playbook site.yml --vault-password-file .password</strong>
+</pre><p>There is yet another option that allows you to decrypt files using a script, which can then look up some other source and decrypt the file. This can also be a useful option to provide more security. However, make sure that the <code class="literal">get_password.py</code> script has executable permissions:</p><pre class="programlisting">
+<strong>$ ansible-playbook site.yml --vault-password-file ~/.get_password.py</strong>
+</pre><p>Before closing this chapter, I'd like to speak a little bit about the password file. This file needs to be present on the machine where you execute your playbooks, in a location and with permissions so that is readable by the user who is executing the playbook. You can create the <code class="literal">.password</code> file at startup. The '<code class="literal">.</code>' character in the <code class="literal">.password</code> filename is to make sure that the file is hidden by default when you look for it. This is not directly a security measure, but could help mitigate cases where an attacker does not know exactly what he is looking for.</p><p>The <code class="literal">.password</code> file content should be a password or key that is secure and accessible only to folks who have permission to run Ansible playbooks.</p><p>Finally, make sure that you're not encrypting every file that's available! Ansible vault should be used only for important information that needs to be secure.</p><div><div><h3 class="title"><a id="note22"/>Note</h3><p>Every time you'll save an encrypted file, no matter if changes have been applied or not, the file will be re-encrypted and therefore will change in encrypted content. This will cause your SCM tool to mark the file as modified.</p></div></div></div><div><div><div><div><h2 class="title"><a id="ch04lvl2sec48"/>Encrypting user passwords</h2></div></div></div><p>Ansible vault takes care of passwords that are checked in and helps you handle them while running Ansible playbooks or commands. However, when Ansible plays are run, at times you might need your users to enter passwords. You also want to make sure that these passwords don't appear in the comprehensive Ansible logs (the default location: <code class="literal">/var/log/ansible.log</code>) or on <code class="literal">stdout</code>.</p><p>Ansible uses <code class="literal">Passlib</code>, which is a password hashing library for Python, to handle encryption for prompted passwords. You can use any of the following algorithms supported by <code class="literal">Passlib</code>:</p><div><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc"><code class="literal">des_crypt</code>: DES Crypt</li><li class="listitem" style="list-style-type: disc"><code class="literal">bsdi_crypt</code>: BSDi Crypt</li><li class="listitem" style="list-style-type: disc"><code class="literal">bigcrypt</code>: BigCrypt</li><li class="listitem" style="list-style-type: disc"><code class="literal">crypt16</code>: Crypt16</li><li class="listitem" style="list-style-type: disc"><code class="literal">md5_crypt</code>: MD5 Crypt</li><li class="listitem" style="list-style-type: disc"><code class="literal">bcrypt</code>: BCrypt</li><li class="listitem" style="list-style-type: disc"><code class="literal">sha1_crypt</code>: SHA-1 Crypt</li><li class="listitem" style="list-style-type: disc"><code class="literal">sun_md5_crypt</code>: Sun MD5 Crypt</li><li class="listitem" style="list-style-type: disc"><code class="literal">sha256_crypt</code>: SHA-256 Crypt</li><li class="listitem" style="list-style-type: disc"><code class="literal">sha512_crypt</code>: SHA-512 Crypt</li><li class="listitem" style="list-style-type: disc"><code class="literal">apr_md5_crypt</code>: Apache's MD5-Crypt variant</li><li class="listitem" style="list-style-type: disc"><code class="literal">phpass</code>: PHPass' Portable Hash</li><li class="listitem" style="list-style-type: disc"><code class="literal">pbkdf2_digest</code>: Generic PBKDF2 Hashes</li><li class="listitem" style="list-style-type: disc"><code class="literal">cta_pbkdf2_sha1</code>: Cryptacular's PBKDF2 hash</li><li class="listitem" style="list-style-type: disc"><code class="literal">dlitz_pbkdf2_sha1</code>: Dwayne Litzenberger's PBKDF2 hash</li><li class="listitem" style="list-style-type: disc"><code class="literal">scram</code>: SCRAM Hash</li><li class="listitem" style="list-style-type: disc"><code class="literal">bsd_nthash</code>: FreeBSD's MCF-compatible <code class="literal">nthash</code> encoding</li></ul></div><p>Let's now see how encryption works with a variable prompt:</p><pre class="programlisting">    vars_prompt:
+    - name: ssh_password 
+      prompt: Enter ssh_password 
+      private: True 
+      encryption: md5_crypt 
+      confirm: True 
+      salt_size: 7 
+</pre><p>In the preceding snippet, <code class="literal">vars_prompt</code> is used to prompt users for some data. The <code class="literal">vars_prompt</code> is not a task but is another section at the same level as the <code class="literal">tasks:</code> one.</p><p>The <code class="literal">name</code> module indicates the actual variable name where Ansible will store the user password, as shown in the following command:</p><pre class="programlisting">
+<strong>name: ssh_password</strong>
+</pre><p>We are using the <code class="literal">prompt</code> utility to prompt users for the password as follows:</p><pre class="programlisting">
+<strong>prompt: Enter ssh password</strong>
+</pre><p>We are explicitly asking Ansible to hide the password from <code class="literal">stdout</code> by using <code class="literal">private</code> module; this works like any other password prompt on a Unix system. The <code class="literal">private</code> module is accessed as follows:</p><pre class="programlisting">
+<strong>private: True</strong>
+</pre><p>We are using the <code class="literal">md5_crypt</code> algorithm over here with a salt size of <code class="literal">7</code>:</p><pre class="programlisting">
+<strong>encrypt: md5_crypt</strong>
+<strong>salt_size: 7</strong>
+</pre><p>Moreover, Ansible will prompt for the password twice and compare both passwords:</p><pre class="programlisting">
+<strong>confirm: True</strong>
+</pre></div><div><div><div><div><h2 class="title"><a id="ch04lvl2sec49"/>Hiding passwords</h2></div></div></div><p>Ansible, by default, filters output that contains the <code class="literal">login_password</code> key, the <code class="literal">password</code> key, and the <code class="literal">user:pass</code> format. For example, if you are passing a password in your module using <code class="literal">login_password</code> or the <code class="literal">password</code> key, then Ansible will replace your password with <code class="literal">VALUE_HIDDEN</code>. Let's now see how you can hide a password using the <code class="literal">password</code> key:</p><pre class="programlisting">
+<strong>- name: Running a script</strong>
+<strong>  shell: script.sh</strong>
+<strong>    password: my_password</strong>
+</pre><p>In the preceding <code class="literal">shell</code> task, we use the <code class="literal">password</code> key to pass passwords. This will allow Ansible to hide it from <code class="literal">stdout</code> and its log file.</p><p>Now, when you run the preceding task in the <em>verbose</em> mode, you should not see your <code class="literal">mypass</code> password; instead Ansible, with <code class="literal">VALUE_HIDDEN</code>, will replace it as follows:</p><pre class="programlisting">
+<strong>REMOTE_MODULE command script.sh password=VALUE_HIDDEN #USE_SHELL</strong>
+</pre><div><div><h3 class="title"><a id="note23"/>Note</h3><p>Ansible will protect the strings you declared as password even if they are being used in a different context. For instance, if you have another variable that contains the string <code class="literal">my_password</code>, if you are going to print it, <code class="literal">HIDDEN_VALUE</code> will appear, even if that specific variable has not been declared as the password.</p></div></div></div><div><div><div><div><h2 class="title"><a id="ch04lvl2sec50"/>Using no_log</h2></div></div></div><p>Ansible will hide your passwords only if you are using a specific set of keys. However, this might not be the case every time; moreover, you might also want to hide some other confidential data. The <code class="literal">no_log</code> feature of Ansible will hide your entire task from logging it to the <code class="literal">syslog</code> file. It will still print your task on <code class="literal">stdout</code> and log it to other Ansible logfiles.</p><div><div><h3 class="title"><a id="note24"/>Note</h3><p>At the time of writing this book, Ansible did not support hiding tasks from <code class="literal">stdout</code> using <code class="literal">no_log</code>.</p></div></div><p>Another way to prevent Ansible from logging is to set in the <code class="literal">ansible.cfg</code> file, in the <code class="literal">[defaults]</code> section, <code class="literal">log_path</code> with the value <code class="literal">/dev/null</code> so that all logs are saved in <code class="literal">/dev/null</code>, and therefore lost.</p><p>Let's now see how you can hide an entire task with <code class="literal">no_log</code> as follows:</p><pre class="programlisting">    - name: Running a script
+      shell: script.sh
+        password: my_password
+      no_log: True
+</pre><p>By passing <code class="literal">no_log</code>: True to your task, Ansible will prevent the entire task from hitting syslog.</p></div></div>
+<div><div><div><div><h1 class="title"><a id="ch04lvl1sec42"/>Summary</h1></div></div></div><p>In this chapter, we have seen a very large number of Ansible features. We started with <code class="literal">local_actions</code> for performing operations on a machine, then we moved to the delegation for performing the task on a third machine. We then moved to conditionals and include for making playbooks more flexible. We learned about roles and how they can help you keep your system aligned and learned how to organize an Ansible repository properly, making the most of Ansible and Git. Later, we covered execution strategies and Jinja filters for more flexible executions.</p><p>We ended this chapter with Ansible vault and many other tips to make your Ansible execution safer.</p><p>In the next chapter, we will be looking at how to use Ansible to create infrastructures and more specifically, how to do it using the cloud providers, AWS and DigitalOcean.</p></div></body></html>

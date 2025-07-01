@@ -1,0 +1,1022 @@
+<html><head></head><body><div><div><div><div><h1 class="title"><a id="ch09"/>Chapter 9. Complex Environments</h1></div></div></div><p>So far, we've seen how you can develop playbooks and test them. The final aspect is how to release playbooks into production. In most cases, you will have multiple environments to deal with before the playbook is released into production. This is similar to software that your developers have written. Many companies have multiple environments and usually your playbook will follow these steps:</p><div><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">Development environment</li><li class="listitem" style="list-style-type: disc">Testing environment</li><li class="listitem" style="list-style-type: disc">Staging environment</li><li class="listitem" style="list-style-type: disc">Production</li></ul></div><p>Some companies name these environments in different ways, and some companies have additional environments such as certification where all software has to be certified before it can go to production.</p><p>When you write your playbooks and set up roles, we strongly recommend that you keep in mind the notion of the environments right from the start. It might be worthwhile to talk to your software and operations teams to figure out exactly how many environments your setup has to cater to.</p><p>We'll list down a couple of approaches with examples that you can follow in your environment:</p><div><div><div><div><h1 class="title"><a id="ch09lvl1sec69"/>Code based on the Git branch</h1></div></div></div><p>Let's assume you have four environments to take care of, which are as follows:</p><div><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">Development</li><li class="listitem" style="list-style-type: disc">Testing</li><li class="listitem" style="list-style-type: disc">Stage</li><li class="listitem" style="list-style-type: disc">Production</li></ul></div><p>In the Git branch-based method, you will have one environment per branch. You will always make changes to <strong>Development</strong> first, and then promote those changes to <strong>Testing</strong> (merge or cherry-pick, and tag commits in Git), <strong>Stage</strong>, and <strong>Production</strong>. In this approach, you will hold one single inventory file, one set of variable files, and finally, a bunch of folders dedicated to roles and playbooks per branch.</p></div></div>
+<div><div><div><div><h1 class="title"><a id="ch09lvl1sec70"/>A single stable branch with multiple folders</h1></div></div></div><p>In this approach, you will always maintain the dev and master branches. The initial code is committed to the dev branch, and once stable, you will promote it to the master branch. The same roles and playbooks that exist in the master branch will run across all environments. On the other hand, you will have separate folders for each of your environments. Let's look at an example. We'll show how you can have a separate configuration and an inventory for two environments: stage and production. You can extend it for your scenario to fit all the environments you use. Let's first look at the playbook in <code class="literal">playbooks/variables.yaml</code> that will run across these multiple environments and has the following content:</p><pre class="programlisting">- hosts: web &#13;
+  user: root &#13;
+  tasks: &#13;
+  - name: Print environment name &#13;
+    debug: &#13;
+      var: env &#13;
+  - name: Print db server url &#13;
+    debug: &#13;
+      var: db_url &#13;
+  - name: Print domain url &#13;
+    debug: &#13;
+      var: domain &#13;
+- hosts: db &#13;
+  user: root &#13;
+  tasks: &#13;
+  - name: Print environment name &#13;
+    debug: &#13;
+      var: env &#13;
+  - name: Print database username &#13;
+    debug: &#13;
+      var: db_user &#13;
+  - name: Print database password &#13;
+    debug: &#13;
+      var: db_pass &#13;
+</pre><p>As you can see, there are two sets of tasks in this plays:</p><div><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">Tasks that run against DB servers</li><li class="listitem" style="list-style-type: disc">Tasks that run against web servers</li></ul></div><p>There is also an extra task to print the environment name that is common to all servers in a particular environment. We will also have two different inventory files.</p><p>The first one will be called <code class="literal">inventory/production</code> with the following content:</p><pre class="programlisting">[web] &#13;
+ws01.fale.io &#13;
+ws02.fale.io &#13;
+ &#13;
+[db] &#13;
+db01.fale.io &#13;
+ &#13;
+[production:children] &#13;
+db &#13;
+web &#13;
+</pre><p>The second one will be called <code class="literal">inventory/staging</code> with the following content:</p><pre class="programlisting">[web] &#13;
+ws01.stage.fale.io &#13;
+ws02.stage.fale.io &#13;
+ &#13;
+[db] &#13;
+db01.stage.fale.io &#13;
+ &#13;
+[staging:children] &#13;
+db &#13;
+web &#13;
+</pre><p>As you can see, we have two machines for the <code class="literal">web</code> section and one for the <code class="literal">db</code> in each environment. Further, we have a different set of machines for stage and production environments. The additional section, <code class="literal">[ENVIRONMENT:children]</code>, allows you to create a group of groups. This would mean that any variables that are defined in the <code class="literal">ENVIRONMENT</code> section will apply to both the <code class="literal">db</code> and <code class="literal">web</code> groups, unless they're overridden in the individual sections, respectively. The next interesting part would be to look at variable values for each of the environments and see how they are separated out in each environment.</p><p>Let's start with the variables that will be the same for all our environments, located in <code class="literal">inventory/group_vars/all</code>:</p><pre class="programlisting">db_user: mysqluser &#13;
+</pre><p>The only variable that is the same for both our environments is the <code class="literal">db_user</code>.</p><p>We can now look at the production-specific variables, located in <code class="literal">inventory/group_vars/production</code>:</p><pre class="programlisting">env: production &#13;
+domain: fale.io &#13;
+db_url: db.fale.io &#13;
+db_pass: this_is_a_safe_password &#13;
+</pre><p>If we now look at the stage-specific variables located in <code class="literal">inventory/group_vars/staging</code>, we will find the same variables we had in the production one, but with different values:</p><pre class="programlisting">env: staging &#13;
+domain: stage.fale.io &#13;
+db_url: db.stage.fale.io &#13;
+db_pass: this_is_an_unsafe_password &#13;
+</pre><p>We can now validate that we receive the expected results. First we are going to run against the staging environment:</p><pre class="programlisting">
+<strong>ansible-playbook -i staging playbooks/variables.yaml</strong>
+</pre><p>And we should receive an output similar to the following:</p><pre class="programlisting">
+<strong>PLAY [web] *******************************************************&#13;
+&#13;
+ &#13;
+TASK [setup] ***************************************************** &#13;
+ok: [ws02.stage.fale.io] &#13;
+ok: [ws01.stage.fale.io] &#13;
+&#13;
+ &#13;
+TASK [Print environment name] ************************************ &#13;
+ok: [ws01.stage.fale.io] =&gt; { &#13;
+    "env": "staging" &#13;
+} &#13;
+ok: [ws02.stage.fale.io] =&gt; { &#13;
+    "env": "staging" &#13;
+} &#13;
+&#13;
+ &#13;
+TASK [Print db server url] *************************************** &#13;
+ok: [ws01.stage.fale.io] =&gt; { &#13;
+    "db_url": "db.stage.fale.io" &#13;
+} &#13;
+ok: [ws02.stage.fale.io] =&gt; { &#13;
+    "db_url": "db.stage.fale.io" &#13;
+} &#13;
+&#13;
+ &#13;
+TASK [Print domain url] ****************************************** &#13;
+ok: [ws01.stage.fale.io] =&gt; { &#13;
+    "domain": "stage.fale.io" &#13;
+} &#13;
+ok: [ws02.stage.fale.io] =&gt; { &#13;
+    "domain": "stage.fale.io" &#13;
+} &#13;
+&#13;
+ &#13;
+PLAY [db] ******************************************************** &#13;
+&#13;
+ &#13;
+TASK [setup] ***************************************************** &#13;
+ok: [db01.stage.fale.io] &#13;
+&#13;
+ &#13;
+TASK [Print environment name] ************************************ &#13;
+ok: [db01.stage.fale.io] =&gt; { &#13;
+    "env": "staging" &#13;
+} &#13;
+&#13;
+ &#13;
+TASK [Print database username] *********************************** &#13;
+ok: [db01.stage.fale.io] =&gt; { &#13;
+    "db_user": "mysqluser" &#13;
+} &#13;
+&#13;
+ &#13;
+TASK [Print database password] ********************************** &#13;
+ok: [db01.stage.fale.io] =&gt; { &#13;
+    "db_pass": "this_is_an_unsafe_password" &#13;
+} &#13;
+&#13;
+ &#13;
+PLAY RECAP ******************************************************* &#13;
+db01.stage.fale.io: ok=4    changed=0    unreachable=0    failed=0 &#13;
+ws01.stage.fale.io: ok=4    changed=0    unreachable=0    failed=0 &#13;
+ws02.stage.fale.io: ok=4    changed=0    unreachable=0    failed=0</strong>
+</pre><p>We can now run against the production environment:</p><pre class="programlisting">
+<strong>ansible-playbook -i production playbooks/variables.yaml</strong>
+</pre><p>We will receive the following result:</p><pre class="programlisting">
+<strong>PLAY [web] *******************************************************&#13;
+&#13;
+</strong>
+<strong>TASK [setup] *****************************************************</strong>
+<strong>ok: [ws02.fale.io]</strong>
+<strong>ok: [ws01.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [Print environment name] ************************************</strong>
+<strong>ok: [ws01.fale.io] =&gt; {</strong>
+<strong>    "env": "production"</strong>
+<strong>}</strong>
+<strong>ok: [ws02.fale.io] =&gt; {</strong>
+<strong>    "env": "production"</strong>
+<strong>}&#13;
+&#13;
+</strong>
+<strong>TASK [Print db server url] ***************************************</strong>
+<strong>ok: [ws01.fale.io] =&gt; {</strong>
+<strong>    "db_url": "db.fale.io"</strong>
+<strong>}</strong>
+<strong>ok: [ws02.fale.io] =&gt; {</strong>
+<strong>    "db_url": "db.fale.io"</strong>
+<strong>}&#13;
+&#13;
+</strong>
+<strong>TASK [Print domain url] ******************************************</strong>
+<strong>ok: [ws01.fale.io] =&gt; {</strong>
+<strong>    "domain": "fale.io"</strong>
+<strong>}</strong>
+<strong>ok: [ws02.fale.io] =&gt; {</strong>
+<strong>    "domain": "fale.io"</strong>
+<strong>}&#13;
+&#13;
+</strong>
+<strong>PLAY [db] ********************************************************&#13;
+&#13;
+</strong>
+<strong>TASK [setup] *****************************************************</strong>
+<strong>ok: [db01.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [Print environment name] ************************************</strong>
+<strong>ok: [db01.fale.io] =&gt; {</strong>
+<strong>    "env": "production"</strong>
+<strong>}&#13;
+&#13;
+</strong>
+<strong>TASK [Print database username] ***********************************</strong>
+<strong>ok: [db01.fale.io] =&gt; {</strong>
+<strong>    "db_user": "mysqluser"</strong>
+<strong>}&#13;
+&#13;
+</strong>
+<strong>TASK [Parint database password] **********************************</strong>
+<strong>ok: [db01.fale.io] =&gt; {</strong>
+<strong>    "db_pass": "this_is_a_safe_password"</strong>
+<strong>}&#13;
+&#13;
+</strong>
+<strong>PLAY RECAP *******************************************************</strong>
+<strong>db01.fale.io      : ok=4    changed=0    unreachable=0    failed=0</strong>
+<strong>ws01.fale.io      : ok=4    changed=0    unreachable=0    failed=0</strong>
+<strong>ws02.fale.io      : ok=4    changed=0    unreachable=0    failed=0</strong>
+</pre><p>You can see that the Ansible run picked up all the relevant variables defined for the staging environment.</p><p>If you're using this approach to gain a stable master branch for multiple environments, it's best to use an amalgamation of environment-specific directories, <code class="literal">group_vars</code>, and inventory groups to tackle the scenario.</p></div>
+<div><div><div><div><h1 class="title"><a id="ch09lvl1sec71"/>Software distribution strategy</h1></div></div></div><p>Deploying applications is probably one of the most complex tasks in the <strong>Information and Communication Technology</strong> (<strong>ICT</strong>) field. This is mainly caused by the fact that it often requires changing the state of the majority of machines that are somehow part of that application. In fact, often you find yourself having to change the state of load balancers, distribution servers, application servers, and database servers all at the same time during a deployment. New technologies, like containers, are trying to make those operations simpler, but often is not easy or possible to just move a legacy application to a container.</p><p>What we are now going to see are the various software distribution strategies and how Ansible can help with each one.</p><div><div><div><div><h2 class="title"><a id="ch09lvl2sec69"/>Copying files from the local machine</h2></div></div></div><p>This is probably the oldest strategy to distribute software. The idea is to have the files on the local machine (often used to develop the code) and as soon as the change is made, a copy of the file is put on the server (usually via FTP). This way of deploying code was often used for web development, where the code (usually in PHP) does not need any compilation.</p><p>This distribution strategy should be avoided due to its multiple problems:</p><div><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">Very hard to rollback</li><li class="listitem" style="list-style-type: disc">Impossible to track changes to the various deployments</li><li class="listitem" style="list-style-type: disc">No deployment history</li><li class="listitem" style="list-style-type: disc">Easy to make errors during the deployment</li></ul></div><p>Although this distribution strategy can be very easily automated with Ansible, I strongly suggest you move immediately to a different strategy that allows you to have a safer distribution strategy.</p></div><div><div><div><div><h2 class="title"><a id="ch09lvl2sec70"/>Revision control system with branches</h2></div></div></div><p>Many companies are using this technique to distribute their software, mainly for uncompiled software. The idea behind this technique is to set up your server to use a local copy of your code repository. With SVN this was possible but not very easy to manage properly, while Git allowed a simplification of this technique, making it very popular.</p><p>This technique has many advantages over the one we have just seen, the main ones are:</p><div><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">Easy rollbacks</li><li class="listitem" style="list-style-type: disc">Very easy to obtain the history of changes</li><li class="listitem" style="list-style-type: disc">Very easy deployments (mainly if Git is used)</li></ul></div><p>On the other hand, this technique, still has multiple disadvantages:</p><div><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">No deployment history</li><li class="listitem" style="list-style-type: disc">Hard for compiled software</li><li class="listitem" style="list-style-type: disc">Possible security problems</li></ul></div><p>I'd like to discuss the possible security problems you can encounter with this technique a little bit more. What can be very tempting, is to download your Git repository directly in the folder that you use to distribute the content, so if it's a web server, the <code class="literal">/var/www/</code> folder. This has obvious advantages since to deploy you'll only need to perform a <code class="literal">git pull</code>. The disadvantage is that Git will create the <code class="literal">/var/www/.git</code> folder which will contain your entire Git repository (history included) and, if not properly protected, will be freely downloadable by anyone.</p><div><div><h3 class="title"><a id="note47"/>Note</h3><p>About 1% of Alexa's top 1 million websites have the Git folder publicly accessible, so be very careful if you want to use this distribution strategy.</p></div></div></div><div><div><div><div><h2 class="title"><a id="ch09lvl2sec71"/>Revision control system with tags</h2></div></div></div><p>Another way of using revision control systems that is a little bit more complex but have some advantages, is leveraging the tagging system. This method requires to tag every time a new deployment has to be done and then checkout the specific tag on the server.</p><p>This has all the advantages of the previous method, with the addition of the deployment history. The compiled software problem and possible security problems are the same as in the previous method.</p></div><div><div><div><div><h2 class="title"><a id="ch09lvl2sec72"/>RPM packages</h2></div></div></div><p>A very common way to deploy software (mainly for compiled applications, but also advantageous for non-compiled applications) is using some kind of packaging system. Some languages, like Java, have an included system (the WAR, in Java case), but there are also packaging systems that can be used for any kind of applications, such as RPM. The disadvantage of these systems is that they are a little bit more complex than the previous methods, but those systems can grant a higher level of security as well as versioning. Also, these systems are easily injectable in a CI/CD pipeline, so the real complexity is much lower than what it could seem at first sight, since the CI/CD pipeline will take care of the building itself.</p></div></div>
+<div><div><div><div><h1 class="title"><a id="ch09lvl1sec72"/>Preparing the environment</h1></div></div></div><p>To see how we can deploy the code in the various ways we talked about in the previous pages, we will need an environment, and obviously we are going to create it using Ansible. First of all, to ensure that our roles are properly loaded, we need the <code class="literal">ansible.cfg</code> file with the following content:</p><pre class="programlisting">[defaults] &#13;
+roles_path = roles &#13;
+</pre><p>Then we need the <code class="literal">playbooks/firstrun.yaml</code> to ensure that we can configure our machines with a basic configuration, with the following content:</p><pre class="programlisting">- hosts: all &#13;
+  user: root &#13;
+  tasks: &#13;
+  - name: Ensure ansible user exists &#13;
+    user: &#13;
+      name: ansible &#13;
+      state: present &#13;
+      comment: Ansible &#13;
+  - name: Ensure ansible user accepts the SSH key &#13;
+    authorized_key: &#13;
+      user: ansible &#13;
+      key: https://github.com/fale.keys &#13;
+      state: present &#13;
+  - name: Ensure the ansible user is sudoer with no password required &#13;
+    lineinfile: &#13;
+      dest: /etc/sudoers &#13;
+      state: present &#13;
+      regexp: '^ansible ALL\=' &#13;
+      line: 'ansible ALL=(ALL) NOPASSWD:ALL' &#13;
+      validate: 'visudo -cf %s' &#13;
+</pre><p>The <code class="literal">playbooks/groups/web.yaml</code> will also need to be created to allow us to properly bootstrap our web servers:</p><pre class="programlisting">- hosts: web &#13;
+  user: ansible &#13;
+  roles: &#13;
+  - common &#13;
+  - webserver &#13;
+</pre><p>As you can imagine from the previous file content, we will need to create the roles: <code class="literal">common</code> and <code class="literal">webserver</code> which are very similar to the ones we created in <a class="link" href="ch04.html" title="Chapter 4.  Handling Complex Deployment">Chapter 4</a>, <em>Handling Complex Deployment</em>. We start with the <code class="literal">roles/common/tasks/main.yaml</code> file with the following content:</p><pre class="programlisting">- name: Ensure EPEL is enabled&#13;
+   yum:&#13;
+     name: epel-release&#13;
+     state: present&#13;
+   become: True&#13;
+- name: Ensure needed packages are present&#13;
+   yum:&#13;
+     name: '{{ item }}'&#13;
+     state: present&#13;
+   become: True&#13;
+   with_items:&#13;
+   - libsemanage-python&#13;
+   - libselinux-python&#13;
+   - ntp&#13;
+   - firewalld&#13;
+- name: Ensure we have last version of every package&#13;
+   yum:&#13;
+     name: "*"&#13;
+     state: latest&#13;
+   become: True&#13;
+- name: Ensure the timezone is set to UTC&#13;
+   file:&#13;
+     src: /usr/share/zoneinfo/GMT&#13;
+     dest: /etc/localtime&#13;
+     state: link&#13;
+   become: True&#13;
+- name: Ensure the NTP service is running and enabled&#13;
+   service:&#13;
+   name: ntpd&#13;
+   state: started&#13;
+   enabled: True&#13;
+ become: True&#13;
+- name: Ensure FirewallD is running&#13;
+   service:&#13;
+     name: firewalld&#13;
+     state: started&#13;
+     enabled: True&#13;
+   become: True&#13;
+- name: Ensure SSH can pass the firewall&#13;
+   firewalld:&#13;
+     service: ssh&#13;
+     state: enabled&#13;
+     permanent: True&#13;
+     immediate: True&#13;
+   become: True&#13;
+- name: Ensure the MOTD file is present and updated&#13;
+   template:&#13;
+     src: motd&#13;
+     dest: /etc/motd&#13;
+     owner: root&#13;
+     group: root&#13;
+     mode: 0644&#13;
+   become: True&#13;
+- name: Ensure the hostname is the same of the inventory&#13;
+   hostname:&#13;
+     name: "{{ inventory_hostname }}"&#13;
+   become: True&#13;
+</pre><p>It's <code class="literal">motd</code> template is in <code class="literal">roles/common/templates/motd</code>:</p><pre class="programlisting">                This system is managed by Ansible &#13;
+  Any change done on this system could be overwritten by Ansible &#13;
+ &#13;
+OS: {{ ansible_distribution }} {{ ansible_distribution_version }} &#13;
+Hostname: {{ inventory_hostname }} &#13;
+eth0 address: {{ ansible_eth0.ipv4.address }} &#13;
+ &#13;
+            All connections are monitored and recorded &#13;
+    Disconnect IMMEDIATELY if you are not an authorized user &#13;
+</pre><p>We can now move to the <code class="literal">webserver</code> role, more specifically to the <code class="literal">roles/webserver/tasks/main.yaml</code> file:</p><pre class="programlisting">- name: Ensure the HTTPd package is installed &#13;
+  yum: &#13;
+    name: httpd &#13;
+    state: present &#13;
+  become: True &#13;
+- name: Ensure the PHP is installed &#13;
+  yum: &#13;
+    name: '{{ item }}'&#13;
+    state: present &#13;
+  become: True &#13;
+  with_items:&#13;
+ - git&#13;
+ - php &#13;
+- name: Ensure the HTTPd service is enabled and running &#13;
+  service: &#13;
+    name: httpd &#13;
+    state: started &#13;
+    enabled: True &#13;
+  become: True &#13;
+- name: Ensure HTTP can pass the firewall &#13;
+  firewalld: &#13;
+    service: http &#13;
+    state: enabled &#13;
+    permanent: True &#13;
+    immediate: True &#13;
+  become: True &#13;
+- name: Ensure HTTPd configuration is updated &#13;
+  copy: &#13;
+    src: website.conf &#13;
+    dest: /etc/httpd/conf.d &#13;
+  become: True &#13;
+  notify: Restart HTTPd &#13;
+</pre><p>We also need to create the handler in <code class="literal">roles/webserver/handlers/main.yaml</code> with the content:</p><pre class="programlisting">- name: Restart HTTPd &#13;
+  service: &#13;
+    name: httpd &#13;
+    state: restarted &#13;
+  become: True &#13;
+</pre><p>Lastly, we need to touch the <code class="literal">roles/webserver/files/website.conf</code> file, leaving it empty for now, but it needs to exist.</p><p>We can now provision a couple of CentOS machines (I provisioned <code class="literal">ws01.fale.io</code> and <code class="literal">ws02.fale.io</code>) and ensure that the inventory is right. We can also run the <code class="literal">firstrun.yaml</code> playbook to ensure that the Ansible user is present and properly configured:</p><pre class="programlisting">
+<strong>ansible-playbook -i inventory/production playbooks/firstrun.yaml</strong>
+</pre><p>The output you should receive is the following:</p><pre class="programlisting">
+<strong>PLAY [localhost] *************************************************&#13;
+&#13;
+</strong>
+<strong>PLAY [all] *******************************************************&#13;
+</strong>
+<strong>TASK [setup] *****************************************************</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [Ensure ansible user exists] ********************************</strong>
+<strong>changed: [ws01.fale.io]</strong>
+<strong>changed: [ws02.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [Ensure ansible user accepts the SSH key] *******************</strong>
+<strong>changed: [ws01.fale.io]</strong>
+<strong>changed: [ws02.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [Ensure the ansible user is sudoer with no password required]</strong>
+<strong>changed: [ws01.fale.io]</strong>
+<strong>changed: [ws02.fale.io]&#13;
+&#13;
+</strong>
+<strong>PLAY RECAP *******************************************************</strong>
+<strong>ws01.fale.io      : ok=4    changed=3    unreachable=0    failed=0</strong>
+<strong>ws02.fale.io      : ok=4    changed=3    unreachable=0    failed=0</strong>
+</pre><p>We can now configure those machines running their group playbook:</p><pre class="programlisting">
+<strong>ansible-playbook -i inventory/production playbooks/groups/web.yaml</strong>
+</pre><p>We will receive the following output:</p><pre class="programlisting">
+<strong>PLAY [web] *******************************************************&#13;
+&#13;
+</strong>
+<strong>TASK [setup] *****************************************************</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]</strong>
+<strong>    ....</strong>
+<strong>PLAY RECAP *******************************************************</strong>
+<strong>ws01.fale.io      : ok=20   changed=14   unreachable=0    failed=0</strong>
+<strong>ws02.fale.io      : ok=20   changed=14   unreachable=0    failed=0</strong>
+</pre><p>We can now point our browser to our nodes on port <code class="literal">80</code> to check that the HTTPd page is displayed as expected.</p></div>
+<div><div><div><div><h1 class="title"><a id="ch09lvl1sec73"/>Deploying a web app with revision control systems</h1></div></div></div><p>For this example, we are going to deploy a simple PHP application that will be composed of only a single PHP page. The source is available on the following repository: https://github.com/Fale/demo-php-app.</p><p>To deploy it, we will need the following code placed in <code class="literal">playbooks/manual/rcs_deploy.yaml</code>:</p><pre class="programlisting">- hosts: web &#13;
+  user: ansible &#13;
+  tasks: &#13;
+  - name: Install or update website &#13;
+    git: &#13;
+      repo: https://github.com/Fale/demo-php-app.git &#13;
+      dest: /var/www/application &#13;
+    become: True &#13;
+</pre><p>We can now run the <strong>deployer</strong> with the following command:</p><pre class="programlisting">
+<strong>ansible-playbook -i inventory/production playbooks/manual/rcs_deploy.yaml</strong>
+</pre><p>This is the expected result:</p><pre class="programlisting">
+<strong>PLAY [web] *******************************************************&#13;
+&#13;
+</strong>
+<strong>TASK [setup] *****************************************************</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]</strong>
+<strong>    ....&#13;
+</strong>
+<strong>PLAY RECAP *******************************************************</strong>
+<strong>ws01.fale.io      : ok=2    changed=1    unreachable=0    failed=0</strong>
+<strong>ws02.fale.io      : ok=2    changed=1    unreachable=0    failed=0</strong>
+</pre><p>At the moment, our application is not yet reachable since we have no HTTPd rule for that folder. To achieve this, we will need to change the <code class="literal">roles/webserver/files/website.conf</code> file with the following content:</p><pre class="programlisting">&lt;VirtualHost *:80&gt; &#13;
+    ServerName app.fale.io &#13;
+    DocumentRoot /var/www/application &#13;
+    &lt;Directory /var/www/application&gt; &#13;
+        Options None &#13;
+    &lt;/Directory&gt; &#13;
+    &lt;DirectoryMatch ".git*"&gt; &#13;
+        Require all denied &#13;
+    &lt;/DirectoryMatch&gt; &#13;
+&lt;/VirtualHost&gt; &#13;
+</pre><p>As you can see, we are just displaying this application to the users reaching our server with the <code class="literal">app.fale.io</code> URL and not to everyone. This will ensure that all your users will have a consistent experience. Also, you can see that we are blocking all access to the <code class="literal">.git</code> folder (and all its content). This is needed for security reasons we mentioned earlier in the chapter.</p><p>We can now re-run the web playbook to ensure that our HTTPd configuration gets propagated with:</p><pre class="programlisting">
+<strong>ansible-playbook -i inventory/production playbooks/groups/web.yaml</strong>
+</pre><p>This is the result we are going to receive:</p><pre class="programlisting">
+<strong>PLAY [web] *******************************************************&#13;
+&#13;
+</strong>
+<strong>TASK [setup] *****************************************************</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [common : Ensure EPEL is enabled] ***************************</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [common : Ensure libselinux-python is present] **************</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [common : Ensure libsemanage-python is present] *************</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [common : Ensure we have last version of every package] *****</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [common : Ensure NTP is installed] **************************</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [common : Ensure the timezone is set to UTC] ****************</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [common : Ensure the NTP service is running and enabled] ****</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [common : Ensure FirewallD is installed] ********************</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [common : Ensure FirewallD is running] **********************</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [common : Ensure SSH can pass the firewall] *****************</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [common : Ensure the MOTD file is present and updated] ******</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [common : Ensure the hostname is the same of the inventory] *</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [webserver : Ensure the HTTPd package is installed] *********</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [webserver : Ensure the PHP is installed] *******************</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [webserver : Ensure git is installed] ***********************</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [webserver : Ensure the HTTPd service is enabled and running]</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [webserver : Ensure HTTP can pass the firewall] *************</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [webserver : Ensure HTTPd configuration is updated] *********</strong>
+<strong>changed: [ws01.fale.io]</strong>
+<strong>changed: [ws02.fale.io]&#13;
+&#13;
+</strong>
+<strong>RUNNING HANDLER [webserver : Restart HTTPd] **********************</strong>
+<strong>changed: [ws01.fale.io]</strong>
+<strong>changed: [ws02.fale.io]&#13;
+&#13;
+</strong>
+<strong>PLAY RECAP *******************************************************</strong>
+<strong>ws01.fale.io      : ok=20   changed=2    unreachable=0    failed=0</strong>
+<strong>ws02.fale.io      : ok=20   changed=2    unreachable=0    failed=0</strong>
+</pre><p>You can now check and see that everything works properly.</p></div>
+<div><div><div><div><h1 class="title"><a id="ch09lvl1sec74"/>Deploying a web app with RPM packages</h1></div></div></div><p>In order to deploy an RPM package, we will need to create it in the first place. To do so, the first thing we need is a Spec file.</p><div><div><div><div><h2 class="title"><a id="ch09lvl2sec73"/>Creating a Spec file</h2></div></div></div><p>The first thing to do is to create a <strong>Specifics</strong> (<strong>Spec</strong>) file, which is a recipe for instructing <code class="literal">rpmbuild</code> on how to actually create the RPM package. We are going to locate the Spec file in <code class="literal">spec/demo-php-app.spec</code> and put the following content into it:</p><pre class="programlisting">%define debug_package %{nil} &#13;
+%global commit0 b49f595e023e07a8345f47a3ad62a6f50f03121e &#13;
+%global shortcommit0 %(c=%{commit0}; echo ${c:0:7}) &#13;
+ &#13;
+Name:       demo-php-app &#13;
+Version:    0 &#13;
+Release:    1%{?dist} &#13;
+Summary:    Demo PHP application &#13;
+ &#13;
+License:    PD &#13;
+URL:        https://github.com/Fale/demo-php-app &#13;
+Source0:    %{url}/archive/%{commit0}.tar.gz#/%{name}-%{shortcommit0}.tar.gz &#13;
+ &#13;
+%description &#13;
+This is a demo PHP application in RPM format &#13;
+ &#13;
+%prep &#13;
+%autosetup -n %{name}-%{commit0} &#13;
+ &#13;
+%build &#13;
+ &#13;
+%install &#13;
+mkdir -p %{buildroot}/var/www/application &#13;
+ls -alh &#13;
+cp index.php %{buildroot}/var/www/application &#13;
+ &#13;
+%files &#13;
+%dir /var/www/application &#13;
+/var/www/application/index.php &#13;
+ &#13;
+%changelog &#13;
+* Tue Oct 04 2016 Fabio Alessandro Locati - 0.1 &#13;
+- Initial packaging &#13;
+</pre><p>Let's see what the various parts do and mean before moving forward:</p><pre class="programlisting">%define debug_package %{nil} &#13;
+%global commit0 b49f595e023e07a8345f47a3ad62a6f50f03121e &#13;
+%global shortcommit0 %(c=%{commit0}; echo ${c:0:7}) &#13;
+</pre><p>These first three lines are variables declarations.</p><p>The first one will disable the generation of a debug package. By default, <code class="literal">rpmbuild</code> will create a debug package every time and include all debugging symbols, but in this case, we don't have any debugging symbols since we are not making any compilation.</p><p>The second puts the <strong>hash</strong> of the commit in the variable <code class="literal">commit0</code>. The third one calculates the value of <code class="literal">shortcommit0</code>, that is calculated as the first eight characters of the <code class="literal">commit0</code> string:</p><pre class="programlisting">Name:       demo-php-app &#13;
+Version:    0 &#13;
+Release:    1%{?dist} &#13;
+Summary:    Demo PHP application &#13;
+ &#13;
+License:    PD &#13;
+URL:        https://github.com/Fale/demo-php-app &#13;
+Source0:    %{url}/archive/%{commit0}.tar.gz#/%{name}-%{shortcommit0}.tar.gz &#13;
+</pre><p>In the first line, we declare the name, version, release number, and summary. The difference between version and release, is that the version is the upstream version, while the release is the Spec version for that upstream release.</p><p>The license is the source license, not the Spec license. The URL is used to track the upstream website. The <code class="literal">source0</code> field is used by <code class="literal">rpmbuild</code> to know how the source file is called (in case more than one file is present, we can user <code class="literal">source1</code>, <code class="literal">source2</code>, and so on). Also, if the source fields are valid URI, we can use <code class="literal">spectool</code> to download them automatically.</p><pre class="programlisting">%description &#13;
+This is a demo PHP application in RPM format &#13;
+</pre><p>This is the <code class="literal">description</code> of the software packaged in RPM package.</p><pre class="programlisting">%prep &#13;
+%autosetup -n %{name}-%{commit0} &#13;
+</pre><p>The <code class="literal">prep</code> phase is the one where the source(s) get uncompressed and eventual patch(es) and applied. The <code class="literal">%autosetup</code> will <code class="literal">uncompress</code> the first source, as well as apply all patches. In this part, you can also perform other operations that need to be executed before the building phase and have the goal to prepare the environment for the build phase:</p><pre class="programlisting">%build &#13;
+</pre><p>Here we would put all actions of the <code class="literal">build</code> phase. In our case, our sources do not need to be compiled and therefore it is empty:</p><pre class="programlisting">%install &#13;
+mkdir -p %{buildroot}/var/www/application &#13;
+ls -alh &#13;
+cp index.php %{buildroot}/var/www/application &#13;
+</pre><p>In the <code class="literal">install</code> phase, we put the files in the folder <code class="literal">%{buildroot}</code> that will mimic the target filesystem.</p><pre class="programlisting">%files &#13;
+%dir /var/www/application &#13;
+/var/www/application/index.php &#13;
+</pre><p>The <code class="literal">files</code> section is needed to declare which files are to be put in the package.</p><pre class="programlisting">%changelog &#13;
+* Tue Oct 04 2016 Fabio Alessandro Locati - 0.1 &#13;
+- Initial packaging &#13;
+</pre><p>The <code class="literal">changelog</code> is needed to track who released a new version when and with which changes.</p><p>Now that we have the Spec file, we need to build it. To do so, we could use a production machine, but this would increase the attack surface to that machine, so it's better to avoid one. There are multiple ways to build your RPM software. The four main ways are:</p><div><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">Manually</li><li class="listitem" style="list-style-type: disc">Automate the manual way with Ansible</li><li class="listitem" style="list-style-type: disc">Jenkins</li><li class="listitem" style="list-style-type: disc">Koji</li></ul></div><p>Let's look at the differences very briefly.</p></div><div><div><div><div><h2 class="title"><a id="ch09lvl2sec74"/>Building RPMs manually</h2></div></div></div><p>The simplest way to build an RPM package is doing so in a manual way.</p><p>The big advantage is that you need very few and easy to install packages and for this reason many people that are starting with RPM, start from here. The disadvantage is that the process will be manual, and therefore human errors can spoil the result and the procedure is not easy to audit.</p><p>To build RPM packages, you will need a Fedora or an EL (Red Hat Enterprise Linux, CentOS, Scientific Linux, Oracle Enterprise Linux) system. If you are using Fedora, you will need to execute the following command to install all needed software:</p><pre class="programlisting">
+<strong>sudo dnf install -y fedora-packager</strong>
+</pre><p>If you are running an EL system, the command you'll need to execute is:</p><pre class="programlisting">
+<strong>sudo yum install -y mock rpm-build spectool</strong>
+</pre><p>In either case, you'll need to add the user you'll use to the <code class="literal">mock</code> group, to do so, you need to execute:</p><pre class="programlisting">
+<strong>sudo usermod -a -G mock [yourusername]</strong>
+</pre><div><div><h3 class="title"><a id="note48"/>Note</h3><p>Linux loads the users at login, so to apply a group change, you need to restart your session.</p></div></div><p>At this point, we can copy the Spec file in folder (usually <code class="literal">$HOME</code> is a good one) and perform the following actions:</p><pre class="programlisting">
+<strong>mkdir -p ~/rpmbuild/SOURCES</strong>
+</pre><p>This will create the <code class="literal">$HOME/rpmbuild/SOURCES</code> folder that is needed in the process. The <code class="literal">-p</code> option will automatically create all folders in the path that are eventually missing.</p><pre class="programlisting">
+<strong>spectool -R -g demo-php-app.spec</strong>
+</pre><p>We used <code class="literal">spectool</code> to download the source file and place it in the appropriate directory. The <code class="literal">spectool</code> will automatically get the URL from the Spec file so that we don't have to remember it.</p><p>We now need to create an <code class="literal">src.rpm</code> file, to do so we can use <code class="literal">rpmbuild</code>:</p><pre class="programlisting">
+<strong>rpmbuild -bs demo-php-app.spec</strong>
+</pre><p>This command will output something like:</p><pre class="programlisting">
+<strong>Wrote: /home/fale/rpmbuild/SRPMS/demo-php-app-0-1.fc24.src.rpm</strong>
+</pre><p>Some small differences in the name could be present, for instance you will probably have a different <code class="literal">$HOME</code> folder and you could have something other than <code class="literal">fc24</code>, if you are using something different than Fedora 24 to build the package. At this point, we can create the binary file with:</p><pre class="programlisting">
+<strong>mock -r epel-7-x86_64 /home/fale/rpmbuild/SRPMS/demo-php-app-0-1.fc24.src.rpm</strong>
+</pre><p>Mock allows us to build RPM packages in a clean environment and also, thanks to the <code class="literal">-r</code> option, it allows us to build for different versions of Fedora, EL, and Mageia. This command will give you a very long output, that I'll not report here, but in the last few lines there is useful information. If everything built properly, this is the last few lines you should see:</p><pre class="programlisting">
+<strong>Wrote: /builddir/build/RPMS/demo-php-app-0-1.el7.centos.x86_64.rpm</strong>
+<strong>Executing(%clean): /bin/sh -e /var/tmp/rpm-tmp.d4vPhr</strong>
+<strong>+ umask 022</strong>
+<strong>+ cd /builddir/build/BUILD</strong>
+<strong>+ cd demo-php-app-b49f595e023e07a8345f47a3ad62a6f50f03121e</strong>
+<strong>+ /usr/bin/rm -rf /builddir/build/BUILDROOT/demo-php-app-0-1.el7.centos.x86_64</strong>
+<strong>+ exit 0</strong>
+<strong>Finish: rpmbuild demo-php-app-0-1.fc24.src.rpm</strong>
+<strong>Finish: build phase for demo-php-app-0-1.fc24.src.rpm</strong>
+<strong>INFO: Done(/home/fale/rpmbuild/SRPMS/demo-php-app-0-1.fc24.src.rpm) Config(epel-7-x86_64) 0 minutes 58 seconds</strong>
+<strong>INFO: Results and/or logs in: /var/lib/mock/epel-7-x86_64/result</strong>
+<strong>Finish: run</strong>
+</pre><p>The second to last line contains the path where you can find the results. If you look in that folder, you should find the following files:</p><pre class="programlisting">
+<strong>drwxrwsr-x. 2 fale mock 4.0K Oct 10 12:26 .</strong>
+<strong>drwxrwsr-x. 4 root mock 4.0K Oct 10 12:25 ..</strong>
+<strong>-rw-rw-r--. 1 fale mock 4.6K Oct 10 12:26 build.log</strong>
+<strong>-rw-rw-r--. 1 fale mock 3.3K Oct 10 12:26 demo-php-app-0-1.el7.centos.src.rpm</strong>
+<strong>-rw-rw-r--. 1 fale mock 3.1K Oct 10 12:26 demo-php-app-0-1.el7.centos.x86_64.rpm</strong>
+<strong>-rw-rw-r--. 1 fale mock 184K Oct 10 12:26 root.log</strong>
+<strong>-rw-rw-r--. 1 fale mock  792 Oct 10 12:26 state.log</strong>
+</pre><p>The three log files are very useful in case of problems during the compilation. The <code class="literal">src.rpm</code> file will be a copy of the <code class="literal">src.rpm</code> file we created with the first command, while the <code class="literal">x86_64.rpm</code> file is the one mock created and the one we will need to install on our machines.</p></div><div><div><div><div><h2 class="title"><a id="ch09lvl2sec75"/>Building RPMs with Ansible</h2></div></div></div><p>Since doing all those steps manually can be long, boring, and error prone, we can automatize them with Ansible. The resulting playbook will probably not be the cleanest one, but will be able to execute all operations in a repeatable way.</p><p>For this reason, we are going to build a new machine from scratch. I'll call this machine <code class="literal">builder01.fale.io</code> and we are also going to change the inventory/production file to match this change:</p><pre class="programlisting">[web] &#13;
+ws01.fale.io &#13;
+ws02.fale.io &#13;
+ &#13;
+[db] &#13;
+db01.fale.io &#13;
+ &#13;
+[builders] &#13;
+builder01.fale.io &#13;
+ &#13;
+[production:children] &#13;
+db &#13;
+web &#13;
+builders &#13;
+</pre><p>Before diving in the <code class="literal">builders</code> role, we will need to do a couple of changes to the <code class="literal">webserver</code> roles to enable a new repository. The first is adding a task in <code class="literal">roles/webserver/tasks/main.yaml</code> at the end of the file with the following code:</p><pre class="programlisting">- name: Install our private repository &#13;
+  copy: &#13;
+    src: privaterepo.repo &#13;
+    dest: /etc/yum.repos.d/privaterepo.repo &#13;
+  become: True &#13;
+</pre><p>And the second change is actually creating the <code class="literal">roles/webserver/files/privaterepo.repo</code> file with the following content:</p><pre class="programlisting">[privaterepo] &#13;
+name=Private repo that will keep our apps packages &#13;
+baseurl=http://repo.fale.io/ &#13;
+skip_if_unavailable=True &#13;
+gpgcheck=0 &#13;
+enabled=1 &#13;
+enabled_metadata=1 &#13;
+</pre><p>We can now execute the <code class="literal">webserver</code> group playbook to make the changes effective with:</p><pre class="programlisting">
+<strong>ansible-playbook -i inventory/production playbooks/groups/web.yaml</strong>
+</pre><p>And the following output should appear:</p><pre class="programlisting">
+<strong>PLAY [web] *******************************************************&#13;
+&#13;
+</strong>
+<strong>TASK [setup] *****************************************************</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]&#13;
+    ....</strong>
+<strong>PLAY RECAP ******************************************************</strong>
+<strong>ws01.fale.io       : ok=20   changed=1    unreachable=0    failed=0</strong>
+<strong>ws02.fale.io       : ok=20   changed=1    unreachable=0    failed=0</strong>
+</pre><p>As expected, the only change has been the deployment of our newly generated repository file.</p><p>We also need to create a role for <code class="literal">builders</code> with a <code class="literal">tasks</code> file located in <code class="literal">roles/builder/tasks/main.yaml</code> with the following content:</p><pre class="programlisting">- name: Ensure needed packages are present &#13;
+  yum: &#13;
+    name: '{{ item }}' &#13;
+    state: present &#13;
+  become: True &#13;
+  with_items: &#13;
+  - mock &#13;
+  - rpm-build &#13;
+  - spectool &#13;
+  - createrepo &#13;
+  - httpd &#13;
+ &#13;
+- name: Ensure the user ansible is in the mock group &#13;
+  user: &#13;
+    name: ansible &#13;
+    groups: mock &#13;
+    append: True &#13;
+  become: True &#13;
+ &#13;
+- name: Ensure the /var/www/repo folder is present &#13;
+  file: &#13;
+    name: /var/www/repo &#13;
+    state: directory &#13;
+    group: ansible &#13;
+    owner: ansible &#13;
+    mode: 0755 &#13;
+  become: True &#13;
+ &#13;
+- name: Ensure the HTTPd zone for the repo is present &#13;
+  copy: &#13;
+    src: repo.conf &#13;
+    dest: /etc/httpd/conf.d/repo.conf &#13;
+  become: True &#13;
+  notify: Restart HTTPd &#13;
+ &#13;
+- name: Ensure the HTTPd service is enabled and running &#13;
+  service: &#13;
+    name: httpd &#13;
+    state: started &#13;
+    enabled: True &#13;
+  become: True &#13;
+ &#13;
+- name: Ensure HTTP can pass the firewall &#13;
+  firewalld: &#13;
+    service: http &#13;
+    state: enabled &#13;
+    permanent: True &#13;
+    immediate: True &#13;
+  become: True &#13;
+</pre><p>Also, as part of the <code class="literal">builders</code> role, we need the <code class="literal">roles/builder/handlers/main.yaml</code> handler file with the following content:</p><pre class="programlisting">- name: Restart HTTPd &#13;
+  service: &#13;
+    name: httpd &#13;
+    state: restarted &#13;
+  become: True &#13;
+</pre><p>As you can guess from the tasks file, we will also need the <code class="literal">roles/builder/files/repo.conf</code> file with the following content:</p><pre class="programlisting">&lt;VirtualHost *:80&gt; &#13;
+    ServerName repo.fale.io &#13;
+    DocumentRoot /var/www/repo &#13;
+    &lt;Directory /var/www/repo&gt; &#13;
+        Options Indexes FollowSymLinks &#13;
+    &lt;/Directory&gt; &#13;
+&lt;/VirtualHost&gt; &#13;
+</pre><p>We also need a new <code class="literal">group</code> playbook in <code class="literal">playbooks/groups/builders.yaml</code> with the following content:</p><pre class="programlisting">- hosts: builders &#13;
+  user: ansible &#13;
+  roles: &#13;
+  - common &#13;
+  - builder &#13;
+</pre><p>We can now execute the <code class="literal">firstrun</code> playbook against it with:</p><pre class="programlisting">
+<strong>ansible-playbook -i inventory/production playbooks/firstrun.yaml -lbuilder01.fale.io</strong>
+</pre><p>And we will receive the following output:</p><pre class="programlisting">
+<strong>PLAY [all] *******************************************************&#13;
+&#13;
+</strong>
+<strong>TASK [setup] *****************************************************</strong>
+<strong>ok: [builder01.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [Ensure ansible user exists] ********************************</strong>
+<strong>changed: [builder01.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [Ensure ansible user accepts the SSH key] *******************</strong>
+<strong>changed: [builder01.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [Ensure the ansible user is sudoer with no password required]</strong>
+<strong>changed: [builder01.fale.io]&#13;
+&#13;
+</strong>
+<strong>PLAY RECAP *******************************************************</strong>
+<strong>builder01.fale.io : ok=4    changed=3    unreachable=0    failed=0</strong>
+</pre><p>We can now move to create the host itself with:</p><pre class="programlisting">
+<strong>ansible-playbook -i inventory/production playbooks/groups/builders.yaml</strong>
+</pre><p>And we are expecting a result similar to:</p><pre class="programlisting">
+<strong>PLAY [builders] **************************************************&#13;
+&#13;
+</strong>
+<strong>TASK [setup] *****************************************************</strong>
+<strong>ok: [builder01.fale.io]</strong>
+<strong>    .... &#13;
+</strong>
+<strong>PLAY RECAP *******************************************************</strong>
+<strong>builder01.fale.io : ok=23   changed=5    unreachable=0    failed=0</strong>
+</pre><p>Now that we have all the parts of the infrastructure ready, we can create the <code class="literal">playbooks/manual/rpm_deploy.yaml</code> with the following content:</p><pre class="programlisting">- hosts: builders &#13;
+  user: ansible &#13;
+  tasks: &#13;
+  - name: Copy Spec file to user folder &#13;
+    copy: &#13;
+      src: ../../spec/demo-php-app.spec &#13;
+      dest: /home/ansible &#13;
+  - name: Ensure rpmbuild exists &#13;
+    file: &#13;
+      name: ~/rpmbuild &#13;
+      state: directory &#13;
+  - name: Ensure rpmbuild/SOURCES exists &#13;
+    file: &#13;
+      name: ~/rpmbuild/SOURCES &#13;
+      state: directory &#13;
+  - name: Download the sources &#13;
+    command: spectool -R -g demo-php-app.spec &#13;
+  - name: Ensure no SRPM files are present &#13;
+    command: rm -f ~/rpmbuild/SRPMS/* &#13;
+  - name: Build the SRPM file &#13;
+    command: rpmbuild -bs demo-php-app.spec &#13;
+  - name: Execute mock &#13;
+    shell: mock ~/rpmbuild/SRPMS/* &#13;
+  - name: Copy the arch binaries in the repo path &#13;
+    shell: cp -f /var/lib/mock/epel-7-x86_64/result/*.x86_64.rpm /var/www/repo &#13;
+  - name: Recreate the repo metadata &#13;
+    command: createrepo --database /var/www/repo &#13;
+- hosts: web &#13;
+  user: ansible &#13;
+  tasks: &#13;
+  - name: Ensure last version of demo-php-app is present &#13;
+    yum: &#13;
+      state: latest &#13;
+      update_cache: True &#13;
+      disable_gpg_check: True &#13;
+      name: demo-php-app &#13;
+    become: True &#13;
+</pre><p>As discussed, this playbook has a lot of commands and shells which are not very clean. Probably, in the future it will be possible to write a playbook with the same features but with modules. Most actions are the same as we discussed in the previous section. The new actions are toward the end, in fact in this case we copy the generated RPM file to a specific folder, we invoke <code class="literal">createrepo</code> to generate a repository in that folder, and then we force all web servers to update the generated package to the last version.</p><div><div><h3 class="title"><a id="note49"/>Note</h3><p>To grant the security of your application, is important that the repository is only accessible internally and not publicly.</p></div></div><p>We can now run the playbook with:</p><pre class="programlisting">
+<strong>ansible-playbook -i inventory/production playbooks/manual/rpm_deploy.yaml</strong>
+</pre><p>And we expect a result like the following:</p><pre class="programlisting">
+<strong>PLAY [builders] **************************************************&#13;
+&#13;
+</strong>
+<strong>TASK [setup] *****************************************************</strong>
+<strong>ok: [builder01.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [Copy SPEC file to user folder] *****************************</strong>
+<strong>changed: [builder01.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [Ensure rpmbuild exists] ************************************</strong>
+<strong>changed: [builder01.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [Ensure rpmbuild/SOURCES exists] ****************************</strong>
+<strong>changed: [builder01.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [Download the sources] **************************************</strong>
+<strong>changed: [builder01.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [Ensure no SRPM files are present] **************************</strong>
+<strong>changed: [builder01.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [Build the SRPM file] ***************************************</strong>
+<strong>changed: [builder01.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [Execute mock] **********************************************</strong>
+<strong>changed: [builder01.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [Copy the arch binaries in the repo path] *******************</strong>
+<strong>changed: [builder01.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [Recreate the repo metadata] ********************************</strong>
+<strong>changed: [builder01.fale.io]&#13;
+&#13;
+</strong>
+<strong>PLAY [web] *******************************************************&#13;
+&#13;
+</strong>
+<strong>TASK [setup] *****************************************************</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [Update all packages] ***************************************</strong>
+<strong>changed: [ws01.fale.io]</strong>
+<strong>changed: [ws02.fale.io]&#13;
+&#13;
+</strong>
+<strong>PLAY RECAP *******************************************************</strong>
+<strong>builder01.fale.io : ok=10   changed=9    unreachable=0    failed=0</strong>
+<strong>ws01.fale.io      : ok=2    changed=1    unreachable=0    failed=0</strong>
+<strong>ws02.fale.io      : ok=2    changed=1    unreachable=0    failed=0</strong>
+</pre></div><div><div><div><div><h2 class="title"><a id="ch09lvl2sec76"/>Building RPMs with CI/CD pipelines</h2></div></div></div><p>Although this is not covered by this book, in more complex cases you may want to use a CI/CD pipeline to create and manage RPM packages. The two main pipelines are based on two different software: Jenkins and Koji.</p><p>The Koji software has been developed by the Fedora community and Red Hat. It is released under the terms of the LGPL 2.1 license. This is the pipeline that currently gets used by Fedora, CentOS, as well as many other companies and communities to create all their RPMs (both for official and testing-aka <strong>scratch builds</strong>-builds). Koji - by default is not triggered by commit, but needs to be called "manually" from a user (through web interface or CLI). Koji will automatically download the last version of the Spec Git, download the source from a side-cache (this is optional, but suggested) or from the original location, and trigger the mock build. Koji does support only mock due to the fact that is the only system that allows consistent and repeatable builds. Koji can store all output artifacts forever or for a limited amount of time, based on the configuration. This is to ensure a very high level of auditability.</p><p>Jenkins is one of the most used CI/CD managers and can also be used for RPM pipelines. The big disadvantage is that it needs to be configured from scratch with the consequence that more time is required, but this means it has more flexibility. Also, a big advantage of Jenkins is that many companies already have an instance of Jenkins, and this makes it easier to set up and maintain the infrastructure, since you can reuse an installation you already have, having to manage less systems overall.</p></div></div>
+<div><div><div><div><h1 class="title"><a id="ch09lvl1sec75"/>Building compiled software with RPM packaging</h1></div></div></div><p>RPM packaging is very useful for non-binary applications and close to a necessity for binary applications. This is also true because the difference in complexity is pretty low between a non-binary and a binary case. In fact, the build and the installation will work in exactly the same way. The only thing that will change is the Spec file.</p><p>Let's see for example the Spec file needed to compile and package a simple Hello World! application written in C:</p><pre class="programlisting">%global commit0 7c288b9d80a6ef525c0cca8a744b32e018eaa386 &#13;
+%global shortcommit0 %(c=%{commit0}; echo ${c:0:7}) &#13;
+ &#13;
+Name:           hello-world &#13;
+Version:        1.0 &#13;
+Release:        1%{?dist} &#13;
+Summary:        Hello World example implemented in C &#13;
+ &#13;
+License:        GPLv3+ &#13;
+URL:            https://github.com/Fale/hello-world &#13;
+Source0:        %{url}/archive/%{commit0}.tar.gz#/%{name}-%{shortcommit0}.tar.gz &#13;
+ &#13;
+BuildRequires:  gcc &#13;
+BuildRequires:  make &#13;
+ &#13;
+%description &#13;
+The description for our Hello World Example implemented in C &#13;
+ &#13;
+%prep &#13;
+%autosetup -n %{name}-%{commit0} &#13;
+ &#13;
+%build &#13;
+make %{?_smp_mflags} &#13;
+ &#13;
+%install &#13;
+%make_install &#13;
+ &#13;
+%files &#13;
+%license LICENSE &#13;
+%{_bindir}/hello &#13;
+ &#13;
+%changelog &#13;
+* Tue Oct 11 2016 Fabio Alessandro Locati - 1.0-1 &#13;
+- Initial packaging &#13;
+</pre><p>As you can see, it's very similar to the one we saw for the PHP demo application. Let's see the differences.</p><pre class="programlisting">%global commit0 7c288b9d80a6ef525c0cca8a744b32e018eaa386 &#13;
+%global shortcommit0 %(c=%{commit0}; echo ${c:0:7}) &#13;
+</pre><p>As you can see, we don't have the line to disable the debug package. Every time you package a compiled application, you should let <code class="literal">rpm</code> create the debug symbols package so that in case of crashes, it will be easier to debug and understand the problem.</p><pre class="programlisting">Name:           hello-world &#13;
+Version:        1.0 &#13;
+Release:        1%{?dist} &#13;
+Summary:        Hello World example implemented in C &#13;
+ &#13;
+License:        GPLv3+ &#13;
+URL:            https://github.com/Fale/hello-world &#13;
+Source0:        %{url}/archive/%{commit0}.tar.gz#/%{name}-%{shortcommit0}.tar.gz &#13;
+</pre><p>As you can see, the changes in this section are only due to the fact that the new package has a different name and <code class="literal">URL</code>, but are not linked to the fact that is a compliable application.</p><pre class="programlisting">BuildRequires:  gcc &#13;
+BuildRequires:  make &#13;
+</pre><p>In the non-compiled application we did not need any packages present at build time, while in this case we will need the make and the <code class="literal">gcc</code> (compiler) applications. Different applications could require different tools and or libraries to be present on the system at build time.</p><pre class="programlisting">%description &#13;
+The description for our Hello World Example implemented in C &#13;
+ &#13;
+%prep &#13;
+%autosetup -n %{name}-%{commit0} &#13;
+ &#13;
+%build &#13;
+make %{?_smp_mflags} &#13;
+</pre><p>The <code class="literal">description</code> is package-specific and is not influenced by the compilation of the package. In the same way, the <code class="literal">%prep</code> phase works.</p><p>In the <code class="literal">%build</code> phase we now have make <code class="literal">%{?_smp_mflags}</code>. This is needed to tell <code class="literal">rpmbuild</code> to actually run make to build our application. The <code class="literal">_smp_mflags</code> variable will include a set of parameters to optimize the compilation to be multi-thread.</p><pre class="programlisting">%install &#13;
+%make_install &#13;
+</pre><p>During the <code class="literal">%install</code> phase, we will issue the <code class="literal">%make_install</code> command. This macro will call <code class="literal">%make_install</code> with a set of additional parameters to ensure that the <strong>libraries</strong> are located in the right folder, as well as the binaries and so forth.</p><pre class="programlisting">%files &#13;
+%license LICENSE &#13;
+%{_bindir}/hello &#13;
+</pre><p>In this case, we only need to place the <code class="literal">hello</code> binary that was located in the right folder of the <code class="literal">buildroot</code> during the <code class="literal">%install</code> phase as well as add the <code class="literal">LICENSE</code> file containing the license.</p><pre class="programlisting">%changelog &#13;
+* Tue Oct 11 2016 Fabio Alessandro Locati - 1.0-1 &#13;
+- Initial packaging &#13;
+</pre><p>The <code class="literal">%changelog</code> is very similar to the other Spec file we saw, since it is not influenced by the involvement of a compilation.</p><p>After you completed this, you can place it in <code class="literal">spec/hello-world.spec</code> and tweak <code class="literal">playbooks/manual/rpm_deploy.yaml</code> saving it into <code class="literal">playbooks/manual/hello_deploy.yaml</code> with the following content:</p><pre class="programlisting">- hosts: builders &#13;
+  user: ansible &#13;
+  tasks: &#13;
+  - name: Copy Spec file to user folder &#13;
+    copy: &#13;
+      src: ../../spec/hello-world.spec &#13;
+      dest: /home/ansible &#13;
+  - name: Ensure rpmbuild exists &#13;
+    file: &#13;
+      name: ~/rpmbuild &#13;
+      state: directory &#13;
+  - name: Ensure rpmbuild/SOURCES exists &#13;
+    file: &#13;
+      name: ~/rpmbuild/SOURCES &#13;
+      state: directory &#13;
+  - name: Download the sources &#13;
+    command: spectool -R -g hello-world.spec &#13;
+  - name: Ensure no SRPM files are present &#13;
+    command: rm -f ~/rpmbuild/SRPMS/* &#13;
+  - name: Build the SRPM file &#13;
+    command: rpmbuild -bs hello-world.spec &#13;
+  - name: Execute mock &#13;
+    shell: mock ~/rpmbuild/SRPMS/* &#13;
+  - name: Copy the arch binaries in the repo path &#13;
+    shell: cp -f /var/lib/mock/epel-7-x86_64/result/*.x86_64.rpm /var/www/repo &#13;
+  - name: Recreate the repo metadata &#13;
+    command: createrepo --database /var/www/repo &#13;
+- hosts: web &#13;
+  user: ansible &#13;
+  tasks: &#13;
+  - name: Ensure last version of hello-world is present &#13;
+    yum: &#13;
+      state: latest &#13;
+      update_cache: True &#13;
+      disable_gpg_check: True &#13;
+      name: hello-world &#13;
+    become: True &#13;
+</pre><p>As you can see, the only thing that we changes is that all references to <code class="literal">demo-php-app</code> got replaced with <code class="literal">hello-world</code>. Running it with:</p><pre class="programlisting">
+<strong>ansible-playbook -i inventory/production playbooks/manual/hello_deploy.yaml</strong>
+<strong>We are going to have the following result:</strong>
+<strong>PLAY [builders] **************************************************&#13;
+&#13;
+</strong>
+<strong>TASK [setup] *****************************************************</strong>
+<strong>ok: [builder01.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [Copy SPEC file to user folder] *****************************</strong>
+<strong>changed: [builder01.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [Ensure rpmbuild exists] ************************************</strong>
+<strong>ok: [builder01.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [Ensure rpmbuild/SOURCES exists] ****************************</strong>
+<strong>ok: [builder01.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [Download the sources] **************************************</strong>
+<strong>changed: [builder01.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [Ensure no SRPM files are present] **************************</strong>
+<strong>changed: [builder01.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [Build the SRPM file] ***************************************</strong>
+<strong>changed: [builder01.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [Execute mock] **********************************************</strong>
+<strong>changed: [builder01.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [Copy the arch binaries in the repo path] *******************</strong>
+<strong>changed: [builder01.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [Recreate the repo metadata] ********************************</strong>
+<strong>changed: [builder01.fale.io]&#13;
+&#13;
+</strong>
+<strong>PLAY [web] *******************************************************&#13;
+&#13;
+</strong>
+<strong>TASK [setup] *****************************************************</strong>
+<strong>ok: [ws01.fale.io]</strong>
+<strong>ok: [ws02.fale.io]&#13;
+&#13;
+</strong>
+<strong>TASK [Ensure last version of hello-world is present] *************</strong>
+<strong>changed: [ws01.fale.io]</strong>
+<strong>changed: [ws02.fale.io]&#13;
+&#13;
+</strong>
+<strong>PLAY RECAP *******************************************************</strong>
+<strong>builder01.fale.io : ok=10   changed=7    unreachable=0    failed=0</strong>
+<strong>ws01.fale.io      : ok=2    changed=1    unreachable=0    failed=0</strong>
+<strong>ws02.fale.io      : ok=2    changed=1    unreachable=0    failed=0</strong>
+</pre><div><div><h3 class="title"><a id="note50"/>Note</h3><p>You could eventually create a playbook that accepts the name of the package to build as a parameter, so that you don't need a different playbook for every package.</p></div></div></div>
+<div><div><div><div><h1 class="title"><a id="ch09lvl1sec76"/>Deployment strategies</h1></div></div></div><p>We have seen how to distribute software in your environment, let's now speak about deployment strategies; that is how to upgrade your application without your service suffering from it.</p><p>There are three different problems you might incur during an update:</p><div><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">Downtime during the update rollout</li><li class="listitem" style="list-style-type: disc">The new version has problems</li><li class="listitem" style="list-style-type: disc">The new version seems to work, until it fails</li></ul></div><p>The first problem is known to every system administrator. During the update, you are probably going to restart some services, and for the time between the stop and the start of the service, your application will not be available on that machine. To avoid this also means that your application is not available at all; you will need to have at least some machines with the application available and a smart load balancer in front that will remove (and add them back when is the case) all nonfunctioning nodes.</p><p>The second problem can be prevented in multiple ways. The cleanest one would be testing in the CI/CD pipeline. In fact, those kinds of problems are pretty easy to find with simple tests. This can also be prevented with the methods we are going to see soon.</p><p>The third problem is by far the most complex. Many big down have been generated by these kinds of problems. Usually the problem is that the new version has some performance problems or memory leaks. Since the majority of deployments are done in the period of least load of the servers, as soon as the load increases, a performance problem or memory leak could kill your servers.</p><div><div><h3 class="title"><a id="note51"/>Note</h3><p>To be able to use those methods in a proper way, you have to be able to ensure that your software can accept rollbacks. There are cases where this is not possible (that is, a database table gets removed in an update) but should be avoided. We will not speak how to avoid it since is part of the development strategy, and is not related to Ansible.</p></div></div><div><div><div><div><h2 class="title"><a id="ch09lvl2sec77"/>Canary deployment</h2></div></div></div><p>The canary deployment is a technique that involves updating a small percentage of your machines (often 5%) to the new version and instruct the load balancers to send only an equivalent amount of traffic to it. This has several advantages:</p><div><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">During the update, you never have less than 95% of the capacity</li><li class="listitem" style="list-style-type: disc">If the new version completely fails, you lose the 5% of capacity</li><li class="listitem" style="list-style-type: disc">Since the load-balancer divides the traffic between your new and old version, if the new version has problems, only 5% of your users will see the problem</li><li class="listitem" style="list-style-type: disc">You only need to have 5% capacity more than your expected load</li></ul></div><p>Canary deployment is able to prevent all three problems we mentioned with a very small overhead (5%) and with a low cost in case of rollback (5%). For those reasons, this technique is used a lot by huge companies; progressive rollout. Often to ensure a similar user experience to users that live close to each other, geography is used to choose if the user is going to hit the old or the new version.</p><p>When the test seems to be a success, the percentage can be increased progressively until 100% is reached.</p><p>It's possible to implement a canary deployment in multiple ways in Ansible. The way I suggest is the cleanest one; using the inventory files, more specifically, to have something like the following:</p><pre class="programlisting">[web-main] &#13;
+ws[00:94].fale.io &#13;
+ &#13;
+[web-canary] &#13;
+ws[95:99].fale.io &#13;
+ &#13;
+[web:children] &#13;
+web-main &#13;
+web-canary &#13;
+</pre><p>In this way, you can set all variables on the web group (the variables are going to be the same no matter the version, or at least they should be) but you can run a playbook easily against the canary group, the main group, or both groups at the same time. Another option would be to create two different inventory files, one for the canary group and the other for the main group with the groups having the same name so that variables are shared.</p></div><div><div><div><div><h2 class="title"><a id="ch09lvl2sec78"/>Blue/Green deployment</h2></div></div></div><p>
+<strong>Blue/Green</strong> deployment is very different from canary deployment and has some advantages and some disadvantages. The main advantages are:</p><div><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">Easier to implement</li><li class="listitem" style="list-style-type: disc">Allows quicker iterations</li><li class="listitem" style="list-style-type: disc">All users get moved at the same time</li><li class="listitem" style="list-style-type: disc">Rollbacks have no performance degradation</li></ul></div><p>Among the disadvantages, the main ones are the fact that you need to have double the machines available than what your application requires. This disadvantage can be easily mitigated if the application is running on a cloud (either private, public, or hybrid) scaling up the application resources for the deployment and then scale them back down.</p><p>Implementing Blue/Green deployment in Ansible is very easy. The simplest way is to create two different inventories (one for blue and one for green) and then simply manage your infrastructure as if they are different environments such as production, staging, dev, and so on.</p></div></div>
+<div><div><div><div><h1 class="title"><a id="ch09lvl1sec77"/>Optimizations</h1></div></div></div><p>Sometimes, Ansible feels slow, mainly if you have a very long list of tasks to execute and/or if you have huge amount of machines. This feeling is actually more than just a feeling. There are multiple reasons for this, and ways to avoid it, we are going to look at three of those.</p><div><div><div><div><h2 class="title"><a id="ch09lvl2sec79"/>Pipelining</h2></div></div></div><p>One of the reason why Ansible is slow by default is that for every module execution and for every host, Ansible will perform the following actions:</p><div><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">SSH handshake</li><li class="listitem" style="list-style-type: disc">Execute the task</li><li class="listitem" style="list-style-type: disc">Close the SSH connection</li></ul></div><p>As you can see, this means that if you have 10 tasks to be executed on a single remote server, Ansible will open (and close) the connection 10 times. Since the SSH protocol is an encrypted protocol, this makes the SSH handshake an even longer process, since the two parts have to negotiate the ciphers every single time.</p><p>Ansible allows us to reduce the execution time drastically by initiating the connections at the beginning of the playbook and keeping them alive for the whole execution so that it does not need to reopen the connection at every task. Over the course of Ansible life, this feature has changed name multiple times, as well as the way it's enabled. From version 1.5, it's been called <strong>pipelining</strong> and the way to enable it is by adding the following line to your <code class="literal">ansible.cfg</code> file:</p><pre class="programlisting">pipelining=True &#13;
+</pre><p>The reason why this feature is not enabled by default, is that many distributions ship with the <code class="literal">requiretty</code> option in <code class="literal">sudo</code>. The pipelining mode in Ansible and the <code class="literal">requiretty</code> option in <code class="literal">sudo</code> conflict and will make your playbooks fail.</p><div><div><h3 class="title"><a id="tip52"/>Tip</h3><p>If you want to enable the pipelining mode, ensure that the <code class="literal">sudo requiretty</code> mode is disabled on your target machines.</p></div></div></div><div><div><div><div><h2 class="title"><a id="ch09lvl2sec80"/>Optimizing with_items</h2></div></div></div><p>If you want to execute similar operations multiple times, it's possible to repeat the same task multiple times with different parameters or use the <code class="literal">with_items</code> option. Aside from the fact that <code class="literal">with_items</code> makes your code easier to read and to follow, it could also improve your performance. An example is with the installation of packages (that is: <code class="literal">apt</code>, <code class="literal">dnf</code>, <code class="literal">yum</code>, <code class="literal">package</code> modules) where Ansible will perform a single command if you use <code class="literal">with_items</code> against a single command for each package if you don't. As you can imagine, this can help boosting your performance.</p></div><div><div><div><div><h2 class="title"><a id="ch09lvl2sec81"/>Understanding what happens when your tasks are executed</h2></div></div></div><p>Even after you implement the methods we just talked about to speed up the playbook execution, you may still find some tasks take a very long time. This is very common with some tasks, even if it's possible with many other modules. The modules that usually give you this problem are the following:</p><div><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">Packaging management (that is: <code class="literal">apt</code>, <code class="literal">dnf</code>, <code class="literal">yum</code>, <code class="literal">package</code>)</li><li class="listitem" style="list-style-type: disc">Cloud machine creation (that is: DigitalOcean, EC2)</li></ul></div><p>The reason for this slowness is often non-Ansible specific. An example case could be if you used a packaging management module to update your machines. This requires downloading tens or hundreds of megabytes on every machine and installing a high quantity of software. A way to speed up this kind of operation is to have a local repository in your datacenter and have all your machines pointing to it instead of your distribution repositories. This will allow your machines to download at higher speed and without using the public connection that is often limited in bandwidth or metered.</p><div><div><h3 class="title"><a id="note53"/>Note</h3><p>It's often important to understand what the modules do in the background to optimize the playbook execution.</p></div></div><p>In the cloud machine creation case, Ansible just performs an API call to the chosen cloud provider and waits for the machine to be ready. DigitalOcean machines can take up to one minute to be created (and other clouds much longer) so Ansible will wait for that amount of time. Some modules have an asynchronous mode to avoid this wait period, but you'll have to ensure that the machine is ready before using it otherwise the modules that use the created machine will fail.</p></div></div>
+<div><div><div><div><h1 class="title"><a id="ch09lvl1sec78"/>Summary</h1></div></div></div><p>In this chapter, we have seen how you can deploy an application with Ansible, as well as the various distribution and deployment strategies you can use. We also saw how to create RPM packages with Ansible and how to optimize the performance of Ansible using different methods.</p><p>In the last and final chapter, we will discuss Ansible on Windows, networking devices. Additionally, some Ansible Tower concepts will be discussed.</p></div></body></html>

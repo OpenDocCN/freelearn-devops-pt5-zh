@@ -1,0 +1,687 @@
+<html><head></head><body>
+<div><h1 class="chapter-number" id="_idParaDest-219"><a id="_idTextAnchor641"/>15</h1>
+<h1 id="_idParaDest-220"><a id="_idTextAnchor642"/>Using Ansible with GitHub Actions and Azure DevOps</h1>
+<p>In this chapter, we will start running Ansible in the cloud instead of our local machines, something we have been doing up to this point.</p>
+<p>First, this chapter will examine two services I often use during my day job:</p>
+<ul>
+<li>Running GitHub Actions</li>
+<li>Running pipelines in Azure DevOps</li>
+</ul>
+<p>Before we move on, we will examine tools designed to execute Ansible from a central location in <a href="B21620_16.xhtml#_idTextAnchor716"><em class="italic">Chapter 16</em></a>, <em class="italic">Introducing Ansible AWX and Red Hat Ansible </em><em class="italic">Automation Platform</em>.</p>
+<p>Neither of the two services we will be looking at has what you would call native support for Ansible; however, they both provide ephemeral compute resources that can be configured using YAML, which you can ship alongside your playbook code.</p>
+<p>This chapter will cover a more complex playbook in both <strong class="bold">GitHub Actions</strong> and <strong class="bold">Azure DevOps</strong>. We will also discuss some considerations when running Ansible away from your machine.</p>
+<p>So, rather than discussing it anymore, let’s dive straight in and look at GitHub Actions.</p>
+<h1 id="_idParaDest-221"><a id="_idTextAnchor643"/>Technical requirements</h1>
+<p>If you are following along with the example code that we will be working through, then you will need access to a GitHub and an Azure DevOps account, as well as an Azure account since we will be launching a WordPress instance running in Azure as part of this chapter.</p>
+<p>You can find a complete copy of the playbook, GitHub Action config, and Azure DevOps Pipeline code accompanying this chapter in this book’s GitHub repository at <a id="_idTextAnchor644"/><a href="https://github.com/PacktPublishing/Learn-Ansible-Second-Edition/tree/main/Chapter15">https://github.com/PacktPublishing/Learn-Ansible-Second-Edition/tree/main/Chapter15</a>.</p>
+<h1 id="_idParaDest-222"><a id="_idTextAnchor645"/>GitHub Actions</h1>
+<p><a id="_idTextAnchor646"/>GitHub Actions is a <a id="_idIndexMarker854"/>comprehensive platform for <strong class="bold">continuous integration</strong> (<strong class="bold">CI</strong>) and<strong class="bold"> continuous delivery</strong> (<strong class="bold">CD</strong>) from GitHub. It enables<a id="_idIndexMarker855"/> you to automate your<a id="_idIndexMarker856"/> build, test, and deployment pipeline while hosting your code and GitHub’s exhaustive suite of code management tools. Using GitHub Actions, you can define custom workflows that automatically build and test every pull request made to your repository or deploy merged pull requests to production.</p>
+<p>GitHub Actions offers more than just DevOps functionality as it is closely integrated with GitHub. This allows you to run workflows in response to other repository events. For instance, you can have a workflow that adds relevant labels automatically when a new issue is created in your repository.</p>
+<p>With GitHub Actions, you’re in control. You can run your workflows using GitHub’s Linux, Windows, and macOS virtual machines. You can also take full charge and operate self-hosted runners in your own data center or cloud infrastructure.</p>
+<p>We will create a GitHub Action workflow to utilize the Linux agents hosted by GitHub.</p>
+<h2 id="_idParaDest-223"><a id="_idTextAnchor647"/>Preparation</h2>
+<p>We need to configure<a id="_idIndexMarker857"/> a few things before we can start working through our GitHub Action workflow code:</p>
+<ol>
+<li>Create a GitHub repository to host our code and workflow.</li>
+<li>Generate an SSH key pair; this will be used to access our Azure-hosted virtual machine instance from the GitHub-hosted compute resource when the workflow runs.</li>
+<li>Configure some repository secrets that will be used in our workflow; these will store things such as our Azure credentials and the SSH key pair we created.</li>
+<li>Copy the files from <a href="https://github.com/PacktPublishing/Learn-Ansible-Second-Edition/tree/main/Chapter15">https://github.com/PacktPublishing/Learn-Ansible-Second-Edition/tree/main/Chapter15</a> to your new repo<a id="_idIndexMarker858"/> and run the workflow.</li>
+</ol>
+<p>Let’s look at these steps in more detail.</p>
+<h3>Creating a repository</h3>
+<p>Let’s start by creating<a id="_idIndexMarker859"/> a repository in GitHub that we will use to host our code and workflow.</p>
+<p>First, you need to log into GitHub. Once you’ve logged in, go to <strong class="bold">Repositories</strong> and then click on the <strong class="bold">New</strong> button; you will be taken to the <strong class="bold">Create a new repository</strong> page, where you need to update the following:</p>
+<ul>
+<li><strong class="bold">Owner</strong>: Here, you need to select an owner for the repository. This will typically be your GitHub user; however, if you belong to any organization, you may have the option of creating the repository under one of those organizations. If you do that, please ensure that you have permission to do so as we will be spinning up temporary compute resources, which may not be allowed by your organization’s admins.</li>
+<li><strong class="bold">Repository name</strong>: I recommend using something descriptive, such as <em class="italic">Learn-Ansible-Second-Edition-Chapter15</em>.</li>
+<li><strong class="bold">Description</strong>: While this is optional, it is always best to add one; for example, let’<a id="_idTextAnchor648"/><a id="_idTextAnchor649"/>s add <em class="italic">Following along with </em><a href="B21620_15.xhtml#_idTextAnchor641"><em class="italic">Chapter 15</em></a><em class="italic"> of </em><em class="italic">Learn Ansible</em>.</li>
+<li><strong class="bold">Public</strong> or <strong class="bold">Private</strong>: I recommend setting your repository’s visibility to <em class="italic">private</em>.</li>
+</ul>
+<p>You can leave the remaining options as-is and then click on the <strong class="bold">Create repository</strong> button at the end of the form. Once the repository has been created, you should be presented with a page<a id="_idIndexMarker860"/> that looks like th<a id="_idTextAnchor650"/>is:</p>
+<div><div><img alt="Figure 15.1 – Our new repository" src="img/B21620_15_01.jpg"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 15.1 – Our new repository</p>
+<p>Let’s move on to the next step.</p>
+<h3>Generating the SSH key pair and Azure Service Principle</h3>
+<p>We need to generate <a id="_idIndexMarker861"/>an SSH key pair and an Azure Service Principle<a id="_idIndexMarker862"/> before adding<a id="_idIndexMarker863"/> secrets to our newly<a id="_idIndexMarker864"/> created repository.</p>
+<p class="callout-heading">Information</p>
+<p class="callout">Remember to run the commands in Windows Subsystem for Linux if you’re following along on a Windows machine.</p>
+<p>To do this, open a Terminal and run the following c<a id="_idTextAnchor651"/>ommand:</p>
+<pre class="console">
+$ ssh-keygen -t rsa -C "learnansible" -f ./id_rsa</pre> <p>When prompted to enter a passphrase, just hit <em class="italic">Enter</em>; we don’t want to use one. This should give you two files: one called <code>id_rsa</code>, which contains the private portion of our key – please keep this private – and another called <code>id_rsa.pub</code>. As its name implies, it includes the public portion of our SSH key.</p>
+<p>Next, we need to generate an Azure Service Principle and grant permissions to our Azure subscription.</p>
+<p>From <a href="B21620_07.xhtml#_idTextAnchor336"><em class="italic">Chapter 7</em></a>, <em class="italic">Ansible Windows Modules</em>, and <a href="B21620_09.xhtml#_idTextAnchor411"><em class="italic">Chapter 9</em></a>, <em class="italic">Moving to the Cloud</em>, we used the Azure command-line tool to log in using our Azure credentials. However, when interacting with Azure using services such as GitHub Actions, we don’t want to use our credentials as they will be locked down with multi-factor authentication, and you don’t want to hand out your credentials.</p>
+<p>To get around this, we can create<a id="_idIndexMarker865"/> a service principal and grant it permissions<a id="_idIndexMarker866"/> to the Azure subscription<a id="_idIndexMarker867"/> so that it can launch resources<a id="_idIndexMarker868"/> from the GitHub Action.</p>
+<p>To create the service principle, you need to log into Azure using the Azure CLI by running the follo<a id="_idTextAnchor652"/>wing command:</p>
+<pre class="console">
+$ az login</pre> <p>If you are already logged in, run the following:</p>
+<pre class="console">
+$ az account list</pre> <p>Both commands will return a list of subscription IDs your account can access. Please make a note of the ID; we will need it momentarily.</p>
+<p>Here’s an example of the sort of output you can expect to see; this is the JSON that is being returned by the API request that the Azure CLI has made:</p>
+<pre class="console">
+{
+  "environmentName": "AzureCl<a id="_idTextAnchor653"/>oud",
+  "id": "e80d5ad9-e2c5-4ade-a866-bcfbae2b8aea",
+  "isDefault": true,
+  "name": "My Subscription",
+  "state": "Enabled",
+  "tenantId": "c5df827f-a940-4d7c-b313-426cb3c6b1fe",
+  "user": {
+    "name": "account@russ.foo",
+    "type": "user"
+  }
+}</pre> <p>The information we are after is labeled as <code>id</code> against the subscription to which we would like to grant the service principal access. Using the preceding example, the command I would need to run would be as follows:</p>
+<pre class="console">
+$ az ad sp create-for-rbac –name sp-learn-ansible –role contributor –scopes /<a id="_idTextAnchor654"/>subscriptions/e80d5ad9-e2c5-4ade-a866-bcfbae2b8aea</pre> <p>When you run this command, replace the subscription ID in the scope with your own.</p>
+<p>The output you get will look something like this; please note it down as you will not be able to retrieve the password again:</p>
+<pre class="console">
+Creating 'contributor' role assignment under scope '/subscriptions/e80d5ad9-e2c5-4ade-a866-bcfbae2b8aea'
+The output includes credentials that you must protect. Be sure that you do not include these credentials in your code or check the credentials into your source control. For more information, see https://aka.ms/azadsp-cli<a id="_idTextAnchor655"/>
+{
+  "appId": "2616e3df-826d-4d9b-9152-3de141465a69",
+  "displayName": "sp-learn-ansible",
+<a id="_idTextAnchor656"/>  "password": "Y4j8Q~gVO*NoTaREalPa55w0rdpP-pdaw"<a id="_idTextAnchor657"/>,
+  "tenant": "c5df827f-a940-4d7c-b313-426cb3c6b1fe"
+}</pre> <p>Also, as I am sure you<a id="_idIndexMarker869"/> will have already <a id="_idIndexMarker870"/>guessed, none<a id="_idIndexMarker871"/> of the information<a id="_idIndexMarker872"/> in the preceding examples is valid data, so please use your values in the next section.</p>
+<h3>GitHub personal access token</h3>
+<p>There is one more set of credentials<a id="_idIndexMarker873"/> we need to generate; because our GitHub repository is set to private, we need to be able to authenticate to check the code out and write logs back to the repository during the workflow run. To do this, we will need to generate a personal access token.</p>
+<p>A personal access token for GitHub is a secure, revocable, and customizable credential that allows you to authenticate with GitHub and access its API or command-line tools without using your main account password.</p>
+<p>Rather than documenting the process here, as GitHub is moving from classic to fine-grained tokens at the time of writing, an up-to-date copy of the documentation can be found at <a href="https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens">https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens</a>.</p>
+<p>For our purposes, you need to name your token, select just your repository, and grant it the following access:</p>
+<ul>
+<li><strong class="bold">Contents</strong>: Read-only</li>
+<li><strong class="bold">Metadata</strong>: Read-only; this will be selected automatically once the permission is set</li>
+</ul>
+<p>Once you have your token, please<a id="_idIndexMarker874"/> note it somewhere secure; it will not be displayed again.</p>
+<h3>Adding secrets to the repository</h3>
+<p>Go back to the repository<a id="_idIndexMarker875"/> in GitHub by choosing <strong class="bold">Settings</strong> | <strong class="bold">Secrets and Variables</strong> | <strong class="bold">Actions</strong>. Click the <strong class="bold">New repository secret</strong> button for<a id="_idIndexMarker876"/> each of the secrets listed in the following table. Please make sure that you call each secret as per the following naming conventions since our workflow code references these secrets by their name:</p>
+<table class="No-Table-Style _idGenTablePara-1" id="table001-2">
+<colgroup>
+<col/>
+<col/>
+</colgroup>
+<tbody>
+<tr class="No-Table-Style">
+<td class="No-Table-Style">
+<p><strong class="bold"><a id="_idTextAnchor658"/></strong><strong class="bold">Secret Name</strong></p>
+</td>
+<td class="No-Table-Style">
+<p><strong class="bold">Secret Content</strong></p>
+</td>
+</tr>
+<tr class="No-Table-Style">
+<td class="No-Table-Style">
+<p><code>ARM_CLIENT_ID</code></p>
+</td>
+<td class="No-Table-Style">
+<p>This is the <code>appId</code> value from when you create the service principle. In this example, this would be <code>2616e3df-826d-4d9b-9152-3de141465a69</code>.</p>
+</td>
+</tr>
+<tr class="No-Table-Style">
+<td class="No-Table-Style">
+<p><code>ARM_CLIENT_SECRET</code></p>
+</td>
+<td class="No-Table-Style">
+<p>This is the <code>password</code> value that was given when you created the service principle. In this example, this would be <code>Y4j8Q~gVO*NoTaREalPa55w0rdpP-pdaw</code>.</p>
+</td>
+</tr>
+<tr class="No-Table-Style">
+<td class="No-Table-Style">
+<p><code>ARM_SUBSCRIPTION_ID</code></p>
+</td>
+<td class="No-Table-Style">
+<p><a id="_idTextAnchor659"/>This is your Azure subscription ID; use the one you granted the service principal access to. <a id="_idTextAnchor660"/>In this example, this would be <code>e80d5ad9-e2c5-4ade-a866-bcfbae2b8aea</code>.</p>
+</td>
+</tr>
+<tr class="No-Table-Style">
+<td class="No-Table-Style">
+<p><code>ARM_TENANT_ID</code></p>
+</td>
+<td class="No-Table-Style">
+<p>This is the ID of the <code>tenant</code> value listed when you created the service principle. In this example, this would be <code>c5df827f-a940-4d7c-b313-426cb3c6b1fe</code>.</p>
+</td>
+</tr>
+<tr class="No-Table-Style">
+<td class="No-Table-Style">
+<p><code>SSH_PRIVATE_KEY</code></p>
+</td>
+<td class="No-Table-Style">
+<p>Open the <code>id_rsa</code> file in a text editor and copy and paste the contents here.</p>
+</td>
+</tr>
+<tr class="No-Table-Style">
+<td class="No-Table-Style">
+<p><code>SSH_PUBLIC_KEY</code></p>
+</td>
+<td class="No-Table-Style">
+<p>Open the <code>id_rsa.pub</code> file in a text editor and copy and paste the contents here.</p>
+</td>
+</tr>
+<tr class="No-Table-Style">
+<td class="No-Table-Style">
+<p><code>GH_PAT</code></p>
+</td>
+<td class="No-Table-Style">
+<p>This should contain your GitHub personal access token.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Table 15.1 – <a id="_idTextAnchor661"/>Information needed for GitHub Actions</p>
+<p>Once they have all been<a id="_idIndexMarker877"/> added, your <strong class="bold">Actions secrets and variables</strong> page should<a id="_idIndexMarker878"/> look something like this:</p>
+<div><div><img alt="Figure 15.2 – All of the repository secrets have been added" src="img/B21620_15_02.jpg"/>
+</div>
+</div>
+<p class="IMG---Figure"><a id="_idTextAnchor662"/></p>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 15.2 – All of the repository secrets have been added</p>
+<p>Now that we have all the basic configurations for the GitHub Action, let’s look at the workflow itself.</p>
+<h2 id="_idParaDest-224"><a id="_idTextAnchor663"/>Understanding the GitHub Action workflow</h2>
+<p>The workflow file, which lives<a id="_idIndexMarker879"/> in the <code>.github/workflows/action.yml</code> file, contains, as its name suggests, the YAML code containing the jobs, steps, and tasks that will be executed during the workflow run. In our case, the workflow will execute the following two jobs, with each job being made up of multiple steps:</p>
+<ul>
+<li>Scan the Ansible Playbook:<ol><li class="Alphabets">Check out the code.</li><li class="Alphabets">Create a folder to store the scan results.</li><li class="Alphabets">Run a KICS scan on the checked-out code.</li><li class="Alphabets">Upload a copy of the results to GitHub.</li></ol></li>
+</ul>
+<p>Now, if KICS detects a problem with our playbook, it will report an error, and the workflow will stop here – if everything looks good with the KICS scan, then the workflow will proceed by running the following job:</p>
+<ul>
+<li>Install and run the Ansible Playbook:</li>
+</ul>
+<ol>
+<li class="Alphabets">Check if a cached version of our Ansible modules and Python packages is available.</li>
+<li class="Alphabets">If not cached, download and install the Ansible Azure modules and the supporting Python packages.</li>
+<li class="Alphabets">Check out the code.</li>
+<li class="Alphabets">Log into Azure using the Azure CLI and the service principle we created.</li>
+<li class="Alphabets">Set the SSH key.</li>
+<li class="Alphabets">Run the Ansible Playbook, logging the output of the Playbook so that we can store a copy alongside the scan results in the workflow logs.</li>
+<li class="Alphabets">Upload the Playbook execution summary.</li>
+</ol>
+<p>Now that we know what the workflow<a id="_idIndexMarker880"/> will do, let’s dive into the code. We’ll start with some basic configuration:</p>
+<ol>
+<li>The first line disables a KICS check – while the workflow does not form part of our Playbook, it is stored in the repository and will be scanned as part of the workflow’s execution:<pre class="source-code">
+# kics-scan disable=555ab8f9-2001-455e-a077-f2d0f41e2fb9
+name: "Ansible Playbook Run"
+env:
+  FAIL_ON: "medium"
+  RESULTS_DIR: "results-dir"</pre><p class="list-inset">We are also setting the name of the workflow, which is how it will appear in the GitHub web interface, before finally setting up some variables that we will use during the workflow’s execution.</p></li> <li>Next up, we have the configuration that defines the workflow that should run; for our needs, we will run the workflow each time the code is committed to the main branch:<pre class="source-code">
+On:
+  push:
+    branches:
+      - main</pre></li> <li>Next up, we must define our first job, which is the one that scans the Playbook code:<pre class="source-code">
+jobs:<a id="_idTextAnchor664"/>
+  scan_ansible_playbook:
+    name: "Scan Ansible Playbook"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash</pre><p class="list-inset">As you can see, we are defining it as <code>scan_ansible_playbook</code>, which runs on the latest version of the Ubuntu image supplied by GitHub, and the default action for tasks is to run bash. With the job defined, we can move on to the next steps.</p></li> <li>We start with the ones<a id="_idIndexMarker881"/> that check out the code and create the directory where we are going to be storing the results of the scan we will be running:<pre class="source-code">
+    steps:
+      - name: "Checkout the code"
+        uses: "actions/checkout@v4"
+        with:
+          tok<a id="_idTextAnchor665"/>en: "${{secrets.GH_PAT}}"</pre></li> <li>The step downloads a copy of the repository in which the workflow is hosted; as you can see, we are using <code>${{secrets.GH_PAT}}</code>. We will look at secret variables a little later. Now, we must create the folder:<pre class="source-code">
+      - name: "Create the folder for storing the scan results"
+        run: mkdir<a id="_idTextAnchor666"/> -p ${{<a id="_idTextAnchor667"/>env.RESULTS_DIR}}</pre><p class="list-inset">The section step creates a direc<a id="_idTextAnchor668"/>tory whose name is referenced as the <code>RESULTS_DIR</code> environment variable, which we defined in the top section of the workflow file.</p></li> <li>When referencing an environment variable, we use <a id="_idTextAnchor669"/>the <code>${{env.VARIABLE_NAME}}</code> format. So, in our case, we are using <code>${{env.RESULTS_DIR}}</code>. In the next step, we have a dedicated task for running KICS, which is managed and maintained by Checkmarx:<pre class="source-code">
+      - name: "Run kics Scan"
+        uses: "checkmarx/kics-github-action@v1.7.0"
+        with:
+          path: "./"
+          output_path: "${{env.RESULTS_DIR}}"
+          output_formats: "json,sarif"
+          fail_on: "${{ env.FAIL_ON }}"
+          enable_jobs_summary: true</pre><p class="list-inset">As you can see, we are instructing the task to output the JSON and SARIF files, <code>${{env.RESULTS_DIR}}</code> directory we created in the previous step and also for the workflow fail if the results of the scan contain anything with a severity defined in <code>${{ env.FAIL_ON }}</code>. We set this to <code>medium</code> at the start of the workflow file.</p></li> <li>Now that we have completed<a id="_idIndexMarker883"/> the scan, we can review the workflow code for the job that installs and runs Ansible. This is called <code>run_ansible_playbo<a id="_idTextAnchor670"/>ok</code>:<pre class="source-code">
+  run_ansible_playbook:
+    name: "Install Ansible and run Playbook"
+    runs-on: ubuntu-lates<a id="_idTextAnchor671"/>t
+    n<a id="_idTextAnchor672"/><a id="_idTextAnchor673"/>eeds: scan_ansible_playbook
+    defaults:
+      run:
+        shell: bash</pre><p class="list-inset">As you can see, the job is defined the same as the first job, with one exception: we have added a <code>needs</code> line with a value of <code>scan_ansible_playbook</code>. This instructs the job to only run once <code>scan_ansible_playbook</code> has completed with a successful status.</p></li> <li>The step of the job checks<a id="_idIndexMarker884"/> for the presence of three folders; if they exist, a cached version of those folders will be used, meaning that once the workflow has been run once, subsequent executions will be much quicker as we don’t have to install the Ansible Galaxy modules and their requirements each time the workflow runs:<pre class="source-code">
+    steps:
+      - name: "Cache Ansible collections and Python packages"
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.ansible/collections
+            ~/.cache/pip
+            /home/runner/.local/lib/python3.10/site-packages
+          key: ${{ runner.os }}-ansible-collections-and-python-packages
+          restore-keys: |
+            ${{ runner.os }}-ansible-collections-and-python-packages</pre></li> <li>Next up, we have the step that checks out our repo:<pre class="source-code">
+      - name: "Checkout the code"
+        id: "checkout"
+        uses: "actions/checkout@v4"</pre><p class="list-inset">You might be wondering, “<em class="italic">Why do we need to check out the code again? We already did that during the last job.</em>” This is a great question.</p><p class="list-inset">The answer is that the compute resource that ran the job was terminated when the last job finished running, and all data was lost. When the current job started, a new resource was launched, and we started again with a completely fresh installation.</p></li> <li>The next step in the workflow<a id="_idIndexMarker885"/> uses the <code>Azure/login@2</code> task to install the Azure CLI if it’s not already installed and then log in using the service principal information we defined as repository secrets earlier in this chapter:<pre class="source-code">
+      - name: "Login to Azure using a service principal"
+        uses: "Azure/login@v2"
+        with:
+          creds: '{"<a id="_idTextAnchor674"/>cli<a id="_idTextAnchor675"/>entId":"${{secrets.ARM_CLIENT_ID }}","clie<a id="_idTextAnchor676"/>ntSecret":"${{secrets.ARM_CLIENT_SECRET }}","subscriptionId":"${{secrets.ARM_SUBSCRIPTION_ID }}","<a id="_idTextAnchor677"/>tenantId":"${{secrets.ARM_TENANT_ID }}"}'</pre><p class="list-inset">We need to embed secrets using the <code>${{ secrets.SECRET_NAME }}</code> format. Here, we are using the following:</p><ul><li><code>${{</code><code>secrets.ARM_CLIENT_ID }}</code></li><li><code>${{</code><code>secrets.ARM_CLIENT_SECRET}}</code></li><li><code>${{ </code><code>secrets.ARM_SUBSCRIPTION_ID }}</code></li><li><code>${{ </code><code>secrets.ARM_TENANT_ID }}</code></li></ul><p class="list-inset">Because these are all defined as secrets, the values will never appear in any of the Pipeline run logs.</p><p class="list-inset">This means that while we know the values, someone else who has permission to run the workflow will never need to be told the credentials for our service principle as they can consume the secrets. They will also never accidentally be exposed to them if they check any logs or try and output them due to the workflow’s execution as they will be automatically redacted.</p></li> <li>The final step before we run Ansible<a id="_idIndexMarker886"/> is to add and configure the SSH key pair to our host:<pre class="source-code">
+      - name: "Setup SSH key for Ansible"
+        id: "add-ssh-key"
+        run: |
+          mkdir ~/.ssh
+          chmod 700 ~/.ssh/
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" &gt; ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          echo "${{ secrets.SSH_PUBLIC_KEY }}" &gt; ~/.ssh/id_rsa.pub
+          chmod 644 ~/.ssh/id_rsa.pub
+          cat  ~/.ssh/id_rsa.pub</pre></li> <li>The SSH key pair is the final piece we needed. Now, we can run Ansible:<pre class="source-code">
+      - name: "Run the playbook (with ansible-playbook)"
+        id: "ansible-playbook-run"
+        continue-on-error: true
+        run: |
+          ansible-playbook -i inv site.yml 2&gt;&amp;1 | tee ansible_output.log
+          echo "summary&lt;&lt;EOF" &gt;&gt; $GITHUB_OUTPUT
+          echo "## Ansible Playbook Output" &gt;&gt; $GITHUB_OUTPUT
+          echo "&lt;details&gt;&lt;summary&gt;Click to expand&lt;/summary&gt;" &gt;&gt; $GITHUB_OUTPUT
+          echo "" &gt;&gt; $GITHUB_OUTPUT
+          echo "\`\`\`" &gt;&gt; $GITHUB_OUTPUT
+          cat ansible_output.log &gt;&gt; $GITHUB_OUTPUT
+          echo "\`\`\`" &gt;&gt; $GITHUB_OUTPUT
+          echo "&lt;/details&gt;" &gt;&gt; $GITHUB_OUTPUT
+          echo "EOF" &gt;&gt; $GITHUB_OUTPUT
+        env:
+          ANSIBLE_HOST_KEY_CHECKING: "False"</pre></li> </ol>
+<p>As you can see, there is slightly<a id="_idIndexMarker887"/> more to running Ansible here than we have been doing on our local machines. The reason we are running the Ansible playbook is to capture its output and format the output so that it can be displayed in the GitHub Actions job log.</p>
+<p>Here’s a breakdown of what’s happening:</p>
+<ul>
+<li><code>Run the playbook (with ansible-playbook)</code> for clarity in the workflow’s execution log.</li>
+<li><code>ansible-playbook-run</code> so that we can refer to this step’s outputs in the subsequent step.</li>
+<li><code>continue-on-error</code> to <code>true</code>, we are allowing the workflow to continue even if this step encounters an error. This is useful for ensuring that the workflow can proceed to steps that might, for example, provide diagnostic information or perform cleanup actions, even if the Ansible playbook fails.</li>
+<li><strong class="bold">Run</strong>: This key starts a multi-line script<a id="_idIndexMarker888"/> block that’s executed in the jobs shell. The script does the following:<pre class="source-code">
+ansible-playbook -i inv site.yml 2&gt;&amp;1 | tee ansible_output.log</pre><p class="list-inset">This command runs the Ansible playbook defined in <code>site.yml</code> with an inventory file, <code>inv</code>. The <code>2&gt;&amp;1</code> part redirects <code>stderr</code> to <code>stdout</code>, so both standard output and errors from the <code>ansible-playbook</code> command are piped to the <code>tee</code> command. <code>tee ansible_output.log</code> writes the output to <code>ansible_output.log</code> and displays it in the workflow’s log for real-time monitoring.</p><p class="list-inset">Subsequent <code>echo</code> commands and <code>cat</code> append a formatted summary of the Ansible output to the special <code>GITHUB_OUTPUT</code> environment variable. As you may have noticed, we are mostly using Markdown to format the text.</p></li> <li><code>env</code> section defines environment variables for this step. <code>ANSIBLE_HOST_KEY_CHECKING: "False"</code> disables Ansible’s SSH host key checking. This option is often used in automated environments to avoid manual interventions.</li>
+</ul>
+<p>The final step in our workflow takes the output of the previous step and outputs it to <code>$GITHUB_STEP_SUMMARY</code>. This is a special variable that’s used by a GitHub Actions workflow to record the results of a step in the workflow executions log:</p>
+<pre class="source-code">
+      - name: "Publish Ansible Playbook run to Task Summary"
+        env:
+          SUMMARY: ${{ steps.ansible-playbook-run.outputs.summary }}
+        run: |
+          echo "$S<a id="_idTextAnchor678"/>UMMARY" &gt;&gt; $GITHUB_STEP_SUMMARY</pre> <p>While that completes our workflow code review, one more task happens in the background that we don’t have to define. As you may recall, in the first step of the <code>run_ansible_playbook</code> job, we had a step that looked for any caches associated with the workflow. Well, by defining that step, there is a post-deploy task that runs at the end of the workflow and creates<a id="_idIndexMarker889"/> the cache if one doesn’t exist.</p>
+<p>Now that we understand our workflow code, let’s check out a copy of our newly created repository. Copy the code from the example repository and then check in the changes.</p>
+<h2 id="_idParaDest-225"><a id="_idTextAnchor679"/>Committing the code</h2>
+<p>As mentioned previously, before running<a id="_idIndexMarker890"/> the workflow, we need to check out the empty repository we created at the start of this chapter. This will vary depending on how you interact with GitHub. I use the command line, but you might use the GitHub Desktop application or an IDE such as Visual Studio Code.</p>
+<p class="callout-heading">Information</p>
+<p class="callout">For more information on the GitHub desktop application, see <a href="https://desktop.github.com/">https://desktop.github.com/</a>. For details on how to configure an SSH connection to GitHub, see <a href="https://docs.github.com/en/authentication/connecting-to-github-with-ssh.">https://docs.github.com/en/authentication/connecting-to-github-with-ssh.</a></p>
+<p>If you want to follow along on the command line, you must update the repository’s name to reflect your own and ensure you have SSH access to your GitHub r<a id="_idTextAnchor680"/>epositories:</p>
+<pre class="console">
+$ git clone https://github.com/PacktPublishing/Learn-Ansible-Second-Edition.git
+$ cd Learn-Ansible-Second-Edition-Chapter15</pre> <p>Once I was in the folder, I copie<a id="_idTextAnchor681"/>d across the contents of <a href="https://github.com/PacktPublishing/Learn-Ansible-Second-Edition/tree/main/Chapter15">https://github.com/PacktPublishing/Learn-Ansible-Second-Edition/tree/main/Chapter15</a>, ensuring that I also copied the <code>.github</code> folder as this contains the workflow we want<a id="_idTextAnchor682"/> to execute.</p>
+<p>Once copied, I ran the following commands to add the new files and create the first commit, then pushed:</p>
+<pre class="console">
+$ git add .
+$ git commit -m "first commit"
+$ git push</pre> <p>If everything goes as planned, if you go to your repository<a id="_idIndexMarker891"/> and click on the <strong class="bold">Actions</strong> tab, you should see something <a id="_idTextAnchor683"/>like this:</p>
+<div><div><img alt="Figure 15.3 – Our first commit is running the GitHub Action" src="img/B21620_15_03.jpg"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 15.3 – Our first commit is running the GitHub Action</p>
+<p>Clicking the name of the commit should show you the progress of the <a id="_idTextAnchor684"/>workflow:</p>
+<div><div><img alt="Figure 15.4 – Viewing the progress of the workflow" src="img/B21620_15_04.jpg"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 15.4 – Viewing the progress of the workflow</p>
+<p>Click on the running job – in my example, this is the <em class="italic">Install Ansible and Run Playbook</em> job. This will show you its real-time p<a id="_idTextAnchor685"/>rogress:</p>
+<div><div><img alt="Figure 15.5 – Viewing the real-time output" src="img/B21620_15_05.jpg"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 15.5 – Viewing the real-time output</p>
+<p>If everything works<a id="_idIndexMarker892"/> as planned, the Ansible playbook will run, the Azure resources will be deployed, and we should have a running WordPress instance.</p>
+<p>Clicking on the <strong class="bold">Summary</strong> link at the top of the page will show you the full output. Here, we’ll see any warnings or information that was logged during the workflow run, followed by the KICS <a id="_idTextAnchor686"/>results:</p>
+<div><div><img alt="Figure 15.6 – The KICS scan results" src="img/B21620_15_06.jpg"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 15.6 – The KICS scan results</p>
+<p>You will also be able to expand<a id="_idIndexMarker893"/> the <strong class="bold">Ansible Playbook Output</strong> area and view t<a id="_idTextAnchor687"/>he logs:</p>
+<div><div><img alt="Figure 15.7 – Ansible Playb﻿﻿ook Output" src="img/B21620_15_07.jpg"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 15.7 – Ansible Playb<a id="_idTextAnchor688"/><a id="_idTextAnchor689"/>ook Output</p>
+<p>Before we remove the Azure resources, let’s see what happens when the scan fails. To do this, open <code>roles/azure/tasks/main.yml</code> and remove the line that reads as follows (it should be around line <em class="italic">61</em>):</p>
+<pre class="source-code">
+    security_group: "{{ nsg_output.state.name }}"</pre> <p>Once removed, check in the updated code. This will trigger a new workfl<a id="_idTextAnchor690"/>ow run:</p>
+<div><div><img alt="Figure 15.8 – Triggering a second workflow run" src="img/B21620_15_08.jpg"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 15.8 – Triggering a second workflow run</p>
+<p>As the line we removed will trigger<a id="_idIndexMarker894"/> a medium severity rule, our workflow run should fail, as sh<a id="_idTextAnchor691"/>o<a id="_idTextAnchor692"/>wn here:</p>
+<div><div><img alt="Figure 15.9 – Our second workflow run failed due to our change" src="img/B21620_15_09.jpg"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 15.9 – Our second workflow run failed due to our change</p>
+<p>Once you have finished testing, I recommend logging into Azure and manually deleting the resource group containing the resources we’ve just launched.</p>
+<p>As you can see, while there are considerations you need to make for your deployments – such as ensuring all the connectivity and steps are in place to interact with your cloud provider securely – the general gist and approach to running our Playbooks remains much the same<a id="_idIndexMarker895"/> as on our local machine.</p>
+<p>The same can also be said about the next tool we will examine, Azure DevOps.</p>
+<h1 id="_idParaDest-226"><a id="_idTextAnchor693"/>Azure DevOps</h1>
+<p>The description we used for GitHub Actions<a id="_idIndexMarker896"/> also applies to Azure DevOps Pipelines and repositories, two of the Azure DevOps services we will use in this section. Again, we will use platform-provided computing resources to run our Ansible Playbook, and many approaches will be the same. So, rather than covering old ground, let’s start with preparing an Azure DevOps project to host our code and run our Playbook.</p>
+<h2 id="_idParaDest-227"><a id="_idTextAnchor694"/>Creating and configuring our project</h2>
+<p>First, you will need to create<a id="_idIndexMarker897"/> an Azure DevOps<a id="_idIndexMarker898"/> project. Like our GitHub repository, I’ve called it <code>Learn-Ansible-Second-Edition-<a id="_idTextAnchor695"/>Chapter15</code>:</p>
+<div><div><img alt="Figure 15.10 – Our newly created Azure DevOps project" src="img/B21620_15_10.jpg"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 15.10 – Our newly created Azure DevOps project</p>
+<p>We need to configure a few<a id="_idIndexMarker899"/> things before<a id="_idIndexMarker900"/> checking our code in and adding our pipeline; the first is to create a service connection to Azure itself. To do this, click on the <strong class="bold">Project Settings</strong> button, which can be found at the bottom far left-hand corner of the page.</p>
+<p>Once <strong class="bold">Project Settings</strong> is open, in the left-hand menu under <strong class="bold">Pipelines</strong>, click <strong class="bold">Service connections</strong>, then click the <strong class="bold">Create service </strong><strong class="bold">connection</strong> button.</p>
+<p>Select <strong class="bold">Azure Resource Manager</strong>, then click <strong class="bold">Next</strong>; from here, select <strong class="bold">Service principal (manual)</strong> and click <strong class="bold">Next</strong> again.</p>
+<p>We are taking this approach rather than any of the others, which would automatically create the service principle for us, as we already have the details of a service principle noted from the <em class="italic">GitHub </em><em class="italic">Actions</em> section.</p>
+<p>The following table contains the information you need to enter:</p>
+<table class="No-Table-Style _idGenTablePara-1" id="table002">
+<colgroup>
+<col/>
+<col/>
+</colgroup>
+<tbody>
+<tr class="No-Table-Style">
+<td class="No-Table-Style">
+<p><strong class="bold">Option</strong></p>
+</td>
+<td class="No-Table-Style">
+<p><strong class="bold">Content</strong></p>
+</td>
+</tr>
+<tr class="No-Table-Style">
+<td class="No-Table-Style">
+<p><strong class="bold">Subscription Id</strong></p>
+</td>
+<td class="No-Table-Style">
+<p>This is your Azure subscription ID; use the one you granted the service principal access to. In this example, this would be <code>e80d5ad9-e2c5-4ade-a866-bcfbae2b8aea</code>.</p>
+</td>
+</tr>
+<tr class="No-Table-Style">
+<td class="No-Table-Style">
+<p><strong class="bold">Subscription Name</strong></p>
+</td>
+<td class="No-Table-Style">
+<p>Enter the name of your Azure subscription. Since we are going to be referring to the subscription ID in the pipeline code, this can be set to anything you like.</p>
+</td>
+</tr>
+<tr class="No-Table-Style">
+<td class="No-Table-Style">
+<p><strong class="bold">Service </strong><strong class="bold">Principal Id</strong></p>
+</td>
+<td class="No-Table-Style">
+<p>This is the <code>appId</code> value from when you create the service principle. In this example, this would be <code>2616e3df-826d-4d9b-9152-3de141465a69</code>.</p>
+</td>
+</tr>
+<tr class="No-Table-Style">
+<td class="No-Table-Style">
+<p><strong class="bold">Service </strong><strong class="bold">principal key</strong></p>
+</td>
+<td class="No-Table-Style">
+<p>This is the <code>password</code> value that was given when you created the service principle. In this example, this would be <code>Y4j8Q~gVO*NoTaREalPa55w0rdpP-pdaw</code>.</p>
+</td>
+</tr>
+<tr class="No-Table-Style">
+<td class="No-Table-Style">
+<p><strong class="bold">Tenant ID</strong></p>
+</td>
+<td class="No-Table-Style">
+<p>This is the ID of the <code>tenant</code> value listed when you created the service principle. In this example, this would be <code>c5df827f-a940-4d7c-b313-426cb3c6b1fe</code>.</p>
+</td>
+</tr>
+<tr class="No-Table-Style">
+<td class="No-Table-Style">
+<p><strong class="bold"><a id="_idTextAnchor696"/>Service </strong><strong class="bold">connection nam</strong><strong class="bold">e</strong></p>
+</td>
+<td class="No-Table-Style">
+<p>Enter <code>azConnection</code> here as this is how we are referencing the connection in the pipeline code.</p>
+</td>
+</tr>
+<tr class="No-Table-Style">
+<td class="No-Table-Style">
+<p><strong class="bold">Security</strong></p>
+</td>
+<td class="No-Table-Style">
+<p>Ensure that <strong class="bold">Grant access permission to all pipelines</strong> is selected.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Table 15.2 – Information needed for your pipeline in Azure DevOps</p>
+<p>Once you’ve entered<a id="_idIndexMarker901"/> this information, click<a id="_idIndexMarker902"/> the <strong class="bold">Verify and Save</strong> button. This will check the details you entered are correct and save the service connection.</p>
+<p>Next, we need to install a few extensions from the Visual Studio Marketplace, allowing us to publish our KICS<a id="_idIndexMarker903"/> report and an overview of our Playbook run:</p>
+<ul>
+<li><strong class="bold">Markdown </strong><strong class="bold">Reports</strong>: <a href="https://marketplace.visualstudio.com/items?itemName=MasamitsuMurase.publish-markdown-reports">https://marketplace.visualstudio.com/items?itemName=MasamitsuMurase.publish-markdown-reports</a></li>
+<li><strong class="bold">Sarif </strong><strong class="bold">Tools</strong>: <a href="https://marketplace.visualstudio.com/items?itemName=sariftools.scans">https://marketplace.visualstudio.com/items?itemName=sariftools.scans</a></li>
+</ul>
+<p>To enable the extensions on your Azure DevOps organization, follow the preceding URLs and the instructions when you click the <strong class="bold">Get it </strong><strong class="bold">free</strong> button.</p>
+<p>The final configuration piece is adding a pipeline variable group and secure file. To do this, click on <strong class="bold">Pipelines</strong> in the left-hand side menu and then click <strong class="bold">Library</strong>. Once on the <strong class="bold">Library</strong> page, click the <strong class="bold">+ Variable </strong><strong class="bold">group</strong> button.</p>
+<p>Name the variable group <code>playbook</code> and enter the following variables:</p>
+<table class="No-Table-Style _idGenTablePara-1" id="table003">
+<colgroup>
+<col/>
+<col/>
+</colgroup>
+<tbody>
+<tr class="No-Table-Style">
+<td class="No-Table-Style">
+<p><strong class="bold">Name</strong></p>
+</td>
+<td class="No-Table-Style">
+<p><strong class="bold">Value</strong></p>
+</td>
+</tr>
+<tr class="No-Table-Style">
+<td class="No-Table-Style">
+<p><code>breakSeverity</code></p>
+</td>
+<td class="No-Table-Style">
+<p><code>MEDIUM</code></p>
+</td>
+</tr>
+<tr class="No-Table-Style">
+<td class="No-Table-Style">
+<p><code>SSH_PUBLIC_KEY</code></p>
+</td>
+<td class="No-Table-Style">
+<p>Paste the contents of the <code>id_rsa.pub</code> file here</p>
+</td>
+</tr>
+<tr class="No-Table-Style">
+<td class="No-Table-Style">
+<p><code>subscriptionName</code></p>
+</td>
+<td class="No-Table-Style">
+<p><code>azConnection</code> – this is the name of the connection we created at the start of this section</p>
+</td>
+</tr>
+</tbody>
+</table>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Table 15.3 – Information required for the variable group</p>
+<p>Once you have filled in the preceding<a id="_idIndexMarker904"/> information, click <code>id_rsa</code> file.</p>
+<p>We now have all the base configurations ready and can upload our code.</p>
+<h2 id="_idParaDest-228"><a id="_idTextAnchor697"/>Cloning the repository and uploading the code</h2>
+<p>Next, we must clone<a id="_idIndexMarker906"/> the repository<a id="_idIndexMarker907"/> and upload our code, including the <code>azure-pipelines.yml</code> file we will cover in the next section. To do this, click on <strong class="bold">Repos</strong> in the left-hand side menu; you will be presented with several ways to clone the repository.</p>
+<p>I’ve chosen to clone using SSH again; if you are following along, update the <code>git clone</code> command to reflect your repository:</p>
+<pre class="console">
+$ git clone git@ssh.dev.azure.com:v3/russmckendrick/Learn-Ansible-Second-Edition-Chapter15/Learn-Ansible-Second-Edition-Chapter15
+$ cd Learn-Ansible-Second-Edition-Chapter15</pre> <p>I then copied the files across from <a href="https://github.com/PacktPublishing/Learn-Ansible-Second-Edition/tree/main/Chapter15">https://github.com/PacktPublishing/Learn-Ansible-Second-Edition/tree/main/Chapter15</a>. This time, I didn’t worry about copying the <code>.github</code> directory as it isn’t required. Once the files were in my locally cloned folder, I ran the following commands to add the new files and create the first commit, then push<a id="_idTextAnchor698"/>:</p>
+<pre class="console">
+$ git add <a id="_idTextAnchor699"/>.
+$ git commit -m "first commit"
+$ git push</pre> <p>Unlike when we first <a id="_idIndexMarker908"/>checked our code<a id="_idIndexMarker909"/> into GitHub, nothing will happen because we haven’t configured our pipeline yet.</p>
+<h2 id="_idParaDest-229"><a id="_idTextAnchor700"/>The Azure DevOps pipeline</h2>
+<p>Our pipeline is defined<a id="_idIndexMarker910"/> <a id="_idTextAnchor701"/>in the <code>azure-pipelines.yml</code> file, which can be found at the root of our repository file. Let’s quickly review the content before we create the pipeline using that file.</p>
+<p class="callout-heading">Information</p>
+<p class="callout">Structurally, our <code>azure-pipelines.yml</code> file is close to what we have already covered for GitHub Actions; in fact, you might almost think they are interchangeable and compatible – however, they aren’t, so please be careful not to mix the two up.</p>
+<p>Our pipeline file starts with a basic configuration that instructs the pipeline when to trigger, which variable group to load, and which underlying image to use. Right at the top, there’s an exclusion<a id="_idIndexMarker911"/> rule for KICS, something we covered in <a href="B21620_13.xhtml#_idTextAnchor566"><em class="italic">Chapter 13</em></a>, <em class="italic">Scanning Your </em><em class="italic">Ansible Playbooks</em>:</p>
+<pre class="source-code">
+# kics-scan disable=3e2d3b2f-c22a-4df1-9cc6-a7a0aebb0c99
+trigger:
+  - main
+variables:
+  - group: playbook
+pool:
+  vmImage: ubuntu-latest</pre> <p>Once the basic configuration is complete, we can start the stages:</p>
+<ol>
+<li>Our first run is the KICS scan on the code:<pre class="source-code">
+  - stage: "scan"
+    displayName: "KICS - Scan Ansible Playbook"</pre></li> <li>This stage is made up of a single job:<pre class="source-code">
+   jobs:
+      - job: "kics_scan"
+        displayName: "Run KICS Scan"
+        pool:
+          vmImage: "ubuntu-latest"
+        con<a id="_idTextAnchor702"/>tainer: checkmarx/kics:debian</pre></li> <li>As you may have noticed, here, we are using the <code>checkmarx/kics:debian</code> container image to deploy KICS. This will spin up the container and run the following steps from within it. Our step contains two tasks – the first creates the output folder, checks out the code, and runs the scan:<pre class="source-code">
+        steps:
+          - script: |
+              mkdir -p $(System.DefaultWorkingDirectory)/output
+              /app/bin/kics scan --ci -p ${PWD} -o ${PWD} --report-formats "all" --ignore-on-exit results
+              mv results* $(System.DefaultWorkingDirectory)/output
+              ls -lhat $(System.DefaultWorkingDirectory)/output</pre></li> <li>The second task publishes<a id="_idIndexMarker912"/> the content of the output directory, which contains all of our scan results as a build artifact:<pre class="source-code">
+          - task: PublishBuildArtifacts@1
+            inputs:
+              pathToPublish: $(System.DefaultWorkingDirectory)/output
+              artifactName: CodeAnalysisLogs</pre></li> <li>With the files published, we no longer need the resources that were generated during this stage, so we can move on to the second stage:<pre class="source-code">
+  - stage: "scan_parse"
+    displayName: "KICS - Parse Scan Resaults"
+    jobs:
+      - job: "kics_scan_parse_result"
+        displayName: "Check KICS Scan Resaults"
+        pool:
+          vmImage: "ubuntu-latest"
+        steps:</pre></li> <li>As you can see, this stage parses our scan results; the first task we run downloads a copy of the artifact we uploaded during the last stage:<pre class="source-code">
+          - task: DownloadPipelineArtifact@2
+            displayName: "Download the Security Scan Artifact Result"
+            inputs:
+              artifact: CodeAnalysisLogs</pre><p class="list-inset">Now that we have the results<a id="_idIndexMarker913"/> files, we need to review them to figure out if the Ansible Playbook should be run or not. This task runs a bash script that reads the JSON results and sets some pipeline variables to control what happens next.</p></li> <li>We start the task with some configuration:<pre class="source-code">
+          - task: Bash@3
+            name: "setvar"
+            displayName: "Check for issues in the scan result"
+            inputs:
+                failOnStderr: true
+                targetType: "inline"
+                script: |</pre></li> <li>Now, we have the script itself, which starts by setting some local variables and printing some results out to the screen using the <code>echo</code> command. These will appear in our pipeline run:<pre class="source-code">
+                  resultsFilePath="$(Pipeline.Workspace)/results.json"
+                  BREAK=$(breakSeverity)
+                  echo "Checking for severity level: $BREAK"
+                  noIssues=$(jq --arg BREAK "$BREAK" '.severity_counters[$BREAK] // 0' $resultsFilePath)
+                  echo "Number of issues found: $noIssues"</pre><p class="list-inset">Then, we create a <em class="italic">group</em>, which means that when we review the pipeline output, the following information will be minimized, making it easier to read.</p></li> <li>In the group, we have an <code>if</code> statement that states<a id="_idIndexMarker914"/> that if less than (<code>-lt</code>) <code>1</code> issues are detected (that is, zero issues), then the output variable, <code>OK_TO_DEPLOY</code>, is set to <code>true</code>:<pre class="source-code">
+                  echo "##[group]Checking the scan output"
+                  if [ "$noIssues" -lt 1 ]; then
+                      echo "##vso[task.setvariabl<a id="_idTextAnchor703"/>e variable=OK_TO_DEPLOY;isOutput=true]true"
+                      echo "##vso[task.logissue type=warning]No issue found. Progressing with pipeline."</pre></li> <li>If this condition is not met – that is, there are one or more issues – then <code>OK_TO_DEPLOY</code> is set to <code>false</code> and an error is logged:<pre class="source-code">
+                  else
+                      echo "##vso[task.setvariabl<a id="_idTextAnchor704"/>e variable=OK_TO_DEPLOY;isOutput=true]false"
+                      echo "##vso[task.logissue type=error]Pipeline failed due to $noIssues issue(s) found."
+                  fi
+                  echo "##[endgroup]"</pre></li> <li>Logging the error will stop the remainder of the pipeline from running. The next and final stage runs the Ansible Playbook. It has a dependency on the previous stage being successfully executed and <code>OK_TO_DEPLOY</code> being set to <code>true</code>:<pre class="source-code">
+  - stage: "run_ansible"
+    displayName: "Run Ansible"
+    condition: |
+      and
+        (
+          succeeded(),
+          eq(dependencies.scan_parse.outputs['kics_scan_parse_res<a id="_idTextAnchor705"/>ult.setvar.OK_TO_DEPLOY'], 'true')
+        )
+    jobs:
+      - job: "ansible_install"
+        displayName: "Ansible"
+        steps:</pre></li> <li>The first task logs<a id="_idIndexMarker915"/> us into Azure and sets the service principle details as environment variables for use in a later task:<pre class="source-code">
+          - task: AzureCLI@2
+            displayName: 'Azure CLI'
+            inputs:
+              azureSubscription: '$(subscriptionName)'
+              addSpnToEnvironment: true
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                echo "##vso[task.setvariable variable=ARM_SUBSCRIPTION_ID]$(az account show --query="id" -o tsv)"
+                echo "##vso[task.setvariable variable=ARM_CLIENT_ID]${servicePrincipalId}"
+                echo "##vso[task.setvariable variable=ARM_CLIENT_SECRET]${servicePrincipalKey}"
+                echo "##vso[task.setvariable variable=ARM_TENANT_ID]${tenantId}"</pre></li> <li>Next up, we need to add our SSH key to our environment. This uses the secure file we uploaded earlier:<pre class="source-code">
+          - task: InstallSSHKey@0
+            displayName: "Add SSH Key"
+            inputs:
+              sshKeySecureFile: "id_rsa"
+              knownHostsEntry: "azure.devops"</pre></li> <li>Now, we need to add<a id="_idIndexMarker916"/> the public portion of the SSH key, install the bits we need to run the Ansible Playbook, and then actually run it, remembering to add the details for the service principle:<pre class="source-code">
+          - task: Bash@3
+            name: "ansible"
+            displayName: "Run Ansible"
+            env:
+              AZURE_CLIENT_ID: $(ARM_CLIENT_ID)
+              AZURE_SECRET: $(ARM_CLIENT_SECRET)
+              AZURE_TENANT: $(ARM_TENANT_ID)
+              AZURE_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
+              ANSIBLE_HOST_KEY_CHECKING: "False"
+            inputs:
+                targetType: "inline"
+                script: |</pre></li> <li>With the environment ready, we can run the script, which starts by adding the <code>id_rsa.pub</code> file and adding the right permissions:<pre class="source-code">
+                  echo "##[group]Add SSH key"
+                      echo "$(SSH_PUBLIC_KEY)" &gt; ~/.ssh/id_rsa.pub
+                      chmod 644 ~/.ssh/id_rsa.pub
+                  echo "##[endgroup]"</pre></li> <li>The next part of the script<a id="_idIndexMarker917"/> installs the Azure Ansible collection from Ansible Galaxy and installs the requirements. We are using <code>--force</code> here to ensure that the latest copy of all the collection is pulled down from Ansible Galaxy:<pre class="source-code">
+                  echo "##[group]Install the Azure Ansible Collection"
+                      ansible-galaxy collection install --force azure.azcollection
+                      pip3 install -r ~/.ansible/collections/ansible_collections/azure/azcollection/requirements-azure.txt
+                  echo "##[endgroup]"</pre></li> <li>With those installed, we can now run the playbook; we are taking a similar approach to running the playbook as we did for our GitHub Action:<pre class="source-code">
+                  echo "##[group]Run the Ansible Playbook"
+                      ansible-playbook -i inv site.yml 2&gt;&amp;1 | tee $(System.DefaultWorkingDirectory)/ansible_output.log
+                  echo "##[endgroup]"</pre></li> <li>The final part of our script takes<a id="_idIndexMarker918"/> our Ansible output and creates a Markdown file called <code>summary.md</code>:<pre class="source-code">
+                  echo "##[group]Create the mardown file for the Ansible Playbook Output"
+                      mkdir -p $(System.DefaultWorkingDirectory)/markdown
+                      echo "# Ansible Playbook Output" &gt; $(System.DefaultWorkingDirectory)/markdown/summary.md
+                      echo "&lt;details&gt;&lt;summary&gt;Click to expand&lt;/summary&gt;" &gt;&gt; $(System.DefaultWorkingDirectory)/markdown/summary.md
+                      echo "" &gt;&gt; $(System.DefaultWorkingDirectory)/markdown/summary.md
+                      echo "\`\`\`" &gt;&gt; $(System.DefaultWorkingDirectory)/markdown/summary.md
+                      cat $(System.DefaultWorkingDirectory)/ansible_output.log &gt;&gt; $(System.DefaultWorkingDirectory)/markdown/summary.md
+                      echo "\`\`\`" &gt;&gt; $(System.DefaultWor<a id="_idTextAnchor706"/>kingDirec<a id="_idTextAnchor707"/>tory)/markdown/summary.md                      echo "&lt;/details&gt;" &gt;&gt; $(System.DefaultWorkingDirectory)/markdown/summary.md
+                  echo "##[endgroup]"</pre></li> <li>The final task of the pipeline is to upload a copy of the <code>markdown/summary.md</code> file to our pipeline:<pre class="source-code">
+          - task: PublishMarkdownReports@1
+            name: "upload_ansible_output"
+            displayName: "Upload Ansible Output"
+            inputs:
+              contentPath: "$(Build.SourcesDirectory)/markdown"
+              indexFile: "summary.md"</pre></li> </ol>
+<p>With that, our pipeline<a id="_idIndexMarker919"/> is complete. So, now that we know what it does, let’s add it to our Azure DevOps project and run it for the first time.</p>
+<p>If you click on <code>azure-pipelines.yml</code> file will be loaded and you will have the option to <strong class="bold">Run</strong> or <strong class="bold">Save</strong>. We’ll click <strong class="bold">Run</strong>.</p>
+<p>You will be presented with something like the follo<a id="_idTextAnchor708"/>wing screen:</p>
+<div><div><img alt="Figure 15.11 – Running the pipeline for the first time" src="img/B21620_15_11.jpg"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 15.11 – Running the pipeline for the first time</p>
+<p>However, not is all as it seems! If you click on the first stage, you will be presented with the following. The pipeline needs permissions to access the variable group <a id="_idTextAnchor709"/>we created:</p>
+<div><div><img alt="Figure 15.12 – Granting the permissions for the variable group" src="img/B21620_15_12.jpg"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 15.12 – Granting the permissions for the variable group</p>
+<p>Click <strong class="bold">View</strong> and follow the onscreen<a id="_idIndexMarker920"/> instructions to grant the permissions. The KICS scan will run, and the stage will be complete. It will then move on to the <strong class="bold">Parse Scan Results</strong> stage, which should be completed again.</p>
+<p>If you go back to the summary, you’ll see that more permissions are required, this time to access the secure file w<a id="_idTextAnchor710"/>e uploaded:</p>
+<div><div><img alt="Figure 15.13 – Grant the permissions for the secure file" src="img/B21620_15_13.jpg"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 15.13 – Grant the permissions for the secure file</p>
+<p>Again, click <strong class="bold">View</strong> and follow the onscreen instructions to grant permission. This should be the last permission that needs to be given. From now on, when we run the pipeline, permissions will already be given.</p>
+<p>If you click on the <strong class="bold">Run Ansible</strong> stage, you can keep track of the Playbook run. If everything goes as planned, returning<a id="_idIndexMarker921"/> to the summary should show you something like the<a id="_idTextAnchor711"/> following:</p>
+<div><div><img alt="Figure 15.14 – Everything worked!!!" src="img/B21620_15_14.jpg"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 15.14 – Everything worked!!!</p>
+<p>Clicking on <strong class="bold">Markdown reports</strong> will show the result of the Pla<a id="_idTextAnchor712"/>ybook run:</p>
+<div><div><img alt="Figure 15.15 – The Markdown report" src="img/B21620_15_15.jpg"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 15.15 – The Markdown report</p>
+<p>Clicking <strong class="bold">Scans</strong> will show you the results<a id="_idIndexMarker922"/> of the <a id="_idTextAnchor713"/>KICS scan:</p>
+<div><div><img alt="Figure 15.16 – The scan report" src="img/B21620_15_16.jpg"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 15.16 – The scan report</p>
+<p>Like GitHub Actions, let’s see what happens when the scan fails. Again, open <code>roles/azure/tasks/main.yml</code> and remove the line that reads as follows (it should be around line <em class="italic">61</em>):</p>
+<pre class="source-code">
+    security_group: "{{ nsg_output.state.name }}"</pre> <p>Once removed, check in the updated code. This will trigger a new workflow run:</p>
+<div><div><img alt="Figure 15.17 – The pipeline has errored" src="img/B21620_15_17.jpg"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 15.17 – The pipeline has errored</p>
+<p>As you can see, we have a message stating <strong class="bold">Pipeline failed due to 1 issue(s) found</strong>, and the <strong class="bold">Run Ansible</strong> stage was skipped as we didn’t meet the conditions for it to run.</p>
+<p>Once you have finished testing, log into Azure<a id="_idIndexMarker923"/> and manually delete the resource group containing the resources we have just launched.</p>
+<h1 id="_idParaDest-230"><a id="_idTextAnchor714"/>Summary</h1>
+<p>In this chapter, we looked at running our Ansible Playbooks using the compute resources GitHub and Azure DevOps provide. We discovered that this is great for running our playbook code as we can ship code that defines the configuration for the computing resources alongside our Playbook code.</p>
+<p>We also learned that by using the built-in tools, we can securely configure our environment so as not to expose secrets, such as our service principle credentials, to other users who have access to run the playbook.</p>
+<p>The only downside is that we had to create the logic that runs the playbook. Wouldn’t it be great to use a tool designed to centrally run our Playbooks from a single user interface? Well, in our next chapter, we will cover exactly that – so if you like the approach we have taken so far, read on.</p>
+<h1 id="_idParaDest-231"><a id="_idTextAnchor715"/>Further reading</h1>
+<p>To learn more about the topics that were covered in this chapter, take a look at the following resources:</p>
+<ul>
+<li><strong class="bold">GitHub </strong><strong class="bold">Actions</strong>: <a href="https://docs.github.com/en/actions">https://docs.github.com/en/actions</a></li>
+<li><strong class="bold">Azure </strong><strong class="bold">DevOps</strong>: <a href="https://azure.microsoft.com/en-gb/products/devops">https://azure.microsoft.com/en-gb/products/devops</a></li>
+</ul>
+</div>
+</body></html>

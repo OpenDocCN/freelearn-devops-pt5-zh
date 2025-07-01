@@ -1,0 +1,304 @@
+<html><head></head><body><div><div><div><div><h1 class="title"><a id="ch05"/>Chapter 5. Custom Modules</h1></div></div></div><p>Until now we have been working solely with the tools provided to us by Ansible. This does afford us a lot of power, and make many things possible. However if you have something particularly complex or if you find yourself using the script module a lot, you will probably want to learn how to extend Ansible.</p><p>In this chapter, you will learn the following topics:</p><div><ul class="itemizedlist"><li class="listitem">How to write modules in Bash scripting or Python</li><li class="listitem">Using the custom modules that you have developed</li><li class="listitem">Writing a script to use an external data source as an inventory</li></ul></div><p>Often when you approach something complex in Ansible, you write a script module. The issue with script modules is that you can't process their output, or trigger handlers based on their output easily. So, although the script module works in some cases, using a module can be better.</p><p>Use a module instead of writing a script when:</p><div><ul class="itemizedlist"><li class="listitem">You don't want to run the script every single time</li><li class="listitem">You need to process the output</li><li class="listitem">Your script needs to make facts</li><li class="listitem">You need to send complex variables as arguments</li></ul></div><p>If you want to start writing modules, you should check out the Ansible repository. If you want your module to work with a particular version, you should also switch to that version to ensure compatibility. The following commands will set you up to develop modules for Ansible 1.3.0.</p><div><pre class="programlisting">
+<strong>$ git clone (https://github.com/ansible/ansible.git)</strong>
+<strong>$ cd ansible</strong>
+<strong>$ git checkout v1.3.0</strong>
+<strong>$ chmod +x hacking/test-module</strong>
+</pre></div><p>Checking out the Ansible code gives you access to a handy script that we will use later to test our modules. We will also make this script executable in anticipation of its use later in the chapter.</p><div><div><div><div><h1 class="title"><a id="ch05lvl1sec41"/>Writing a module in Bash</h1></div></div></div><p>Ansible allows <a id="id221" class="indexterm"/>you to write modules in any language that you prefer. Although most modules in Ansible work with JSON, you are allowed to use shortcuts if you don't have any JSON parsing facilities available. Ansible will hand you arguments in their original key value forms, if they were provided in that format. If complex arguments are <a id="id222" class="indexterm"/>provided, you will receive JSON-encoded data. You <a id="id223" class="indexterm"/>could parse this using something like jsawk (<a class="ulink" href="https://github.com/micha/jsawk">https://github.com/micha/jsawk</a>) or jq (<a class="ulink" href="http://stedolan.github.io/jq/">http://stedolan.github.io/jq/</a>), but only if they <a id="id224" class="indexterm"/>are installed on your remote machine.</p><p>Ansible already has a module that lets you change the hostname of a system, but it only works with systemd-based systems. So let's write one that works with the standard <code class="literal">hostname</code> command. We will start just printing the current hostname and then expand the script from there. Here is what that simple module looks like:</p><div><pre class="programlisting">#!/bin/bash
+
+HOSTNAME="$(hostname)"
+
+echo "hostname=${HOSTNAME}"</pre></div><p>If you have written Bash scripts before, this should seem extremely basic. Essentially, what we are doing is grabbing the hostname and printing it out in a key value form. Now that we have written the first cut of the module, we should test it out.</p><p>To test the Ansible modules, we use the script that we ran the <code class="literal">chmod</code> command on earlier. This command simply runs your module, records the output, and returns it to you. It also shows how Ansible interpreted the output of the module. The command that we will use looks like the following:</p><div><pre class="programlisting">
+<strong>ansible/hacking/test-module -m ./hostname</strong>
+</pre></div><p>The output of the previous command should look like this:</p><div><pre class="programlisting">* module boilerplate substitution not requested in module, line numbers will be unaltered
+***********************************
+RAW OUTPUT
+hostname=admin01.int.example.com
+
+
+***********************************
+PARSED OUTPUT
+{
+    "hostname": "admin01.int.example.com"
+}</pre></div><p>Ignore the notice at the top; it does not apply to modules built with bash. You can see the raw output that our script sent, which looks exactly the way we expected. The test script also gives you the parsed output. In our example, we are using the short output format and we can see here that <a id="id225" class="indexterm"/>Ansible is correctly interpreting it into the JSON that it normally accepts from modules.</p><p>Let's expand out the module to allow setting the <code class="literal">hostname</code>. We should write it so that it doesn't make any changes unless required, and lets Ansible know whether changes were made or not. This is <a id="id226" class="indexterm"/>actually pretty simple for the small command that we are writing. The new script should look something like this:</p><div><pre class="programlisting">#!/bin/bash
+
+set -e
+
+# This is potentially dangerous
+source ${1}
+
+OLDHOSTNAME="$(hostname)"
+CHANGED="False"
+
+if [ ! -z "$hostname" -a "${hostname}x" != "${OLDHOSTNAME}x" ]; then
+  hostname $hostname
+  OLDHOSTNAME="$hostname"
+  CHANGED="True"
+fi
+
+echo "hostname=${OLDHOSTNAME} changed=${CHANGED}"
+exit 0</pre></div><p>The previous script works as follows:</p><div><ol class="orderedlist arabic"><li class="listitem">We set Bash's exit on error mode, so that we don't have to deal with errors from the <code class="literal">hostname</code> method. Bash will automatically exit on failure with its exit code. This will signal Ansible that something went wrong.</li><li class="listitem">We source the argument file. This file is passed from Ansible as the first argument to the script. It contains the arguments that were sent to our module. Because we are sourcing the file, this can be used to run arbitrary commands; however, Ansible can already do this, so it's not that much of a security issue.</li><li class="listitem">We collect the old hostname and default <code class="literal">CHANGED</code> to <code class="literal">False</code>. This allows us to see whether our module needs to perform any changes.</li><li class="listitem">We check whether we were sent a new hostname to set, and whether that hostname is different from the one that is currently set.</li><li class="listitem">If both these tests are true, we try to change the hostname, and set <code class="literal">CHANGED</code> to <code class="literal">True</code>.</li><li class="listitem">Finally, we output the results and exit. This includes the current hostname and whether we made changes or not.</li></ol><div></div><p>Changing the hostname <a id="id227" class="indexterm"/>on a Unix machine requires root privileges. So while testing this script, you need to make sure to run it as the root user. Let's test this script <a id="id228" class="indexterm"/>using <code class="literal">sudo</code> to see whether it works. This is the command you will use:</p><div><pre class="programlisting">
+<strong>sudo ansible/hacking/test-module -m ./hostname -a 'hostname=test.example.com'</strong>
+</pre></div><p>If <code class="literal">test.example.com</code> is not the current hostname of the machine, you should get the following output:</p><div><pre class="programlisting">* module boilerplate substitution not requested in module, line numbers will be unaltered
+***********************************
+RAW OUTPUT
+hostname=test.example.com changed=True
+
+
+***********************************
+PARSED OUTPUT
+{
+    "changed": true,
+    "hostname": "test.example.com"
+}</pre></div><p>As you can see, our output is being parsed correctly, and the module claims that changes have been made to the system. You can check this yourself with the <code class="literal">hostname</code> command. Now, run the module for the second time with the same hostname. You should see an output that looks like this:</p><div><pre class="programlisting">* module boilerplate substitution not requested in module, line numbers will be unaltered
+***********************************
+RAW OUTPUT
+hostname=test.example.com changed=False
+
+
+***********************************
+PARSED OUTPUT
+{
+    "changed": false,
+    "hostname": "test.example.com"
+}</pre></div><p>Again, we see that the <a id="id229" class="indexterm"/>output was parsed correctly. This time, however, the <a id="id230" class="indexterm"/>module claims to not have made any changes, which is what we expect. You can also check this with the <code class="literal">hostname</code> command.</p></div></div>
+<div><div><div><div><h1 class="title"><a id="ch05lvl1sec42"/>Using a custom module</h1></div></div></div><p>Now that we <a id="id231" class="indexterm"/>have written our very first module for Ansible, we should give it a go in a playbook. Ansible looks at several places for its modules—first it looks at the place specified in the <code class="literal">library</code> key in its <code class="literal">config</code> file (<code class="literal">/etc/ansible/ansible.cfg</code>), next it will look at the location specified using the <code class="literal">--module-path</code> argument in the command line, then it will look in the same directory as the playbook for a <code class="literal">library</code> directory containing modules, and finally it will look in the <code class="literal">library</code> directory for any roles that may be set.</p><p>Let's create a playbook that uses our new module and place it in a <code class="literal">library</code> directory in the same place so that we can see it in action. Here is a playbook that uses the <code class="literal">hostname</code> module:</p><div><pre class="programlisting">---
+- name: Test the hostname file
+  hosts: testmachine
+  tasks:
+    - name: Set the hostname
+      hostname: hostname=testmachine.example.com</pre></div><p>Then create a directory named <code class="literal">library</code> in the same directory as the playbook file. Place the <code class="literal">hostname</code> module inside the library. Your directory layout should look like this:</p><div><img src="img/image00106.jpeg" alt="Using a custom module"/></div><p style="clear:both; height: 1em;"> </p><p>Now when you <a id="id232" class="indexterm"/>run the playbook, it will find the <code class="literal">hostname</code> module in the <code class="literal">library</code> directory and execute it. You should see an output like this:</p><div><pre class="programlisting">PLAY [Test the hostname file] ***************************************
+
+GATHERING FACTS *****************************************************
+ok: [ansibletest]
+
+TASK: [Set the hostname] ********************************************
+changed: [ansibletest]
+
+PLAY RECAP **********************************************************
+ansibletest                : ok=2    changed=1    unreachable=0    failed=0</pre></div><p>Running it again should change the result from <code class="literal">changed</code> to <code class="literal">ok</code>. Congratulations! You have now created and executed your very first module. This module is very simple right now, but you can extend it to know about the <code class="literal">hostname</code> file, or other methods to configure the hostname at boot time.</p></div>
+<div><div><div><div><h1 class="title"><a id="ch05lvl1sec43"/>Writing modules in Python</h1></div></div></div><p>All of the <a id="id233" class="indexterm"/>modules that are distributed with Ansible are written in <a id="id234" class="indexterm"/>Python. Because Ansible is also written in Python, these modules can directly integrate with Ansible. Here are a few reasons why you should write modules in Python:</p><div><ul class="itemizedlist"><li class="listitem">Modules written in Python can use boilerplate, which reduces the amount of code required</li><li class="listitem">Python modules can provide documentation to be used by Ansible</li><li class="listitem">Arguments to your module are handled automatically</li><li class="listitem">Output is automatically converted to JSON for you</li><li class="listitem">Ansible upstream only accepts plugins using Python with the boilerplate code included</li></ul></div><p>You can still build Python modules without this integration by parsing the arguments and outputting JSON yourself. However, with all the things you get for free, it would be hard to make a case for it.</p><p>Let's build a Python module that lets us change the currently running init level of the system. There is a Python module named <code class="literal">pyutmp</code> that will let us parse the <code class="literal">utmp</code> file. Unfortunately, since Ansible modules have to be contained in a single file, we can't use it unless we know it will be installed on the remote systems, so we will resort to using the <code class="literal">runlevel</code> command and parsing its output. Setting the run level can be done with the <code class="literal">init</code> command.</p><p>The first step is to <a id="id235" class="indexterm"/>figure out what arguments and features the module supports. For the sake of simplicity, let's have our module only accept one argument. We'll use the argument <code class="literal">runlevel</code> to get the run level the user wants to change to. To do this, we will instantiate the <code class="literal">AnsibleModule</code> class with our data as follows:</p><div><pre class="programlisting">module = AnsibleModule(
+  argument_spec = dict(
+    runlevel=dict(default=None, type='str')
+  )
+)</pre></div><p>Now we need to implement the actual guts of the module. The module object that we created previously <a id="id236" class="indexterm"/>provides us with a few shortcuts. There are three shortcuts that we will be using in the next step. As there are way too many methods to document here, you can see the whole <code class="literal">AnsibleModule</code> class and all the available helper functions in <code class="literal">lib/ansible/module_common.py</code>.</p><div><ul class="itemizedlist"><li class="listitem"><code class="literal">run_command</code>: This <a id="id237" class="indexterm"/>method is used to launch external commands and retrieve the return code, the output from <code class="literal">stdout</code>, and also the output from <code class="literal">stderr</code>.</li><li class="listitem"><code class="literal">exit_json</code>: This <a id="id238" class="indexterm"/>method is used to return data to Ansible when the module has completed successfully.</li><li class="listitem"><code class="literal">fail_json</code>: This <a id="id239" class="indexterm"/>method is used to signal a failure to Ansible, with an error message and return code.</li></ul></div><p>The following code <a id="id240" class="indexterm"/>actually manages the init level of the system comments <a id="id241" class="indexterm"/>to explain what it does:</p><div><pre class="programlisting">def main():     #1
+  module = AnsibleModule(    #2
+    argument_spec = dict(    #3
+      runlevel=dict(default=None, type='str')     #4
+    )     #5
+  )     #6
+
+  # Ansible helps us run commands     #7
+  rc, out, err = module.run_command('/sbin/runlevel')     #8
+  if rc != 0:     #9
+    module.fail_json(msg="Could not determine current runlevel.", rc=rc, err=err)     #10
+
+  # Get the runlevel, exit if its not what we expect     #11
+  last_runlevel, cur_runlevel = out.split(' ', 1)     #12
+  cur_runlevel = cur_runlevel.rstrip()     #13
+  if len(cur_runlevel) &gt; 1:     #14
+    module.fail_json(msg="Got unexpected output from runlevel.", rc=rc)     #15
+
+  # Do we need to change anything     #16
+  if module.params['runlevel'] is None or module.params['runlevel'] == cur_runlevel:     #17
+    module.exit_json(changed=False, runlevel=cur_runlevel)     #18
+
+  # Check if we are root     #19
+  uid = os.geteuid()     #20
+  if uid != 0:     #21
+    module.fail_json(msg="You need to be root to change the runlevel")     #22
+
+  # Attempt to change the runlevel     #23
+  rc, out, err = module.run_command('/sbin/init %s' % module.params['runlevel'])     #24
+  if rc != 0:     #25
+    module.fail_json(msg="Could not change runlevel.", rc=rc, err=err)     #26
+
+  # Tell ansible the results     #27
+  module.exit_json(changed=True, runlevel=cur_runlevel)     #28</pre></div><p>There is one final thing to add to the boilerplate to let Ansible know that it needs to dynamically add the integration code into our module. This is the magic that lets us use the <code class="literal">AnsibleModule</code> class and enables our tight integration with Ansible. The boilerplate code needs to be <a id="id242" class="indexterm"/>placed right at the bottom of the file, with no code <a id="id243" class="indexterm"/>afterwards. The code to do this looks like this:</p><div><pre class="programlisting"># include magic from lib/ansible/module_common.py
+#&lt;&lt;INCLUDE_ANSIBLE_MODULE_COMMON&gt;&gt;
+main()
+So, finally, we have the code for our module built. Putting it all together, it should look like the following code:
+#!/usr/bin/python     #1
+# -*- coding: utf-8 -*-    #2
+
+import os     #3
+
+def main():     #4
+  module = AnsibleModule(    #5
+    argument_spec = dict(    #6
+      runlevel=dict(default=None, type='str'),     #7
+    ),     #8
+  )     #9
+
+  # Ansible helps us run commands     #10
+  rc, out, err = module.run_command('/sbin/runlevel')     #11
+  if rc != 0:     #12
+    module.fail_json(msg="Could not determine current runlevel.", rc=rc, err=err)     #13
+
+  # Get the runlevel, exit if its not what we expect     #14
+  last_runlevel, cur_runlevel = out.split(' ', 1)     #15
+  cur_runlevel = cur_runlevel.rstrip()     #16
+  if len(cur_runlevel) &gt; 1:     #17
+    module.fail_json(msg="Got unexpected output from runlevel.", rc=rc)     #18
+
+  # Do we need to change anything     #19
+  if (module.params['runlevel'] is None or module.params['runlevel'] == cur_runlevel):     #20
+    module.exit_json(changed=False, runlevel=cur_runlevel)     #21
+
+  # Check if we are root     #22
+  uid = os.geteuid()     #23
+  if uid != 0:     #24
+    module.fail_json(msg="You need to be root to change the runlevel")     #25
+
+  # Attempt to change the runlevel     #26
+  rc, out, err = module.run_command('/sbin/init %s' % module.params['runlevel'])     #27
+  if rc != 0:     #28
+    module.fail_json(msg="Could not change runlevel.", rc=rc, err=err)     #29
+
+  # Tell ansible the results     #30
+  module.exit_json(changed=True, runlevel=cur_runlevel)     #31
+
+# include magic from lib/ansible/module_common.py     #32
+#&lt;&lt;INCLUDE_ANSIBLE_MODULE_COMMON&gt;&gt;     #33
+main()     #34</pre></div><p>You can test this module the same way you tested the Bash module with the <code class="literal">test-module</code> script. However, you need to be careful, because if you run it with <code class="literal">sudo</code>, you might reboot your machine or alter the init level to something you don't want. This module is probably better tested by using Ansible itself on a remote test machine. We follow the same <a id="id244" class="indexterm"/>process as described in the <em>Writing a module in Bash</em> section <a id="id245" class="indexterm"/>earlier in this chapter. We create a playbook that uses the module, and then place the module in a library directory that has been made in the same directory as the playbook. Here is the playbook we need to use:</p><div><pre class="programlisting">---
+- name: Test the new init module
+  hosts: testmachine
+  user: root
+  tasks:
+    - name: Set the init level to 5
+      init: runlevel=5</pre></div><p>Now you should be able to try and run this on a remote machine. The first time you run it, if the machine is not already in run level 5, you should see it change the run level. Then you should be able to run it for a second time to see that nothing has changed. You might also want to check to make sure the module fails correctly when not run as root.</p></div>
+<div><div><div><div><h1 class="title"><a id="ch05lvl1sec44"/>External inventories</h1></div></div></div><p>In <a class="link" title="Chapter 1. Getting Started with Ansible" href="part0014.xhtml">Chapter 1</a>, <em>Getting Started with Ansible</em>, we saw how Ansible needs an inventory file, so that it knows where its <a id="id246" class="indexterm"/>hosts are and how to access them. Ansible also allows you to specify a script that allows you to fetch the inventory from another source. External inventory scripts can be written in any language that you like as long as they output valid JSON.</p><p>An external inventory script has to accept two different calls from Ansible. If called with <code class="literal">–list</code>, it must return a list of all the available groups and hosts. Additionally, it may be called with <code class="literal">--host</code>. In this case, the second argument will be a hostname and the script is expected to return a list of variables for that host. All the outputs are expected in JSON, so you should use a language that supports it naturally.</p><p>Let's write a module that takes a CSV file listing all your machines and presents this to Ansible as an inventory. This will be handy if you have a <strong>Configuration Management Database</strong> (<strong>CMDB</strong>) that <a id="id247" class="indexterm"/>allows you to export your machine list as CSV, or for someone who keeps records of their machines in a spreadsheet. Additionally, it doesn't require any dependencies outside Python, as a CSV <a id="id248" class="indexterm"/>processing module is already included with Python. This really just parses the CSV file into the right data structures and prints them out as JSON data structures. The following is an example CSV file we wish to process; you may wish to customize it for the machines in your environment:</p><div><pre class="programlisting">Group,Host,Variables
+test,example,ansible_ssh_user=root
+test,localhost,connection=local</pre></div><p>This file needs to be converted into two different JSON outputs. When <code class="literal">--list</code> is called, we need to output the whole thing in a form that looks like this:</p><div><pre class="programlisting">{"test": ["example", "localhost"]}</pre></div><p>And when it is called with the arguments <code class="literal">--host example</code>, it should return this:</p><div><pre class="programlisting">{"ansible_ssh_user": "root"}</pre></div><p>Here is the script that opens a file named <code class="literal">machines.csv</code> and produces the dictionary of the groups if <code class="literal">--list</code> is given: Additionally, when <code class="literal">--host</code> and a hostname are given, it parses that host's variables and returns them as a dictionary. The script is well-commented, so you can see what it is doing. You can run the script manually with the <code class="literal">--list</code> and <code class="literal">--host</code> arguments to confirm that it behaves correctly.</p><div><pre class="programlisting">#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+import sys
+import csv
+import json
+
+def getlist(csvfile):
+  # Init local variables
+  glist = dict()
+  rowcount = 0
+
+  # Iterate over all the rows
+  for row in csvfile:
+    # Throw away the header (Row 0)
+    if rowcount != 0:
+      # Get the values out of the row
+      (group, host, variables) = row
+
+      # If this is the first time we've
+      # read this group create an empty
+      # list for it
+      if group not in glist:
+        glist[group] = list()
+
+      # Add the host to the list
+      glist[group].append(host)
+
+    # Count the rows we've processed
+    rowcount += 1
+
+  return glist
+
+def gethost(csvfile, host):
+  # Init local variables
+  rowcount = 0
+
+  # Iterate over all the rows
+  for row in csvfile:
+    # Throw away the header (Row 0)
+    if rowcount != 0 and row[1] == host:
+      # Get the values out of the row
+      variables = dict()
+      for kvpair in row[2].split():
+        key, value = kvpair.split('=', 1)
+        variables[key] = value
+
+      return variables
+
+    # Count the rows we've processed
+    rowcount += 1
+
+command = sys.argv[1]
+
+#Open the CSV and start parsing it
+with open('machines.csv', 'r') as infile:
+  result = dict()
+  csvfile = csv.reader(infile)
+
+  if command == '--list':
+    result = getlist(csvfile)
+  elif command == '--host':
+    result = gethost(csvfile, sys.argv[2])
+
+  print json.dumps(result)</pre></div><p>You can now use this inventory script to provide the inventory when using Ansible. A quick way to test that everything is working correctly is to use the <code class="literal">ping</code> module to test the connection to all the machines. This command will not test whether the hosts are in the right groups; if you want to do that, you can use the same <code class="literal">ping</code> module command but instead of running it across all, you can simply use the group you would like to test<strong>.</strong> If your inventory file is <a id="id249" class="indexterm"/>executable, then Ansible will run it and use the output. You can also use a directory and Ansible will include all files inside, running them if they are executable.</p><div><pre class="programlisting">
+<strong>$ ansible -i csvinventory –list-hosts -m ping all</strong>
+</pre></div><p>Similar to when you used the <code class="literal">ping</code> module in <a class="link" title="Chapter 1. Getting Started with Ansible" href="part0014.xhtml">Chapter 1</a>, <em>Getting Started with Ansible</em>, you should see an output that looks like the following:</p><div><pre class="programlisting">localhost | success &gt;&gt; {
+  "changed": false,
+  "ping": "pong"
+}
+
+example | success &gt;&gt; {
+  "changed": false,
+  "ping": "pong"
+}</pre></div><p>This indicates that you can connect and use Ansible on all the hosts from your inventory. You can use the same <code class="literal">-i</code> argument with <code class="literal">ansible-playbook</code> to run your playbooks with the same inventory.</p></div>
+<div><div><div><div><h1 class="title"><a id="ch05lvl1sec45"/>Extending Ansible</h1></div></div></div><p>Apart from writing <a id="id250" class="indexterm"/>modules and external inventory script, you can also extend the core functionality of Ansible itself. This allows you to include even more functionality into Ansible using Python. By writing plugins for Ansible, you can do the following:</p><div><ul class="itemizedlist"><li class="listitem">Add new methods for controlling other machines with connection plugins</li><li class="listitem">Use data from external sources outside Ansible in loops or lookups with lookup plugins</li><li class="listitem">Add new filters for use with variables or in templates with filter plugins</li><li class="listitem">Include callbacks that run when certain actions happen inside Ansible with callback plugins</li></ul></div><p>To add extra plugins to your Ansible projects, we create a Python file in the plugin directories specified in your <code class="literal">ansible.cfg</code> file. Alternatively, we can add new directories containing our plugins to the list of directories already present.</p><div><h3 class="title"><a id="note18"/>Note</h3><p>Do not remove any of the existing directories, as you will be removing plugins that provide core Ansible features such as the ones we have mentioned earlier in this book.</p></div><p>When writing plugins to Ansible, you should focus on making them flexible and reusable where possible. This way you end up removing some complexity from your playbooks and templates into a few complex Python files. Focusing on re-usability of your plugins also means it is possible to submit them back to the Ansible project using a GitHub pull request. If you submit your <a id="id251" class="indexterm"/>plugins back to Ansible, then everybody will be able to take advantage of your plugin, and you would have played a part in the development of Ansible itself. More information on contributing to Ansible can be found in the <code class="literal">CONTRIBUTORS.md</code> file in the Ansible source code.</p><div><div><div><div><h2 class="title"><a id="ch05lvl2sec37"/>Connection plugins</h2></div></div></div><p>Connection plugins are <a id="id252" class="indexterm"/>responsible for relaying files to and from the <a id="id253" class="indexterm"/>remote machine, and executing modules. You will no doubt have already used the SSH, local and possibly the winrm plugins with the playbooks used earlier in the book.</p><p>Apart from the normal <code class="literal">__init__()</code> method, connection plugins must implement the following methods:</p><div><table border="1"><colgroup><col/><col/></colgroup><thead><tr><th valign="bottom">
+<p>Method</p>
+</th><th valign="bottom">
+<p>Purpose</p>
+</th></tr></thead><tbody><tr><td valign="top">
+<p>
+<code class="literal">connect()</code>
+</p>
+</td><td valign="top">
+<p>This opens <a id="id254" class="indexterm"/>the connection to the host we are managing</p>
+</td></tr><tr><td valign="top">
+<p>
+<code class="literal">exec_command()</code>
+</p>
+</td><td valign="top">
+<p>This <a id="id255" class="indexterm"/>executes a command on the managed host</p>
+</td></tr><tr><td valign="top">
+<p>
+<code class="literal">put_file()</code>
+</p>
+</td><td valign="top">
+<p>This <a id="id256" class="indexterm"/>copies a file to the managed host</p>
+</td></tr><tr><td valign="top">
+<p>
+<code class="literal">fetch_file()</code>
+</p>
+</td><td valign="top">
+<p>This <a id="id257" class="indexterm"/>downloads a file from the managed host</p>
+</td></tr><tr><td valign="top">
+<p>
+<code class="literal">close()</code>
+</p>
+</td><td valign="top">
+<p>This <a id="id258" class="indexterm"/>closes the connection to the host we are managing</p>
+</td></tr></tbody></table></div></div><div><div><div><div><h2 class="title"><a id="ch05lvl2sec38"/>Lookup plugins</h2></div></div></div><p>Lookup plugins are used in <a id="id259" class="indexterm"/>two ways: to include data from outside as a <code class="literal">lookup()</code>, or in the <code class="literal">with_</code> style to loop over items. You can even combine the two <a id="id260" class="indexterm"/>to loop over external data as is done in the <code class="literal">with_fileglob</code> lookup plugin. Several lookup plugins have been demonstrated earlier in the book, particularly in <em>Looping</em> section of <a class="link" title="Chapter 3. Advanced Playbooks" href="part0028.xhtml">Chapter 3</a>, <em>Advanced Playbook</em>.</p><p>Lookup plugins are simple to write, and apart from the normal <code class="literal">__init__()</code> method, they only need you to implement a <code class="literal">run()</code> method. This method uses the <code class="literal">listify_lookup_plugin_terms()</code> method from the Ansible <code class="literal">utils</code> package to gather the arguments list passed to it, and returns the result. As an example, we will now demonstrate a lookup plugin to read data from a JSON encoded file:</p><div><pre class="programlisting">import json
+
+class LookupModule(object):
+    def __init__(self, basedir=None, **kwargs):
+        pass
+
+    def run(self, terms, inject=None, **kwargs):
+        with open(terms, 'r') as f:
+            json_obj = json.load(f)
+
+        return json_obj</pre></div><p>This can be used either as a lookup plugin to fetch complex data or, if the file contains a JSON list, as a loop using <code class="literal">with_jsonfile</code>. Save the preceding example as <code class="literal">jsonfile.py</code> in one of your lookup plugin directories. You can see that we have declared a new class named <code class="literal">LookupModule</code>; this is what Ansible tries to find within your Python file, so you must use this name. We then create a constructor (named <code class="literal">__init__</code>) so that Ansible can create our class. Finally, we make a small method that simply opens a JSON file, parses it and returns the result to Ansible.</p><p>We should note that this example is really simplified and only looks in the current working directory for the file. It could be extended later to look in a roles file directory or elsewhere in order to better conform to conventions set by other Ansible modules.</p><p>You can then use this lookup plugin in a playbook like this:</p><div><pre class="programlisting">- name: Print the JSON data we received
+  debug:
+    msg: "{{ lookup('json', 'file.json') }}"</pre></div></div><div><div><div><div><h2 class="title"><a id="ch05lvl2sec39"/>Filter plugins</h2></div></div></div><p>Filter plugins are <a id="id261" class="indexterm"/>extensions to the Jinja2 template engine that Ansible uses to process variables and generate files from templates. These extensions can be used in playbooks to perform data processing on variables, or they can be used inside <a id="id262" class="indexterm"/>templates to process data before it is included in the file. They simplify the processing of data by moving the complexity to a Python file and away from the templates or Ansible configuration.</p><p>Filter plugins are a little different from other plugins. To implement one, you first write a simple function that simply takes the input you need and returns the result. Second, you create a class named <code class="literal">FilterModule</code>, and implement a <code class="literal">filters</code> method on it, which returns a Python dictionary, where the keys are the filter names and the values the functions to call.</p><p>Here is a sample implementation of a plugin that can be used to calculate the minimum number of servers required in any group to avoid a split-brain situation: This number in most systems is one greater than 50% of the nodes available.</p><div><pre class="programlisting">def quorum(list_of_machines):
+
+    n = len(list_of_machines)
+    quorum = n / 2 + 1
+
+    return quorum
+
+class FilterModule(object):
+    def filters(self):
+        return {
+            'quorum': quorum,
+        }</pre></div><p>Simply put, this module counts how many items were in the list passed to it, divides it by two, and then adds one. It is all done as integer math, so remainders are ignored and everything is done as whole numbers, which suits our purpose.</p><p>This filter can then be used in a playbook or a template. For example, if we wanted to configure an Elasticsearch cluster to have a quorum and avoid split-brain issues, we will use the following line of code:</p><div><pre class="programlisting">discovery.zen.minimum_master_nodes: {{ play_hosts|quorum }}</pre></div><p>This will get the list of hosts this play is being run on (from the <code class="literal">play_hosts</code> variable), and then calculate how many of those are required to obtain a quorum.</p></div><div><div><div><div><h2 class="title"><a id="ch05lvl2sec40"/>Callback plugins</h2></div></div></div><p>Callback plugins are used to <a id="id263" class="indexterm"/>provide information about actions that are happening in Ansible to external systems. They are automatically activated if they are found in the directories specified under the <code class="literal">callback_plugins</code> directory into Ansible configuration. They are often useful when playbooks are being run as automated tasks as they can give feedback via other channels than the standard output. Callback plugins have a wide variety of uses, as follows:</p><div><ul class="itemizedlist"><li class="listitem">Sending an e-mail at the end of a playbook with the statistics of what changed</li><li class="listitem">Recording a running <a id="id264" class="indexterm"/>log of changes being made to <code class="literal">syslog</code></li><li class="listitem">Notifying a chat channel when a playbook task fails</li><li class="listitem">Updating a CMDB as changes are made to ensure an accurate view of the configuration of every system.</li><li class="listitem">Alerting an admin when a play has exited early because all hosts have failed.</li></ul></div><p>The callback plugins are the most complicated plugins to write because they have the ability to hook into most of Ansible's features. Just because there are many options though does not mean you need to implement them all. You only need to implement the ones your callback will use. Here is a list of the methods you can implement, along with their description:</p><div><ul class="itemizedlist"><li class="listitem"><code class="literal">def on_any(self, *args, **kwargs)</code>: This is called before any of the other callbacks are called. Because the arguments differ from callback to callback, it expands its arguments into <code class="literal">args</code> and <code class="literal">kwargs</code>. This method is good for logging. Using it for anything else can become quite complicated.</li><li class="listitem"><code class="literal">runner_on_failed(self, host, res, ignore_errors=False)</code>: This is run after a task fails. The <code class="literal">host</code> argument contains the host on which the task was running, <code class="literal">res</code> contains the task data from the playbook and anything that was returned, and <code class="literal">ignore_errors</code> contains a boolean value specifying whether the playbook indicated errors should be ignored.</li><li class="listitem"><code class="literal">runner_on_ok(self, host, res)</code>: This runs after a task succeeds or when a poll for an async job succeeds. The argument <code class="literal">host</code> contains the host on which the task was running and <code class="literal">res</code> contains the task data from the playbook and any data that was returned.</li><li class="listitem"><code class="literal">runner_on_skipped(self, host, item=None)</code>: This runs after a task is skipped. The argument <code class="literal">host</code> contains the host on which the task would have run if it were not skipped and the <code class="literal">item</code> argument contains the loop item, which is currently being iterated over.</li><li class="listitem"><code class="literal">runner_on_unreachable(self, host, res)</code>:This runs when a host is found to be unreachable. The <code class="literal">host</code> argument contains the unreachable host and <code class="literal">res</code> contains the error message from the connection plugin.</li><li class="listitem"><code class="literal">runner_on_no_hosts(self)</code>: This callback runs when a task is started without any hosts. It does not have any variables.</li><li class="listitem"><code class="literal">runner_on_async_poll(self, host, res, jid, clock)</code>: This runs whenever an async job is polled for status. The variable <code class="literal">host</code> contains the host that is being polled, <code class="literal">res</code> contains details of the polling, <code class="literal">jid</code> contains the job ID, and <code class="literal">clock</code> contains the amount of time remaining before the job fails.</li><li class="listitem"><code class="literal">runner_on_async_ok(self, host, res, jid)</code>: This runs when polling has completed without an error. The argument <code class="literal">host</code> contains the host that was being polled, <code class="literal">res</code> holds the results from the task, and <code class="literal">jid</code> contains the job ID.</li><li class="listitem"><code class="literal">runner_on_async_failed(self, host, res, jid)</code>: This runs when polling has completed with an error. The argument <code class="literal">host</code> contains the host that was being polled, <code class="literal">res</code> holds the results from the task, and <code class="literal">jid</code> contains the job ID.</li><li class="listitem"><code class="literal">playbook_on_start(self)</code>: This callback is executed when a playbook is started with <code class="literal">ansible-playbook</code>. It does not use any variables.</li><li class="listitem"><code class="literal">playbook_on_notify(self, host, handler)</code>: This callback is run whenever a <a id="id265" class="indexterm"/>handler is notified. Because this is run when the notify happens and not when the handler runs, it may run multiple times for each handler. It has two variables: <code class="literal">host</code> stores the hostname on which the task <a id="id266" class="indexterm"/>notified and <code class="literal">handler</code> stores the name of the handler that was notified.</li><li class="listitem"><code class="literal">playbook_on_no_hosts_matched(self)</code>: This callback runs if a play starts that does not match any host. It does not have any variables.</li><li class="listitem"><code class="literal">playbook_on_no_hosts_remaining(self)</code>: This callback runs when all the hosts in a play have errors and the play is unable to continue.</li><li class="listitem"><code class="literal">playbook_on_task_start(self, name, is_conditional)</code>: This callback runs right before each task, even if the task is going to be skipped. The <code class="literal">name</code> variable is set to the name of the task, and <code class="literal">is_conditional</code> is set to the outcome of the when clause—<code class="literal">True</code> if the task will run, and <code class="literal">False</code> if not.</li><li class="listitem"><code class="literal">playbook_on_setup(self)</code>: This callback is executed right before the setup module executes across the hosts. It runs once no matter how many hosts are included. It does not include any variables.</li><li class="listitem"><code class="literal">playbook_on_play_start(self, name)</code>: This callback runs at the beginning of each play. The <code class="literal">name</code> variable contains the name of the play that is starting.</li><li class="listitem"><code class="literal">playbook_on_stats(self, stats)</code>: This callback runs at the end of a playbook right <a id="id267" class="indexterm"/>before the stats are to be printed. The <code class="literal">stats</code> <a id="id268" class="indexterm"/>variable contains the details of the playbook.</li></ul></div></div></div>
+<div><div><div><div><h1 class="title"><a id="ch05lvl1sec46"/>Summary</h1></div></div></div><p>Having read this chapter, you should now be able to build modules using either Bash or any other languages that you know. You should be able to install modules that you have either obtained from the Internet, or written yourself. We also covered how to write modules more efficiently using the boilerplate code in Python, and we wrote an inventory script that allows you to pull your inventory from an external source. Finally we covered adding new features to Ansible itself by writing connection, lookup, filter, and callback plugins.</p><p>We have tried to cover most of the things you will need when getting to know Ansible, but we can't possibly cover everything. If you would like to continue learning about Ansible, you can visit the official Ansible documentation at <a class="ulink" href="http://docs.ansible.com/">http://docs.ansible.com/</a>.</p><p>The Ansible project is <a id="id269" class="indexterm"/>currently working on a rewrite, which will eventually be released as version 2.0. This book should stay compatible with this version and others going forward, but there will be new features that are not covered here. In version 2.0 of Ansible, you can expect the following features, which may change in the future (as it has not yet been released):</p><div><ul class="itemizedlist"><li class="listitem">The ability to recover from failures within a playbook</li><li class="listitem">Allowing you to run lots of tasks in parallel</li><li class="listitem">Compatibility with Python 3</li><li class="listitem">Easier debugging as errors will contain line numbers</li></ul></div></div></body></html>

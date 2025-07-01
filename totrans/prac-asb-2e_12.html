@@ -1,0 +1,345 @@
+<html><head></head><body>
+<div><div><h1 class="chapter-number" id="_idParaDest-189"><a id="_idTextAnchor523"/>12</h1>
+<h1 id="_idParaDest-190"><a id="_idTextAnchor524"/>Troubleshooting and Testing Strategies</h1>
+<p>In a similar way to any other kind of code, Ansible code can contain issues and bugs. Ansible tries to make it as safe as possible by checking the task syntax before the task is executed. This check, however, only saves you from a small number of possible types of errors, such as incorrect task parameters, but it will not protect you from others.</p>
+<p>It’s also important to remember that, due to its nature, we describe the desired state in Ansible code rather than stating a sequence of steps to obtain the desired state. This difference means that the system is less prone to logical errors.</p>
+<p>Nevertheless, a bug in a playbook could mean a potential misconfiguration on all your machines. This should be taken very seriously. It is even more critical when critical parts of the system are changed, such as SSH daemon or <code>sudo</code> configuration, since the risk is you locking yourself out of the system.</p>
+<p>There are many ways to prevent or mitigate a bug in Ansible playbooks. In this chapter, we will cover the following topics:</p>
+<ul>
+<li>Digging into playbook execution problems</li>
+<li>Using host facts to diagnose failures</li>
+<li>Testing with a playbook</li>
+<li>Using check mode</li>
+<li>Solving host connection issues</li>
+<li>Passing working variables via the CLI</li>
+<li>Limiting the host’s execution</li>
+<li>Flushing the code cache</li>
+<li>Checking for bad syntax</li>
+</ul>
+<h1 id="_idParaDest-191"><a id="_idTextAnchor525"/><a id="_idTextAnchor526"/>Technical requirements</h1>
+<p>This chapter assumes that you have set up your control host with Ansible, as detailed in <a href="B20846_01.xhtml#_idTextAnchor015"><em class="italic">Chapter 1</em></a>, <em class="italic">Getting Started with Ansible</em>, and are using the most recent version available – the examples in this chapter were tested with Ansible 2.9. Although we will give specific examples of hostnames in this chapter, you are free to substitute them with your hostnames and/or IP addresses. Details of how to do this will be provided at the appropriate places.</p>
+<p>The examples in this chapter can be found in this book’s GitHub repository at <a href="https://github.com/PacktPublishing/Practical-Ansible-Second-Edition/tree/main/Chapter%2012">https://github.com/PacktPublishing/Practical-Ansible-Second-Edition/tree/main/Chapter%2012</a>.</p>
+<h1 id="_idParaDest-192"><a id="_idTextAnchor527"/><a id="_idTextAnchor528"/>Digging into playbook execution problems</h1>
+<p>There are<a id="_idIndexMarker695"/> cases where an Ansible execution will interrupt. Many things can cause these situations.</p>
+<p>The network is the most frequent cause of problems I’ve found while executing Ansible playbooks. Since the machine issuing the commands and the one performing them are usually linked through the network, a problem in the network will immediately show itself as an Ansible execution problem.</p>
+<p>You can tell Ansible to repeat the execution of a task by registering a variable and using the <code>until</code> keyword.</p>
+<p>Sometimes, and this is particularly true for some modules, such as <code>ansible.builtin.shell</code> or <code>ansible.builtin.command</code>, the return code is non-zero, even though the execution was successful. In those cases, you can ignore the error by using the following line in your module:</p>
+<pre class="source-code">
+ignore_errors: yes</pre> <p>For instance, if you run the <code>/bin/false</code> command, it will always return <code>1</code>. To execute this in a playbook so that you can avoid it blocking there, you can write something like the following:</p>
+<pre class="source-code">
+- name: Run a command that will return 1
+  ansible.builtin.command: /bin/false
+  ignore_errors: yes</pre> <p>As we have seen, <code>/bin/false</code> will always return <code>1</code> as the return code, but we still managed to <a id="_idIndexMarker696"/>proceed with the execution. Be aware that this is a particular case. Often, the best approach is to fix your application so that you follow UNIX standards and return <code>0</code> if the application runs appropriately instead of putting a workaround in your playbooks.</p>
+<p>Next, we will talk more about the methods we can use to diagnose Ansible execution problems<a id="_idTextAnchor529"/><a id="_idTextAnchor530"/>.</p>
+<h1 id="_idParaDest-193"><a id="_idTextAnchor531"/>Using host facts to diagnose failures</h1>
+<p>Some <a id="_idIndexMarker697"/>execution failures derive from the state of the target machine. The most common problem of this<a id="_idIndexMarker698"/> kind is the case where Ansible expects a file or variable to be present, but it’s not there.</p>
+<p>Sometimes, it can be enough to print the machine facts to find the problem.</p>
+<p>To do so, we need to create a simple playbook called <code>print_facts.yaml</code>, which contains the following content:</p>
+<pre class="source-code">
+---
+- hosts: all
+  tasks:
+  - name: Display all variables/facts known for a host
+    ansible.builtin.debug:
+      var: hostvars[inventory_hostname]</pre> <p>This technique will give you a lot of information about the state of the target machine during Ansible executi<a id="_idTextAnchor532"/><a id="_idTextAnchor533"/>on.</p>
+<h1 id="_idParaDest-194"><a id="_idTextAnchor534"/>Testing with a playbook</h1>
+<p>One of the most complex<a id="_idIndexMarker699"/> things in the IT field is not creating software and systems but debugging them when they have problems. Ansible is no exception. No matter how good you are at creating Ansible playbooks, sooner or later, you’ll find yourself debugging a playbook that is not behaving as you thought it would.</p>
+<p>The simplest way of <a id="_idIndexMarker700"/>performing basic tests is to print out the values of variables during execution. Let’s learn how to do this with Ansible:</p>
+<ol>
+<li>First of all, we need a playbook called <code>debug.yaml</code> with the following content:<pre class="source-code">
+---
+- hosts: localhost
+  tasks:
+  - ansible.builtin.shell: /usr/bin/uptime
+    register: result
+  - ansible.builtin.debug:
+      var: result</pre></li> <li>Run it with the following command:<pre class="source-code">
+<strong class="bold">$ ansible-playbook debug.yaml</strong></pre></li> </ol>
+<p>You will receive an output similar to the following:</p>
+<pre class="source-code">
+<strong class="bold">PLAY [localhost] **********************************************************************************</strong>
+<strong class="bold">TASK [Gathering Facts] ****************************************************************************</strong>
+<strong class="bold">ok: [localhost]</strong>
+<strong class="bold">TASK [shell] **************************************************************************************</strong>
+<strong class="bold">changed: [localhost]</strong>
+<strong class="bold">TASK [debug] **************************************************************************************</strong>
+<strong class="bold">ok: [localhost] =&gt; {</strong>
+<strong class="bold">    "result": {</strong>
+<strong class="bold">        "changed": true,</strong>
+<strong class="bold">        "cmd": "/usr/bin/uptime",</strong>
+<strong class="bold">        "delta": "0:00:00.003461",</strong>
+<strong class="bold">        "end": "2019-06-16 11:30:51.087322",</strong>
+<strong class="bold">        "failed": false,</strong>
+<strong class="bold">        "rc": 0,</strong>
+<strong class="bold">        "start": "2019-06-16 11:30:51.083861",</strong>
+<strong class="bold">        "stderr": "",</strong>
+<strong class="bold">        "stderr_lines": [],</strong>
+<strong class="bold">        "stdout": " 11:30:51 up 40 min, 1 user, load average: 1.11, 0.73, 0.53",</strong>
+<strong class="bold">        "stdout_lines": [</strong>
+<strong class="bold">            " 11:30:51 up 40 min, 1 user, load average: 1.11, 0.73, 0.53"</strong>
+<strong class="bold">        ]</strong>
+<strong class="bold">    }</strong>
+<strong class="bold">}</strong>
+<strong class="bold">PLAY RECAP ****************************************************************************************</strong>
+<code>ansible.builtin.command</code> module to execute the <code>uptime</code> command and saved its output in the <code>result</code> variable. Then, in the second task, we used the <code>ansible.builtin.debug</code> module to print the content of the <code>result</code> variable.</p>
+<p>The <code>ansible.builtin.debug</code> module is the module that allows you to print the value of a variable (by using the <code>var</code> option) or a fixed string (by using the <code>msg</code> option) during Ansible’s execution.</p>
+<p>The <code>ansible.builtin.debug</code> module also provides the <code>verbosity</code> option. Let’s say you change the playbook in the following way:</p>
+<pre class="source-code">
+---
+- hosts: localhost
+  tasks:
+  - ansible.builtin.shell: /usr/bin/uptime
+    register: result
+  - ansible.builtin.debug:
+      var: result
+      verbosity: 2</pre> <p>Now, if you try to execute it in the same way you did previously, you will notice that the debug step won’t be executed and that the following line will appear in the output instead:</p>
+<pre class="console">
+TASK [debug] **************************************************************************************
+skipping: [localhost]</pre> <p>This is because we set the minimum required <code>verbosity</code> to <code>2</code>, and by default, Ansible runs with <code>verbosity</code> set to <code>0</code>.</p>
+<p>To see the result <a id="_idIndexMarker702"/>of using the debug module with this new playbook, we will need to run a slightly different command:</p>
+<pre class="console">
+$ ansible-playbook debug2.yaml -vv</pre> <p>By putting two <code>-v</code> options in the command line, we will be running Ansible with <code>verbosity</code> set to <code>2</code>. This will not only affect this specific module but all the modules (or Ansible itself) that are set to behave differently at different debug levels.</p>
+<p>Now that you have learned how to test with a playbook, let’s learn how to use chec<a id="_idTextAnchor535"/><a id="_idTextAnchor536"/>k mode.</p>
+<h1 id="_idParaDest-195"><a id="_idTextAnchor537"/>Using check mode</h1>
+<p>Although you <a id="_idIndexMarker703"/>might be confident in the code you have written, it still pays to test it before running it for real in a production environment. In such cases, it is a good idea to be able to run your code, but with a safety net in place. This is what check mode is for. Follow these steps:</p>
+<ol>
+<li>First of all, we need to create an easy playbook to test this feature. Let’s create a playbook called <code>check-mode.yaml</code> that contains the following content:<pre class="source-code">
+---
+- hosts: localhost
+  tasks:
+  - name: Touch a file
+    ansible.builtin.file:
+      path: /tmp/myfile
+      state: touch</pre></li> <li>Now, we can run the playbook in check mode by specifying the <code>--check</code> option in the invocation:<pre class="source-code">
+<strong class="bold">$ ansible-playbook check-mode.yaml --check</strong></pre></li> </ol>
+<p>This will output everything as if it were really performing the operation, as follows:</p>
+<pre class="source-code">
+<strong class="bold">PLAY [localhost] **********************************************************************************</strong>
+<strong class="bold">TASK [Gathering Facts] ****************************************************************************</strong>
+<strong class="bold">ok: [localhost]</strong>
+<strong class="bold">TASK [Touch a file] *******************************************************************************</strong>
+<strong class="bold">ok: [localhost]</strong>
+<strong class="bold">PLAY RECAP ****************************************************************************************</strong>
+<code>/tmp</code>, you won’t find <code>myfile</code>.</p>
+<p>Ansible <a id="_idIndexMarker704"/>check mode is usually called a dry run. The idea is that the run won’t change the state of the machine and will only highlight the differences between the current status and the status declared in the Playbook.</p>
+<p>Not all modules support check mode, but all major modules do, and more and more modules are being added at every release. In particular, note that the <code>ansible.builtin.command</code> and <code>ansible.builtin.shell</code> modules do not support it because the module can’t tell what commands will result in a change, and what won’t. Therefore, these modules will always return changed when they’re run outside of check mode because they assume a change has been made. It is possible to find out whether a specific module supports check mode by looking in the module’s documentation, in the <em class="italic">Attributes</em> section. A similar feature to check mode is the <code>--diff</code> flag. A big difference between those two options is that, while check mode will not make changes to the systems, <code>--diff</code> will perform the changes on the system! What the <code>--diff</code> flag allows us to do is track what exactly changed during an Ansible execution. So, let’s say we run the same playbook with the following command:</p>
+<pre class="console">
+$ ansible-playbook check-mode.yaml --diff</pre> <p>This will return <a id="_idIndexMarker705"/>something like the following:</p>
+<pre class="console">
+PLAY [localhost] **********************************************************************************
+TASK [Gathering Facts] ****************************************************************************
+ok: [localhost]
+TASK [Touch a file] *******************************************************************************
+--- before
++++ after
+@@ -1,6 +1,6 @@
+ {
+- "atime": 1560693571.3594637,
+- "mtime": 1560693571.3594637,
++ "atime": 1560693571.3620908,
++ "mtime": 1560693571.3620908,
+ "path": "/tmp/myfile",
+- "state": "absent"
++ "state": "touch"
+ }
+changed: [localhost]
+PLAY RECAP ****************************************************************************************
+localhost : ok=2 changed=1 unreachable=0 failed=0 skipped=0 rescued=0 ignored=0</pre> <p>As you can see, the <a id="_idIndexMarker706"/>output says <code>changed</code>, which means that something was changed (more specifically, the file was created), and in the output, we can see a diff-like output that tells us that the state moved from <code>absent</code> to <code>touch</code>, which means the file was created. <code>mtime</code> and <code>atime</code> also changed, but this is probably due to how files are created and checked.</p>
+<p>Now that you have learned how to use check mode, let’s learn how to solve host connect<a id="_idTextAnchor538"/><a id="_idTextAnchor539"/>ion issues.</p>
+<h1 id="_idParaDest-196"><a id="_idTextAnchor540"/>Solving host connection issues</h1>
+<p>Ansible is often <a id="_idIndexMarker707"/>used to manage remote hosts or systems. To do this, Ansible will need to be able to connect to the remote host, and only after that will it be able to issue commands. Sometimes, the problem is that Ansible is unable to connect to the remote host. A typical example of this is when you try to manage a machine that hasn’t booted yet. Being able to quickly recognize these kinds of problems and fix them promptly will help you save a lot of time.</p>
+<p>Follow these steps to get started:</p>
+<ol>
+<li>Let’s create a playbook called <code>remote.yaml</code> with the following content:<pre class="source-code">
+---
+- hosts: all
+  tasks:
+  - name: Touch a file
+    ansible.builtin.file:
+      path: /tmp/myfile
+      state: touch</pre></li> <li>We can try<a id="_idIndexMarker708"/> to run the <code>remote.yaml</code> playbook against a non-existent FQDN, as follows:<pre class="source-code">
+<strong class="bold">$ ansible-playbook -i host.example.com, remote.yaml</strong></pre></li> </ol>
+<p>In this case, the output will inform us that the SSH service did not reply in time:</p>
+<pre class="source-code">
+<strong class="bold">PLAY [all] ****************************************************************************************</strong>
+<strong class="bold">TASK [Gathering Facts] ****************************************************************************</strong>
+<strong class="bold">fatal: [host.example.com]: UNREACHABLE! =&gt; {"changed": false, "msg": "Failed to connect to the host via ssh: ssh: Could not resolve hostname host.example.com: Name or service not known", "unreachable": true}</strong>
+<strong class="bold">PLAY RECAP ****************************************************************************************</strong>
+<strong class="bold">host.example.com : ok=0 changed=0 unreachable=1 failed=0 skipped=0 rescued=0 ignored=0</strong>
+<strong class="bold">There is also the possibility that we'll receive a different error:</strong>
+<strong class="bold">PLAY [all] ****************************************************************************************</strong>
+<strong class="bold">TASK [Gathering Facts] ****************************************************************************</strong>
+<strong class="bold">fatal: [host.example.com]: UNREACHABLE! =&gt; {"changed": false, "msg": "Failed to connect to the host via ssh: fale@host.example.com: Permission denied (publickey,gssapi-keyex,gssapi-with-mic).", "unreachable": true}</strong>
+<strong class="bold">PLAY RECAP ****************************************************************************************</strong>
+<strong class="bold">host.example.com : ok=0 changed=0 unreachable=1 failed=0 skipped=0 rescued=0 ignored=0</strong></pre> <p>In this case, the <a id="_idIndexMarker709"/>host did reply, but we don’t have enough access to be able to SSH into it.</p>
+<p>SSH connections usually fail for one of two reasons:</p>
+<ul>
+<li>The SSH client is unable to establish a connection with the SSH server</li>
+<li>The SSH server refuses the credentials provided by the SSH client</li>
+</ul>
+<p>Due to OpenSSH’s very high stability and backward compatibility, when the first issue occurs, it’s very probable that the IP address or the port is wrong, so the TCP connection isn’t feasible. Very rarely, this kind of error occurs in SSH-specific problems. Usually, double-checking the IP and the hostname (if it’s DNS, check that it resolves to the right IP) solves the problem. To investigate this further, you can try performing an SSH connection from the same machine to check whether there are problems. For instance, I would do this like so:</p>
+<pre class="console">
+$ ssh host.example.com -vvv</pre> <p>I’ve taken the hostname from the error itself to ensure that I’m simulating exactly what Ansible is doing. I’m doing this to ensure that I can see all possible logging messages that SSH can give me to troubleshoot the problem.</p>
+<p>The second<a id="_idIndexMarker710"/> problem might be a little bit more complex to debug since it can happen for multiple reasons. One of those is that you are trying to connect to the wrong host and you don’t have the credentials for that machine. Another common case is that the username is wrong. To debug it, you can take the <code>user@host</code> address that is shown in the error (in my case, <code>fale@host.example.com</code>) and use the same command you used previously:</p>
+<pre class="console">
+$ ssh fale@host.example.com -vvv</pre> <p>This should raise the same error that Ansible reported to you but with much more detail.</p>
+<p>Now that you have learned how to solve host connection issues, let’s learn how to pass working variabl<a id="_idTextAnchor541"/><a id="_idTextAnchor542"/>es via the CLI.</p>
+<h1 id="_idParaDest-197"><a id="_idTextAnchor543"/>Passing working variables via the CLI</h1>
+<p>One thing that <a id="_idIndexMarker711"/>can help during debugging, and definitely helps for code reusability, is passing variables to playbooks via the command line. Every time your application – either an Ansible playbook or any kind of application – receives input from a third party (a human, in this case), it should ensure that the value is reasonable. An example of this would be to check that the variable has been set and therefore <a id="_idIndexMarker712"/>is not an empty string. This is a security golden rule, but it should also be applied when the user is trusted since the user might mistype the variable’s name. The application should identify this and protect the whole system by protecting itself. Follow these steps:</p>
+<ol>
+<li>The first thing we want to have is a simple playbook that prints the content of a variable. Let’s create a playbook called <code>printvar.yaml</code> that contains the following content:<pre class="source-code">
+---
+- hosts: localhost
+  tasks:
+  - ansible.builtin.debug:
+      var: variable</pre></li> <li>Now that we have an Ansible playbook that allows us to see whether a variable has been set to <a id="_idIndexMarker713"/>what we were expecting, let’s run it<a id="_idIndexMarker714"/> with <code>variable</code>, which is declared in the execution statement:<pre class="source-code">
+<strong class="bold">$ ansible-playbook printvar.yaml --extra-vars='{"variable": "Hello, World!"}'</strong></pre></li> </ol>
+<p>By running this, we will receive an output similar to the following:</p>
+<pre class="source-code">
+<strong class="bold">PLAY [localhost] **********************************************************************************</strong>
+<strong class="bold">TASK [Gathering Facts] ****************************************************************************</strong>
+<strong class="bold">ok: [localhost]</strong>
+<strong class="bold">TASK [debug] **************************************************************************************</strong>
+<strong class="bold">ok: [localhost] =&gt; {</strong>
+<strong class="bold"> "variable": "Hello, World!"</strong>
+<strong class="bold">}</strong>
+<strong class="bold">PLAY RECAP ****************************************************************************************</strong>
+<strong class="bold">localhost : ok=2 changed=0 unreachable=0 failed=0 skipped=0 rescued=0 ignored=0</strong></pre> <p>Ansible allows variables to be set in various modes and with different priorities. More specifically, you <a id="_idIndexMarker715"/>can <a id="_idIndexMarker716"/>set them with the following:</p>
+<ul>
+<li>System configuration settings in <code>/etc/ansible/ansible.cfg</code> (lowest priority)</li>
+<li>User configuration settings in <code>~/.ansible.cfg</code></li>
+<li>Project configuration in <code>ansible.cfg</code> in the current directory</li>
+<li>The <code>ANSIBLE_CONFIG</code> environment variable</li>
+<li>Command-line options</li>
+<li>Role defaults</li>
+<li>Inventory files or the <code>vars</code> script group</li>
+<li>The <code>group_vars/all</code> inventory</li>
+<li>The <code>group_vars/all</code> playbook</li>
+<li>The <code>group_vars/*</code> inventory</li>
+<li>The <code>group_vars/*</code> playbook</li>
+<li>Inventory files or the <code>vars</code> script host</li>
+<li>The <code>host_vars/*</code> inventory</li>
+<li>The <code>host_vars/*</code> playbook</li>
+<li>Host facts/cached <code>set_facts</code></li>
+<li>Play <code>vars</code></li>
+<li>Play <code>vars_prompt</code></li>
+<li>Play <code>vars_files</code></li>
+<li>The <code>vars</code> role (defined in <code>role/vars/main.yml</code>)</li>
+<li>The <code>vars</code> block (only for tasks in the block)</li>
+<li>The <code>vars</code> task (only for the task)</li>
+<li><code>include_vars</code></li>
+<li><code>set_facts</code>/registered vars</li>
+<li>Role (and <code>include_role</code>) params</li>
+<li><code>include</code> params</li>
+<li>Command-line extra <code>vars</code> (highest priority)</li>
+</ul>
+<p>As you<a id="_idIndexMarker717"/> can see, the<a id="_idIndexMarker718"/> last option (and the highest priority of them all) is using <code>--extra-vars</code> (or <code>-e</code>) in the execution command.</p>
+<p>Now that you have learned how to pass working variables via the CLI, let’s learn how to limi<a id="_idTextAnchor544"/><a id="_idTextAnchor545"/>t the host’s execution.</p>
+<h1 id="_idParaDest-198"><a id="_idTextAnchor546"/>Limiting the host’s execution</h1>
+<p>While<a id="_idIndexMarker719"/> testing a playbook, it might make sense to test on a restricted number of machines; for instance, just one. Let’s get started:</p>
+<ol>
+<li>To use the limitation of target hosts on Ansible, we will need a playbook. Create a playbook called <code>helloworld.yaml</code> that contains the following content:<pre class="source-code">
+---
+- hosts: all
+  tasks:
+  - ansible.builtin.debug:
+      msg: "Hello, World!"</pre></li> <li>We also need to create an inventory with at least two hosts. In my case, I created a file called <code>inventory</code> that contains the following content:<pre class="source-code">
+[hosts]
+host1.example.com
+host2.example.com
+host3.example.com</pre></li> </ol>
+<p>Let’s run<a id="_idIndexMarker720"/> the playbook in the usual way with the following command:</p>
+<pre class="source-code">
+<strong class="bold">$ ansible-playbook -i inventory helloworld.yaml</strong></pre> <p>By doing this, we will receive the following output:</p>
+<pre class="source-code">
+<strong class="bold">PLAY [all] ****************************************************************************************</strong>
+<strong class="bold">TASK [Gathering Facts] ****************************************************************************</strong>
+<strong class="bold">ok: [host1.example.com]</strong>
+<strong class="bold">ok: [host3.example.com]</strong>
+<strong class="bold">ok: [host2.example.com]</strong>
+<strong class="bold">TASK [debug] **************************************************************************************</strong>
+<strong class="bold">ok: [host1.example.com] =&gt; {</strong>
+<strong class="bold"> "msg": "Hello, World!"</strong>
+<strong class="bold">}</strong>
+<strong class="bold">ok: [host2.example.com] =&gt; {</strong>
+<strong class="bold"> "msg": "Hello, World!"</strong>
+<strong class="bold">}</strong>
+<strong class="bold">ok: [host3.example.com] =&gt; {</strong>
+<strong class="bold"> "msg": "Hello, World!"</strong>
+<strong class="bold">}</strong>
+<strong class="bold">PLAY RECAP ****************************************************************************************</strong>
+<strong class="bold">host1.example.com : ok=2 changed=0 unreachable=0 failed=0 skipped=0 rescued=0 ignored=0</strong>
+<strong class="bold">host2.example.com : ok=2 changed=0 unreachable=0 failed=0 skipped=0 rescued=0 ignored=0</strong>
+<code>host3.example.com</code>, we will need to specify this on the command line, as follows:</p>
+<pre class="source-code">
+<strong class="bold">$ ansible-playbook -i inventory helloworld.yaml --limit=host3.example.com</strong></pre> <p>To prove that this works as expected, we can run it. By doing this, we will receive the following output:</p>
+<pre class="source-code">
+<strong class="bold">PLAY [all] ****************************************************************************************</strong>
+<strong class="bold">TASK [Gathering Facts] ****************************************************************************</strong>
+<strong class="bold">ok: [host3.example.com]</strong>
+<strong class="bold">TASK [debug] **************************************************************************************</strong>
+<strong class="bold">ok: [host3.example.com] =&gt; {</strong>
+<strong class="bold"> "msg": "Hello, World!"</strong>
+<strong class="bold">}</strong>
+<strong class="bold">PLAY RECAP ****************************************************************************************</strong>
+<code>--limit</code> keyword, we can force Ansible to ignore all the hosts that are outside what is specified in the <code>limit</code> parameter.</p>
+<p>It’s possible to specify multiple hosts as a list or with patterns, so both of the following commands will execute the playbook against <code>host2.example.com</code> and <code>host3.example.com</code>:</p>
+<pre class="console">
+$ ansible-playbook -i inventory helloworld.yaml --limit=host2.example.com,host3.example.com
+$ ansible-playbook -i inventory helloworld.yaml --limit=host[2-3].example.com</pre> <p>The limit will not override the inventory but will add restrictions to it. So, let’s say we limit to a host that is not part of the inventory, as follows:</p>
+<pre class="console">
+$ ansible-playbook -i inventory helloworld.yaml --limit=host4.example.com</pre> <p>Here, we will receive the following error, and nothing will be done:</p>
+<pre class="console">
+[WARNING]: Could not match supplied host pattern, ignoring: host4.example.com
+ERROR! Specified hosts and/or --limit does not match any hosts</pre> <p>Now that you <a id="_idIndexMarker723"/>have learned how to limit the host’s execution, let’s learn <a id="_idTextAnchor547"/><a id="_idTextAnchor548"/>how to flush the code cache.</p>
+<h1 id="_idParaDest-199"><a id="_idTextAnchor549"/>Flushing the code cache</h1>
+<p>Everywhere in IT, caches are used to speed up operations, and Ansible is no exception.</p>
+<p>Usually, caches <a id="_idIndexMarker724"/>are good, and for this reason, they are heavily used ubiquitously. However, they might create some problems if they cache a value that should not have been cached or if they are not flushed, even if the value has changed.</p>
+<p>Flushing caches in Ansible is very straightforward, and it’s enough to run <code>ansible-playbook</code>, which we are already running, with the addition of the <code>--flush-cache</code> option, as follows:</p>
+<pre class="console">
+ansible-playbook -i inventory helloworld.yaml --flush-cache</pre> <p>Ansible can use multiple cache plugins to save host variables, as well as execution variables. Sometimes, those variables might be left behind and influence the following executions. When Ansible finds a variable that should be set in the step it just started, Ansible might assume that the step has already been completed, and therefore pick up that old variable as if it has just been created. By using the <code>--flush-cache</code> option, we can avoid this since it will ensure that Ansible flushes the Ansible facts cache during its execution.</p>
+<p>Now that you have learned how to flush the code cache, let’s learn<a id="_idTextAnchor550"/><a id="_idTextAnchor551"/> how to check for bad syntax.</p>
+<h1 id="_idParaDest-200"><a id="_idTextAnchor552"/>Checking for bad syntax</h1>
+<p>Defining whether a <a id="_idIndexMarker725"/>file has the right syntax or not is fairly easy for a machine, but this might be more complex for humans. This does not mean that machines can fix the code for you, but they can quickly identify whether a problem is present or not. To use Ansible’s built-in syntax checker, we need a playbook with a syntax error. Let’s get started:</p>
+<ol>
+<li>Let’s create a <code>syntaxcheck.yaml</code> file with the following content:<pre class="source-code">
+---
+- hosts: all
+  tasks:
+  - ansible.builtin.debug:
+    msg: "Hello, World!"</pre></li> <li>Now, we can use the <code>--</code><code>syntax-check</code> command:<pre class="source-code">
+<strong class="bold">$ ansible-playbook syntaxcheck.yaml --syntax-check</strong></pre></li> </ol>
+<p>By doing this, we will receive the following output:</p>
+<pre class="source-code">
+<strong class="bold">ERROR! 'msg' is not a valid attribute for a Task</strong>
+<strong class="bold">The error appears to be in '/home/fale/ansible/Ansible2Cookbook/Ch11/syntaxcheck.yaml': line 4, column 7, but may</strong>
+<strong class="bold">be elsewhere in the file depending on the exact syntax problem.</strong>
+<strong class="bold">The offending line appears to be:</strong>
+<strong class="bold"> tasks:</strong>
+<strong class="bold"> - debug:</strong>
+<strong class="bold"> ^ here</strong>
+<strong class="bold">This error can be suppressed as a warning using the "invalid_task_attribute_failed" configuration</strong></pre> <ol>
+<li value="3">We can<a id="_idIndexMarker726"/> now proceed to fix the indentation problem on line 4:<pre class="source-code">
+---
+- hosts: all
+  tasks:
+  - ansible.builtin.debug:
+      msg: "Hello, World!"</pre></li> </ol>
+<p>When we recheck the syntax, we will see that it now returns no errors:</p>
+<pre class="source-code">
+<strong class="bold">$ ansible-playbook syntaxcheck-fixed.yaml --syntax-check</strong>
+<strong class="bold">playbook: syntaxcheck.yaml</strong></pre> <p>When the syntax check doesn’t find any errors, the output will resemble the previous one, where it listed the files that were analyzed without listing any errors.</p>
+<p>Since Ansible knows all the supported options in all the supported modules, it can quickly read your code and validate whether the YAML you provided contains all the required fields and that it does not <a id="_idTextAnchor553"/><a id="_idTextAnchor554"/>contain any unsupported fields.</p>
+<h1 id="_idParaDest-201"><a id="_idTextAnchor555"/>Summary</h1>
+<p>In this chapter, you learned about the various options that Ansible provides so that you can look for problems in your Ansible code. More specifically, you learned how to use host facts to diagnose failures, how to include testing within a playbook, how to use check mode, how to solve host connection issues, how to pass variables from the CLI, how to limit the execution to a subset of hosts, how to flush the code cache, and how to check for bad syntax.</p>
+<p>In the next chapter, you will learn how to get started with<a id="_idTextAnchor556"/><a id="_idTextAnchor557"/> Ansible Automation Controller.</p>
+<h1 id="_idParaDest-202"><a id="_idTextAnchor558"/>Questions</h1>
+<p>Answer the following questions to test your knowledge of this chapter:</p>
+<ol>
+<li>True or False: The <code>ansible.builtin.debug</code> module allows you to print the value of a variable or a fixed string during Ansible’s execution.<ol><li>True</li><li>False</li></ol></li>
+<li>Which keyword allows Ansible to force limit the host’s execution?<ol><li><code>--</code><code>limit</code></li><li><code>--<a id="_idTextAnchor559"/><a id="_idTextAnchor560"/></code><code>max</code></li><li><code>--</code><code>restrict</code></li><li><code>--</code><code>force</code></li><li><code>--</code><code>except</code></li></ol></li>
+</ol>
+<h1 id="_idParaDest-203"><a id="_idTextAnchor561"/>Further reading</h1>
+<p>Ansible’s official documentation about error handling can be found at <a href="https://docs.ansible.com/ansible/latest/playbook_guide/playbooks_error_handling.xhtml">https://docs.ansible.com/ansible/latest/playbook_guide/playbooks_error_handling.xhtml</a>.</p>
+</div>
+</div></body></html>

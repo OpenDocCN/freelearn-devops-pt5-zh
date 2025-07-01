@@ -1,0 +1,363 @@
+<html><head></head><body><div><div><div><div><h1 class="title"><a id="ch08"/>Chapter 8. Debugging and Error Handling</h1></div></div></div><p>Like software code, testing infrastructure code is an all-important task. There should ideally be no code floating around in production that has not been tested, especially when you have strict customer SLAs to meet, and this is true even for the infrastructure. In this chapter, we'll look at syntactic checks, testing without applying the code on the machines (the no-op mode), and functional testing for playbooks, which are at the core of Ansible and trigger the various tasks you want to perform on the remote hosts. It is recommended that you integrate some of these into your <strong>Continuous Integration</strong> (<strong>CI</strong>) system that you have for Ansible to better test your playbooks. We'll be looking at the following points:</p><div><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">Syntax checking</li><li class="listitem" style="list-style-type: disc">Checking the mode with and without diff</li><li class="listitem" style="list-style-type: disc">Functional testing</li></ul></div><p>As part of functional testing, we will be looking at:</p><div><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">Assertions on the end state of the system</li><li class="listitem" style="list-style-type: disc">Testing with tags</li><li class="listitem" style="list-style-type: disc">Serverspec (a different tool, but can work wonderfully with Ansible)</li><li class="listitem" style="list-style-type: disc">Using the <code class="literal">--syntax-check</code> option</li></ul></div><p>Whenever you run a playbook, Ansible first checks the syntax of the playbook file. If an error is encountered, Ansible will error out saying there was a syntax error and will not proceed unless you fix that error. This syntax checking is performed only when you run the <code class="literal">ansible-playbook</code> command. When writing a big playbook or if you have included task files, it might be difficult to fix all of the errors; this might end up wasting more time. In order to deal with such situations, Ansible provides a way to check your YAML syntax as you keep progressing with your playbook. For this example, we will need to create the file <code class="literal">playbooks/setup_apache.yaml</code> with the following content:</p><pre class="programlisting">    - hosts: localhost &#13;
+      tasks: &#13;
+      - name: Install Apache &#13;
+        yum: &#13;
+          name: httpd &#13;
+          state: present &#13;
+      - name: Enable Apache &#13;
+      service: &#13;
+          name: httpd &#13;
+          state: running &#13;
+          enabled: True &#13;
+</pre><p>Now that we have our example file, we need to run it with the <code class="literal">--syntax-check</code> parameter, so you will invoke Ansible as:</p><pre class="programlisting">
+<strong>ansible-playbook playbooks/setup_apache.yaml --syntax-check</strong>
+</pre><p>The <code class="literal">ansible-playbook</code> command checked the YAML syntax of the <code class="literal">setup_apache.yml</code> playbook and showed that the syntax of the playbook was correct. Let's look at the resulting errors from the invalid syntax in the playbook:</p><pre class="programlisting">    ERROR! Syntax Error while loading YAML. &#13;
+    The error appears to have been in '~/08_code/playbooks/setup_apache.yaml': line 9, column 4, but may &#13;
+    be elsewhere in the file depending on the exact syntax problem. &#13;
+ &#13;
+    The offending line appears to be: &#13;
+ &#13;
+      - name: Enable Apache &#13;
+      service: &#13;
+      ^ here &#13;
+</pre><p>The error shows that there is an indentation error in the <code class="literal">Enable Apache</code> task. Ansible also gives you the line number, column number, and the filename where this error is found (even if this is not a guarantee of the exact location of the error). This should definitely be one of the basic tests that you should run as part of your CI for Ansible.</p><div><div><div><div><h1 class="title"><a id="ch08lvl1sec60"/>The check mode</h1></div></div></div><p>The check mode (also known as the <strong>dry run</strong> or <strong>no-op mode</strong>) will run your playbook in a no-operation mode, that is, it will not apply any changes to the remote host; instead, it will just show the changes that will be introduced when a task is run. Whether the check mode is actually enabled or not depends on each task. There are few commands that you may find interesting. All those modules will have to be run in <code class="literal">/usr/lib/python2.7/site-packages/ansible/modules</code> or where your Ansible module folder is (different paths could be possible based on the operating system you are using as well as the way you installed Ansible).</p><p>To count the number of available modules on your installation, you can perform this command:</p><pre class="programlisting">
+<strong>find . -type f | grep '.py$' | grep -v '__init__' | wc -l</strong>
+</pre><p>With Ansible 2.1.1, the result of this command is <code class="literal">569</code>, since Ansible has that many modules.</p><p>If you want to see how many of these support the check mode, you can run:</p><pre class="programlisting">
+<strong>grep -r 'supports_check_mode=True' | awk -F: '{print $1}' | sort | uniq | wc -l</strong>
+</pre><p>With Ansible 2.1.1 the result of this command is <code class="literal">242</code>.</p><p>You might also find the following command useful for listing all modules that support the check mode:</p><pre class="programlisting">
+<strong>grep -r 'supports_check_mode=True' | awk -F: '{print $1}' | sort | uniq</strong>
+</pre><p>This helps you test how your playbook will behave and check if there may be any failures before running it on your production server. You run a playbook in the check mode by simply passing the <code class="literal">--check</code> option to your <code class="literal">ansible-playbook</code> command. Let's see how the check mode works with the <code class="literal">setup_apache.yml</code> playbook, as follows:</p><pre class="programlisting">
+<strong>    PLAY [localhost] ************************************************* &#13;
+ &#13;
+    TASK [setup] ***************************************************** &#13;
+    ok: [localhost] &#13;
+ &#13;
+    TASK [Install Apache] ******************************************** &#13;
+    ok: [localhost] &#13;
+ &#13;
+    TASK [Enable Apache] ********************************************* &#13;
+    changed: [localhost] &#13;
+ &#13;
+    PLAY RECAP ******************************************************* &#13;
+    localhost         : ok=3    changed=1    unreachable=0    failed=0 &#13;
+</strong>
+</pre><p>In the preceding run, instead of making the changes on the target host, Ansible highlighted all the changes that would have occurred during the actual run. From the preceding run, you can find that <code class="literal">httpd</code> service was already installed on the target host, because of which, Ansible's exit message for that task was ok.</p><pre class="programlisting">    <strong>TASK [Install Apache] ******************************************** &#13;
+    ok: [localhost]</strong>
+</pre><p>Whereas, with the second task, it found that <code class="literal">httpd</code> service was not running on the target host:</p><pre class="programlisting">    <strong>TASK [Enable Apache] ********************************************* &#13;
+    changed: [localhost]</strong>
+</pre><p>When you run the preceding playbook again without the check mode enabled, Ansible will make sure that the service state is running.</p></div></div>
+<div><div><div><div><h1 class="title"><a id="ch08lvl1sec61"/>Indicating differences between files using
+ --diff</h1></div></div></div><p>In the check mode, you can use the <code class="literal">--diff</code> option to show the changes that would be applied to a file. To be able to see the <code class="literal">--diff</code> option in use, we need to change our <code class="literal">playbooks/setup_apache.yaml</code> playbook to match the following:</p><pre class="programlisting">    - hosts: localhost &#13;
+      tasks: &#13;
+      - name: Ensure Apache is installed &#13;
+        yum: &#13;
+          name: httpd &#13;
+          state: present &#13;
+      - name: Ensure Apache in enabled &#13;
+        service: &#13;
+          name: httpd &#13;
+          state: running &#13;
+          enabled: True &#13;
+      - name: Ensure Apache userdirs are properly configured &#13;
+        template: &#13;
+          src: '../templates/userdir.conf' &#13;
+          dest: '/etc/httpd/conf.d/userdir.conf' &#13;
+</pre><p>As you can see, we added a task, which will ensure a certain state of the <code class="literal">/etc/httpd/conf.d/userdir.conf</code> file.</p><p>We also need to create a template file placed in <code class="literal">templates/userdir.conf</code> with the following content:</p><pre class="programlisting">    # UserDir: The name of the directory that is appended onto a user's home &#13;
+    # directory if a ~user request is received. &#13;
+    # The path to the end user account 'public_html' directory must be &#13;
+    # accessible to the webserver userid.  This usually means that ~userid &#13;
+    # must have permissions of 711, ~userid/public_html must have permissions &#13;
+    # of 755, and documents contained therein must be world-readable. &#13;
+    # Otherwise, the client will only receive a "403 Forbidden" message. &#13;
+    # &#13;
+    &lt;IfModule mod_userdir.c&gt; &#13;
+        # &#13;
+        # UserDir is disabled by default since it can confirm the presence &#13;
+        # of a username on the system (depending on home directory &#13;
+        # permissions). &#13;
+        # &#13;
+        UserDir enabled &#13;
+     &#13;
+        # &#13;
+        # To enable requests to /~user/ to serve the user's public_html &#13;
+        # directory, remove the "UserDir disabled" line above, and uncomment &#13;
+        # the following line instead: &#13;
+        # &#13;
+        #UserDir public_html &#13;
+    &lt;/IfModule&gt; &#13;
+     &#13;
+    # &#13;
+    # Control access to UserDir directories.  The following is an example &#13;
+    # for a site where these directories are restricted to read-only. &#13;
+    # &#13;
+    &lt;Directory "/home/*/public_html"&gt; &#13;
+        AllowOverride FileInfo AuthConfig Limit Indexes &#13;
+        Options MultiViews Indexes SymLinksIfOwnerMatch IncludesNoExec &#13;
+        Require method GET POST OPTIONS &#13;
+    &lt;/Directory&gt; &#13;
+</pre><p>In this template, we only changed the <code class="literal">UserDir enabled</code> line, which by default is <code class="literal">UserDir disabled</code>.</p><div><div><h3 class="title"><a id="note44"/>Note</h3><p>The <code class="literal">--diff</code> option doesn't work with the file module; you will have to use the template module only.</p></div></div><p>We can now test the result of this with the following command:</p><pre class="programlisting">
+<strong>ansible-playbook playbooks/setup_apache.yaml --diff --check</strong>
+</pre><p>As you can see, we are using the <code class="literal">--check</code> parameter that will ensure this will be a dry-run. We will receive the following output:</p><pre class="programlisting">
+<strong>    PLAY [localhost] ************************************************* &#13;
+ &#13;
+    TASK [setup] ***************************************************** &#13;
+    ok: [localhost] &#13;
+ &#13;
+    TASK [Ensure Apache is installed] ******************************** &#13;
+    ok: [localhost] &#13;
+ &#13;
+    TASK [Ensure Apache in enabled] ********************************** &#13;
+    changed: [localhost] &#13;
+ &#13;
+    TASK [Ensure Apache userdirs are properly configured] ************ &#13;
+    changed: [localhost] &#13;
+    --- before: /etc/httpd/conf.d/userdir.conf &#13;
+    +++ after: dynamically generated &#13;
+    @@ -14,7 +14,7 @@ &#13;
+        # of a username on the system (depending on home directory &#13;
+        # permissions). &#13;
+        # &#13;
+    -    UserDir disabled &#13;
+    +    UserDir enabled &#13;
+     &#13;
+        # &#13;
+        # To enable requests to /~user/ to serve the user's public_html &#13;
+    @@ -33,4 +33,3 @@ &#13;
+        Options MultiViews Indexes SymLinksIfOwnerMatch IncludesNoExec &#13;
+        Require method GET POST OPTIONS &#13;
+    &lt;/Directory&gt; &#13;
+    - &#13;
+     &#13;
+     &#13;
+    PLAY RECAP ******************************************************* &#13;
+    localhost         : ok=4    changed=2    unreachable=0    failed=0</strong>
+</pre><p>As we can see, Ansible compares the current file of the remote host with the source file; a line starting with <code class="literal">+</code> indicates that a line was added to the file, whereas <code class="literal">-</code> indicates that a line was removed.</p><div><div><h3 class="title"><a id="note45"/>Note</h3><p>You can also use <code class="literal">--diff</code> without the <code class="literal">--check</code> option, which will allow Ansible to make the specified changes and show the difference between two files.</p></div></div><p>Using <code class="literal">--diff</code> and <code class="literal">--check</code> modes together is a test step that can potentially be used as part of your CI tests to assert how many steps have changed as part of the run. Another case where you can use those features together is the part of the deployment process that checks what exactly will change when you run Ansible on that machine.</p><p>There are also cases - that should not happen, but sometimes happen-where you have not run a playbook on a machine for a very long time and you are worried that running it again will break something. Using those options together should help you understand if it was just you worrying or if this is a real risk.</p></div>
+<div><div><div><div><h1 class="title"><a id="ch08lvl1sec62"/>Functional testing in Ansible</h1></div></div></div><p>Wikipedia says functional testing is a <strong>Quality Assurance (QA) process</strong> and a type of black-box testing that bases its test cases on the specifications of the software component under the test. <strong>Functions are tested by feeding them input and examining the output</strong>; the internal program structure is rarely considered. Functional testing is as important as code when it comes to infrastructure.</p><p>From an infrastructure perspective, with respect to functional testing, we test output of our Ansible runs on the actual machines. Ansible provides multiple ways to perform the functional testing of your playbook; let's look at some of the most commonly used methods.</p></div>
+<div><div><div><div><h1 class="title"><a id="ch08lvl1sec63"/>Functional testing using assert</h1></div></div></div><p>The check mode will only work when you want to check whether a task will change anything on the host or not. This will not help when you want to check whether the output of your module is what you expected. For example, let's say you wrote a module that will check if a port is up or not. In order to test this, you might need to check the output of your module and see whether it matches the desired output or not. To perform such tests, Ansible provides a way to directly compare the output of a module with the desired output.</p><p>Let's see how this works creating the file <code class="literal">playbooks/assert_ls.yaml</code> with the following content:</p><pre class="programlisting">    - hosts: localhost &#13;
+      tasks: &#13;
+      - name: List files in /tmp &#13;
+        command: ls /tmp &#13;
+        register: list_files &#13;
+      - name: Check if file testfile.txt exists &#13;
+        assert: &#13;
+          that: &#13;
+          - "'testfile.txt' in list_files.stdout_lines" &#13;
+</pre><p>In the preceding playbook, we're running the <code class="literal">ls</code> command on the target host and registering the output of that command in the <code class="literal">list_files</code> variable. Further, we ask Ansible to check whether the output of the <code class="literal">ls</code> command has the expected result. We do this using the <code class="literal">assert</code> module, which uses some conditional checks to verify if the <code class="literal">stdout</code> value of a task meets the expected output of the user. Let's run the preceding playbook to see what output Ansible returns with the command:</p><pre class="programlisting">
+<strong>ansible-playbook playbooks/assert_ls.yaml</strong>
+</pre><p>Since we don't have the file, we will receive the following output:</p><pre class="programlisting">
+<strong>    PLAY [localhost] ************************************************* &#13;
+ &#13;
+    TASK [setup] ***************************************************** &#13;
+    ok: [localhost] &#13;
+ &#13;
+    TASK [List files in /tmp] **************************************** &#13;
+    changed: [localhost] &#13;
+ &#13;
+    TASK [Check if file testfile.txt exists] ************************* &#13;
+    fatal: [localhost]: FAILED! =&gt; {"assertion": "'testfile.txt' in list_files.stdout_lines", "changed":     false, "evaluated_to": false, "failed": true} &#13;
+     &#13;
+    NO MORE HOSTS LEFT *********************************************** &#13;
+        to retry, use: --limit @playbooks/assert_ls.retry &#13;
+ &#13;
+    PLAY RECAP ******************************************************* &#13;
+    localhost         : ok=2    changed=1    unreachable=0    failed=1</strong>
+</pre><p>If we re-run the playbook after we create the expected file, it will not fail and therefore this will be the result:</p><pre class="programlisting">
+<strong>    PLAY [localhost] ************************************************* &#13;
+ &#13;
+    TASK [setup] ***************************************************** &#13;
+    ok: [localhost] &#13;
+ &#13;
+    TASK [List files in /tmp] **************************************** &#13;
+    changed: [localhost] &#13;
+ &#13;
+    TASK [Check if file testfile.txt exists] ************************* &#13;
+    ok: [localhost] &#13;
+ &#13;
+    PLAY RECAP ******************************************************* &#13;
+    localhost         : ok=3    changed=1    unreachable=0    failed=0</strong>
+</pre><p>This time, the task passed with an ok message as <code class="literal">testfile.txt</code> was present in the <code class="literal">list_files</code> variable. Likewise, you can match multiple strings in a variable or multiple variables using the <code class="literal">and</code> and <code class="literal">or</code> operators. The assertion feature is quite powerful, and users who have written either unit or integration tests in their projects will be quite happy to see this feature!</p></div>
+<div><div><div><div><h1 class="title"><a id="ch08lvl1sec64"/>Testing with tags</h1></div></div></div><p>Tags are a great way to test a bunch of tasks without running an entire playbook. We can use tags to run actual tests on the nodes to verify the state that the user intended to be in, the playbook. We can treat this as another way to run integration tests for Ansible on the actual box. The tag method to test can be run on the actual machines where you run Ansible, and also, it can be used primarily during deployments to test the state of your end systems. In this section, we'll first look at how to use tags in general, their features that can possibly help us, not just with testing but even otherwise, and finally for testing purposes.</p><p>To add tags in your playbook, use the tags parameter followed by one or more tag names separated by commas. Let's create a simple playbook in <code class="literal">playbooks/tags_example.yaml</code> to see how the tags work with the following content:</p><pre class="programlisting">    - hosts: localhost &#13;
+      tasks: &#13;
+      - name: Ensure the file /tmp/ok exists &#13;
+        file: &#13;
+          name: /tmp/ok &#13;
+          state: touch &#13;
+        tags: &#13;
+        - file_present &#13;
+      - name: Ensure the file /tmp/ok does not exists &#13;
+        file: &#13;
+          name: /tmp/ok &#13;
+          state: absent &#13;
+        tags: &#13;
+        - file_absent &#13;
+</pre><p>If we now run the playbook, the file will be created and destroyed. We can see it running with the following command:</p><pre class="programlisting">
+<strong>ansible-playbook playbooks/tags_example.yaml</strong>
+</pre><p>It will give us this output:</p><pre class="programlisting">
+<strong>    PLAY [localhost] ************************************************* &#13;
+ &#13;
+    TASK [setup] ***************************************************** &#13;
+    ok: [localhost] &#13;
+     &#13;
+    TASK [Ensure the file /tmp/ok exists] **************************** &#13;
+    changed: [localhost] &#13;
+     &#13;
+    TASK [Ensure the file /tmp/ok does not exists] ******************* &#13;
+    changed: [localhost] &#13;
+     &#13;
+    PLAY RECAP ******************************************************* &#13;
+    localhost         : ok=3    changed=2    unreachable=0    failed=0</strong>
+</pre><p>Since this is not an idempotent playbook, if we run it over and over, we will always see the same result, as the playbook will create and delete the file every time.</p><p>You can now simply pass the <code class="literal">file_present</code> tag or the <code class="literal">file_absent</code> tag to only perform one of the actions, like in the following example:</p><pre class="programlisting">
+<strong>ansible-playbook playbooks/tags_example.yaml -t file_present</strong>
+</pre><p>Thanks to the <code class="literal">-t file_present</code> part, only the tasks with the <code class="literal">file_present</code> tag will be executed, in fact this will be the output:</p><pre class="programlisting">
+<strong>    PLAY [localhost] ************************************************* &#13;
+ &#13;
+    TASK [setup] ***************************************************** &#13;
+    ok: [localhost] &#13;
+ &#13;
+    TASK [Ensure the file /tmp/ok exists] **************************** &#13;
+    changed: [localhost] &#13;
+ &#13;
+    PLAY RECAP ******************************************************* &#13;
+    localhost         : ok=2    changed=1    unreachable=0    failed=0</strong>
+</pre><p>You can also use tags to perform a set of tasks on the remote host just like taking a server out of a load balancer and adding it back to the load balancer.</p><p>You can also use the <code class="literal">--check</code> option with tags. By doing this, you can test your tasks without actually running them on your hosts. This allows you to test a bunch of individual tasks directly, instead of copying your tasks to a temporary playbook and running it from there.</p></div>
+<div><div><div><div><h1 class="title"><a id="ch08lvl1sec65"/>The --skip-tags</h1></div></div></div><p>Ansible also provides a way to skip some tags in a playbook. If you have a long playbook with multiple tags, like 10, and you want to execute them all but one, then it would not be a good idea to pass nine tags to Ansible. The situation would be more difficult if you forgot to pass a tag and the <code class="literal">ansible-playbook</code> command fails. To overcome such situations, Ansible provides a way to skip a couple of tags, instead of passing multiple tags. It's functioning is pretty straightforward, and can be triggered in the following way:</p><pre class="programlisting">
+<strong>ansible-playbook playbooks/tags_example.yaml --skip-tags file_present</strong>
+</pre><p>The output will be something like:</p><pre class="programlisting">
+<strong>    PLAY [localhost] ************************************************* &#13;
+ &#13;
+    TASK [setup] ***************************************************** &#13;
+    ok: [localhost] &#13;
+ &#13;
+    TASK [Ensure the file /tmp/ok does not exists] ******************* &#13;
+    ok: [localhost] &#13;
+ &#13;
+    PLAY RECAP ******************************************************* &#13;
+    localhost         : ok=2    changed=1    unreachable=0    failed=0</strong>
+</pre><p>As you can see, all tasks have been executed except the one with the <code class="literal">file_present</code> tag.</p></div>
+<div><div><div><div><h1 class="title"><a id="ch08lvl1sec66"/>Managing exceptions</h1></div></div></div><p>There are many cases, where for one reason or another, you want your playbook and roles to carry on in the case one or more tasks fail. A typical example of this could be that you want to check if software is installed or not. Let's see the following example to install Java. In the <code class="literal">roles/java/tasks/main.ymal</code> file, we are going to put the following code:</p><pre class="programlisting">    - name: Verify if the current version of Java is installed &#13;
+      command: rpm -q jdk1.8.0_91-1.8.0_91-fcs &#13;
+      register: java &#13;
+      ignore_errors: True &#13;
+      changed_when: java|failed &#13;
+ &#13;
+    - name: Ensure that JavaSE is download &#13;
+      uri: &#13;
+        url: 'http://download.oracle.com/otn-pub/java/jdk/8u91-b14/jdk-8u91-linux-x64.rpm' &#13;
+        method: GET &#13;
+        HEADER_Cookie: 'gpw_e24=http%3A%2F%2Fwww.oracle.com%2F; oraclelicense=accept-securebackup-cookie' &#13;
+        dest: /tmp &#13;
+        creates: /tmp/jdk-8u91-linux-x64.rpm &#13;
+      when: java|failed &#13;
+ &#13;
+    - name: Ensure JavaSE is installed &#13;
+      dnf: &#13;
+        name: /tmp/jdk-8u91-linux-x64.rpm &#13;
+        state: present &#13;
+      when: java|failed &#13;
+ &#13;
+    - name: Set alternatives for java &#13;
+      alternatives: &#13;
+        path: /usr/java/jdk1.8.0_91/jre/bin/java &#13;
+        name: java &#13;
+        link: /usr/bin/java &#13;
+      when: java|failed &#13;
+     &#13;
+    - name: Set alternatives for javac &#13;
+      alternatives: &#13;
+        path: /usr/java/jdk1.8.0_91/bin/javac &#13;
+        name: javac &#13;
+        link: /usr/bin/javac &#13;
+      when: java|failed &#13;
+ &#13;
+    - name: Set alternatives for javaws &#13;
+      alternatives: &#13;
+        path: /usr/java/jdk1.8.0_91/bin/javaws &#13;
+        name: javaws &#13;
+        link: /usr/bin/javaws &#13;
+      when: java|failed &#13;
+</pre><p>Before going forward with the other parts that are needed to execute this role, I'd like to spend some words on the various parts of this role task list, since there are many new things:</p><pre class="programlisting">    - name: Verify if the current version of Java is installed &#13;
+      command: rpm -q jdk1.8.0_91-1.8.0_91-fcs &#13;
+      register: java &#13;
+      ignore_errors: True &#13;
+      changed_when: java|failed &#13;
+</pre><p>In this task, we execute an <code class="literal">rpm</code> command that could have two different outputs:</p><div><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">Fail</li><li class="listitem" style="list-style-type: disc">Return the complete name of the JDK package</li></ul></div><p>Since we only want to check if the package exists or not and then to go forward, we register the output (<em>third</em> line) and ignore eventual failures (<em>fourth</em> line):</p><pre class="programlisting">    - name: Ensure that JavaSE is download &#13;
+      uri: &#13;
+        url: 'http://download.oracle.com/otn-pub/java/jdk/8u91-b14/jdk-8u91-linux-x64.rpm' &#13;
+        method: GET &#13;
+        HEADER_Cookie: 'gpw_e24=http%3A%2F%2Fwww.oracle.com%2F; oraclelicense=accept-securebackup-cookie' &#13;
+        dest: /tmp &#13;
+        creates: /tmp/jdk-8u91-linux-x64.rpm &#13;
+      when: java|failed &#13;
+</pre><p>In this part, we use the <code class="literal">uri</code> module that allows us to hit a remote URI with an HTTP request. This module is very nice since it allows you to use all HTTP methods as well as to customize HTTP headers. This makes this module very flexible. Since in the last line we have <code class="literal">when: java|failed</code>, this will only be executed if Java is not installed:</p><pre class="programlisting">    - name: Ensure JavaSE is installed &#13;
+      dnf: &#13;
+        name: /tmp/jdk-8u91-linux-x64.rpm &#13;
+        state: present &#13;
+      when: java|failed &#13;
+</pre><p>Here we use <code class="literal">dnf</code> to install the Java package. Since in the last line we have <code class="literal">when: java|failed</code>, this will only be executed if Java is not installed:</p><pre class="programlisting">    - name: Set alternatives for java &#13;
+      alternatives: &#13;
+        path: /usr/java/jdk1.8.0_91/jre/bin/java &#13;
+        name: java &#13;
+        link: /usr/bin/java &#13;
+      when: java|failed &#13;
+ &#13;
+    - name: Set alternatives for javac &#13;
+      alternatives: &#13;
+        path: /usr/java/jdk1.8.0_91/bin/javac &#13;
+        name: javac &#13;
+        link: /usr/bin/javac &#13;
+      when: java|failed &#13;
+ &#13;
+    - name: Set alternatives for javaws &#13;
+      alternatives: &#13;
+        path: /usr/java/jdk1.8.0_91/bin/javaws &#13;
+        name: javaws &#13;
+        link: /usr/bin/javaws &#13;
+      when: java|failed &#13;
+</pre><p>Here we are going to set new alternatives, in case we are installing Java. <code class="literal">alternatives</code> is an Ansible module that allows us to manage the configuration of the Linux <code class="literal">alternatives</code> program. This program is often used to manage which version of a program should be run by default in case you have multiple versions installed by default.</p><p>After we create the role, we will need the <code class="literal">hosts</code> file containing the host machine, in my case:</p><pre class="programlisting">    j01.fale.io &#13;
+</pre><p>And a playbook to apply the role, placed in <code class="literal">playbooks/hosts/j01.fale.io.yaml</code> and with the following content:</p><pre class="programlisting">    - hosts: j01.fale.io &#13;
+      user: root &#13;
+      roles: &#13;
+      - java &#13;
+</pre><p>We can now execute it with the following:</p><pre class="programlisting">
+<strong>ansible-playbook playbooks/hosts/j01.fale.io.yaml</strong>
+</pre><p>We will get the following result:</p><pre class="programlisting">    <strong>PLAY [j01.fale.io] *********************************************** &#13;
+ &#13;
+    TASK [setup] ***************************************************** &#13;
+    ok: [j01.fale.io] &#13;
+ &#13;
+    TASK [java : Verify if the current version of Java is installed] * &#13;
+    fatal: [j01.fale.io]: FAILED! =&gt; {"changed": true, "cmd": ["rpm", "-q", "jdk1.8.0_91-1.8.0_91-fcs"],         "delta": "0:00:00.009788", "end": "2016-09-27 11:04:56.185618", "failed": true, "rc": 1, "start":         "2016-    09-27 11:04:56.175830", "stderr": ``, "stdout": "package jdk1.8.0_91-1.8.0_91-fcs is not         installed", "stdout_lines": ["package jdk1.8.0_91-1.8.0_91-fcs is not installed"], "warnings":             ["Consider using yum, dnf or zypper module rather than running rpm"]} &#13;
+      ...ignoring &#13;
+ &#13;
+    TASK [java : Ensure that JavaSE is download] ********************* &#13;
+    changed: [j01.fale.io] &#13;
+ &#13;
+    TASK [java : Ensure JavaSE is installed] ************************* &#13;
+    changed: [j01.fale.io] &#13;
+ &#13;
+    TASK [java : Set alternatives for java] ************************** &#13;
+    ok: [j01.fale.io] &#13;
+ &#13;
+    TASK [java : Set alternatives for javac] ************************* &#13;
+    ok: [j01.fale.io] &#13;
+ &#13;
+    TASK [java : Set alternatives for javaws] ************************ &#13;
+    ok: [j01.fale.io] &#13;
+ &#13;
+    PLAY RECAP ******************************************************* &#13;
+    j01.fale.io       : ok=7    changed=2    unreachable=0    failed=0</strong>
+</pre><p>As you can see, the installation check failed since Java was not installed on the machine, and for this reason all other tasks have been executed as expected.</p></div>
+<div><div><div><div><h1 class="title"><a id="ch08lvl1sec67"/>Trigger failure</h1></div></div></div><p>There are cases when you want to trigger a failure directly. This can happen for multiple reasons, even if there are disadvantages doing so, since when you trigger the failure, the playbook will be brutally interrupted and this could leave your machine in an inconsistent state if you are not careful. One case where I have seen it work very well, is when you are running a non-idempotent playbook (for instance building of a newer version of an application) and you need a variable (for instance: the version/branch to deploy) set. In this case, you can check that the expected variable is correctly configured before starting to run the operations to ensure that everything will work as expected later on.</p><p>Let's put the following code in <code class="literal">playbooks/maven_build.yaml</code>:</p><pre class="programlisting">    - hosts: j01.fale.io &#13;
+      tasks: &#13;
+      - name: Ensure the tag variable is properly set &#13;
+        fail: 'The version needs to be defined. To do so, please add: --extra-vars                                 "version=$[TAG/BRANCH]"' &#13;
+        when: version is not defined &#13;
+      - name: Get last Project version &#13;
+        git: &#13;
+          repo: https://github.com/org/project.git &#13;
+          dest: "/tmp" &#13;
+          version: '{{ version }}' &#13;
+      - name: Maven clean install &#13;
+        shell: "cd /tmp/project &amp;&amp; mvn clean install" &#13;
+</pre><p>As you can see, we expect the user to add <code class="literal">--extra-vars "version=$[TAG/BRANCH]"</code> in the script to call the command. We could have put a branch to use by default but this is too risky because the user may lose focus and forget to add the right branch name themselves, which would lead to compiling (and deploying) the wrong version of the application. The <code class="literal">fail</code> module also allows us to specify a message that will be displayed to the user.</p><div><div><h3 class="title"><a id="note46"/>Note</h3><p>I think that the <code class="literal">fail</code> task is far more useful in playbooks that are run manually since when a playbook is automatically run, managing the exception is often better than failing.</p></div></div></div>
+<div><div><div><div><h1 class="title"><a id="ch08lvl1sec68"/>Summary</h1></div></div></div><p>In this chapter, we have seen how to debug Ansible playbooks using multiple techniques. Then we moved to the management of failures and lastly we saw how to trigger failures intentionally.</p><p>In the next chapter, we will discuss multi-tier environments as well as deployment methodologies.</p></div></body></html>

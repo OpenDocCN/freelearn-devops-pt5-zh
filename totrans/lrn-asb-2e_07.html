@@ -1,0 +1,367 @@
+<html><head></head><body>
+<div><h1 class="chapter-number" id="_idParaDest-111"><a id="_idTextAnchor336"/>7</h1>
+<h1 id="_idParaDest-112"><a id="_idTextAnchor337"/>Ansible Windows Modules</h1>
+<p>In this chapter, we will look at the ever-growing collection of built-in Ansible modules that support and interact with Windows-based servers; coming from an almost exclusively macOS and Linux background, it seemed odd to be using a tool not natively supported on Windows to manage Windows.</p>
+<p>By the end of our time in this chapter, I am sure you will agree that looking at the options available, the Ansible developers have made managing Windows Server workloads with a playbook as seamless and familiar as possible.</p>
+<p>In this chapter, we will learn how to do the following:</p>
+<ul>
+<li>Launch a Windows server instance in Microsoft Azure</li>
+<li>Enable features in Windows</li>
+<li>Create users</li>
+<li>Install third-party packages using Chocolatey</li>
+</ul>
+<p>The chapter covers the following topics:</p>
+<ul>
+<li>Launching a Windows server in Azure</li>
+<li>Ansible preparation</li>
+<li>The Windows Playbook roles</li>
+<li>Running the Playbook</li>
+</ul>
+<h1 id="_idParaDest-113"><a id="_idTextAnchor338"/>Technical requirements</h1>
+<p>Rather than trying to run a full Windows Server 2022 locally in a <strong class="bold">virtual machine</strong> (<strong class="bold">VM</strong>), in this chapter, we will cover securely launching and configuring a Windows Server 2022 VM hosted in Microsoft Azure. If you are following along, you must have an active Microsoft Azure subscription and the Azure <strong class="bold">command-line interface</strong> (<strong class="bold">CLI</strong>) installed.</p>
+<p>For details on how to install and configure the Azure CLI, please see the documentation at <a href="https://learn.microsoft.com/en-us/cli/azure/install-azure-cli/">https://learn.microsoft.com/en-us/cli/azure/install-azure-cli/</a>. If you are following along on a Windows host, I recommend installing the Azure CLI within your Windows Subsystem for Linux installation alongside where you installed Ansible.</p>
+<h1 id="_idParaDest-114"><a id="_idTextAnchor339"/>Launching a Windows server in Azure</h1>
+<p>We will not use Ansible to deploy the<a id="_idIndexMarker385"/> Azure resources as we will do in <a href="B21620_09.xhtml#_idTextAnchor411"><em class="italic">Chapter 9</em></a>, <em class="italic">Moving to the Cloud</em>; instead, we will use the Azure CLI to launch our <a id="_idIndexMarker386"/>VM.</p>
+<p class="callout-heading">Note</p>
+<p class="callout">As some of the commands in this chapter will be pretty long, I will break them up with a backslash. In Linux command lines, th<a id="_idTextAnchor340"/>e backslash (<code>\</code>) followed by a newline is a line continuation character. It lets you split a single command over multiple lines for better readability.</p>
+<p>Start by changing to the <code>Chapter07</code> folder within your checked-out copy of the repository that accompanies this title and run the following commands:</p>
+<pre class="console">
+$ MYIP=$(cur<a id="_idTextAnchor341"/>l https://api.ipify.org 2&gt;/dev/null)
+<a id="_idTextAnchor342"/>$ VMPASSWORD=$(openssl rand -base64 24<a id="_idTextAnchor343"/>)
+$ echo $VMPASSWORD &gt; VMPASSWORD</pre> <p>The first two commands set two variables on your command line; the first uses the <code>$MYIP</code> variable with the public IP address of your current network session.</p>
+<p>The second generates a random password using the <code>openssl</code> command and assigns it to the variable call<a id="_idTextAnchor344"/>ed <code>$VMPASSWORD</code>.</p>
+<p>The third command copies the content of <code>$VMPASSWORD</code> to a file called <code>VMPASSWORD</code>; this command must be executed in the same folder as the host inventory file, as it will be called in our host inventory file, which we will discuss later in the chapter.</p>
+<p class="callout-heading">Note</p>
+<p class="callout">I will follow the Azure Cloud Adoption Framework recommendations around resource naming and launching the resources in the UK South region.</p>
+<p>Now that we know our IP address <a id="_idIndexMarker388"/>and have a password, we can start using the <a id="_idIndexMarker389"/>Azure CLI to launch resources. The first thing we need to do is make sure that we are logged in by running the following:</p>
+<pre class="console">
+$ az login</pre> <p>Once logged in, we can <a id="_idIndexMarker390"/>then crea<a id="_idTextAnchor345"/>te an <strong class="bold">Azure Resource Group</strong> by executing the following:</p>
+<pre class="console">
+$ az group create \
+    --name rg-ansible-windows-server-uks \
+    --location uksouth</pre> <p>The Azure Resource Group is the logic container we will be deploying our Azure resources to, the first of which <a id="_idIndexMarker391"/>will be an <strong class="bold">Azure </strong><strong class="bold">Virtual Network</strong>.</p>
+<p>The following command will create the Azure Virtual Network with an address space of <code>10.0.0.0/24</code> and a single subnet using <code>10.0.0.0/27</code>; this is where we will launch our Windows Server:</p>
+<pre class="console">
+$ az network vnet create \
+    --resource-group rg-ansible-windows-server-uks \
+    --name vnet-ansible-windows-server-uks \
+    --address-prefix 10.0.0.0/24 \
+    --subnet-name sub-vms \
+    --subnet-prefix 10.0.0.0/27</pre> <p>Now, we need to <a id="_idIndexMarker392"/>create a <strong class="bold">Network Security Group</strong> to assign to the network interface of our VM once it has been launched.</p>
+<p>We need this as we will assign a public IP address to the VM, and we don’t want to expose our three management ports directly to the internet; instead, we want to lock them down to just us:</p>
+<pre class="console">
+$ az network nsg create \
+    --resource-group rg-ansible-windows-server-uks \
+    --name nsg-ansible-windows-server-uks</pre> <p>We now have an empty Network<a id="_idIndexMarker393"/> Security Group created. Let’s add some rules, starting <a id="_idIndexMarker394"/>with the rule that opens port <code>80</code> to everyone to allow HTTP traffic:</p>
+<pre class="console">
+$ az network nsg rule create \
+   --resource-group rg-ansible-windows-server-uks \
+   --nsg-name nsg-ansible-windows-server-uks \
+   --name allowHTTP \
+   --protocol tcp \
+   --priority 100 \
+   --destination-port-range 80 \
+   --access allow</pre> <p>Next, we have the rule that <a id="_idIndexMarker395"/>opens port <code>3389</code>, which <strong class="bold">Remote Desktop</strong> uses to allow you to create a session to the host; we only want this open to us, so the command here would be as follows:</p>
+<pre class="console">
+$ az network nsg rule create \
+    --resource-group rg-ansible-windows-server-uks \
+    --nsg-name nsg-ansible-windows-server-uks \
+    --name allowRDP \
+    --protocol tcp \
+    --priority 1000 \
+    --destination-port-range 3389 \
+    --source-addr<a id="_idTextAnchor346"/>ess-prefix $MYIP/32 \
+    --access allow</pre> <p>Note that we are passing in the <code>$MYIP</code> variable we registered when launching the resources. This will pass <a id="_idIndexMarker396"/>your IP address, and as you can see, we are then appending <code>/32</code> to the<a id="_idIndexMarker397"/> end; this is the <strong class="bold">Classless Inter-Domain Routing</strong> (<strong class="bold">CIDR</strong>) notation for a single IP address.</p>
+<p>Now that we have the<a id="_idIndexMarker398"/> rule for Remote Desktop in place, which is how we, as end users, will connect to the VM, we nee<a id="_idTextAnchor347"/>d to open the <strong class="bold">Windows Remote Management</strong> (<strong class="bold">WinRM</strong>) port, which is <a id="_idIndexMarker399"/>how Ansible will be connecting to the machine:</p>
+<pre class="console">
+$ az network nsg rule create \
+    --resource-group rg-ansible-windows-server-uks \
+    --nsg-name nsg-ansible-windows-server-uks \
+    --name allowWinRM \
+    --protocol tcp \
+    --priority 1050 \
+    --destination-port-range 5985-5986 \
+    --source-address-prefix $MYIP/32 \
+    --access allow</pre> <p>The next of the commands we need to run is the one that launches the VM itself and configures it to use the core networking components we have just launched:</p>
+<pre class="console">
+$ az vm create \
+     --<a id="_idTextAnchor348"/>resource-group rg-ansible-windows-server-uks \
+     --name vm-ansible-windows-server-uks \
+     --computer-name ansibleWindows \
+     --image Win2022Datacenter \
+     --admin-username azureuser \
+     --admin-password $VMPASSWORD \
+     --vnet-name vnet-ansible-windows-server-uks \
+     --subnet sub-vms \
+     --nsg nsg-ansible-windows-server-uks \
+     --public-ip-sku Standard \
+     --public-ip-address-allocation static</pre> <p>As you can see, we are instructing the Azure CLI to launch a VM that uses the <code>rg-ansible-windows-server-uks</code> resource group and using all of the network resources we launched using the previous commands.</p>
+<p>You might be thinking, great, let’s get back to looking <a id="_idIndexMarker401"/>at Ansible. However, there is one more command we need to<a id="_idIndexMarker402"/> run before we can connect to the VM using Ansible – and the reason is that while we have a Windows 2022 server up and running, the WinRM protocol is not enabled by default.</p>
+<p>The command to enable this functionality is as follows:</p>
+<pre class="console">
+$ az vm extension set \
+    --resource-group rg-ansible-windows-server-uks \
+    --vm-name vm-ansible-windows-server<a id="_idTextAnchor349"/>-uks \
+    --name CustomScriptExtension \
+    --publisher Microsoft.Compute \
+    --version 1.10 \
+    --settings "{'fileUrls': ['https://raw.githubusercontent.com/PacktPublishing/Learn-Ansible-Second-Edition/main/Scripts/ConfigureRemotingForAnsible.ps1'],'c<a id="_idTextAnchor350"/>ommandToExecute': 'powershell -ExecutionPolicy Unrestricted -File ConfigureRemotingForAnsible.ps1'}"</pre> <p>This enables a VM Extension on the Azure VM we have just deployed. There are many different types of Virtual Machine Extensions; the <a id="_idIndexMarker403"/>one we are using is <strong class="bold">Custom Script Extension</strong>. This extension downloads a script from a URL passed to it and then executes a command; in our case, we are downloading the script configuring WinRM from the GitHub repository accompanying this title.</p>
+<p>You can see the script that will be<a id="_idIndexMarker404"/> downloaded at the following URL: <a href="https://raw.githubusercontent.com/PacktPublishing/Learn-Ansible-Second-Edition/main/Scripts/ConfigureRemotingForAnsible.ps1">https://raw.githubusercontent.com/PacktPublishing/Learn-Ansible-Second-Edition/main/Scripts/ConfigureRemotingForAnsible.ps1</a></p>
+<p>The command that runs <a id="_idIndexMarker405"/>once the script is downloaded is as follows:</p>
+<pre class="console">
+$ powershell -ExecutionPolicy Unrestricted -File ConfigureRemotingForAnsible.ps1</pre> <p>The Virtual Machine Extension executes the preceding command, so we do not have to <a id="_idTextAnchor351"/>run it directly.</p>
+<p>The Resource Visualizer in the Azure portal for the resource group should show you something that looks like the fo<a id="_idTextAnchor352"/><a id="_idTextAnchor353"/>llowing overview:</p>
+<div><div><img alt="Figure 7.1 – Reviewing our resources in the Azure Resource Visualizer" src="img/B21620_07_1.jpg"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.1 – Reviewing our resources in the Azure Resource Visualizer</p>
+<p>Once completed, our<a id="_idIndexMarker406"/> Windows Server VM is ready to have our Ansible run<a id="_idIndexMarker407"/> against it.</p>
+<h1 id="_idParaDest-115"><a id="_idTextAnchor354"/>Ansible preparation</h1>
+<p>As mentioned in the previous section, Ansible<a id="_idIndexMarker408"/> will use WinRM to interact with our Windows host.</p>
+<p class="callout-heading">Information</p>
+<p class="callout">WinRM provides<a id="_idIndexMarker409"/> access to a <strong class="bold">Simple Object Access Protocol</strong> (<strong class="bold">SOAP</strong>)-like protocol called <strong class="bold">WS-Management</strong>. Unlike <strong class="bold">Secure Shell</strong> (<strong class="bold">SSH</strong>), which provides the user with an interactive shell to manage<a id="_idIndexMarker410"/> the host, WinRM accepts executed scripts, and the results <a id="_idIndexMarker411"/>are passed back to you.</p>
+<p>Ansible requires us to install a few<a id="_idIndexMarker412"/> Python modules to enable it to use the protocol; these modules need to be installed as they are not typically installed alongside Ansible.</p>
+<p>To install the module, if you are running on Ubuntu, run the fo<a id="_idTextAnchor355"/>llowing command:</p>
+<pre class="console">
+$ sudo -H pip install pywinrm</pre> <p>On macOS, run the following:</p>
+<pre class="console">
+$ pip install pywinrm</pre> <p>Once installed, we need to update our environment file to instruct Ansible to use the WinRM protocol rather than SSH.</p>
+<p>Our updated <code>hosts</code> file looks like the following file, which is a copy of the <code>hosts.example</code> file from the <code>Chapter07</code> folder in the accompanying repository. If you are following along with the exercise, you will need to update yours to update the IP address to match that of your Azure Virtual Machine once it has been launched:</p>
+<pre class="source-code">
+WindowsServer ansible_host=123.123.123.123.nip.io
+[ansible_hosts]
+WindowsSe<a id="_idTextAnchor356"/><a id="_idTextAnchor357"/>rver
+[ansible_hosts:vars<a id="_idTextAnchor358"/>]
+ansible_connection=winrm
+ansible_user="azureuser"
+ansible_password="{{ lookup('ansible.builtin.file', 'VMPASSWORD') }}"
+ansible_winrm_server_cert_validation=ignore</pre> <p>The start of the file mirrors what we have been used to so far in that it contains a name for a host and the resolvable hostname<a id="_idIndexMarker413"/> of the VM, again using the <strong class="bold">Nip.io</strong> service (<a href="https://nip.io/">https://nip.io/</a>).</p>
+<p>Next, we take the named host and put it in the <code>ansible_hosts</code> group before defining a bunch of settings for the group.</p>
+<p>The first of these settings instructs Ansible to use <code>winrm</code> by setting it as the value for the <code>ansible_connection</code> key.</p>
+<p>Next, we set the <code>ansible_user</code> key; the value is <code>azureuser</code>, which we defined when we launched the Azur<a id="_idTextAnchor359"/>e Virtual Machine; and also the <code>ansible_password</code> key.</p>
+<p>If you recall, at the start of<a id="_idIndexMarker414"/> the chapter, we ran t<a id="_idTextAnchor360"/>he following c<a id="_idTextAnchor361"/>ommand:</p>
+<pre class="console">
+$ echo $VMPASSWORD &gt; VMPASSWORD</pre> <p>This took the random password we generated, that is, <code>$VMPASSWORD</code>,<a id="_idTextAnchor362"/> and placed it inside a file named <code>VMPASSWORD</code>; this means that when we define the <code>ansible_password</code> key, we can use a lookup value, using <code>{{ lookup('ansible.builtin.file', 'VMPASSWORD') }}</code>, to read the contents of the <code>VMPASSWORD</code> file and use that rather than us having to hardcode the password into our environment file.</p>
+<p>Finally, we tell Ansible to ignore any certificate errors by setting the <code>ansible_winrm_server_cert_validation</code> key to <code>false</code>; we need to do this because WinRM has been configured to use a self-signed certificate, which will cause a certificate error as our local machine does not know to trust the certificate.</p>
+<p>Now that we have Windows up and running and Ansible configured, we can start interacting with it.</p>
+<h2 id="_idParaDest-116"><a id="_idTextAnchor363"/>The ping module</h2>
+<p>Not all Ansible modules <a id="_idTextAnchor364"/>work with <a id="_idIndexMarker415"/>Windows hosts, and <code>ansible.builtin.ping</code> is one<a id="_idIndexMarker416"/> of them.</p>
+<p>If you were to run the following command:</p>
+<pre class="console">
+$ ansible WindowsServer -i hosts -m ansible.builtin.ping</pre> <p>You would then get quite a verbose error with the following warning:</p>
+<pre class="console">
+[WARNING]: No python interpreters found for host WindowsServer (tried ['python3.11', 'python3.10',
+'python3.9', 'python3.8', 'python3.7', 'python3.6', 'python3.5', '/usr/bin/python3',
+'/usr/libexec/platform-python', 'python2.7', '/usr/bin/python', 'python'])</pre> <p>Luckily, there is a modu<a id="_idTextAnchor365"/>le provided <a id="_idIndexMarker417"/>for Windows called <code>ansible.windows.win_ping</code>, so let’s update our command to run that instead:</p>
+<pre class="console">
+$ ansible WindowsServer -i hosts -m ansible.windows.win_ping</pre> <p>This returns the result you<a id="_idIndexMarker418"/> would expect to receive if you sent a ping:</p>
+<pre class="console">
+WindowsServer | SUCCESS =&gt; {
+    "changed": false,
+    "ping": "pong"
+}</pre> <p>The next module we will look at doesn’t require any changes from how we ran it against a Linux host.</p>
+<h2 id="_idParaDest-117"><a id="_idTextAnchor366"/>The setup module</h2>
+<p>As before, we need to run the<a id="_idIndexMarker419"/> module and target our host, so the command is <a id="_idIndexMarker420"/>as follows:</p>
+<pre class="console">
+$ ansible WindowsServer -i hosts -m ansible.builtin.setup</pre> <p>This will return information on the host as it did when executing the same module against our Linux host, a snippet of which can be seen in the following screenshot:</p>
+<div><div><img alt="Figure 7.2 – Some of the output from the setup module" src="img/B21620_07_2.jpg"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.2 – Some of the output from the setup module</p>
+<p>This is one of the <a id="_idIndexMarker421"/>only modules that will work on Windows and<a id="_idIndexMarker422"/> Linux hosts.</p>
+<p>Now that we have confirmed that our host is accessible, let’s look at the changes we need to make to the playbooks.</p>
+<h1 id="_idParaDest-118"><a id="_idTextAnchor367"/>The Windows Playbook roles</h1>
+<p>The entire playbook can be<a id="_idIndexMarker423"/> found in the <code>Chapter 07</code> folder in the repository that accompanies the title, so I will not cover how to create roles in this chapter as we have covered it at length in the previous chapters.</p>
+<h2 id="_idParaDest-119"><a id="_idTextAnchor368"/>Enabling Windows features</h2>
+<p>Two roles cover how to enable features; the<a id="_idTextAnchor369"/><a id="_idIndexMarker424"/> first role, called <code>iis</code>, enables <a id="_idIndexMarker425"/>the <strong class="bold">Internet Information Services</strong> (<strong class="bold">IIS</strong>) on our Windows Server.</p>
+<p class="callout-heading">Information</p>
+<p class="callout">IIS is the default web server that ships with Windows Server, and it supports the following protocols: HTTP, HTTPS, and HTTP/2, as well as FTP, FTPS, SMTP, and NNTP. It was first r<a id="_idTextAnchor370"/>eleased in 1995 as part of Windows NT.</p>
+<p>There are some default variables in <code>roles/iis/defaults/main.yml</code>; these define where things need <a id="_idIndexMarker426"/>to be copied to on the server and also include the contents on an HTML file we will copy to the host:</p>
+<pre class="source-code">
+document_root: 'C:\inetpub\wwwroot\'
+html_file: "<a id="_idTextAnchor371"/>ansible.html"
+html_heading: "Success !!!"
+html_body: |
+  This HTML page has been deployed using Ansible to a &lt;b&gt;{{ ansible_distribution }}&lt;/b&gt; host.&lt;br&gt;&lt;br&gt;
+  The weboot is &lt;b&gt;{{ document_root }}&lt;/b&gt; this file is called &lt;b&gt;{{ html_file }}&lt;/b&gt;.&lt;br&gt;</pre> <p>There are then two tasks in <code>role<a id="_idTextAnchor372"/>s/iis/tasks/main.yml</code>. The first task is <em class="italic">where the </em><em class="italic">magic happens</em>:</p>
+<pre class="source-code">
+- name: "Enable IIS"
+  ansible.windows.win_feature:
+    name:
+      - "Web-Server"
+      - "Web-Common-Http"
+    state: "present"</pre> <p>I say <em class="italic">where the magic happens</em> because I don’t get to touch Windows hosts very often as a Linux system administrator by trade.</p>
+<p>Still, as you can see from the preceding task, Ansible is giving us a Linux-like experience, meaning that I don’t have to roll up my sleeves and get under the hood of Windows too much.</p>
+<p>The task uses the <code>ansible.windows.win_feature</code> module to enable the <code>Web-Server</code> and <code>Web-Common-Http</code> features; as we are sticking with the default out-of-the-box settings, there isn’t <a id="_idIndexMarker427"/>any more configuration we need to do other than to copy an HTML file across to the document root:</p>
+<pre class="source-code">
+- name: "Create an html file from a template"
+  ansible.windows.win_template:
+    src: "index.html.j2"
+    dest: "{{ document_root }}{{ html_file }}"</pre> <p>As you can see, we are using a Jinja2 template file, an abridged version of which looks like the following:</p>
+<pre class="source-code">
+&lt;!--{{ ansible_managed }}--&gt;
+&lt;title&gt;{{ html_heading }}&lt;/title&gt;
+&lt;article&gt;
+    &lt;h1&gt;{{ html_heading }}&lt;/h1&gt;
+    &lt;div&gt;
+        &lt;p&gt;{{ html_body }}&lt;/p&gt;
+    &lt;/div&gt;
+&lt;/article&gt;</pre> <p>But rather than <code>ansible.builtin.template</code>, we are using <code>ansible.windows.win_template</code>, which is the Windows module version, as I am sure you will have already guessed.</p>
+<p>Suppose we were to use the <code>ansible.builtin.template</code> version; we would get the same error as when we ran the <code>ansible.builtin.ping</code> module, and complaints about Python not being installed.</p>
+<p>The next role expands on the <code>iis</code> file and enables <code>.Net</code>; the role is called <code>dotnet</code>.</p>
+<p>Again, there are some default variables in <code>roles/dotnet/defaults/main.yml</code>:</p>
+<pre class="source-code">
+aspx_document_root: 'C:\inetpub\wwwroot\ansible\'
+aspx_file: "default.aspx"
+aspx_heading: "Success !!!"
+aspx_body: |
+  This HTML page has been deployed using Ansible to a &lt;b&gt;{{ ansible_distribution }}&lt;/b&gt; host.&lt;br&gt;&lt;br&gt;
+  The weboot is &lt;b&gt;{{ aspx_document_root }}&lt;/b&gt; this file is called &lt;b&gt;{{ aspx_file }}&lt;/b&gt;.&lt;br&gt;&lt;br&gt;
+  The output below is from ASP.NET&lt;br&gt;&lt;br&gt;
+  Hello from &lt;%= Environment.MachineName %&gt; at &lt;%= DateTime.UtcNow %&gt;&lt;br&gt;&lt;br&gt;</pre> <p>As you can see, this time, the<a id="_idIndexMarker428"/> body contains some inline code.</p>
+<p>However, you may have yet to spot a subtle difference in how we define the paths in the variables. For both tasks for our Windows workload, the pat<a id="_idTextAnchor373"/>h variables have been defined as follows:</p>
+<pre class="source-code">
+document_root: 'C:\inetpub\wwwroot\'
+aspx_document_root: 'C:\inetpub\wwwroot\ansible\'</pre> <p>But, if we look at how we defined the path in <a href="B21620_05.xhtml#_idTextAnchor253"><em class="italic">Chapter 5</em></a>, <em class="italic">Deploying WordPress</em>, there is quite a crucial difference:</p>
+<pre class="source-code">
+wordpress_system:
+    home: "/var/www/wordpress"</pre> <p>The difference is not that we have used <code>wordpress_system.home</code> as the variable; it is more subtle than that.</p>
+<p>If you have noticed that th<a id="_idTextAnchor374"/>e Windows workload paths are using single quotes and the Linux one is using double quotes, give yourself a pat on the back.</p>
+<p>In Ansible, single quotes (<code>'</code>) that enclose strings are treated as literals, ensuring special characters aren’t interpreted or expanded, making them ideal for Windows paths.</p>
+<p>Double quotes (<code>"</code>) allow f<a id="_idTextAnchor375"/>or string interpolation, meaning embedded Jinja2 template expressions or special characters will be expanded. They also support escape sequences, such as <code>\n</code> for new lines, because many escape sequences such as <code>\</code>, which is in our path, could cause problems.</p>
+<p>If we needed to use double quotes because we needed to pass in something that needed to be expanded, then you could have a double slash (<code>\\</code>) like this:</p>
+<pre class="source-code">
+document_root: "C:\\inetpub\\wwwroot\\"
+aspx_document_root: "C:\\inetpub\\wwwroot\\ansible\\"</pre> <p>However, it can confuse reading<a id="_idIndexMarker429"/> the paths, so I used single quotes in our examples – back to the role now.</p>
+<p>The first of four tasks in <code>roles/dotnet/tasks/main.yml</code> enables <code>.Net</code>:</p>
+<pre class="source-code">
+- name: "Enable .NET"
+  ansible.windows.win_feature:
+    name:
+      - "Net-Framework-Features"
+      - "Web-Asp-Net45"
+      - "Web-Net-Ext45"
+    state: "present"
+  notify: "Restart IIS"</pre> <p>We are also triggering a restart of IIS via a handler if any changes are detected; this uses <code>ansible.windows.win_service</code>:</p>
+<pre class="source-code">
+- name: "Restart IIS"
+  ansible.windows.win_service:
+    name: "w3svc"
+    state: "restarted"</pre> <p>The next task creates a folder if one doesn’t exist:</p>
+<pre class="source-code">
+- name: "Create the folder for our asp.net app"
+  ansible.windows.win_file:
+    path: "{{ aspx_document_root }}"
+    state: "directory"</pre> <p>Again, a Windows version of an existing module we have used is called, this time <code>ansible.windows.win_file</code>. Next, we copy the file to the folder we just created:</p>
+<pre class="source-code">
+- name: "Create an aspx file from a template"
+  ansible.windows.win_template:
+    src: "default.aspx.j2"
+    dest: "{{ aspx_document_root }}{{ aspx_file }}"</pre> <p>The final task in the role <a id="_idIndexMarker430"/>configures IIS to consider we are now running an application:</p>
+<pre class="source-code">
+- name: "Ensure the default web application exists"
+  community.windows.win_iis_webapplication:
+    name: "Default"
+    state: "present"
+    physical_path: "{{ aspx_document_root }}"
+    application_pool: "DefaultAppPool"
+    site: "Default Web Site"</pre> <p>There are a few more roles to cover before we run the playbook; let’s look at the next one.</p>
+<h2 id="_idParaDest-120"><a id="_idTextAnchor376"/>Creating a user</h2>
+<p>This role creates a user for us to <a id="_idIndexMarker431"/>connect to our instance with. The defaults that can be found in <code>roles/user/defaults/main.yml</code> are as follows:</p>
+<pre class="source-code">
+ansible:
+  username: "ansible"
+  password: "{{ lookup('password', 'group_vars/generated_password chars=ascii_letters,digits length=30') }}"
+  groups:
+    - "Users"
+    - "Administrators"</pre> <p>As you can see, here, we are defining a user called <code>ansible</code> that has a 30-character random <code>password</code>, which <a id="_idIndexMarker432"/>Ansible will create using a lookup plugin if one doesn’t exist. The <code>ansible</code> user will be a member of the <code>Users</code> and <code>Administrators</code> groups.</p>
+<p>There is a single task in <code>roles/user/tasks/main.yml</code> using the <code>ansible.windows.win_user</code> module, which looks like the following:</p>
+<pre class="source-code">
+- name: "Ensure that the ansible created users are present"
+  ansible.windows.win_user:
+    name: "{{ ansible.username }}"
+    fullname: "{{ ansible.username | capitalize }}"
+    password: "{{ ansible.password }}"
+    state: "present"
+    groups: "{{ ansible.groups }}"</pre> <p>Like all Windows modules, the syntax is similar to the Linux equivalent, so you should know what each key means. As you can see from the previous task, we are using a Jinja2 transformation to capitalize the first letter of the <code>ansible.username</code> variable.</p>
+<h2 id="_idParaDest-121"><a id="_idTextAnchor377"/>Installing applications using Chocolatey</h2>
+<p>The next role, called <code>choco</code>, uses <strong class="bold">Chocolatey</strong> to install<a id="_idIndexMarker433"/> a few bits of<a id="_idIndexMarker434"/> software on the machine.</p>
+<p class="callout-heading">Information</p>
+<p class="callout">Chocolatey is Windows’ answer to macOS’s Homebrew – a package manager streamlining software installations. Like we used Homebrew earlier, Chocolatey wraps typical Windows installations into neat PowerShell commands, making it a perfect match for orchestration tools such as Ansible.</p>
+<p>In <code>roles/choco/defaults/main.yml</code>, we have a single variable that contains a list of the packages we want<a id="_idIndexMarker435"/> to install:</p>
+<pre class="source-code">
+apps:
+  - "notepadplusplus.install"
+  - "putty.install"
+  - "googlechrome"</pre> <p>As you may have already guessed, this is<a id="_idIndexMarker436"/> the task that installs the applications:</p>
+<pre class="source-code">
+- name: "Install software using chocolatey"
+  chocolatey.chocolatey.win_chocolatey:
+    name: "{{ apps }}"
+    state: "present"</pre> <p>Again, the module takes a similar input to the previous package manager modules, <code>ansible.builtin.apt</code> and <code>ansible.builtin.dnf</code>, that we used. This means that the logic Ansible uses across the modules that do similar tasks is consistent across multiple operating systems and not just different Linux distributions.</p>
+<h2 id="_idParaDest-122"><a id="_idTextAnchor378"/>Information role</h2>
+<p>The final role is called info; its only purpose is to output once the playbook has finished running. The role has a single task <a id="_idIndexMarker437"/>defined in <code>roles/info/tasks/main.yml</code>:</p>
+<pre class="source-code">
+- name: "Print out information on the host"
+  ansible.builtin.debug:
+    msg: "You can connect to '{{ ansible_host }}' using the username of '{{ ansible.username }}' with a password of '{{ ansible.password }}'."</pre> <p>As you can see, this will provide us with the hostname to create a Remote Desktop session, along with confirming the username and password we should use.</p>
+<p>That concludes our look at the <a id="_idIndexMarker438"/>roles that will be called when we run the playbook, which we are now ready to do.</p>
+<h1 id="_idParaDest-123"><a id="_idTextAnchor379"/>Running the Playbook</h1>
+<p>The <code>site.yml</code> is missing some of the <a id="_idIndexMarker439"/>settings at the top because we are targeting a Windows host:</p>
+<pre class="source-code">
+---
+- name: "Install IIS, .NET, create user, install chocolatey and display info"
+  hosts: "ansible_hosts"
+  gather_facts: true
+  vars_files:
+    - "group_vars/common.yml"
+  roles:
+    - "iis"
+    - "dotnet"
+    - "user"
+    - "choco"
+    - "info"</pre> <p>As you can see, there is no need for the <code>become</code> or <code>become_method</code> keys to be set, as we do not need to change users once connected to the host.</p>
+<p>Outside of that, the rest of the file is as expected, as is the way we run the playbook:</p>
+<pre class="console">
+$ ansible-playbook -i hosts site.yml</pre> <p>It will take a little while to run as a lot is going on in the background, as you will see from the <a id="_idTextAnchor380"/>output when the <a id="_idIndexMarker440"/>playbook runs for the first time:</p>
+<div><div><img alt="Figure 7.3 – Reviewing the playbook output" src="img/B21620_07_3.jpg"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.3 – Reviewing the playbook output</p>
+<p>As you can see<a id="_idTextAnchor381"/> from the preceding output, the host I was given was <code>20.50.120.120.nip.io</code> (this host has long since been terminated, but if you are following along, you can replace the preceding host with your own).</p>
+<p>To view the static HTML and <code>.Net</code> pages we uploaded, you can visit <a href="http://20.50.120.120.nip.io/ansible.html">http://20.50.120.120.nip.io/ansible.html</a> or <a href="http://20.50.120.120.nip.io/ansible/default.aspx">http://20.50.120.120.nip.io/ansible/default.aspx</a>, making sure to update the host to reflect your own.</p>
+<p>You can also open a remote desktop session to the host using the credentials given in the output; the following screenshot shows a session using the user we created and opening the side using <strong class="bold">Google Chrome</strong> with notes in <strong class="bold">Notepad++</strong>, both of which are applications we installed with the Playbook:</p>
+<div><div><img alt="Figure 7.4 – A remote desktop session" src="img/B21620_07_4.jpg"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.4 – A remote desktop session</p>
+<p>Once you have finished <a id="_idIndexMarker441"/>with the host, you can run the following Azure CLI command to terminate all the resources we created:</p>
+<pre class="console">
+$ az group delete \
+    --name rg-ansible-windows-server-uks</pre> <p>Double-check that everything has been removed as expected to<a id="_idTextAnchor382"/> ensure you do not get any unexpected bills.</p>
+<h1 id="_idParaDest-124"><a id="_idTextAnchor383"/>Summary</h1>
+<p>As mentioned at the start of the chapter, using what we would consider a traditional Linux tool such as Ansible on Windows always feels a little strange. However, I am sure you will agree that the experience is as Linux-like as possible.</p>
+<p>When I first started experimenting with the Windows modules, I was surprised that I managed to launch a Windows Server in Azure and deploy a simple web application without having to remote desktop into the target instance.</p>
+<p>With each new release, Ansible gets more and more support for Windows-based hosts, making it easy to manage mixed workloads from your playbooks.</p>
+<p>In the next chapter, we will examine the networking modules available in Ansible.</p>
+<h1 id="_idParaDest-125"><a id="_idTextAnchor384"/>Further reading</h1>
+<p>You can find more information on the excellent Chocolatey at <a href="https://chocolatey.org/">https://chocolatey.org/</a>.</p>
+</div>
+
+
+<div><h1 id="_idParaDest-126" lang="en-US" xml:lang="en-US"><a id="_idTextAnchor385"/>Part 3: Network and Cloud Automation</h1>
+<p>Ansible’s power extends beyond just managing servers; it can also automate network devices and cloud infrastructure. Here, we will explore Ansible’s network modules and discuss how to interact with network devices programmatically. We will then shift our attention to the cloud, where you will discover how to provision and manage resources on popular cloud platforms such as Microsoft Azure and Amazon Web Services. By the end of this part, you will have the skills needed to automate complex cloud deployments using Ansible.</p>
+<p>This part has the following chapters:</p>
+<ul>
+<li><a href="B21620_08.xhtml#_idTextAnchor386"><em class="italic">Chapter 8</em></a>, <em class="italic">Ansible Network Modules</em></li>
+<li><a href="B21620_09.xhtml#_idTextAnchor411"><em class="italic">Chapter 9</em></a>, <em class="italic">Moving to the Cloud</em></li>
+<li><a href="B21620_10.xhtml#_idTextAnchor458"><em class="italic">Chapter 10</em></a>, <em class="italic">Building Out a Cloud Network</em></li>
+<li><a href="B21620_11.xhtml#_idTextAnchor501"><em class="italic">Chapter 11</em></a>, <em class="italic">Highly Available Cloud Deployments</em></li>
+<li><a href="B21620_12.xhtml#_idTextAnchor550"><em class="italic">Chapter 12</em></a>, <em class="italic">Building Out a VMware Deployment</em></li>
+</ul>
+</div>
+<div><div></div>
+</div>
+<div><div></div>
+</div>
+</body></html>

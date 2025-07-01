@@ -1,0 +1,849 @@
+<html><head></head><body>
+<div><div><h1 class="chapter-number" id="_idParaDest-32"><a id="_idTextAnchor099"/>2</h1>
+<h1 id="_idParaDest-33"><a id="_idTextAnchor100"/>Understanding the Fundamentals of Ansible</h1>
+<p>At its heart, Ansible is a simple framework that pushes a small program called an <strong class="bold">Ansible module</strong> to target nodes. Modules are at the heart of Ansible and are responsible for performing all of the automation’s hard work. The Ansible framework goes beyond this, however, and also includes plugins and dynamic inventory management, as well as tying all of this together with playbooks to automate infrastructure provisioning, configuration management, application deployment, network automation, and much more, as shown:</p>
+<div><div><img alt="Figure 2.1 – The typical flow and usage of Ansible’s automation engine" height="797" src="img/B20846_02_001.jpg" width="1379"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 2.1 – The typical flow and usage of Ansible’s automation engine</p>
+<p>Even with the addition of Ansible collections since the previous release of this book, this architecture remains unchanged – now, the modules, plugins, and dynamic inventory scripts are simply distributed through collections whereas before everything was distributed as part of the Ansible release itself.</p>
+<p>Ansible only needs to be installed on the management node. From there, it distributes the required modules over the network’s transport layer (usually SSH or WinRM) to perform tasks and deletes them once the tasks are complete. In this way, Ansible retains its agentless architecture and does not clutter up your target nodes with code that might be required for a one-off automation task.</p>
+<p>In this chapter, you will learn more about the composition of the Ansible framework and its various components, as well as how to use them together in playbooks written in YAML syntax. You will learn how to create automation code for your IT operation tasks and learn how to apply this using both ad hoc tasks and more complex playbooks. Finally, you will learn how Jinja2 templating allows you to repeatably build dynamic configuration files using variables and dynamic expressions.</p>
+<p>In this chapter, we will cover the following topics:</p>
+<ul>
+<li>Getting familiar with the Ansible framework</li>
+<li>Exploring the configuration file</li>
+<li>Command-line arguments</li>
+<li>Defining variables</li>
+<li>Understanding Jinja2 filters</li>
+</ul>
+<h1 id="_idParaDest-34"><a id="_idTextAnchor101"/>T<a id="_idTextAnchor102"/>echnical requirements</h1>
+<p>This chapter assumes that you have successfully installed the latest version of Ansible (8.0 with <code>ansible-core</code> 2.15, at the time of writing) on a Linux node, as discussed in <a href="B20846_01.xhtml#_idTextAnchor015"><em class="italic">Chapter 1</em></a>, <em class="italic">Getting Started with Ansible</em>. It also assumes that you have at least one other Linux host to test the automation code on. The more hosts you have available, the more you will be able to develop the examples in this chapter and learn about Ansible. SSH communication between the Linux hosts is assumed, as is a working knowledge of them.</p>
+<p>The code bundle for this chapter is available at <a href="https://github.com/PacktPublishing/Practical-Ansible-Second-Edition/tree/main/Chapter%202">https://github.com/PacktPublishing/Practical-Ansible-Second-Edition/tree/main/Chapter%202</a>.</p>
+<h1 id="_idParaDest-35"><a id="_idTextAnchor103"/>G<a id="_idTextAnchor104"/>etting familiar with the Ansible framework</h1>
+<p>In this section, you<a id="_idIndexMarker106"/> will learn how the Ansible framework fits into IT operations. We will explain how to run Ansible for the first time. Once you understand this framework, you will be ready to start learning about more advanced concepts, such as creating and running playbooks with your own inventory.</p>
+<p>In order to run Ansible’s ad hoc commands via an SSH connection from your Ansible control machine to multiple remote hosts, you need to ensure you have the latest Ansible version installed on the control host. Use the following command to confirm the latest Ansible version:</p>
+<pre class="console">
+$ ansible --version
+ansible [core 2.15.0] (2.15 82b47c8d5c) last updated 2023/05/19 15:21:43 (GMT +000)
+  config file = None
+  configured module search path = ['/home/james/.ansible/plugins/modules', '/usr/share/ansible/plugins/modules']
+  ansible python module location = /home/james/ansible-2.15/ansible/lib/ansible
+  ansible collection location = /home/james/.ansible/collections:/usr/share/ansible/collections
+  executable location = /home/james/ansible-2.15/ansible/bin/ansible
+  python version = 3.10.6 (main, Mar 10 2023, 10:55:28) [GCC 11.3.0] (/usr/bin/python)
+  jinja version = 3.0.3
+  libyaml = True</pre> <p>You also need to ensure SSH connectivity with each remote host that you will define in the inventory. You can use a simple, manual SSH connection on each of your remote hosts to test the connectivity, as Ansible will make use of SSH during all remote Linux-based automation tasks:</p>
+<pre class="console">
+$ ssh &lt;username&gt;@web01.example.org
+The authenticity of host 'web01.example.org (10.0.50.30)' can't be established.
+ED25519 key fingerprint is SHA256:hU+saFERGFDERW453tasdFPAkpVws.
+Are you sure you want to continue connecting (yes/no)? yes
+password:&lt;Input_Your_Password&gt;</pre> <p>In this <a id="_idIndexMarker107"/>section, we will walk you through how Ansible works, starting with some simple connectivity testing. You can learn how the Ansible framework accesses multiple host machines to execute your tasks by following this simple procedure:</p>
+<ol>
+<li>Create or edit your default inventory file, <code>/etc/ansible/hosts</code> (you can also specify the path with your own inventory file by passing options such as <code>–-inventory=/path/inventory_file</code>). Add some example hosts to your inventory—these must be the IP addresses or hostnames of real machines for Ansible to test against. The following are examples from my network, but you need to substitute these for your own devices. Add one hostname (or IP address) per line:<a id="_idTextAnchor105"/><pre class="source-code">
+web01.example.org
+web02.example.org
+app01.example.org
+app02.example.org</pre></li> </ol>
+<p>All hosts should be specified with a<a id="_idIndexMarker108"/> resolvable address—that is, a <code>/etc/hosts</code> on your Ansible control node). Alternatively, this can be IP addresses if you do not have DNS or host entries set up. Whatever format you choose for your inventory addresses, you should be able to successfully connect to each host. Unless you have set up stringent firewall rules, a simple ping to each host will suffice as a test. See the following output as an example:</p>
+<pre class="source-code">
+<strong class="bold">$ ping web01.example.org</strong>
+<strong class="bold">PING web01.example.org (10.0.50.30) 56(84) bytes of data.</strong>
+<strong class="bold">64 bytes from web01.example.org (10.0.50.30): icmp_seq=1 ttl=64 time=1.02 ms</strong>
+<strong class="bold">64 bytes from web01.example.org (10.0.50.30): icmp_seq=2 ttl=64 time=1.01 ms</strong>
+<strong class="bold">64 bytes from web01.example.org (10.0.50.30): icmp_seq=3 ttl=64 time=0.957 ms</strong>
+<strong class="bold">64 bytes from web01.example.org (10.0.50.30): icmp_seq=4 ttl=64 time=1.16 ms</strong></pre> <ol>
+<li value="2">To make<a id="_idIndexMarker109"/> the automation process seamless, we’ll generate an SSH authentication key pair so that we don’t have to type in a password every time we want to run a playbook. If you do not already have an SSH key pair, you can generate one using the following command:<pre class="source-code">
+<strong class="bold">$ ssh-keygen</strong></pre></li> </ol>
+<p>When you run the <code>ssh-keygen</code> tool, you will see an output similar to the following. Note that you should leave the <code>passphrase</code> variable blank when prompted; otherwise, you will need to enter a passphrase every time you want to run an Ansible task, which removes the convenience of authenticating with SSH keys (though it does make them more secure if they ever get into the wrong hands, so please take this into consideration when working with SSH key pairs):</p>
+<pre class="source-code">
+<strong class="bold">$ ssh-keygen</strong>
+<strong class="bold">Generating public/private rsa key pair.</strong>
+<strong class="bold">Enter file in which to save the key (/home/james/.ssh/id_rsa): &lt;Enter&gt;</strong>
+<strong class="bold">Enter passphrase (empty for no passphrase): &lt;Press Enter&gt;</strong>
+<strong class="bold">Enter same passphrase again: &lt;Press Enter&gt;</strong>
+<strong class="bold">Your identification has been saved in /home/james/.ssh/id_rsa.</strong>
+<strong class="bold">Your public key has been saved in /home/james/.ssh/id_rsa.pub.</strong>
+<strong class="bold">The key fingerprint is:</strong>
+<strong class="bold">SHA256:1IF0KMMTVAMEQF62kTwcG59okGZLiMmi4Ae/BGBT+24 james@controlnode.example.org</strong>
+<strong class="bold">The key's randomart image is:</strong>
+<strong class="bold">+---[RSA 2048]----+</strong>
+<strong class="bold">|=*=*BB==+oo |</strong>
+<strong class="bold">|B=*+*B=.o+ . |</strong>
+<strong class="bold">|=+=o=.o+. . |</strong>
+<strong class="bold">|...=. . |</strong>
+<strong class="bold">| o .. S |</strong>
+<strong class="bold">| .. |</strong>
+<strong class="bold">| E |</strong>
+<strong class="bold">| . |</strong>
+<strong class="bold">| |</strong>
+<strong class="bold">+----[SHA256]-----+</strong></pre> <ol>
+<li value="3">Although <a id="_idIndexMarker110"/>there are conditions under which your SSH keys will be automatically picked up, it is recommended that you make use of <code>ssh-agent</code> as this allows you to load multiple keys to authenticate against a variety of targets, without worrying about whether your keys have the right name and path to be picked up. This will be very useful to you in the future, even if it isn’t right now. Start <code>ssh-agent</code> as follows, and then add your new authentication key (note that you will need to do this for every shell that you open):<pre class="source-code">
+<strong class="bold">$ eval $(ssh-agent)</strong>
+<strong class="bold">$ ssh-add ~/.ssh/id_rsa</strong></pre></li> <li>Before you can perform key-based authentication with your target hosts, you need to apply the public key from the key pair you just generated to each host. You can <a id="_idIndexMarker111"/>copy the key to each host, in turn, using the following command:<pre class="source-code">
+<strong class="bold">$ ssh-copy-id -i ~/.ssh/id_rsa.pub web01.example.org</strong>
+<strong class="bold">/usr/bin/ssh-copy-id: INFO: Source of key(s) to be installed: "~/.ssh/id_rsa.pub"</strong>
+<strong class="bold">/usr/bin/ssh-copy-id: INFO: attempting to log in with the new key(s), to filter out any that are already installed</strong>
+<strong class="bold">/usr/bin/ssh-copy-id: INFO: 1 key(s) remain to be installed -- if you are prompted now it is to install the new keys</strong>
+<strong class="bold">james@web01.example.org's password:</strong>
+<strong class="bold">Number of key(s) added: 1</strong>
+<strong class="bold">Now try logging into the machine, with: "ssh 'web01.example.org'"</strong>
+<code>ansible.builtin.ping</code> command on the hosts you put in your inventory file. You will find that you are not prompted for a password at any point as the SSH connections to all the hosts in your inventory are authenticated with your SSH key pair. So, you <a id="_idIndexMarker112"/>should see an output similar to the following:<pre class="source-code">
+<strong class="bold">$ ansible -i hosts -m ansible.builtin.ping all</strong>
+<strong class="bold">web01.example.org | SUCCESS =&gt; {</strong>
+<strong class="bold">    "ansible_facts": {</strong>
+<strong class="bold">        "discovered_interpreter_python": "/usr/bin/python3"</strong>
+<strong class="bold">    },</strong>
+<strong class="bold">    "changed": false,</strong>
+<strong class="bold">    "ping": "pong"</strong>
+<strong class="bold">}</strong>
+<strong class="bold">app02.example.org | SUCCESS =&gt; {</strong>
+<strong class="bold">    "ansible_facts": {</strong>
+<strong class="bold">        "discovered_interpreter_python": "/usr/bin/python3"</strong>
+<strong class="bold">    },</strong>
+<strong class="bold">    "changed": false,</strong>
+<strong class="bold">    "ping": "pong"</strong>
+<strong class="bold">}</strong>
+<strong class="bold">web02.example.org | SUCCESS =&gt; {</strong>
+<strong class="bold">    "ansible_facts": {</strong>
+<strong class="bold">        "discovered_interpreter_python": "/usr/bin/python3"</strong>
+<strong class="bold">    },</strong>
+<strong class="bold">    "changed": false,</strong>
+<strong class="bold">    "ping": "pong"</strong>
+<strong class="bold">}</strong>
+<strong class="bold">app01.example.org | SUCCESS =&gt; {</strong>
+<strong class="bold">    "ansible_facts": {</strong>
+<strong class="bold">        "discovered_interpreter_python": "/usr/bin/python3"</strong>
+<strong class="bold">    },</strong>
+<strong class="bold">    "changed": false,</strong>
+<strong class="bold">    "ping": "pong"</strong>
+<strong class="bold">}</strong></pre></li> </ol>
+<p>This example <a id="_idIndexMarker113"/>output is generated with Ansible’s default level of verbosity. If you run into problems during this process, you can increase Ansible’s level of verbosity by passing one or more <code>-v</code> switches to the <code>ansible</code> command when you run it. For most issues, it is recommended that you use <code>-vvvv</code>, which gives you ample debugging information, including the raw SSH commands and the output from them. For example, assume that a certain host (such as <code>web02.example.org</code>) can’t be connected to and you receive an error similar to the following:</p>
+<pre class="source-code">
+<strong class="bold">web02.example.org | UNREACHABLE! =&gt; {</strong>
+<strong class="bold">    "changed": false,</strong>
+<strong class="bold">    "msg": "Failed to connect to the host via ssh: ssh: connect to host web02.example.org port 22: Connection refused",</strong>
+<strong class="bold">    "unreachable": true</strong>
+<code>-vvvv</code> flag could potentially produce pages of output and so, to save space, we won’t include an example here—experimenting with the verbosity levels is left as an exercise for you. When you generate output with this highest level of verbosity, you will see that it includes many useful details, such as the raw SSH command that was used to generate the connection to the target host in the inventory, along with any error messages that may have resulted from that call. This can be incredibly useful when debugging connectivity or code issues, although the output might be a little overwhelming at first. However, with some practice, you will quickly learn how to interpret it.</p>
+<p>By now, you should have a good idea of how Ansible communicates with its clients over SSH. Let’s proceed <a id="_idIndexMarker114"/>to the next section, where we will look in more detail at the various components that make up Ansible, as this will help us understand how to work with it<a id="_idTextAnchor106"/> <a id="_idTextAnchor107"/>better.</p>
+<h2 id="_idParaDest-36"><a id="_idTextAnchor108"/>Breaking down the Ansible components</h2>
+<p>Ansible<a id="_idIndexMarker115"/> allows you to define policies, configurations, task sequences, and orchestration steps in playbooks—the limit is really only your imagination. A playbook can be executed to manage your tasks either synchronously or asynchronously on a remote machine, although you will find that just about all examples are synchronous. In this section, you will learn about the main components of Ansible and understand how Ansible employs those components to communicate with remote hosts.</p>
+<p>In order to understand the various components, we first need an inventory to work from. Let’s create an example one, ideally with multiple hosts in it—here we will reuse the one we created earlier in this chapter. However, you are free to create your own, and while I have set up name resolution for this example, to give machines more friendly names, remember that you can get started with IP addresses if you don’t want to add name resolution just yet.</p>
+<p>To really understand how Ansible—as well as its various components—works, we first need to create an Ansible playbook. While the ad hoc commands that we have experimented with <a id="_idIndexMarker116"/>so far are useful in their own right, they are just single <strong class="bold">tasks</strong>, whereas playbooks are organized groups of tasks that are (usually) run in sequence. Conditional logic can be applied and in any other programming language, playbooks would be considered as your code. At the head of the playbook, you should specify the name of your <strong class="bold">play</strong>—although this is not mandatory, it is good practice to name all your plays and tasks as, without this, it would be quite hard for someone else to interpret what the playbook does, or even for you to do so if you come back to it after some time.</p>
+<p>Let’s get started with building our first example playbook:</p>
+<ol>
+<li>Specify the play name and inventory hosts to run your tasks against at the very top of your playbook. Also, note the use of <code>---</code>, which denotes the beginning of a YAML file (all Ansible playbooks that are written <a id="_idTextAnchor109"/>in YAML):<pre class="source-code">
+---
+- name: My first Ansible playbook
+  hosts: all</pre></li> <li>After this, we will tell Ansible that we want to perform all the tasks in this playbook as a superuser (usually <code>root</code>). We do this with the following statement (to aid your memory, think of <code>become</code> as shorthand for <code>become su<a id="_idTextAnchor110"/>peruser</code>):<pre class="source-code">
+  become: yes</pre></li> <li>After<a id="_idIndexMarker117"/> this header, we will specify a task block that will contain one or more tasks to be run in sequence. For now, we will simply create one task to update the version of Apache using the <code>ansible.builtin.apt</code> module (because of this, this playbook is only suitable for running against Debian- or Ubuntu-derived hosts). We will also specify a special element of the play <a id="_idIndexMarker118"/>called a <strong class="bold">handler</strong>. Handlers will be covered in greater detail in <a href="B20846_04.xhtml#_idTextAnchor207"><em class="italic">Chapter 4</em></a>, <em class="italic">Playbooks and Roles</em>, so don’t worry too much about them for now. Simply put, a handler is a special type of task that is called only if something changes. So, in this example, the handler code restarts the web server, but only if it is installed or updated, preventing unnecessary restarts if the playbook is run several times and there are no updates for Apache. The following code performs these functions exactly and should form the basis of your first playbook:<pre class="source-code">
+  tasks:
+  - name: Install/Update to the latest of Apache Web Server
+    ansible.builtin.apt:
+      name: apache2
+      state: latest
+    notify:
+      - Restart the Apache Web Server
+  handlers:
+  - name: Restart the Apache Web Server
+    ansible.builtin.service:
+      name: apache2
+      state: restarted</pre></li> </ol>
+<p>Congratulations, you <a id="_idIndexMarker119"/>now have your very first Ansible playbook! If you run this now, you should see it iterate through all the web hosts in your inventory, where it will install or update in the <code>apache2</code> package as required, and then only restart the service where the package was installed/updated.</p>
+<p>In the following command to run the playbook, we have introduced a new switch, <code>--limit</code>, which is used when you want to run a playbook on only part of an inventory. In our example, I have four hosts in my inventory, but I only want to install <code>apache2</code> on the ones named <code>web*</code>, which I specify using the <code>--limit web*</code> option. These, of course, are based on the hostnames I have used in my demo environment for this book, and you should change your limit pattern to match your environment:</p>
+<pre class="console">
+$ ansible-playbook -i hosts --limit web* playbook.yml
+PLAY [My first Ansible playbook] **********************************************************
+TASK [Gathering Facts] ***************************************************
+ok: [web02.example.org]
+ok: [web01.example.org]
+TASK [Install/Update to the latest of Apache Web Server] **********************************************************
+changed: [web01.example.org]
+changed: [web02.example.org]
+RUNNING HANDLER [Restart the Apache Web Server] **********************************************************
+changed: [web02.example.org]
+changed: [web01.example.org]
+PLAY RECAP **********************************************************
+web01.example.org          : ok=3    changed=2    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+web02.example.org          : ok=3    changed=2    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0</pre> <p>If you examine <a id="_idIndexMarker120"/>the output from the playbook, you can see the value in naming not only the play but also each task that is executed, as it makes interpreting the output of the run a very simple task. You will also see that there are multiple possible results from running a task; in the preceding example, we can see two of these results—<code>ok</code> and <code>changed</code>. Most of these results are fairly self-explanatory, with <code>ok</code> meaning the task ran successfully and that nothing changed as a result of the task completing. An example of this in the preceding playbook is the <code>Gathering Facts</code> stage, which is a read-only task that gathers information about the target hosts. As a result, it can only ever return <code>ok</code> or a failed status, such as <code>unreachable</code>, if the host is down. It should never return <code>changed</code>.</p>
+<p>However, you can see in the preceding output that both hosts needed to install/upgrade their <code>apache2</code> package and, as a result of this, the results from the <code>Install/Update to the latest of Apache Web Server</code> task are <code>changed</code> for all the hosts. This <code>changed</code> result means the task ran successfully (as for <code>ok</code>) but that a change was made to the managed node. It also means that our <code>handler</code> instance is notified and so the web server service is restarted.</p>
+<p>If we run the <a id="_idIndexMarker121"/>playbook a second time straight away, we know that it is hugely unlikely that the <code>apache2</code> package will need upgrading again. Notice how the playbook output differs this time:</p>
+<pre class="console">
+PLAY [My first Ansible playbook] **********************************************************
+TASK [Gathering Facts] ************************************************************
+ok: [web02.example.org]
+ok: [web01.example.org]
+TASK [Install/Update to the latest of Apache Web Server] ***********************************************************
+ok: [web01.example.org]
+ok: [web02.example.org]
+PLAY RECAP **********************************************************
+web01.example.org          : ok=2    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+web02.example.org          : ok=2    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0</pre> <p>You can see that this time, the output from the <code>Install/Update to the latest of Apache Web Server</code> task is <code>ok</code> for both hosts, meaning no changes were applied (the package was not updated). As a result of this, our handler is not notified and does not run—you can see that it does not even feature in the preceding playbook output. This distinction is important—the goal of an Ansible playbook (and the modules that underpin Ansible) should be to only make changes when they need to be made. If everything is all up to date, then the target host should not be altered. Unnecessary restarts to services should be avoided, as should unnecessary alterations<a id="_idIndexMarker122"/> to files. In short, Ansible playbooks are (and should be) designed to be efficient and to achieve a target machine state.</p>
+<p>This has very much been a crash course on writing your first playbook, but hopefully, it has given you a taste of what Ansible can do when you move from single ad hoc commands through to more complex playbooks. Before we explore the Ansible language and components any further, let’s take a more in-depth look at the YAML language that playbooks<a id="_idTextAnchor111"/> <a id="_idTextAnchor112"/>are written in.</p>
+<h2 id="_idParaDest-37"><a id="_idTextAnchor113"/>Learning the YAML syntax</h2>
+<p>In this <a id="_idIndexMarker123"/>section, you<a id="_idIndexMarker124"/> will learn how to write a YAML file with the correct syntax, and the various constructs you will see time and again on your Ansible automation journey. Ansible uses YAML because it is easier for humans to read and write than other common data formats, such as XML or JSON. There are no commas, curly braces, or tags to worry about, and the enforced indentation in the code ensures that it is tidy and easy on the eye. In addition, there are libraries available in most programming languages for working with YAML.</p>
+<p>This reflects one of the core goals of Ansible—to produce easy-to-read (and write) code that describes the target state of a given host. Ansible playbooks are (ideally) supposed to be self-documenting, as documentation is often an afterthought in busy technology environments—so, what better way to document than through the automation system responsible for deploying code?</p>
+<p>Before we dive into the YAML structure, a word on the files themselves. Files written in YAML can optionally begin with <code>---</code> (as seen in the example playbook in the previous section) and end with <code>...</code>. This applies to all files in YAML, regardless of whether they are consumed by Ansible or another system, and indicates that the file is in the YAML language. You will find that most examples of Ansible playbooks (as well as roles and other associated YAML files) start with <code>---</code> but do not end with <code>...</code>—the header is sufficient to clearly denote that the file uses the YAML format.</p>
+<p>Let’s explore the YAML language <a id="_idIndexMarker125"/>through the example playbook we created in the preceding section:</p>
+<ol>
+<li>Lists are an important construct in the YAML language—in fact, although it might not be obvious, the <code>tasks:</code> block of the playbook is actually a YAML list. A list in YAML contains all of its items at the same indentation level, with each item in the list preceded by a <code>-</code>. For example, we updated the <code>apache2</code> package <a id="_idIndexMarker126"/>from the preceding playbook using the following code:<pre class="source-code">
+  - name: Install/Update to the latest of Apache Web Server
+    ansible.builtin.apt:
+      name: apache2
+      state: latest</pre></li> </ol>
+<p>However, we could have specified a list of packages to be upgraded as follows:</p>
+<pre class="source-code">
+- name: Install/Update to the latest of Apache Web Server
+  ansible.builtin.apt:
+    name:
+      - apache2
+      - apache2-utils
+    state: latest</pre> <p>Now, rather than passing a single value to the <code>name:</code> key as a string, we pass a YAML-formatted list containing the names of two packages to be installed/updated. Only certain modules support this so do refer to the documentation to establish which ones you can pass lists to.</p>
+<ol>
+<li value="2">Dictionaries are another important concept in YAML—they are represented by a <code>key: value</code> format, as we have already extensively seen, but all of the items in the dictionary are indented by one more level. This is easiest explained by an example, so consider the following code from our example playbook:<pre class="source-code">
+    ansible.builtin.service:
+      name: apache2
+      state: restarted</pre></li> </ol>
+<p>In this example (from <code>handler</code>), the <code>ansible.builtin.service</code> definition is actually a dictionary and both the <code>name</code> and <code>state</code> keys are indented with two more spaces than the <code>ansible.builtin.service</code> key. This higher level of indentation means that the <code>name</code> and <code>state</code> keys are associated with the <code>ansible.builtin.service</code> key, therefore, in this case, telling the <code>ansible.builtin.service</code> module which service to operate on (<code>apache2</code>) and what to do with it (restart it).</p>
+<p>Using these examples, we can see that you can produce quite complicated data structures by mixing lists and dictionaries.</p>
+<ol>
+<li value="3">As <a id="_idIndexMarker127"/>you become<a id="_idIndexMarker128"/> more proficient at playbook design (as you progress through the book, you will certainly become more proficient), you may very well start to produce quite complicated variable structures that you will put into their own separate files to keep your playbook code readable. The following is an example of a <code>variables</code> file that provides the details of two employees of a company:<pre class="source-code">
+---
+employees:
+  - name: daniel
+    fullname: Daniel Oh
+    role: DevOps Evangelist
+    level: Expert
+    skills:
+      - Kubernetes
+      - Microservices
+      - Ansible
+      - Linux Container
+  - name: michael
+    fullname: Michael Smith
+    role: Enterprise Architect
+    level: Advanced
+    skills:
+      - Cloud
+      - Middleware
+      - Windows
+      - Storage</pre></li> </ol>
+<p>In this example, you<a id="_idIndexMarker129"/> can see that we have a <a id="_idIndexMarker130"/>dictionary containing the details of each employee. The employees themselves are list items (you can spot this because the lines start with <code>-</code>) and, equally, the employee skills are denoted as list items. You will notice the <code>fullname</code>, <code>role</code>, <code>level</code>, and <code>skills</code> keys are at the same indentation level as <code>name</code> but do not feature <code>-</code> before them. This tells you that they are in the dictionary with the list item itself, and so they represent the details of the employee.</p>
+<ol>
+<li value="4">YAML is very literal when it comes to parsing the language and a new line always represents a new line of code. What if you actually need to add a block of text (for example, to a variable)? In this case, you can use a literal block scalar, <code>|</code>, to write multiple lines and YAML will faithfully preserve the new lines, carriage returns, and all the whitespace that follows each line (note, however, that the indentation at the beginning of each line is part of the YAML syntax):<pre class="source-code">
+  Specialty: |
+    Agile methodology
+    Cloud-native app development practices
+    Advanced enterprise DevOps practices</pre></li> </ol>
+<p>So, if we were to get <a id="_idIndexMarker131"/>Ansible to print the preceding content to the screen, it would display as follows (note that the preceding two spaces have gone—they were interpreted correctly as part of the YAML language and not printed):</p>
+<pre class="source-code">
+Agile methodology
+Cloud-native app development practices
+Advanced enterprise DevOps practices</pre> <p>Similar to the<a id="_idIndexMarker132"/> preceding is the folded block scalar, <code>&gt;</code>, which does the same as the literal block scalar but does not preserve line endings. This is useful for very long strings that you want to print on a single line, but also want to wrap across multiple lines in your code for the purpose of readability. Take the following variation of our example:</p>
+<pre class="source-code">
+  Specialty: &gt;
+    Agile methodology
+    Cloud-native app development practices
+    Advanced enterprise DevOps practices</pre> <p>Now, if we were to print this, we would see the following:</p>
+<pre class="source-code">
+<strong class="bold">Agile methodologyCloud-native app development practicesAdvanced enterprise DevOps practices</strong></pre> <p>We could add trailing spaces to the preceding example to stop the words from running into each other, but I have not done this here as I wanted to provide you with an easy-to-interpret example.</p>
+<p>As you <a id="_idIndexMarker133"/>review <a id="_idIndexMarker134"/>playbooks, variable files, and so on, you will see these structures used over and over again. Although simple in definition, they are very important—a missed level of indentation or a missing <code>-</code> instance at the start of a list item can cause your entire playbook to fail to run. As we discovered, you can put all of these various constructs together. One additional example is provided in the following code block of a <code>variables</code> file for you to consider, which shows the various examples we have covered all in one place:</p>
+<pre class="source-code">
+---
+servers:
+  - frontend
+  - backend
+  - database
+  - cache
+employees:
+  - name: daniel
+    fullname: Daniel Oh
+    role: DevOps Evangelist
+    level: Expert
+    skills:
+      - Kubernetes
+      - Microservices
+      - Ansible
+      - Linux Container
+  - name: michael
+    fullname: Michael Smiths
+    role: Enterprise Architect
+    level: Advanced
+    skills:
+      - Cloud
+      - Middleware
+      - Windows
+      - Storage
+    Speciality: |
+      Agile methodology
+      Cloud-native app development practices
+      Advanced enterprise DevOps practices</pre> <p>You can <a id="_idIndexMarker135"/>also express <a id="_idIndexMarker136"/>both dictionaries and lists in an abbreviated form, known as <code>employees</code> variable file:</p>
+<pre class="source-code">
+---
+employees: [{"fullname": "Daniel Oh","level": "Expert","name": "daniel","role": "DevOps Evangelist","skills": ["Kubernetes","Microservices","Ansible","Linux Container"]},{"fullname": "Michael Smiths","level": "Advanced","name": "michael","role": "Enterprise Architect","skills":["Cloud","Middleware","Windows","Storage"]}]</pre> <p>Although this displays exactly the same data structure, you can see how difficult it is to read with the naked eye. Flow collections are not used extensively in YAML and I would not recommend you make use of them yourself, but it is important to understand them in case you come across them. You will also notice that although we’ve started talking about variables in YAML, we haven’t expressed any variable types. YAML tries to make assumptions about variable types based on the data they contain, so if you want to assign <code>1.0</code> to a variable, YAML will assume it is a floating-point number. If you need to express it as a string (perhaps because it is a version number), you need to put quotation <a id="_idIndexMarker138"/>marks around it, which causes the YAML parser to<a id="_idIndexMarker139"/> interpret it as a string instead, such as in the following example:</p>
+<pre class="source-code">
+version: "2.0"</pre> <p>This completes our look at the YAML language syntax. Now that’s complete, in the next section, let’s take a look at ways that you can organize your automation cod<a id="_idTextAnchor114"/>e<a id="_idTextAnchor115"/> to keep it manageable and tidy.</p>
+<h2 id="_idParaDest-38"><a id="_idTextAnchor116"/>Organizing your automation code</h2>
+<p>As you<a id="_idIndexMarker140"/> can imagine, if you were to write all of your required Ansible tasks in one massive playbook, it would quickly become<a id="_idIndexMarker141"/> unmanageable—that is to say, it would be difficult to read, difficult for someone else to pick up and understand, and—most of all—difficult to debug when things go wrong. Ansible provides a number of ways for you to divide your code into manageable chunks; perhaps the most important of these is the use of <strong class="bold">roles</strong>. Roles (for the sake of a simple analogy) behave like a library in a conventional high-level programming language. We will go into more detail about roles in <a href="B20846_04.xhtml#_idTextAnchor207"><em class="italic">Chapter 4</em></a>, <em class="italic">Playbooks </em><em class="italic">and Roles</em>.</p>
+<p>There are, however, other ways that Ansible supports splitting your code into manageable chunks, which we will explore briefly in this section as a precursor to the more in-depth exploration of roles later in this book.</p>
+<p>Let’s build up a practical example. To start, we know that we need to create an inventory for Ansible to run against. In this instance, we’ll create four notional groups of servers, with each group containing two servers. Our hypothetical example will contain a frontend server and application servers for a fictional application, located in two different geographic locations. Our inventory file will be called <code>production-inventory</code> and th<a id="_idTextAnchor117"/>e example contents are as follows:</p>
+<pre class="source-code">
+[frontends_na_zone]
+frontend1-na.example.com
+frontend2-na.example.com
+[frontends_emea_zone]
+frontend1-emea.example.com
+frontend2-emea.example.com
+[appservers_na_zone]
+appserver1-na.example.com
+appserver2-na.e<a id="_idTextAnchor118"/>xample.com
+[appservers_emea_zone]
+appserver1-emea.example.com
+appserver2-emea.example.com</pre> <p>Now, obviously, we <a id="_idIndexMarker142"/>could just write one massive playbook to address the required tasks on these different hosts, but as we have<a id="_idIndexMarker143"/> already discussed, this would be cumbersome and inefficient.</p>
+<p>Let’s instead break the task of automating these different hosts down into smaller playbooks:</p>
+<ol>
+<li>Create a playbook to run a connection test on a specific host group, such as <code>frontends_na_zone</code>. Put the f<a id="_idTextAnchor119"/>ollowing contents into the playbook:<pre class="source-code">
+---
+- hosts: frontends_na_zone
+  remote_user: james
+  gather_facts: no
+  tasks:
+    - name: simple connection test
+      ansible.builtin.ping:</pre></li> <li>Now, try running this playbook against the hosts. (Note that we have configured it to connect to a remote user on the inventory system, called <code>james</code>. If you wish to<a id="_idIndexMarker144"/> attempt this example yourself, you will need to set up your own user account and change the <code>remote_user</code> line of your playbook accordingly. Also remember to set up SSH keys and authentication <a id="_idIndexMarker145"/>as we demonstrated earlier in this chapter.) When you run the playbook after setting up the authentication, you should see output like the following:<pre class="source-code">
+<strong class="bold">$ ansible-playbook -i production-inventory frontends-na.yml</strong>
+<strong class="bold">PLAY [frontends_na_zone]  ******************************************************</strong>
+<strong class="bold">TASK [simple connection test] *****************************************************</strong>
+<strong class="bold">ok: [frontend2-na.example.com]</strong>
+<strong class="bold">ok: [frontend1-na.example.com]</strong>
+<strong class="bold">PLAY RECAP **********************************************</strong>
+<strong class="bold">frontend1-na.example.com   : ok=1    changed=0    unreachable=0    failed=0     skipped=0    rescued=0    ignored=0</strong>
+<code>ansible.builtin.ping</code> module to perform a <a id="_idIndexMarker146"/>connection test, but in a real-world situation, you <a id="_idIndexMarker147"/>would perform more complex tasks, such as installing packages or modifying files. Specify that this playbook is run against this host group from the <code>appservers_emea_zone</code> inventory. Add the following contents to the playbook:<pre class="source-code">
+---
+- hosts: appservers_emea_zone
+  remote_user: james
+  gather_facts: no
+  tasks:
+    - name: simple connection test
+      ansible.builtin.ping:</pre></li> </ol>
+<p>As before, you need to ensure you can access these servers, so either create the <code>james</code> user and set up authentication to that account or change the <code>remote_user</code> line in the example playbook. Once you have done this, you should be able to run the playbook and you will see output similar to this:</p>
+<pre class="source-code">
+<strong class="bold">$ ansible-playbook -i production-inventory appservers-emea.yml</strong>
+<strong class="bold">PLAY [appservers_emea_zone] ******************************************************</strong>
+<strong class="bold">TASK [simple connection test] *************************************************************</strong>
+<strong class="bold">ok: [appserver1-emea.example.com]</strong>
+<strong class="bold">ok: [appserver2-emea.example.com]</strong>
+<strong class="bold">PLAY RECAP *****************************************************</strong>
+<strong class="bold">appserver1-emea.example.com : ok=1    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0</strong>
+<strong class="bold">appserver2-emea.example.com : ok=1    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0</strong></pre> <ol>
+<li value="4">So far, so good. However, we <a id="_idIndexMarker148"/>now have two playbooks that we need to run manually, which only address two of our inventory host groups. If we want to address all four <a id="_idIndexMarker149"/>groups, we need to create a total of four playbooks, all of which need to be run manually. This is hardly reflective of best automation practices. What if there was a way to take these individual playbooks and run them together from one top-level playbook? This would enable us to divide our code to keep it manageable but also prevent a lot of manual effort when it comes to running the playbooks. Fortunately, we can do exactly that by taking advantage of the <code>ansible.builtin.import_playbook</code> directive in a top-<a id="_idTextAnchor120"/>level playbook that we will call <code>site.yml</code>:<pre class="source-code">
+---
+- ansible.builtin.import_playbook: frontends-na.yml
+- ansible.builtin.import_playbook: appservers-emea.yml</pre></li> </ol>
+<p>Now, when you run this single playbook using the (by now, familiar) <code>ansible-playbook</code> command, you will see that the effect is the same as if we had actually run both playbooks <a id="_idIndexMarker150"/>back to back. In this way, even before we explore the concept of roles, you can see that <a id="_idIndexMarker151"/>Ansible supports splitting up your code into manageable chunks without needing to run each chunk manually:</p>
+<pre class="console">
+$ ansible-playbook -i production-inventory site.yml
+PLAY [frontends_na_zone] **********************************************************
+TASK [simple connection test] **********************************************************
+ok: [frontend2-na.example.com]
+ok: [frontend1-na.example.com]
+PLAY [appservers_emea_zone] **********************************************************
+TASK [simple connection test] *************************************************************
+ok: [appserver2-emea.example.com]
+ok: [appserver1-emea.example.com]
+PLAY RECAP *********************************************************
+appserver1-emea.example.com : ok=1    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+appserver2-emea.example.com : ok=1    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+frontend1-na.example.com   : ok=1    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+frontend2-na.example.com   : ok=1    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0</pre> <p>There’s much <a id="_idIndexMarker152"/>more that you can do with<a id="_idIndexMarker153"/> geographically diverse environments, such as our simple example here, as we have not even touched on things such as placing variables in your inventory (which, for example, associates different parameters with different environments). We will explore this in more detail in <a href="B20846_03.xhtml#_idTextAnchor158"><em class="italic">Chapter 3</em></a>, <em class="italic">Defining </em><em class="italic">Your Inventory</em>.</p>
+<p>However, hopefully, this has armed you with enough knowledge that you can start making informed choices about how to organize the code for your playbooks. As you complete further chapters of this book, you will be able to establish whether you wish to make use of roles or the <code>ansible.builtin.import_playbook</code> directive (or perhaps even both) as part of your playbook organization.</p>
+<p>Let’s carry on with our practical introduction to Ansible in the next section, with a look at the configuration file and some of t<a id="_idTextAnchor121"/>h<a id="_idTextAnchor122"/>e key directives that you might find valuable.</p>
+<h1 id="_idParaDest-39"><a id="_idTextAnchor123"/>Exploring the configuration file</h1>
+<p>Ansible’s behavior is, in part, defined<a id="_idIndexMarker154"/> by its configuration file. The central configuration file (which impacts the behavior of Ansible for all users on the system) can be found at <code>/etc/ansible/ansible.cfg</code>. However, this is not the only place Ansible will look for its configuration; in fact, it will look in the following locations, from the top to the bottom.</p>
+<p>The first instance of the file is the configuration it will use; all of the others are ignored, even if they are present:</p>
+<ul>
+<li><code>ANSIBLE_CONFIG</code>: The file location specified by the value of this environment variable, if set</li>
+<li><code>ansible.cfg</code>: In the current working directory</li>
+<li><code>~/.ansible.cfg</code>: In the home directory of the user</li>
+<li><code>/etc/ansible/ansible.cfg</code>: The central configuration that we previously mentioned</li>
+</ul>
+<p>If you<a id="_idIndexMarker155"/> installed Ansible through a package manager, such as <code>dnf</code>, <code>yum</code>, or <code>apt</code>, you will almost always find a default configuration file called <code>ansible.cfg</code> in <code>/etc/ansible</code>. However, if you built Ansible from the source or installed it via <code>pip</code>, the central configuration file will not exist, and you will need to create it yourself. A good starting point used to be to reference the example Ansible configuration file that was included with the source code. However, since the release of <code>ansible-core</code> 2.12, you can now generate an example configuration file with all the available options present (but commented out) using this command:</p>
+<pre class="console">
+$ ansible-config init --disabled &gt; ansible.cfg</pre> <p>As you will almost certainly be working with a version of <code>ansible-core</code> newer than this, we’ll assume this for the remainder of this section. Specifically, we will detail how to locate Ansible’s running configuration and how to manipulate it. Most people who install Ansible find that they can get a long way with Ansible before they have to modify the default configuration, as it has been carefully designed to work in a great many scenarios. Indeed, all the example code run so far in this book has been performed on a copy of Ansible installed via PIP, with no configuration changes made.</p>
+<p>Nonetheless, it is important to know a little about configuring Ansible in case you come across an issue in your environment that can only be changed by modifying the configuration.</p>
+<p>Let’s get started by exploring the default configuration that is provided with Ansible:</p>
+<ol>
+<li>The command in the following code block lists the current configuration parameters supported by Ansible. It is incredibly useful because it tells you both the environment variable that can be used to change the setting (see the <code>env</code> field) as well as the configuration file parameter and section that can be used (see the <code>ini</code> field). Other valuable information, including the default configuration values and a description of the configuration, is given (see the <code>default</code> and <code>description</code> fields, respectively). Run the following command to explore the output:<pre class="source-code">
+<strong class="bold">$ ansible-config list</strong></pre></li> </ol>
+<p>The <a id="_idIndexMarker156"/>following is an example of the kind of output you will see. There are, of course, many pages to it, but a snippet is shown here as an example:</p>
+<pre class="source-code">
+<strong class="bold">$ ansible-config list</strong>
+<strong class="bold">ACTION_WARNINGS:</strong>
+<strong class="bold">  default: true</strong>
+<strong class="bold">  description:</strong>
+<strong class="bold">  - By default Ansible will issue a warning when received from a task action (module</strong>
+<strong class="bold">    or action plugin)</strong>
+<strong class="bold">  - These warnings can be silenced by adjusting this setting to False.</strong>
+<strong class="bold">  env:</strong>
+<strong class="bold">  - name: ANSIBLE_ACTION_WARNINGS</strong>
+<strong class="bold">  ini:</strong>
+<strong class="bold">  - key: action_warnings</strong>
+<strong class="bold">    section: defaults</strong>
+<strong class="bold">  name: Toggle action warnings</strong>
+<strong class="bold">  type: boolean</strong>
+<strong class="bold">  version_added: '2.5'</strong>
+<strong class="bold">AGNOSTIC_BECOME_PROMPT:</strong>
+<strong class="bold">  default: true</strong>
+<strong class="bold">  description: Display an agnostic become prompt instead of displaying a prompt containing</strong>
+<strong class="bold">    the command line supplied become method</strong>
+<strong class="bold">  env:</strong>
+<strong class="bold">  - name: ANSIBLE_AGNOSTIC_BECOME_PROMPT</strong>
+<strong class="bold">  ini:</strong>
+<strong class="bold">  - key: agnostic_become_prompt</strong>
+<strong class="bold">    section: privilege_escalation</strong>
+<strong class="bold">  name: Display an agnostic become prompt</strong>
+<strong class="bold">  type: boolean</strong>
+<strong class="bold">  version_added: '2.5'</strong>
+<strong class="bold">  yaml:</strong>
+<strong class="bold">    key: privilege_escalation.agnostic_become_prompt</strong></pre> <ol>
+<li value="2">If you want<a id="_idIndexMarker157"/> to see a straightforward display of all the possible configuration parameters, along with their current values (regardless of whether they are configured from environment variables or a configuration file in one of the previously listed locations), you can run the following command:<pre class="source-code">
+<strong class="bold">$ ansible-config dump</strong></pre></li> </ol>
+<p>The output shows all the configuration parameters (in an environment variable format), along with the current settings. If the parameter is configured with its default value, you are told so (see the <code>(default)</code> element after each parameter name). The output is also color-coded by default, with parameters at their default displayed in green, while those that have been changed are yellow (just like the color coding from an Ansible playbook run):</p>
+<pre class="source-code">
+<strong class="bold">$ ansible-config dump</strong>
+<strong class="bold">ACTION_WARNINGS(default) = True</strong>
+<strong class="bold">AGNOSTIC_BECOME_PROMPT(default) = True</strong>
+<strong class="bold">ANSIBLE_CONNECTION_PATH(default) = None</strong>
+<strong class="bold">ANSIBLE_COW_ACCEPTLIST(default) = ['bud-frogs', 'bunny', 'cheese', 'daemon', 'default', 'dragon', 'elephant-in-snake', 'elephant', 'eyes', 'hellok&gt;</strong>
+<strong class="bold">ANSIBLE_COW_PATH(default) = None</strong>
+<strong class="bold">ANSIBLE_COW_SELECTION(default) = default</strong>
+<strong class="bold">ANSIBLE_FORCE_COLOR(default) = False</strong>
+<strong class="bold">ANSIBLE_HOME(default) = /home/james/.ansible</strong>
+<strong class="bold">…</strong>
+<strong class="bold">CONFIG_FILE() = None</strong>
+<strong class="bold">…</strong></pre> <ol>
+<li value="3">Let’s see the <a id="_idIndexMarker158"/>effect on this output by editing one of the configuration parameters. Let’s do this by setting an environment variable, as follows (this command has been tested in <a id="_idTextAnchor124"/>the <code>bash</code> shell, but may differ for other shells):<pre class="source-code">
+<strong class="bold">$ export ANSIBLE_FORCE_COLOR=True</strong></pre></li> </ol>
+<p>Now, let’s rerun the <code>ansible-config</code> command, but this time get it to tell us only the parameters <a id="_idTextAnchor125"/>that have been changed from their default values:</p>
+<pre class="source-code">
+<strong class="bold">$ ansible-config dump --only-change</strong>
+<strong class="bold">ANSIBLE_FORCE_COLOR(env: ANSIBLE_FORCE_COLOR) = True</strong>
+<code>ansible-config</code> tells us that we have only changed <code>ANSIBLE_FORCE_COLOR</code> from the default value, which it is set to <code>True</code>, and that we set it through an <code>env</code> variable. Note that <code>CONFIG_FILE</code> has also been changed but no source for the change is found – this is because I installed Ansible via PIP, and so <code>/etc/ansible/ansible.cfg</code> (and other valid configuration files) do not exist – thus, this is expected behavior. This is an incredibly valuable tool, especially if you have to debug configuration issues.</p>
+<p>When working with<a id="_idIndexMarker159"/> the Ansible configuration file itself, you will note that it is in INI format, meaning it has sections such as <code>[defaults]</code>, parameters in the format <code>key = value</code>, and comments beginning with either <code>#</code> or <code>;</code>. You only need to place the parameters you wish to change from their defaults in your configuration file, so if you wanted to create a simple configuration to change the location of yo<a id="_idTextAnchor126"/>ur default inventory file, it might look as follows:</p>
+<pre class="source-code">
+# Set my configuration variables
+[defaults]
+inventory = /home/james/ansible-hosts ; Here is the path of the inventory file</pre> <p>As discussed earlier, one of the possible valid locations for the <code>ansible.cfg</code> configuration file is in your current working directory. It is likely that this is within your home directory, so on a multi-user system, we strongly recommend you restrict access to the Ansible configuration file to your user account alone. You should take all the usual precautions when it comes to securing important configuration files on a multi-user system, especially as Ansible is normally used to configure multiple remote systems, and so, a lot of damage could be done if a configuration file was inadvertently compromised!</p>
+<p>It is also important to note that the behavior of environment variables and configuration files is additive—thus with the configuration file I just mentioned in place, running the dump of the changed configuration again will yield the following:</p>
+<pre class="console">
+$ ansible-config dump --only-change
+ANSIBLE_FORCE_COLOR(env: ANSIBLE_FORCE_COLOR) = True
+CONFIG_FILE() = /home/james/code/chapter02/ansible.cfg
+DEFAULT_HOST_LIST(/home/james/code/chapter02/ansible.cfg) = ['/home/james/ansible-hosts']</pre> <p>Of course, Ansible’s behavior is not just controlled by the configuration files and switches—the command-line arguments that you pass to the various Ansible executables are also of vital importance. In fact, we have already worked with several already. We have shown you how to change where Ansible looks for its inventory file using the <code>inventory</code> parameter in <code>ansible.cfg</code>. However, in many of the examples that we previously covered in this book, we overrode this with the <code>-i</code> switch when running Ansible. So, let’s proceed to the next section to look at th<a id="_idTextAnchor127"/>e<a id="_idTextAnchor128"/> use of command-line arguments when running Ansible.</p>
+<h1 id="_idParaDest-40"><a id="_idTextAnchor129"/>Command-line arguments</h1>
+<p>In this section, you <a id="_idIndexMarker160"/>will learn about the use of command-line arguments for playbook execution and how to employ some of the more commonly used ones to your advantage. We are already very familiar with one of these arguments, the <code>--version</code> switch, which we use to confirm that Ansible is installed (and which version is installed).</p>
+<p>Just as we were able to learn about the various configuration parameters directly through Ansible, we can also learn about the command-line arguments. Almost all of the Ansible executables have a <code>--help</code> option that you can run to display the valid command-line parameters. Let’s try this out now:</p>
+<ol>
+<li>You can view all the options and arguments when you execute the <code>ansible</code> command line. Use the following command:<pre class="source-code">
+<strong class="bold">$ ansible --help</strong></pre></li> </ol>
+<p>You will see a great deal of helpful output when you run the preceding command; a snippet of this is shown in the following code block (you might want to pipe this into a pager, such as <code>less</code>, so that you can read it all easily):</p>
+<div><div><img alt="Figure 2.2 – An example of the output of Ansible’s built-in help" height="797" src="img/B20846_02_002.jpg" width="1101"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 2.2 – An example of the output of Ansible’s built-in help</p>
+<ol>
+<li value="2">We <a id="_idIndexMarker161"/>could take one example from the preceding code to build on our previous use of the <code>ansible</code> command; so far, we have almost exclusively used it to run ad hoc tasks with the <code>-m</code> and <code>-a</code> parameters. However, <code>ansible</code> can also perform useful tasks such as telling us about the hosts in a group within our inventory. We could explore this using the <code>product<a id="_idTextAnchor130"/>ion-inventory</code> file we used earlier in this chapter:<pre class="source-code">
+<strong class="bold">$ ansible -i production-inventory --list-host appservers_emea_zone</strong></pre></li> </ol>
+<p>When you run this, you should see the members of the <code>appservers_emea_zone</code> inventory group listed. Although perhaps a little contrived, this example is incredibly valuable when you start working with dynamic inventory files and you can no longer just <code>cat</code> your inventory file to the terminal to view the contents:</p>
+<pre class="source-code">
+<strong class="bold">$ ansible -i production-inventory --list-host appservers_emea_zone</strong>
+<strong class="bold">  hosts (2):</strong>
+<strong class="bold">    appserver1-emea.example.com</strong>
+<code>ansible-playbook</code> executable file, too. We have already seen a few of these in the previous examples of this book and there’s more that we can do. For example, earlier, we discussed the use of <code>ssh-agent</code> to manage multiple SSH authentication keys. While this makes running playbooks simple (as you don’t have to pass any authentication parameters to Ansible), it is not the only way of doing this. You can use one of the command-line arguments for <code>ansible-playbook</code> to sp<a id="_idTextAnchor131"/>ecify the private SSH key file, instead, as follows:</p>
+<pre class="console">
+$ ansible-playbook -i production-inventory site.yml --private-key ~/keys/id_rsa</pre> <p>Similarly, in the preceding section, we specified the <code>remote_user</code> variable for Ansible to connect with in the playbook. However, command-line arguments can also set this parameter for the playbook; so, rather than editing the <code>remote_user</code> line in the playbook, we could remove it altogether and instead run it using the following command-line string:</p>
+<pre class="console">
+$ ansible-playbook -i production-inventory site.yml --user james</pre> <p>The ultimate aim of Ansible is to make your life simpler and to complete mundane day-to-day tasks for you. As a result, there is no right or wrong way to do this—you can specify your private SSH key using a command-line argument or make it available using <code>ssh-agent</code>. Similarly, you can put the <code>remote_user</code> line in your playbook or use the <code>--user</code> parameter on the command line. Ultimately, the choice is yours, but it is important to consider that if you are distributing a playbook to multiple users and they all have to remember to specify the remote user on the command line, will they actually remember to do it? What will the consequences be if they don’t? If the <code>remote_user</code> line is present in the playbook, will that make their lives easier and be less prone to error because the user account has been set in the playbook itself?</p>
+<p>As with the configuration of Ansible, you will use a small handful of the command-line arguments frequently and there will be many that you may never touch. The important thing is that you know they are there and how to find out about them, and you can make informed decisions about when to use them. Let’s proceed to the next section, where we wi<a id="_idTextAnchor132"/>l<a id="_idTextAnchor133"/>l look in more detail at ad hoc commands with Ansible.</p>
+<h1 id="_idParaDest-41"><a id="_idTextAnchor134"/>Understanding ad hoc commands</h1>
+<p>We have<a id="_idIndexMarker163"/> already seen a handful of ad hoc commands so far in this book, but to recap, they are single tasks you can run with Ansible, making use of Ansible modules without the need to create or save playbooks. They are very useful for performing quick, one-off tasks on a number of remote machines or for testing and understanding the behavior of the Ansible modules that you intend to use in your playbooks. They are both a great learning tool and a quick and dirty (because you never document your work with a playbook) automation solution.</p>
+<p>As with every Ansible example, we need an inventory to run against. Let’s reuse our <code>production-inventory</code> file from before:</p>
+<pre class="source-code">
+[frontends_na_zone]
+frontend1-na.example.com
+frontend2-na.example.com
+[frontends_emea_zone]
+frontend1-emea.example.com
+frontend2-emea.example.com
+[appservers_na_zone]
+appserver1-na.example.com
+appserver2-na.example.com
+[appservers_emea_zone]
+appserver1-emea.example.com
+appserver2-emea.example.com</pre> <p>Now, let’s start with perhaps the quickest and dirtiest of ad hoc commands—running a raw shell command on a group of remote machines. Suppose that you want to check that the date and time of all the frontend servers in EMEA are in sync—you could do this by using a monitoring tool or by manually logging in to each server in turn and checking the date and<a id="_idIndexMarker164"/> time. However, you can also use an Ansible ad hoc command:</p>
+<ol>
+<li>Run the following ad hoc command to retrieve the current date<a id="_idTextAnchor135"/> and time from all of the <code>frontends_emea_zone</code> servers:<pre class="source-code">
+<strong class="bold">$ ansible -i production-inventory frontends_emea_zone -a /usr/bin/date</strong></pre></li> </ol>
+<p>You will see that Ansible faithfully logs in to each machine in turn and runs the <code>date</code> command, returning the current date and time. Your output will look something like the following:</p>
+<pre class="source-code">
+<strong class="bold">$ ansible -i production-inventory frontends_emea_zone -a /usr/bin/date</strong>
+<strong class="bold">frontend2-emea.example.com | CHANGED | rc=0 &gt;&gt;</strong>
+<strong class="bold">Tue Apr 25 14:26:30 UTC 2023</strong>
+<strong class="bold">frontend1-emea.example.com | CHANGED | rc=0 &gt;&gt;</strong>
+<strong class="bold">Tue Apr 25 14:26:30 UTC 2023</strong></pre> <ol>
+<li value="2">This command is run with the user account you are logged in to when the command is run. You can use a command-line argument (discussed i<a id="_idTextAnchor136"/>n the previous section) to run it as a different user:<pre class="source-code">
+<strong class="bold">$ ansible -i production-inventory frontends_emea_zone -a /usr/sbin/pvs -u james</strong>
+<strong class="bold">frontend2-emea.example.com | FAILED | rc=5 &gt;&gt;</strong>
+<strong class="bold">  WARNING: Running as a non-root user. Functionality may be unavailable.</strong>
+<strong class="bold">  /run/lock/lvm/P_global:aux: open failed: Permission deniednon-zero return code</strong>
+<strong class="bold">frontend1-emea.example.com | FAILED | rc=5 &gt;&gt;</strong>
+<strong class="bold">  WARNING: Running as a non-root user. Functionality may be unavailable.</strong>
+<code>james</code> user account does not have the privileges required to successfully run the <code>pvs</code> command. However, we can fix this by adding the <code>--become</code> command-line argument, which tells Ansible to become <code>root</code> on the remote systems:<pre class="source-code">
+<strong class="bold">$ ansible -i production-inventory frontends_emea_zone -a /usr/sbin/pvs -u james --become</strong>
+<strong class="bold">frontend2-emea.example.com | FAILED | rc=-1 &gt;&gt;</strong>
+<strong class="bold">Missing sudo password</strong>
+<strong class="bold">frontend1-emea.example.com | FAILED | rc=-1 &gt;&gt;</strong>
+<code>james</code> is in <code>/etc/sudoers</code>, it is not allowed to run commands as <code>root</code> without entering a <code>sudo</code> password. Luckily, there’s a switch to get Ansible to prompt us for this at runtime, meaning we don’t need to edit our <code>/</code><code>etc/sudoers</code> file:<pre class="source-code">
+<strong class="bold">$ ansible -i production-inventory frontends_emea_zone -a /usr/sbin/pvs -u james --become --ask-become-pass</strong>
+<strong class="bold">BECOME password:</strong>
+<strong class="bold">frontend2-emea.example.com | CHANGED | rc=0 &gt;&gt;</strong>
+<strong class="bold">  PV         VG      Fmt  Attr PSize  PFree</strong>
+<strong class="bold">  /dev/vdb1  vg_data lvm2 a--  &lt;8.00g &lt;8.00g</strong>
+<strong class="bold">frontend1-emea.example.com | CHANGED | rc=0 &gt;&gt;</strong>
+<strong class="bold">  PV         VG      Fmt  Attr PSize  PFree</strong>
+<code>-m</code> command-line argument, Ansible assume<a id="_idTextAnchor137"/>s you want to use the <code>ansible.builtin.command</code> module (see <a href="https://docs.ansible.com/ansible/latest/modules/command_module.xhtml">https://docs.ansible.com/ansible/latest/modules/command_module.xhtml</a>). If you wish to use a specific module, you can add the <code>-m</code> switch to the command-line arguments<a id="_idIndexMarker166"/> and then specify the module arguments under the <code>-a</code> switch, as in the following example:<pre class="source-code">
+<strong class="bold">$ ansible -i production-inventory frontends_emea_zone -m ansible.builtin.copy -a "src=/etc/hosts dest=/tmp/hosts"</strong>
+<strong class="bold">frontend2-emea.example.com | CHANGED =&gt; {</strong>
+<strong class="bold">    "ansible_facts": {</strong>
+<strong class="bold">        "discovered_interpreter_python": "/usr/bin/python3"</strong>
+<strong class="bold">    },</strong>
+<strong class="bold">    "changed": true,</strong>
+<strong class="bold">    "checksum": "02b369653b5171fe264d0ac91c331531d04f375d",</strong>
+<strong class="bold">    "dest": "/tmp/hosts",</strong>
+<strong class="bold">    "gid": 1001,</strong>
+<strong class="bold">    "group": "james",</strong>
+<strong class="bold">    "md5sum": "cd9654dbef8a534df2557531038e03a7",</strong>
+<strong class="bold">    "mode": "0664",</strong>
+<strong class="bold">    "owner": "james",</strong>
+<strong class="bold">    "size": 427,</strong>
+<strong class="bold">    "src": "/home/james/.ansible/tmp/ansible-tmp-1682433595.1356337-8575-192421314639198/source",</strong>
+<strong class="bold">    "state": "file",</strong>
+<strong class="bold">    "uid": 1001</strong>
+<strong class="bold">}</strong>
+<strong class="bold">frontend1-emea.example.com | CHANGED =&gt; {</strong>
+<strong class="bold">    "ansible_facts": {</strong>
+<strong class="bold">        "discovered_interpreter_python": "/usr/bin/python3"</strong>
+<strong class="bold">    },</strong>
+<strong class="bold">    "changed": true,</strong>
+<strong class="bold">    "checksum": "02b369653b5171fe264d0ac91c331531d04f375d",</strong>
+<strong class="bold">    "dest": "/tmp/hosts",</strong>
+<strong class="bold">    "gid": 1001,</strong>
+<strong class="bold">    "group": "james",</strong>
+<strong class="bold">    "md5sum": "cd9654dbef8a534df2557531038e03a7",</strong>
+<strong class="bold">    "mode": "0664",</strong>
+<strong class="bold">    "owner": "james",</strong>
+<strong class="bold">    "size": 427,</strong>
+<strong class="bold">    "src": "/home/james/.ansible/tmp/ansible-tmp-1682433595.1226285-8574-79002739194384/source",</strong>
+<strong class="bold">    "state": "file",</strong>
+<strong class="bold">    "uid": 1001</strong>
+<strong class="bold">}</strong></pre></li> </ol>
+<p>The preceding output not only shows that the copy was performed successfully to both hosts but also all the output values from the <code>ansible.builtin.copy</code> module. This, again, can be very helpful later when you are developing playbooks as it enables you to understand exactly how the module works and what output it produces in cases where you need to perform further work with that output. As we progress through this book, this will make more sense, so don’t worry right now if it doesn’t make sense.</p>
+<p>You will also <a id="_idIndexMarker167"/>note that all arguments passed to the module must be enclosed in quotation marks (<code>"</code>). All arguments are specified as <code>key=value</code> pairs and no spaces should be added between <code>key</code> and <code>value</code> (for example, <code>key = value</code> is not acceptable). If you need to place quotation marks around one of your argument values, you can escape them using the backslash character (for example, <code>-a "src=/etc/yum.conf </code><code>dest=\"/tmp/yum file.conf\""</code>).</p>
+<p>All examples we have performed so far are very quick to execute and run, but this is not always the case with computing tasks. When you have to run an operation for a long time—say, more than two hours—you should consider running it as a background process. In this instance, you can run the command asynchronously and confirm the result of that execution later.</p>
+<p>For example, to execute <code>sleep 2h</code> asynchronously in the background with a timeout of 7,200 seconds (<code>-B</code>) and without polling (<code>-P</code>), use this command:</p>
+<pre class="console">
+$ ansible -i production-inventory frontends_emea_zone -B 7200 -P 0 -a "sleep 2h"
+frontend1-emea.example.com | CHANGED =&gt; {
+    "ansible_facts": {
+        "discovered_interpreter_python": "/usr/bin/python3"
+    },
+    "ansible_job_id": "809218129417.1291",
+    "changed": true,
+    "finished": 0,
+    "results_file": "/home/james/.ansible_async/809218129417.1291",
+    "started": 1
+}
+frontend2-emea.example.com | CHANGED =&gt; {
+    "ansible_facts": {
+        "discovered_interpreter_python": "/usr/bin/python3"
+    },
+    "ansible_job_id": "772164843356.1273",
+    "changed": true,
+    "finished": 0,
+    "results_file": "/home/james/.ansible_async/772164843356.1273",
+    "started": 1
+}</pre> <p>Note that the<a id="_idIndexMarker168"/> output from this command gives a unique job ID for each task on each host. Let’s now say that we want to see how this task proceeds on the second frontend server. Simply issue the following command from your Ansible control machine:</p>
+<pre class="console">
+$ ansible -i production-inventory frontend2-emea.example.com -m ansible.builtin.async_status -a "jid=772164843356.1273"
+frontend2-emea.example.com | SUCCESS =&gt; {
+    "ansible_facts": {
+        "discovered_interpreter_python": "/usr/bin/python3"
+    },
+    "ansible_job_id": "772164843356.1273",
+    "changed": false,
+    "finished": 0,
+    "results_file": "/home/james/.ansible_async/772164843356.1273",
+    "started": 1,
+    "stderr": "",
+    "stderr_lines": [],
+    "stdout": "",
+    "stdout_lines": []
+}</pre> <p>Here, we can see<a id="_idIndexMarker169"/> that the job has started but not finished. If we now kill the <code>sleep</code> command that we issued and check on the status again, we can see the following:</p>
+<pre class="console">
+$ ansible -i production-inventory frontend2-emea.example.com -a "pkill sleep"
+frontend2-emea.example.com | CHANGED | rc=0 &gt;&gt;
+james@controlnode:~/code/chapter02$ ansible -i production-inventory frontend2-emea.example.com -m ansible.builtin.async_status -a "jid=772164843356.1273"
+frontend2-emea.example.com | FAILED! =&gt; {
+    "ansible_facts": {
+        "discovered_interpreter_python": "/usr/bin/python3"
+    },
+    "ansible_job_id": "772164843356.1273",
+    "changed": true,
+    "cmd": [
+        "sleep",
+        "2h"
+    ],
+    "delta": "0:02:06.526826",
+    "end": "2023-04-25 14:45:13.024199",
+    "finished": 1,
+    "msg": "non-zero return code",
+    "rc": -15,
+    "results_file": "/home/james/.ansible_async/772164843356.1273",
+    "start": "2023-04-25 14:43:06.497373",
+    "started": 1,
+    "stderr": "",
+    "stderr_lines": [],
+    "stdout": "",
+    "stdout_lines": []
+}</pre> <p>Here, we<a id="_idIndexMarker170"/> see a <code>FAILED</code> status result because the <code>sleep</code> command was killed; it did not exit cleanly and returned a <code>-15</code> code (see the <code>rc</code> parameter). When it was killed, no output was sent to either <code>stdout</code> or <code>stderr</code>, but if it had been, Ansible would have captured it and displayed it in the preceding code, which would aid you in debugging the failure. Lots of other useful information is included, including how long the task actually ran for, the end time, and so on. Similarly, useful output is also returned when the task exits cleanly.</p>
+<p>That concludes our look at ad hoc commands in Ansible. By now, you should have a fairly solid grasp of the fundamentals of Ansible, but there’s one important thing we haven’t looked at yet, even though we briefly touched on it—variables and how to <a id="_idTextAnchor138"/>d<a id="_idTextAnchor139"/>efine them. We’ll proceed to look at this in the next section.</p>
+<h2 id="_idParaDest-42"><a id="_idTextAnchor140"/>Defining variables</h2>
+<p>In this section, we <a id="_idIndexMarker171"/>will explore the topic of variables and how they can be defined in Ansible. You will learn how variables should be defined step by step and understand how to work with them in Ansible.</p>
+<p>Although automation removes much of the repetition from previously manual tasks, not every single system is identical. If two systems differ in some minor way, you could write two unique playbooks—one for each system. However, this would be inefficient and wasteful, as well as difficult to manage as time goes on (for example, if the code in one playbook is changed, how can you ensure that it is updated in the second variant?).</p>
+<p>Equally, you might need to use a value from one system in another—perhaps you need to obtain the hostname of a database server and make it available to another. All of these issues can be addressed with variables as they allow the same automation code to run with parameter variations, as well as values to pass from one system to another (although this must be handled with some care).</p>
+<p>Let’s get started with a practical look at defining variables in Ansible.</p>
+<p>Variables in Ansible should have well-formatted names that adhere to the following rules:</p>
+<ul>
+<li>The name of the variable must only include letters, underscores, and numbers. Spaces are not allowed.</li>
+<li>The name of the variable can only begin with a letter—it can contain numbers but cannot start with one.</li>
+</ul>
+<p>For example, the following are good variable names:</p>
+<ul>
+<li><code>external_svc_port</code></li>
+<li><code>internal_hostname_ap1</code></li>
+</ul>
+<p>The following examples are all invalid, however, and cannot be used (if you are familiar with Python, you will know that these restrictions also apply to Python code, which Ansible, being written in Python, inherits this from):</p>
+<ul>
+<li><code>appserver-zone-na</code></li>
+<li><code>cache </code><code>server ip</code></li>
+<li><code>dbms.server.port</code></li>
+<li><code>01appserver</code></li>
+</ul>
+<p>As discussed in the <em class="italic">Learning the YAML syntax</em> section, variables can be defined in a dictionary structure, such as the following. All values are declared in key-value pairs:</p>
+<pre class="source-code">
+region:
+  east: app
+  west: frontend
+  central: cache</pre> <p>In order <a id="_idIndexMarker172"/>to retrieve a specific field from the preceding dictionary structure, you can use either one of the following notations:</p>
+<pre class="source-code">
+# bracket notation
+region['east']
+# dot notation
+region.east</pre> <p>There are some exceptions to this; for example, you should use bracket notation if the variable name starts and ends with two underscores (for example, <code>__variable__</code>) or contains known public attributes (or even variables that are generated during the playbook run), such as the following:</p>
+<ul>
+<li><code>as_integer_rat<a id="_idTextAnchor141"/>io</code></li>
+<li><code>symmetric_difference</code></li>
+</ul>
+<p>You can find more information on this at https://docs.ansible.com/ansible/latest/user_guide/playbooks_variables.xhtml#creating-valid-variable-names.</p>
+<p>This dictionary structure is valuable when defining host variables. Although earlier in this chapter we worked with a fictional set of employee records defined as an Ansible <code>variables</code> file, you could use this to specify something, such as some <code>redis</code> server parameters:</p>
+<pre class="source-code">
+---
+redis:
+- server: cacheserver01.example.com
+  port: 6379
+  slaveof: cacheserver02.example.com</pre> <p>These<a id="_idIndexMarker173"/> could then be applied through your playbook and one common playbook could be used for all <code>redis</code> servers, regardless of their configuration, as changeable parameters such as the <code>port</code> and <code>master</code> servers are all contained in the variables.</p>
+<p>You can also pass set variables directly in a playbook, and even pass them to roles that you call. For example, the following playbook code calls four hypothetical roles and each assigns a different value to the <code>username</code> variable for each one. These roles could be used to set up various administration roles on a server (or multiple servers), with each passing a changing list of usernames as people come and go from the company:</p>
+<pre class="source-code">
+roles:
+- role: dbms_admin
+  vars:
+    username: James
+- role: system_admin
+  vars:
+    username: John
+- role: security_amdin
+  vars:
+    username: Rock
+- role: app_admin
+  vars:
+    username: Daniel</pre> <p>To access variables from within a playbook, you simply place the variable name inside quoted pairs of curly braces. Consider the following example playbook (based loosely on our previous <code>redis</code> example):</p>
+<pre class="source-code">
+---
+- name: Display redis variables
+  hosts: all
+  vars:
+    redis:
+      server: cacheserver01.example.com
+      port: 6379
+      slaveof: cacheserver02.example.com
+  tasks:
+    - name: Display the redis port
+      ansible.builtin.debug:
+        msg: "The redis port for {{ redis.server }} is {{ redis.port }}"</pre> <p>Here, we <a id="_idIndexMarker174"/>define a variable in the playbook itself called <code>redis</code>. This variable is a dictionary, containing a number of parameters that might be important for our server. To access the contents of these variables, we use pairs of curly braces around them (as described previously) and the entire string is encased in quotation marks, which means we don’t have to individually quote the variables. If you run the playbook on a local machine, you should see an output that looks as follows:</p>
+<pre class="console">
+$ ansible-playbook -i localhost, -c local redis-playbook.yml
+PLAY [Display redis variables] **********************************************************
+TASK [Gathering Facts] **********************************************************
+ok: [localhost]
+TASK [Display the redis port] **********************************************************
+ok: [localhost] =&gt; {
+    "msg": "The redis port for cacheserver01.example.com is 6379"
+}
+PLAY RECAP **********************************************************
+localhost                  : ok=2    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0</pre> <p>Although we <a id="_idIndexMarker175"/>are accessing these variables here to print them in a debug message, you could use the same curly brace notation to assign them to module parameters, or for any other purpose that your playbook requires them for.</p>
+<p>Also note the special inventory format we used here:</p>
+<ul>
+<li><code>-i localhost,</code> – This tells <code>ansible-playbook</code> to read a list of literal hostnames from the command line, removing the need to define an inventory file.</li>
+<li><code>-c local</code> – This replaces the need to set up SSH authentication with the local host, by simply using the <code>local</code> connection mechanism. This is incredibly useful when running commands on the local machine itself.</li>
+</ul>
+<p>Ansible, just like many languages, has specially reserved variables that take on particular meanings in playbooks. In Ansible, these a<a id="_idTextAnchor142"/>re known as magic variables and you can find a full list of them at <a href="https://docs.ansible.com/ansible/latest/reference_appendices/special_variables.xhtml">https://docs.ansible.com/ansible/latest/reference_appendices/special_variables.xhtml</a>. Needless to say, you should not attempt to use any magic variable names for your own variables. Some common magic variables you might come across are as follows:</p>
+<ul>
+<li><code>inventory_hostname</code>: The hostname for the current host that is iterated over in the play</li>
+<li><code>groups</code>: A dictionary of the host groups in the inventory, along with the host membership of each group</li>
+<li><code>group_names</code>: A list of the groups the current host (specified by <code>inventory_hostname</code>) is a part of</li>
+<li><code>hostvars</code>: A dictionary of all the hosts in the inventory and the variables assigned to each of them</li>
+</ul>
+<p>For example, the <a id="_idIndexMarker176"/>host variables for all the hosts can be accessed at any point in the playbook using <code>hostvars</code>, even if you are only operating on one particular host. Magic variables are surprisingly useful in playbooks and you will rapidly start to find yourself using them, so it is important to be aware of their existence.</p>
+<p>You should also note that you can specify Ansible variables in multiple locations. Ansible has a strict order of variable precedence and you can take advantage of this by setting default values for variables in a place that has low precedence and then overriding them later in the play. This is useful for a variety of reasons, especially where an undefined variable could cause havoc when a playbook is run (or even when the playbook would fail as a result of this). We have not yet discussed all of the places that variables can be stored, so the full list of variable precedence order is not given here.</p>
+<p>In addition, it can change between Ansible releases, so it is important that you refer to the documen<a id="_idTextAnchor143"/>tation when working with and understanding variable precedence—go to <a href="https://docs.ansible.com/ansible/latest/user_guide/playbooks_variables.xhtml#variable-precedence-where-should-i-put-a-variable">https://docs.ansible.com/ansible/latest/user_guide/playbooks_variables.xhtml#variable-precedence-where-should-i-put-a-variable</a> for more information.</p>
+<p>That concludes our <a id="_idIndexMarker177"/>brief overview of variables in Ansible, although we will see them used again in later examples in this book. Let’s now round off this chapter with a look at Jinja2 f<a id="_idTextAnchor144"/>i<a id="_idTextAnchor145"/>lters, which add a whole world of power to your variable definitions.</p>
+<h1 id="_idParaDest-43"><a id="_idTextAnchor146"/>Understanding Jinja2 filters</h1>
+<p>As Ansible is <a id="_idIndexMarker178"/>written in Python, it inherits an incredibly useful and powerful templating engine called Jinja2. We will look at the concept of templating later in this book, so for now, we will focus on one particular aspect of Jinja2 known as filtering. Jinja2 filters provide an incredibly powerful framework that you can use to manipulate and transform your data. Perhaps you have a string that you need to convert into lowercase, for example—you could apply a Jinja2 filter to achieve this. You can also use it to perform pattern matching, search and replace operations, and much more. There are many hundreds of filters for you to work with, and in this section, we hope to empower you with a basic understanding of Jinja2 filters and some practical knowledge about how to apply them, as well as showing you where to get more information about them if you wish to explore the subject further.</p>
+<p>It is worth noting that Jinja2 operations are performed on the Ansible control node and only the results of the filter operation are sent to the remote hosts. This is done by design, both for consistency and to reduce the workload on the individual nodes as much as possible.</p>
+<p>Let’s explore this <a id="_idIndexMarker179"/>through a practical example. Suppose we have a YAML file containing some data that we want to parse. We can quite easily read a file from the machine filesystem and capture the result using the <code>register</code> keyword (<code>register</code> captures the result of the task and stores it in a variable—in the case of running the <code>ansible.builtin.shell</code> module, it captures all the output fr<a id="_idTextAnchor147"/>om the command that was run).</p>
+<p>Our YAML data file might look as follows:</p>
+<pre class="source-code">
+tags:
+  - key: job
+    value: developer
+  - key: language
+    value: java</pre> <p>Now, we <a id="_idIndexMarker180"/>could create a playbook to read this file and register the result, but how can we actually turn it into a variable structure that Ansi<a id="_idTextAnchor148"/>ble can understand and work with? Let’s consider the following playbook:</p>
+<pre class="source-code">
+---
+- name: Jinja2 filtering demo 1
+  hosts: localhost
+  tasks:
+    - name: Copy sample data to /tmp
+      ansible.builtin.copy:
+        src: multiple-document-strings.yaml
+        dest: /tmp/multiple-document-strings.yaml
+    - name: Read sample data to a variable
+      ansible.builtin.shell: cat /tmp/multiple-document-strings.yaml
+      register: result
+    - name: Print the filtered output in a debug message
+      ansible.builtin.debug:
+        msg: '{{ item }}'
+      loop: '{{ result.stdout | from_yaml_all | list }}'</pre> <p>The <code>ansible.builtin.shell</code> module does not necessarily run from the directory that the playbook is stored in, so we cannot guarantee that it will find our <code>multiple-document-strings.yaml</code> file even when it is in the same directory as the playbook. The <code>ansible.builtin.copy</code> module does, however, source files from the current (playbook) directory, so it is useful to use it to copy it to a known location (such as <code>/tmp</code>) for the <code>ansible.builtin.shell</code> module to read the file from. The <code>ansible.builtin.debug</code> module is then run in a <code>loop</code>. The <code>loop</code> is used to iterate over all of the lines of <code>stdout</code> from the <code>ansible.builtin.shell</code> command, applying two Jinja2 filters—<code>from_yaml_all</code> and <code>list</code> to the output line by line.</p>
+<p>The <code>from_yaml_all</code> filter <a id="_idIndexMarker181"/>parses the source document lines as YAML and then the <code>list</code> filter converts the parsed data into a valid Ansible list. If we run the playbook, we should see Ansible’s representation of the data structure from within our original file:</p>
+<pre class="console">
+PLAY [Jinja2 filtering demo 1] ************************************************************
+TASK [Gathering Facts] ************************************************************
+ok: [localhost]
+TASK [Copy sample data to /tmp] ***********************************************************
+changed: [localhost]
+TASK [Read sample data to a variable] ***********************************************************
+changed: [localhost]
+TASK [Print the filtered output in a debug message] ***********************************************************
+ok: [localhost] =&gt; (item={'tags': [{'key': 'job', 'value': 'developer'}, {'key': 'language', 'value': 'java'}]}) =&gt; {
+    "msg": {
+        "tags": [
+            {
+                "key": "job",
+                "value": "developer"
+            },
+            {
+                "key": "language",
+                "value": "java"
+            }
+        ]
+    }
+}
+PLAY RECAP ***************************************************
+localhost                  : ok=4    changed=2    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0</pre> <p>As you can see, we have generated a list of dictionaries that in themselves contain the key-value pairs.</p>
+<p>If this data <a id="_idIndexMarker182"/>structure was already stored in our playbook, we could take this one step further and use the <code>items2dict</code> filter to turn the list into true <code>key: value</code> pairs, removing the <code>key</code> and <code>value</code> items from the data structure. For example, consider this second playbook:</p>
+<pre class="source-code">
+---
+- name: Jinja2 filtering demo 2
+  hosts: localhost
+  vars:
+    tags:
+      - key: job
+        value: developer
+      - key: language
+        value: java
+  tasks:
+    - name: Filter the tags variable through items2dict
+      ansible.builtin.debug:
+        msg: '{{ tags | items2dict }}'</pre> <p>Now, if we run this, we<a id="_idIndexMarker183"/> can see that our data is converted into a nice, neat set of <code>key: </code><code>value</code> pairs:</p>
+<pre class="console">
+$ ansible-playbook -i localhost, -c local jinja-filtering2.yml
+[WARNING]: Found variable using reserved name: tags
+PLAY [Jinja2 filtering demo 2] ***********************************************************
+TASK [Gathering Facts] ***************************************************
+ok: [localhost]
+TASK [Filter the tags variable through items2dict] ***********************************************************
+ok: [localhost] =&gt; {
+    "msg": {
+        "job": "developer",
+        "language": "java"
+    }
+}
+PLAY RECAP ***************************************************
+localhost                  : ok=2    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0</pre> <p>Observe the warning <a id="_idIndexMarker184"/>at the top of the playbook. Ansible displays a warning if you attempt to use a reserved name for a variable, as we did here. Normally, you should not create a variable with a reserved name, but the example here demonstrates both how the filter works and how Ansible will attempt to warn you if you do something that might cause problems.</p>
+<p>Earlier in this section, we used the <code>ansible.builtin.shell</code> module to read a file and used <code>register</code> to store the result in a variable. This is perfectly fine, if a little inelegant. Jinja2 contains a series of <code>lookup</code> filters that, among other things, can read the contents of a given file. Let’s examine the behavior of the following playbook:</p>
+<pre class="source-code">
+---
+- name: Jinja2 filtering demo 3
+  hosts: localhost
+  vars:
+    ping_value: "{{ lookup('file', '/etc/hosts') }}"
+  tasks:
+    - name: Display the values obtained from the file lookup
+      ansible.builtin.debug:
+        msg: "ping value is {{ ping_value }}"</pre> <p>When we run this, we <a id="_idIndexMarker185"/>can see that Ansible has captured the contents of the <code>/etc/hosts</code> file for us, without us needing to resort to the <code>ansible.builtin.copy</code> and <code>ansible.builtin.shell</code> modules as we did earlier:</p>
+<pre class="console">
+$ ansible-playbook -i localhost, -c local jinja-filtering3.yml
+PLAY [Jinja2 filtering demo 3] ************************************************************
+TASK [Gathering Facts] ***************************************************
+ok: [localhost]
+TASK [Display the values obtained from the file lookup] ***********************************************************
+ok: [localhost] =&gt; {
+    "msg": "ping value is 127.0.0.1 localhost\n\n# The following lines are desirable for IPv6 capable hosts\n::1 ip6-localhost ip6-loopback\nfe00::0 ip6-localnet\nff00::0 ip6-mcastprefix\nff02::1 ip6-allnodes\nff02::2 ip6-allrouters\nff02::3 ip6-allhosts\n\n10.0.50.30 frontend1-na.example.com frontend1-emea.example.com\n10.0.50.31 frontend2-na.example.com frontend2-emea.example.com\n\n10.0.50.40 appserver1-emea.example.com\n10.0.50.41 appserver2-emea.example.com"
+}
+PLAY RECAP **********************************************************
+localhost                  : ok=2    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0</pre> <p>There are many other<a id="_idIndexMarker186"/> filters that you might be interested in exploring and a full list can be found in the official <a id="_idIndexMarker187"/>Jinja2 documentation (<a href="https://jinja.palletsprojects.com/en/3.1.x/">https://jinja.palletsprojects.com/en/3.1.x/</a>). The following are a handful of other examples that will give you an idea of the kinds of things that Jinja2 filters can achieve for you, from quoting strings to concatenating lists, to obtaining useful path information for a file:</p>
+<pre class="source-code">
+# Add some quotation in the shell
+- shell: echo {{ string_value | quote }}
+# Concatenate a list into a specific string
+{{ list | join("$") }}
+# Obtain the file name of a specific file path
+{{ path | basename }}
+# Retrieve the directory from a full path
+{{ path | dirname }}
+# Get the directory from a specific windows path
+{{ path | win_dirname }}</pre> <p>That concludes our look at Jinja2 filtering. It is a massive topic that deserves a book all to itself, but, as ever, I hope<a id="_idIndexMarker188"/> that this practical guide<a id="_idTextAnchor149"/> <a id="_idTextAnchor150"/>has given you some pointers on how to get started and where to find information.</p>
+<h1 id="_idParaDest-44"><a id="_idTextAnchor151"/>Summary</h1>
+<p>Ansible is a very powerful and versatile automation engine that can be used for a wide variety of tasks. Understanding the basics of how to work with it is of paramount importance, before addressing the more complex challenges of playbook creation and large-scale automation. Ansible relies on a language called YAML, a simple-to-read (and write) syntax that supports the rapid development of easy-to-read and easy-to-maintain code and inherits a number of valuable features from the Python language that it is written in, including Jinja2 filtering.</p>
+<p>In this chapter, you learned the fundamentals of working with various Ansible programs. You then learned about the YAML syntax and the ways that you can break down your code into manageable chunks to make it easier to read and maintain. We explored the use of ad hoc commands in Ansible, variable definition and structure, and how to make use of Jinja2 filters to manipulate the data in your playbooks.</p>
+<p>In the next chapter, we will take a more in-depth look at Ansible inventories and explore <a id="_idTextAnchor152"/>s<a id="_idTextAnchor153"/>ome of the more advanced concepts of working with them that you may find useful.</p>
+<h1 id="_idParaDest-45"><a id="_idTextAnchor154"/>Questions</h1>
+<ol>
+<li>Which component of Ansible allows you to define a block to execute task groups as a play?<ol><li><code>handler</code></li><li><code>service</code></li><li><code>hosts</code></li><li><code>tasks</code></li><li><code>name</code></li></ol></li>
+<li>Which basic syntax from the YAML format do you use to start a file?<ol><li><code>###</code></li><li><code>---</code></li><li><code>%%%</code></li><li><code>===</code></li><li><code>***</code></li></ol></li>
+<li>True or false – in order to interpret a<a id="_idTextAnchor155"/>n<a id="_idTextAnchor156"/>d transform output data in Ansible, you need to use Jinja2 templates.<ol><li>True</li><li>False</li></ol></li>
+</ol>
+<h1 id="_idParaDest-46"><a id="_idTextAnchor157"/>Further reading</h1>
+<p>To find out about more configuration variables, go to <a href="https://docs.ansible.com/ansible/latest/reference_appendices/config.xhtml#ansible-configuration-settings">https://docs.ansible.com/ansible/latest/reference_appendices/config.xhtml#ansible-configuration-settings</a>.</p>
+</div>
+</div></body></html>

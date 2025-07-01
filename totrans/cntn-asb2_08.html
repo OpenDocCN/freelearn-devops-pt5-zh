@@ -1,0 +1,579 @@
+<html><head></head><body>
+        
+
+                            
+                    <h1 class="header-title">Building and Deploying a Multi-Container Project</h1>
+                
+            
+            
+                
+<p>So far, throughout the course of this book, we have explored the many facets of Ansible Container and containerized application deployments. We have looked at building Docker containers from basic Dockerfiles, using Ansible Container to install roles, build containers, and even deploy applications to cloud solutions such as Kubernetes and OpenShift. However, you may have noticed that our discussion so far has been centered around deploying single microservice applications such as Apache2, Memcached, NGINX, and MariaDB. These applications can be deployed standalone, without any dependency on other services or applications aside from a basic Docker daemon. While learning containerization from building single-container microservices is a great way to learn the core concepts of containerization, it isn't an accurate reflection of real-world application infrastructures.</p>
+<p>As you may already know, applications usually comprise stacks of interconnected software that work together to deliver a service to end users. A typical application stack might involve a web frontend that receives input from a user. The web interface might be responsible for knowing how to contact a database backend to store the data provided to it by the user, as well as retrieve previously stored data. Big data applications might periodically analyze the data within the database in an attempt to figure out trends in data, analyze usage, or perform other functions that give data scientists insight into how users are operating the application. These applications live in a delicate balance that's dependent on network connectivity, DNS resolution, and service discovery in order to talk to each other and perform their overarching functions.</p>
+<p>The world of containers is not very different at the outset. After all, the containerized software still draws dependencies on other containerized and non-containerized applications to store, retrieve, and process data, and perform distinct functions. As we touched on in <a href="ccc07e61-25e7-4984-953b-586b28b12aab.xhtml" target="_blank">Chapter 5</a>, <em>Containers at Scale with Kubernetes,</em> and <a href="d3c6ddae-003d-4f20-a3a5-efd018ac61ee.xhtml" target="_blank">Chapter 6</a>, <em>Managing Containers with OpenShift</em>, containers bring a lot more versatility and much reduced management complexity to the problem of deploying and scaling multi-tiered applications.</p>
+<p>In this chapter we will cover the following topics:</p>
+<ul>
+<li class="mce-root">Defining complex applications using Docker networks</li>
+<li class="mce-root">Exploring the Ansible Container django-gulp-nginx project</li>
+<li>Building the django-gulp-nginx project</li>
+<li>Development and production configurations</li>
+<li>Deploying the project to OpenShift</li>
+</ul>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Defining complex applications using Docker networking</h1>
+                
+            
+            
+                
+<p>Containerized environments are dynamic and apt to change state quickly. Unlike traditional infrastructure, containers are continually scaling up and down, perhaps even migrating between hosts. It is critical that containers are able to discover other containers, establish network connectivity, and share resources quickly and efficiently.</p>
+<p>As we touched on in previous chapters, Docker, Kubernetes, and OpenShift have the native functionality to automatically discover and access other containers using various networking protocols and DNS resolution, not unlike bare-metal or virtualized servers. When deploying containers on a single Docker host, Docker will assign each container an IP address in a virtual subnet that can be used to talk to other container IP addresses in the same subnet. Likewise, Docker will also provide simple DNS resolution that can be used to resolve container names internally. When scaled out across multiple hosts using container orchestration systems such as Kubernetes, OpenShift, or Docker Swarm, containers use an overlay network to establish network connectivity between hosts and run as though they exist on the same host. As we saw in <a href="ccc07e61-25e7-4984-953b-586b28b12aab.xhtml" target="_blank">Chapter 5</a>, <em>Containers at Scale with Kubernetes</em>, Kubernetes provides a sophisticated internal DNS system to resolve containers based on namespaces within the larger Kubernetes DNS domain. There is a lot to be said about container networking, so for the purposes of this chapter, we will look at Docker networking for service discovery. In this section, we will create a dedicated Docker network subnet and create containers that leverage DNS to establish network connectivity to other running containers.</p>
+<p>To demonstrate basic network connectivity between Docker containers, let's use the Docker environment in our Vagrant lab host to create a new virtual container network using the bridge networking driver. Bridge networking is one of the most basic types of container networks that is limited to a single Docker host. We can create this using the <kbd>docker network create</kbd> command. In this example, we will create a network called <kbd>SkyNet</kbd> using the <kbd>172.100.0.0/16</kbd> CIDR block, with the <kbd>bridge</kbd> networking driver:</p>
+<pre class="western"><strong>ubuntu@node01:~$ docker network create -d bridge --subnet 172.100.0.0/16 SkyNet
+<br/>2679e6a7009912fbe5b8203c83011f5b3f3a5fa7c154deebb4a9aac7af80a6aa</strong></pre>
+<p>We can validate this network has been successfully created using the <kbd>docker network ls</kbd> command:</p>
+<pre class="western"><strong>ubuntu@node01:~$ docker network ls
+NETWORK ID          NAME                DRIVER              SCOPE
+2679e6a70099        SkyNet              bridge              local
+truncated..</strong></pre>
+<p>We can see detailed information about this network in JSON format using the <kbd>docker network inspect</kbd> command:</p>
+<pre class="western"><strong>ubuntu@node01:~$ docker network inspect SkyNet
+[
+    {
+        "Name": "SkyNet",
+        "Id": "2679e6a7009912fbe5b8203c83011f5b3f3a5fa7c154deebb4a9aac7af80a6aa",
+        "Created": "2017-11-05T02:26:22.790958921Z",
+        "Scope": "local",
+        "Driver": "bridge",
+        "EnableIPv6": false,
+        "IPAM": {
+            "Driver": "default",
+            "Options": {},
+            "Config": [
+                {
+                    "Subnet": "172.100.0.0/16"
+                }
+            ]
+        },</strong></pre>
+<p>Now that we have established a network on our Docker host, we can create containers to connect to this network to test the functionality. Let's create two Alpine Linux containers to connect to this network and use them to test DNS resolution and reachability. The Alpine Linux Docker image is an extremely lightweight container image that can be used to quickly spin up containers for testing purposes. In this example, we will create two Alpine Linux containers named <kbd>service1</kbd> and <kbd>service2</kbd>, connected to the SkyNet Docker network using <kbd>--network</kbd> flag:</p>
+<pre class="western"><strong>ubuntu@node01:~$ docker run --network=SkyNet -itd --name=service1 alpine
+Unable to find image 'alpine:latest' locally
+latest: Pulling from library/alpine
+b56ae66c2937: Pull complete
+Digest: sha256:d6bfc3baf615dc9618209a8d607ba2a8103d9c8a405b3bd8741d88b4bef36478
+Status: Downloaded newer image for alpine:latest
+5f1fba3964fae85e90cc1b3854fc443de0b479f94af68c14d9d666999962e25a<br/></strong></pre>
+<p class="western">In a similar way, we can start the <kbd>service2</kbd> container, using the <kbd>SkyNet</kbd> network:<strong><br/>
+<br/></strong></p>
+<pre class="western"><strong>ubuntu@node01:~$ docker run --network=SkyNet -itd --name=service2 alpine
+8f6ad6b88b52e446cee44df44d8eaa65a9fe0d76a2aecb156fac704c71b34e27</strong></pre>
+<p>Although these containers are not running a service, they are running by allocating a pseudo-tty instance to them using the <kbd>-t</kbd> flag. Allocating a pseudo-tty to the container will keep it from immediately exiting, but will cause the container to exit if the TTY session is terminated. Throughout this book, we have looked at running containers using command and entrypoint arguments, which is the recommended approach. Running containers by allocating a pseudo-tty is great for quickly spinning up containers for testing purposes, but not a recommended way to run traditional application containers.  Application containers should always run based on the status of the <strong>process ID</strong> (<strong>PID</strong>) running within it.</p>
+<p>In the first example, we can see that our local Docker host pulled down the latest Alpine container image and ran it using the parameters we passed into the <kbd>docker run</kbd> command. Likewise, the second <kbd>docker run</kbd> command created a second instance of this container image using the same parameters. Using the <kbd>docker inspect</kbd> command, we can see which IP addresses the Docker daemon assigned our containers:</p>
+<pre class="western"><strong>ubuntu@node01:~$ docker inspect service1<br/>TRUNCATED..<br/>"NetworkID": "2679e6a7009912fbe5b8203c83011f5b3f3a5fa7c154deebb4a9aac7af80a6aa",<br/>"EndpointID": "47e16d352111007b9f19caf8c10a388e768cc20e5114a3b346d08c64f1934e1f",<br/>"Gateway": "172.100.0.1",<br/>"IPAddress": "172.100.0.2",<br/>"IPPrefixLen": 16,<br/>"IPv6Gateway": "",<br/>"GlobalIPv6Address": "",<br/>"GlobalIPv6PrefixLen": 0,<br/>"MacAddress": "02:42:ac:64:00:02",<br/>"DriverOpts": null</strong></pre>
+<div><p>  And we can do the same for <kbd>service2</kbd>:<strong><br/></strong></p>
+</div>
+<pre class="western"><strong>ubuntu@node01:~$ docker inspect service2
+TRUNCATED..
+"NetworkID": "2679e6a7009912fbe5b8203c83011f5b3f3a5fa7c154deebb4a9aac7af80a6aa",
+"EndpointID": "3ca5485aa27bd1baffa826b539f905b50005c9157d5a4b8ba0907d15a3ae7a21",
+"Gateway": "172.100.0.1",
+"IPAddress": "172.100.0.3",
+"IPPrefixLen": 16,
+"IPv6Gateway": "",
+"GlobalIPv6Address": "",
+"GlobalIPv6PrefixLen": 0,
+"MacAddress": "02:42:ac:64:00:03",
+"DriverOpts": null</strong></pre>
+<p>As you can see, Docker assigned the IP address of <kbd>172.100.0.2</kbd> to our <kbd>service1</kbd> container, and the IP address of <kbd>172.100.0.3</kbd> to our <kbd>service2</kbd> container. These IP addresses provide network connectivity exactly as  you would expect between two hosts attached to the same network segment. If we use <kbd>docker exec</kbd> to log into the <kbd>service1</kbd> container, we can check to see whether <kbd>service1</kbd> can ping <kbd>service2</kbd> using the IP addresses Docker assigned:</p>
+<pre class="western"><strong>ubuntu@node01:~$ docker exec -it service1 /bin/sh
+/ # ping 172.100.0.3
+PING 172.100.0.3 (172.100.0.3): 56 data bytes
+64 bytes from 172.100.0.3: seq=0 ttl=64 time=0.347 ms
+64 bytes from 172.100.0.3: seq=1 ttl=64 time=0.160 ms
+64 bytes from 172.100.0.3: seq=2 ttl=64 time=0.159 ms</strong></pre>
+<p>Since these containers are running using a pseudo-tty instead of a command or entrypoint, simply typing <kbd>exit</kbd> in the container shell will kill the TTY session and stop the container. To keep the container running when exiting the shell, use the Docker escape sequence from your keyboard: <em>Ctrl</em> + <em>P</em> <em>Ctrl</em> + <em>Q</em>.</p>
+<p>We can as well do this test likewise from the  <kbd>service2</kbd> container:</p>
+<pre class="western"><strong>ubuntu@node01:~$ docker exec -it service2 /bin/sh
+/ # ping 172.100.0.2
+PING 172.100.0.2 (172.100.0.2): 56 data bytes
+64 bytes from 172.100.0.2: seq=0 ttl=64 time=0.175 ms
+64 bytes from 172.100.0.2: seq=1 ttl=64 time=0.157 ms</strong></pre>
+<p>It is easy to see that IP-based networking works well to establish network connectivity between running containers. The downside of this approach is that we cannot always know ahead of time what IP addresses the container runtime environment will assign our containers. For example, a container may require an entry in a configuration file to point to a service it depends on. Although you might be tempted to plug an IP address into your container role and build it, this container role would have to be rebuilt for each and every environment it is deployed into. Furthermore, when containers get stopped and restarted, they could take on different IP addresses, which will cause the application to break down. Luckily, as a solution to this issue, Docker provides a DNS resolution based on the container name, which will actively keep track of running containers and resolve the correct IP address in the event that a container should change IP addresses. Container names, unlike IP addresses, can be known in advance and be used to point containers to the correct services inside of configuration files, or stored in memory as environment variables. We can see this in action by logging back into the <kbd>service1</kbd> container and using the <kbd>ping</kbd> command to ping the name <kbd>service2</kbd>:</p>
+<pre class="western"><strong>ubuntu@node01:~$ docker exec -it service1 /bin/sh
+/ # ping service2
+PING service2 (172.100.0.3): 56 data bytes
+64 bytes from 172.100.0.3: seq=0 ttl=64 time=0.233 ms
+64 bytes from 172.100.0.3: seq=1 ttl=64 time=0.142 ms
+64 bytes from 172.100.0.3: seq=2 ttl=64 time=0.184 ms
+64 bytes from 172.100.0.3: seq=3 ttl=64 time=0.263 ms</strong></pre>
+<p>Furthermore, we can create a third service container and check to see if the new container has the ability to resolve the names of <kbd>service1</kbd> and <kbd>service2</kbd> respectively:</p>
+<pre class="western"><strong>ubuntu@node01:~$ docker run --network=SkyNet -itd --name=service3 alpine
+8db62ae30457c351474d909f0600db7f744fb339e06e3c9a29b87760ad6364ff
+</strong><br/><strong>ubuntu@node01:~$ docker exec -it service3 /bin/sh
+/ # ping service1
+PING service1 (172.100.0.2): 56 data bytes
+64 bytes from 172.100.0.2: seq=0 ttl=64 time=0.207 ms
+64 bytes from 172.100.0.2: seq=1 ttl=64 time=0.165 ms
+64 bytes from 172.100.0.2: seq=2 ttl=64 time=0.159 ms
+^C
+--- service1 ping statistics ---
+3 packets transmitted, 3 packets received, 0% packet loss
+round-trip min/avg/max = 0.159/0.177/0.207 ms
+/ #
+/ # ping service2
+PING service2 (172.100.0.3): 56 data bytes
+64 bytes from 172.100.0.3: seq=0 ttl=64 time=0.224 ms
+64 bytes from 172.100.0.3: seq=1 ttl=64 time=0.162 ms
+64 bytes from 172.100.0.3: seq=2 ttl=64 time=0.146 ms</strong></pre>
+<p>Finally, if we log into the <kbd>service2</kbd> container, we can use the <kbd>nslookup</kbd> command to resolve the IP address of the newly created <kbd>service3</kbd> container:</p>
+<pre class="western"><strong>ubuntu@node01:~$ docker exec -it service2 /bin/sh
+/ # nslookup service3
+
+Name:      service3
+Address 1: 172.100.0.4 service3.SkyNet</strong></pre>
+<p>Docker creates DNS resolution using the name of the Docker network as a domain. As such, the <kbd>nslookup</kbd> results are showing the fully qualified domain name of <kbd>service3</kbd> as <kbd>service3.SkyNet</kbd>. However, as I'm sure you could imagine, having DNS resolution for containers is an incredibly powerful tool for building reliable and robust containerized infrastructures. Just by knowing the name of the container, you can establish links and dependencies between containers that will scale with your infrastructure. This concept extends far beyond learning the individual IP addresses of containers. For example, as we saw in <a href="ccc07e61-25e7-4984-953b-586b28b12aab.xhtml" target="_blank">Chapter 5</a>, <em>Containers at Scale with Kubernetes</em>, and <a href="d3c6ddae-003d-4f20-a3a5-efd018ac61ee.xhtml" target="_blank">Chapter 6</a>, <em>Managing Your Applications with OpenShift</em>, Kubernetes and OpenShift allow for the creation of services that logically connect to backend pods using labels or other identifiers. When other pods pass traffic to the service DNS entry, Kubernetes will load-balance traffic to the running pods that match the label rules configured in the service entry. The only thing the containers that rely on that service need to know is how to resolve the service FQDN, and the container orchestrator takes care of the rest. The backend pods could scale up or down, but as long as the container orchestrator's DNS service is able to resolve the service entry, the other containers calling the service will not notice a difference.</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Exploring the Ansible Container django-gulp-nginx project</h1>
+                
+            
+            
+                
+<p>Now that we have a basic understanding of container networking concepts and Docker DNS resolution, we can build projects that have multi-container dependencies. Ansible Container has a concept of creating fully reusable full stack containerized applications, aptly named Container Apps. Container Apps are able to be downloaded and deployed quickly from Ansible Galaxy very similar to container-enabled roles. Container Apps have the benefit of allowing users to get started developing quickly against fully functional multi-tier applications that run as separate microservice containers. In this example, we will use a community-developed web application project that spins up a Python-based Django, Gulp, and NGINX environment we can deploy locally and to a container orchestration environment such as OpenShift or Kubernetes.</p>
+<p>You can explore a wide range of container apps using Ansible Galaxy by simply going to the Ansible Galaxy website at <a href="https://galaxy.ansible.com/">https://galaxy.ansible.com</a>, selecting BROWSE ROLES, clicking on Role Type from the Keyword drop-down box, and selecting Container App from the search dialog:</p>
+<div><img src="img/6c64ca50-00dd-44b7-81ad-52584fdf6e2d.png"/></div>
+<p>Figure 1: Searching for Container Apps in Ansible Galaxy</p>
+<p>In this example, we are going to leverage the pre-built Ansible <kbd>django-gulp-nginx</kbd> Container App, which is an official Ansible Container project. This container app creates a containerized Django framework web application that leverages NGINX as a web server, Django and Gulp as a framework, and PostgreSQL as a database server. In this project is an entirely self-contained demo environment we can use to explore how Ansible Container works with other services and dependencies.</p>
+<p>In order to get started with using this project, we need to first install it in a clean directory on our Vagrant Lab VM. First, create a new directory (I will call mine <kbd>demo</kbd>), and run the <kbd>ansible-container init</kbd> command followed by the name of the Container App we want to install, <kbd>ansible.django-gulp-nginx</kbd>. You can find the full name for this project on Ansible Galaxy, using the preceding steps to search for Container Apps. Following code demonstrates creating a new directory and initializing the Django-Gulp-NGINX project:</p>
+<pre class="western"><strong>ubuntu@node01:~$ mkdir demo/
+ubuntu@node01:~$ cd demo/
+ubuntu@node01:~$ ansible-container init ansible.django-gulp-nginx
+Ansible Container initialized from Galaxy container app 'ansible.django-gulp-nginx'</strong></pre>
+<p>Upon successfully initializing the project, you should see the Ansible Container initialized from Galaxy Container App <kbd>ansible.django-gulp-nginx</kbd> message appear. This indicates that the container app was successfully installed from Ansible Galaxy. Executing the <kbd>ls</kbd> command in the <kbd>demo/ directory</kbd> should display project files similar to the following:</p>
+<pre class="western"><strong>ubuntu@node01:~/demo$ ls
+bower.json     dist         Makefile   meta.yml      package.json       project    requirements.txt  roles    src         test
+AUTHORS             container.yml  gulpfile.js  manage.py  node_modules  package-lock.json  README.md  requirements.yml  scripts  temp-space  update-authors.py</strong></pre>
+<p>A lot of the files listed are configuration files that support the Gulp/Django framework for the application we are going to create. The primary file we are concerned with for the purposes of this demonstration is the core file in all Ansible Container projects: <kbd>container.yml</kbd>. If you open the <kbd>container.yml</kbd> file in a text editor, it should resemble the following:</p>
+<pre class="western">version: '2'
+settings:
+  conductor:
+    base: 'centos:7'
+    volumes:
+    - temp-space:/tmp   # Used to copy static content between containers
+  k8s_namespace:
+    name: demo
+    display_name: Ansible Container Demo 
+    description: Django framework demo 
+defaults:
+  POSTGRES_USER: django
+  POSTGRES_PASSWORD: sesame
+  POSTGRES_DB: django
+  DJANGO_ROOT: /django
+  DJANGO_USER: django
+  DJANGO_PORT: 8080
+  DJANGO_VENV: /venv
+  NODE_USER: node
+  NODE_HOME: /node
+  NODE_ROOT: ''
+  GULP_DEV_PORT: 8080
+services:
+  django:
+    from: 'centos:7'
+    roles:
+    - role: django-gunicorn
+    environment:
+      DATABASE_URL: 'pgsql://{{ POSTGRES_USER }}:{{ POSTGRES_PASSWORD }}@postgresql:5432/{{ POSTGRES_DB }}'
+      DJANGO_ROOT: '{{ DJANGO_ROOT }}'
+      DJANGO_VENV: '{{ DJANGO_VENV }}'
+    expose:
+    - '{{ DJANGO_PORT }}'
+    working_dir: '{{ DJANGO_ROOT }}'
+    links:
+    - postgresql
+    user: '{{ DJANGO_USER }}'
+    command: ['/usr/bin/dumb-init', '{{ DJANGO_VENV }}/bin/gunicorn', -w, '2', -b, '0.0.0.0:{{ DJANGO_PORT }}', 'project.wsgi:application']
+    entrypoint: [/usr/bin/entrypoint.sh]
+    dev_overrides:
+      volumes:
+      - '$PWD:{{ DJANGO_ROOT }}'
+      command: [/usr/bin/dumb-init, '{{ DJANGO_VENV }}/bin/python', manage.py, runserver, '0.0.0.0:{{ DJANGO_PORT }}']
+      depends_on:
+      - postgresql
+
+  gulp:
+    from: 'centos:7'
+    roles:
+    - role: gulp-static 
+    working_dir: '{{ NODE_HOME }}'
+    command: ['/bin/false']
+    environment:
+      NODE_HOME: '{{ NODE_HOME }}'
+    dev_overrides:
+      entrypoint: [/entrypoint.sh]
+      command: [/usr/bin/dumb-init, /usr/local/bin/gulp]
+      ports:
+      - '8080:{{ GULP_DEV_PORT }}'
+      - 3001:3001
+      links:
+      - django
+      volumes:
+      - '$PWD:{{ NODE_HOME }}'
+    openshift:
+      state: absent
+
+  nginx:
+    from: 'centos:7'
+    roles:
+    - role: ansible.nginx-container
+      ASSET_PATHS:
+      - /tmp/dist
+      PROXY: yes
+      PROXY_PASS: 'http://django:8080'
+      PROXY_LOCATION: "~* /(admin|api)"
+    ports:
+    - '{{ DJANGO_PORT }}:8000'
+    links:
+    - django
+    dev_overrides:
+      ports: []
+      command: /bin/false
+
+  postgresql:
+    # Uses a pre-built postgresql image from Docker Hub 
+    from: ansible/postgresql:latest
+    environment:
+    - 'POSTGRES_DB={{ POSTGRES_DB }}'
+    - 'POSTGRES_USER={{ POSTGRES_USER }}'
+    - 'POSTGRES_PASS={{ POSTGRES_PASSWORD }}'
+    - 'PGDATA=/var/lib/pgsql/data/userdata'
+    volumes:
+    - postgres-data:/var/lib/pgsql/data
+    expose:
+    - 5432
+
+volumes:
+  postgres-data:
+    docker: {}
+    openshift:
+      access_modes:
+      - ReadWriteMany
+      requested_storage: 3Gi 
+
+  temp-space: 
+    docker: {}
+    openshift:
+      state: absent
+
+registries:
+   local_openshift:
+     url: https://local.openshift
+     namespace: demo
+     pull_from_url: 172.30.1.1:5000</pre>
+<p>The output shown here is a reflection of the contents of <kbd>container.yml</kbd> at the time of writing. Yours may look slightly different if updates have been made to this project since the time of writing.</p>
+<p>As you can see, this <kbd>container.yml</kbd> file contains many of the same specifications we have covered already in previous chapters of the book. Out of the box, this project contains the service declarations to build the Gulp, Django, NGINX, and Postgres containers, complete with the role paths and various role variables defined to ensure the project is able to run in a completely self-contained format. Also built into this project is support for deploying this project to OpenShift. One of the benefits of this project is that it exposes virtually every possible configuration option available in an Ansible Container project, as well as the proper syntax to activate these features. Personally, I like to use this project as a reference guide in case I forget the proper syntax to use in my project's <kbd>container.yml</kbd> files. Following is a list of sections from the <kbd>container.yml</kbd> that are useful for the user to have an understanding of, starting from the top and moving towards the bottom:</p>
+<ul>
+<li><kbd>conductor</kbd>: As we have seen throughout this book, this section defines the conductor container and the base container image to build the conductor from. In this case, the conductor image will be a Centos 7 container that leverages a volume mount from the <kbd>temp-space</kbd> directory in the <kbd>root</kbd> of the project to the <kbd>/tmp</kbd> directory inside of the container. It is important to note here that the conductor image can leverage volume mounts in order to store data during the build process.</li>
+<li><kbd>defaults</kbd>: This section is known as the top-level defaults section and is used to instantiate variables that can be used throughout the project. Here, you can define variables that can be used in the service section of the project as role variable overrides, or simply in place of hardcoding the same values over and over again in the <kbd>container.yml</kbd> file. It is important to note that in the order that, Ansible Container evaluates variable precedence, the top-level defaults section has the lowest precedence.</li>
+<li><kbd>services</kbd>: In the <kbd>services</kbd> section, we see entries for the core service that will run in this stack (<kbd>django</kbd>, <kbd>gulp</kbd>, <kbd>nginx</kbd>, and <kbd>postgresql</kbd>). This section, for the most part, should be reviewed based on what we have covered in previous chapters up until this point. However, you will notice that, in the container definition for the <kbd>django</kbd> container, there is a <kbd>link</kbd> line that specifies the <kbd>postgresql</kbd> container name. You will notice this as well in the other container definitions that list the name of the <kbd>django</kbd> container. In previous versions of Docker, links were a way of establishing networking connectivity and container name resolution for individual containers. However, recent versions of Docker have deprecated the <kbd>link</kbd> syntax in favor of the native container name resolution built into the Docker networking stack. It is important to note that many projects still use links as a way to establish network dependencies and container name resolution, but will most likely be removed in future versions of Docker. Container orchestration tools such as Kubernetes and OpenShift also ignore the <kbd>link</kbd> syntax since they only use native DNS services to resolve other containers and services. Another aspect I would like to draw the readers attention to in the <kbd>services</kbd> section is the <kbd>nginx</kbd>, <kbd>gulp</kbd>, and <kbd>django</kbd> containers have a new sub-section titled <kbd>dev-overrides</kbd>. This section is for specifying container configuration that will only be present when building testing containers locally. Usually, developers use <kbd>dev-overrides</kbd> to run containers with verbose debugging output turned on, or other similar logging mechanisms are used to troubleshoot potential issues. The <kbd>dev-override</kbd> configuration will be ignored when using the <kbd>--production</kbd> flag when executing <kbd>ansible-container run</kbd>.</li>
+<li><kbd>volumes</kbd>: The top-level volumes section is used to specify <strong>persistent volume claims</strong> (<strong>PVCs</strong>) that continue to exist even if the container is stopped or destroyed. This section normally maps volumes that have already been created in the container-specific services section of the <kbd>container.yml</kbd> file to provide a more verbose configuration for how the container orchestrator should handle the persistent volume claim. In this case, the <kbd>postgres-data</kbd> volume that has been mapped in the PostgreSQL container is given the OpenShift specific configuration of <kbd>ReadWriteMany</kbd> access mode, as well as 3 GB of storage. PVCs are usually required for applications dependent on storing and retrieving data, such as databases or storage APIs. The overall goal of PVCs is that we do not want to lose data if need to redeploy, upgrade, or migrate the container to another host.</li>
+</ul>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Building the django-gulp-nginx project</h1>
+                
+            
+            
+                
+<p>Now that we have a firm understanding of some of the more advanced Ansible Container syntax that is commonly found in Container Apps, we can apply the knowledge we have learned so far of the Ansible Container workflow to build and run the container App. Since container apps are full Ansible Container projects complete with roles, a <kbd>container.yml</kbd> file, and other supporting project data, the same Ansible Container workflow commands we used previously can be used here with no modifications. When you are ready, execute the <kbd>ansible-container build</kbd> command in the <kbd>root</kbd> directory of the project:</p>
+<pre class="western"><strong>ubuntu@node01:~/demo$ ansible-container build
+Building Docker Engine context...       
+Starting Docker build of Ansible Container Conductor image (please be patient)...       
+Parsing conductor CLI args.
+Docker™ daemon integration engine loaded. Build starting. project=demo
+Building service...     project=demo service=django
+
+PLAY [django] ******************************************************************
+
+TASK [Gathering Facts] *********************************************************
+ok: [django]
+
+TASK [django-gunicorn : Install dumb init] *************************************
+changed: [django]
+
+TASK [django-gunicorn : Install epel] ******************************************
+changed: [django]</strong>
+
+<strong>TASK [django-gunicorn : Install python deps] ***********************************
+changed: [django] =&gt; (item=[u'postgresql-devel', u'python-devel', u'gcc', u'python-virtualenv', u'nc', u'rsync'])
+
+TASK [django-gunicorn : Make Django user] **************************************
+changed: [django]
+
+TASK [django-gunicorn : Create /django] ****************************************
+changed: [django]
+
+TASK [django-gunicorn : Make virtualenv dir] ***********************************
+changed: [django]
+
+TASK [django-gunicorn : Setup virtualenv] **************************************
+changed: [django]
+
+TASK [django-gunicorn : Copy core source items] ********************************
+changed: [django] =&gt; (item=manage.py)
+changed: [django] =&gt; (item=package.json)
+changed: [django] =&gt; (item=project)
+changed: [django] =&gt; (item=requirements.txt)
+changed: [django] =&gt; (item=requirements.yml)
+TRUNCATED...</strong></pre>
+<p>Since the Container App is building four service containers, it may take a little longer than usual for the build process to complete. If you are following along, you will see Ansible Container go through each playbook role individually as it creates the containers and works to bring them into the desired state described in the playbooks. When the build has completed successfully, we can execute <kbd>ansible-container run</kbd> command to start the containers and bring our new web service online:</p>
+<pre class="western"><strong>ubuntu@node01:~/demo$ ansible-container run
+Parsing conductor CLI args.
+Engine integration loaded. Preparing run.       engine=Docker™ daemon
+Verifying service image service=django
+Verifying service image service=gulp
+Verifying service image service=nginx
+
+PLAY [Deploy demo] *************************************************************
+
+TASK [docker_service] **********************************************************
+changed: [localhost]
+
+PLAY RECAP *********************************************************************
+localhost                  : ok=1    changed=1    unreachable=0    failed=0
+
+All services running.   playbook_rc=0
+Conductor terminated. Cleaning up.      command_rc=0 conductor_id=3109066bdb82a46e0b44fdbbbeaaa02fe8daf7bc18600c0c8466e19346e57b39 save_container=False</strong></pre>
+<p>When the run playbooks have finished executing, the service containers should be running on the Vagrant VM in developer mode, since the <kbd>container.yml</kbd> file specifies <kbd>dev-overrides</kbd> for many of the services. It is important to note that <kbd>ansible-container run</kbd> will, by default, run the service containers according to any <kbd>dev-override</kbd> configuration listed in the <kbd>container.yml</kbd> file. For example, one developer override configured is to not run the NGINX container when running in developer mode. This is accomplished by setting a developer override option for the NGINX container so that it will run <kbd>/bin/false</kbd> as the initial container command, immediately killing it. Executing the <kbd>docker ps -a</kbd> command will show that the <kbd>postgresql</kbd>, <kbd>django</kbd>, and <kbd>gulp</kbd> containers are running, with NGINX in a stopped state. Using the developer overrides, NGINX is stopped and <kbd>gulp</kbd> is responsible for serving up the HTML page:</p>
+<pre class="western"><strong>ubuntu@node01:~/demo$ docker ps -a
+CONTAINER ID  IMAGE  COMMAND  CREATED  STATUS  PORTS  NAMES
+c3e3c2e07427  demo-gulp:20171107030355     "/entrypoint.sh /u..."   56 seconds
+0e14b6468ad4  demo-nginx:20171107031508    "/bin/false"             Exited (1)
+987345cf6460  demo-django:20171107031311   "/usr/bin/en"            57 seconds ago9660b816e86f  ansible/postgresql:latest "/usr/bin/entrypoi..."   58 seconds</strong> </pre>
+<p>Once the containers have started, the <kbd>django-gulp-nginx</kbd> Container App will be listening on the Vagrant lab VM's localhost address at port <kbd>8080</kbd>. We can use the <kbd>curl</kbd> command to test the application and ensure we are able to get the default Hello World simple HTML page response the service is designed to provide:</p>
+<pre class="western"><strong>ubuntu@node01:~/demo$ curl http://localhost:8080
+&lt;!DOCTYPE html&gt;&lt;html lang="en-US"&gt;&lt;head&gt;&lt;title&gt;&lt;/title&gt;&lt;meta charset="UTF-8"&gt;&lt;meta http-equiv="X-UA-Compatible" content="IE=edge"&gt;&lt;meta name="viewport" content="width=device-width,initial-scale=1"&gt;&lt;link rel="stylesheet" href="style.css"&gt;&lt;/head&gt;&lt;body&gt;&lt;div class="content"&gt;&lt;div class="visible"&gt;&lt;p&gt;Hello&lt;/p&gt;&lt;ul&gt;&lt;li&gt;world !&lt;/li&gt;&lt;li&gt;users !&lt;/li&gt;&lt;li&gt;you!&lt;/li&gt;&lt;li&gt;everybody !&lt;/li&gt;&lt;/ul&gt;&lt;/div&gt;&lt;/div&gt;&lt;script src="img/bundle.min.js"&gt;&lt;/script&gt;&lt;/body&gt;&lt;/html&gt;</strong></pre>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Development versus production configurations</h1>
+                
+            
+            
+                
+<p>By default, executing the <kbd>ansible-container run</kbd> command on a project that specifies developer-overrides for a given service will run the service with the developer overrides active. Often, the developer overrides expose verbose logging or debugging options in an application that a developer would not want a general end user to be exposed to, not to mention that it can be quite resource-intensive to run applications with verbose logging stack tracing running constantly. The <kbd>ansible-container run</kbd> command has the ability to be run with the <kbd>--production</kbd> flag to specify when to run services in a mode that mimics a production-style deployment. Using the <kbd>--production</kbd> flag ignores the <kbd>dev_overrides</kbd> sections in the <kbd>container.yml</kbd> file and runs the services as explicitly defined in the <kbd>container.yml</kbd> file. Now that we have verified that our web service is able to run and function in developer mode, we can try running our service in production mode to mimic a full production deployment on our local workstation.</p>
+<p>First, we will need to run <kbd>ansible-container stop</kbd> in order to stop all running container instances in developer mode:</p>
+<pre class="western"><strong>ubuntu@node01:~/demo$ ansible-container stop
+Parsing conductor CLI args.
+Engine integration loaded. Preparing to stop all containers.    engine=Docker™ daemon
+
+PLAY [Deploy demo] *************************************************************
+
+TASK [docker_service] **********************************************************
+changed: [localhost]
+
+PLAY RECAP *********************************************************************
+localhost                  : ok=1    changed=1    unreachable=0    failed=0
+
+All services stopped.   playbook_rc=0
+Conductor terminated. Cleaning up.      command_rc=0 conductor_id=8ab40a594ec72012afdf0abc31ff527925fc5960e4ecbb40eeb16763a12e973a save_container=False</strong></pre>
+<p>Next, let's re-run the <kbd>ansible-container run</kbd> command, this time providing the <kbd>--production</kbd> flag to indicate that we wish to ignore the developer overrides and run this service in production mode:</p>
+<pre class="western"><strong>ubuntu@node01:~/demo$ ansible-container run --production
+Parsing conductor CLI args.
+Engine integration loaded. Preparing run.       engine=Docker™ daemon
+Verifying service image service=django
+Verifying service image service=gulp
+Verifying service image service=nginx
+
+PLAY [Deploy demo] *************************************************************
+
+TASK [docker_service] **********************************************************
+changed: [localhost]
+
+PLAY RECAP *********************************************************************
+localhost                  : ok=1    changed=1    unreachable=0    failed=0
+
+All services running.   playbook_rc=0
+Conductor terminated. Cleaning up.      command_rc=0 conductor_id=1916f63a843d490ec936672528e507332ef408363f65387256fe8a75a1ed7a2f save_container=False</strong></pre>
+<p>If we now look at the services running, you will notice that the NGINX server container is now running and acting as the frontend service for the web traffic on port <kbd>8080</kbd> instead of the Gulp container. Meanwhile, the Gulp container has been started with the default command <kbd>/bin/false</kbd>, which instantly kills the container. In this example, we have introduced a production configuration that terminates a development HTTP web server, in favor of a production-ready NGINX web server:</p>
+<pre class="western"><strong>ubuntu@node01:~/demo$ docker ps -a
+CONTAINER ID  IMAGE  COMMAND  CREATED  STATUS  PORTS  NAMES
+1aabc9745942  demo-nginx:20171107031508    "/usr/bin/dumb-ini..."   7 seconds ago
+16154bbfae54  demo-django:20171107031311   "/usr/bin/entrypoi..."   14 seconds ago      
+ea2ec92e9c50  demo-gulp:20171107030355     "/bin/false"             Exited (1) 15
+9660b816e86f  ansible/postgresql:latest    "/usr/bin/entrypoi..."   20 minutes ago</strong></pre>
+<p>We can finally test the web service once more to ensure that the service is reachable and running on the Vagrant Lab VM on localhost port <kbd>8080</kbd>:</p>
+<pre class="western"><strong>ubuntu@node01:~/demo$ curl http://localhost:8080
+&lt;!DOCTYPE html&gt;&lt;html lang="en-US"&gt;&lt;head&gt;&lt;title&gt;&lt;/title&gt;&lt;meta charset="UTF-8"&gt;&lt;meta http-equiv="X-UA-Compatible" content="IE=edge"&gt;&lt;meta name="viewport" content="width=device-width,initial-scale=1"&gt;&lt;link rel="stylesheet" href="style.css"&gt;&lt;/head&gt;&lt;body&gt;&lt;div class="content"&gt;&lt;div class="visible"&gt;&lt;p&gt;Hello&lt;/p&gt;&lt;ul&gt;&lt;li&gt;world !&lt;/li&gt;&lt;li&gt;users !&lt;/li&gt;&lt;li&gt;you!&lt;/li&gt;&lt;li&gt;everybody !&lt;/li&gt;&lt;/ul&gt;&lt;/div&gt;&lt;/div&gt;&lt;script src="img/bundle.min.js"&gt;&lt;/script&gt;&lt;/body&gt;&lt;/html&gt;</strong></pre>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Deploying the project to OpenShift</h1>
+                
+            
+            
+                
+<p>So far, we have looked at how to run the demo web application locally using the production and development configurations provided by the <kbd>dev_override</kbd> syntax. Now that we have an understanding of how the web application functions and leverages other services, we can look at how to deploy this application in a production-grade container orchestration environment such as OpenShift or Kubernetes. In this section of the book, we will deploy this project using the production configuration into the local Minishift cluster we created in <a href="d3c6ddae-003d-4f20-a3a5-efd018ac61ee.xhtml" target="_blank">Chapter 6</a>, <em>Managing</em> <em>Applications with OpenShift</em>. Prior to starting this example, make sure you have a valid OpenShift credentials file that works with your local cluster, in the <kbd>/home/ubuntu/.kube/config</kbd> directory. If new OpenShift credentials need to be created, be sure to turn back to <a href="ef89f30f-00a9-4f4c-93b9-009474fc3022.xhtml" target="_blank">Chapter 7</a>, <em>Deploying Your First Project</em>, for more details.</p>
+<p>In order to ensure our application can be deployed to OpenShift, we need to modify the container app's <kbd>container.yml</kbd> file so it points to our Kubernetes configuration file as well as to the Docker Hub registry for pushing our container images.</p>
+<p>OpenShift comes with an integrated container registry you can use to push container images to during the <kbd>ansible-container deploy</kbd> process. However, it requires some additional configuration that is beyond the scope of this book. For now, it will be sufficient to use the Docker Hub registry as we have throughout this book so far.</p>
+<p>In the <kbd>settings</kbd> section of the <kbd>container.yml</kbd> file, we will add a <kbd>k8s_auth</kbd> stanza to point to the Kubernetes configuration file the OC generated:</p>
+<pre class="western"> k8s_namespace:
+   name: demo
+   display_name: Ansible Container Demo
+   description: Django framework demo
+ k8s_auth:
+   config_file: /home/ubuntu/.kube/config</pre>
+<p>Next, in the <kbd>registries</kbd> section, we will add an entry for the Docker Hub container registry, using our user credentials:</p>
+<pre class="western">registries:  
+   docker:
+     url: https://index.docker.io/v1/
+     namespace: aric49</pre>
+<p>Now that we have OpenShift and Docker Hub configured in our project, we can use the <kbd>ansible-container deploy</kbd> command with the <kbd>--engine openshift</kbd> flag to generate the OpenShift deployment and push the image artifacts to Docker Hub. In order to differentiate the images, we can push them to Docker Hub using the <kbd>containerapp</kbd> tag. Since we are pushing multiple images to Docker Hub, depending on your internet connection speed, it may take a few minutes for this process to complete:</p>
+<pre class="western"><strong>ubuntu@node01:~/demo$ ansible-container --engine openshift deploy --push-to docker --username aric49 --tag containerapp
+Enter password for aric49 at Docker Hub: 
+Parsing conductor CLI args.
+Engine integration loaded. Preparing push.      engine=OpenShift™
+Tagging aric49/demo-django
+Pushing aric49/demo-django:containerapp...
+The push refers to a repository [docker.io/aric49/demo-django]
+Preparing
+Pushing
+Mounted from library/centos
+Pushing
+Pushed
+containerapp: digest: sha256:983afc3cb7c0f393d20047d0a1aa75a94a9ab30a2f3503147c09b55a81e007a9 size: 741
+Tagging aric49/demo-gulp
+Pushing aric49/demo-gulp:containerapp...
+The push refers to a repository [docker.io/aric49/demo-gul
+TRUNCATED...</strong></pre>
+<p>Once the deploy process has completed successfully, we can use the <kbd>ansible-container run</kbd> command with the <kbd>--engine openshift</kbd> flag to launch our application and run it in our simulated OpenShift production environment. Don't forget to specify the <kbd>--production</kbd> flag so that our service gets deployed using the production configuration and not the developer overrides:</p>
+<pre class="western"><strong>ubuntu@node01:~/demo$ ansible-container --engine openshift run --production
+Parsing conductor CLI args.
+Engine integration loaded. Preparing run.       engine=OpenShift™
+Verifying service image service=django
+Verifying service image service=gulp
+Verifying service image service=nginx
+
+PLAY [Manage the lifecycle of demo on OpenShift?] ******************************
+
+TASK [Create project demo] *****************************************************
+changed: [localhost]
+
+TASK [Create service] **********************************************************
+changed: [localhost]
+
+TASK [Create service] **********************************************************
+changed: [localhost]</strong>
+
+<strong>TASK [Create service] **********************************************************
+changed: [localhost]
+
+TASK [Remove service] **********************************************************
+ok: [localhost]
+
+TASK [Create deployment, and scale replicas up] ********************************
+changed: [localhost]
+
+TASK [Create deployment, and scale replicas up] ********************************
+changed: [localhost]
+TRUNCATED..</strong></pre>
+<p>Once the process has completed successfully, we can log into the OpenShift web console to validate the service is running as expected. Unless it's otherwise changed, the Container App was deployed into a new project called <kbd>demo</kbd>, but will be displayed with the name <kbd>Ansible Container Demo</kbd> in the web interface, as per our <kbd>container.yml</kbd> configuration:</p>
+<div><img height="130" width="619" src="img/7264f1dd-2d91-435a-8e7b-e1336f13e59b.png"/></div>
+<p>Figure 2: The Ansible Container Demo project deployed to OpenShift</p>
+<p>Clicking on the Ansible Container Demo project display name will show you the standard OpenShift dashboard demonstrating the running pods according to the production configuration. You should see the <kbd>django</kbd>, <kbd>ngnix</kbd>, and <kbd>postgresql</kbd> pods running, along with a link to the route created to access the web application in the upper-right corner of the console display:</p>
+<div><img height="178" width="578" src="img/0c909b54-6e3c-4230-aa07-ec720ef32d8f.png"/></div>
+<p>Figure 3: Running pods in the demo project</p>
+<p>We can test to ensure our application is running by clicking on the <kbd>nip.io</kbd> route created in OpenShift and ensuring the NGINX web server container is reachable. Clicking on the link should show the simple <kbd>Hello you!</kbd> Django application in its full glory:</p>
+<div><img height="193" width="419" src="img/5c2bedf4-ada0-487c-80ae-5c36d766c946.png"/></div>
+<p>Figure 4: The Hello World page as viewed running in OpenShift</p>
+<p>That looks a lot nicer then the <kbd>curl</kbd> testing we were running in the local Vagrant lab, don't you think? Congratulations, you have successfully deployed a multi-container application into a simulated production environment!</p>
+<p>From the OpenShift console, we can validate that the various aspects of our deployment are present and functioning as intended. For example, you can click on the <kbd>Storage</kbd> link in the left-hand navigation bar to validate that the PVC Postgres data was created and is functional in OpenShift. Clicking on postgres-data will show the details of the PVC object, including the allocated storage (3 GiB), and the access modes configured in the <kbd>container.yml</kbd> file, <kbd>Read-Write-Many</kbd>:</p>
+<div><img height="133" width="482" src="img/88cc7495-f897-4295-8133-daa930c8d392.png"/></div>
+<p>Figure 5: PostgreSQL PVC</p>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">References</h1>
+                
+            
+            
+                
+<ul>
+<li><strong>Ansible django-gulp-nginx project</strong>: <a href="https://github.com/ansible/django-gulp-nginx/">https://github.com/ansible/django-gulp-nginx/</a></li>
+<li><strong>Docker networking documentation</strong>: <a href="https://docs.docker.com/engine/userguide/networking/">https://docs.docker.com/engine/userguide/networking/</a></li>
+</ul>
+
+
+            
+
+            
+        
+    
+
+        
+
+                            
+                    <h1 class="header-title">Summary</h1>
+                
+            
+            
+                
+<p>As we are nearing the end of our journey with Ansible Container, we have covered what is perhaps the final hurdle in our quest to learn about automating containers using the Ansible Container project, working with multi-container projects. Due to the inherent networking functionality available in almost all container runtime environments, such as Docker, Kubernetes, and OpenShift, building streamlined microservice software stacks is a breeze. As we have seen throughout this chapter, microservice containers can easily be connected with Lego-like efficiency to build and deploy robust applications in production.</p>
+<p>Throughout this section, we have looked at how container runtime environments establish dependencies on other containers using the container networking fabric, as well as creating link dependencies. We observed how these concepts work together to build a rather complex multi-container application using Gulp, Django, NGINX, and Postgres containers. We tested this stack in developer mode using <kbd>dev_overrides</kbd>, as well as in production mode according to the project configuration. Finally, we deployed this application into our local OpenShift cluster to simulate a real-world production deployment, complete with container networking and persistent volume claims.</p>
+<p>The final chapter of the book will cover ways in which you can expand your knowledge of Ansible Container and cover some practical tips on how to go forward in your knowledge of Ansible Container, carrying forward the knowledge you have obtained so far in this book.</p>
+
+
+            
+
+            
+        
+    </body></html>

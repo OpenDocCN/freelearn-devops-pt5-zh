@@ -1,0 +1,314 @@
+<html><head></head><body>
+<div><div><h1 class="chapter-number" id="_idParaDest-220"><a id="_idTextAnchor592"/>14</h1>
+<h1 id="_idParaDest-221"><a id="_idTextAnchor593"/>Execution Environments</h1>
+<p>We have seen how Ansible Automation Controller enables you to scale your automation by leveraging an easy-to-use web interface, RBAC, and logging to allow other people to use the automation in a way that conforms to your company’s rules.</p>
+<p>In this chapter, we will discuss execution environments, a feature of Ansible that was released a few years ago, but it is critical to create automation that lasts. More specifically, we’re going to cover the following main topics:</p>
+<ul>
+<li>The importance of execution environments</li>
+<li>Building an execution environment</li>
+<li>Running playbooks in an execution environment</li>
+<li>Uploading execution environments to a container registry</li>
+<li>Using execution environments in the automation controller</li>
+</ul>
+<h1 id="_idParaDest-222"><a id="_idTextAnchor594"/>Technical requirements</h1>
+<p>To follow this chapter’s examples, you will need <code>ansible-builder</code> version 3.0 or later.</p>
+<p>Ansible Builder requires Python 3.8 or higher, which you probably have already installed on your system.</p>
+<p>The easiest way to install <code>ansible-builder</code> is to use PyPi:</p>
+<pre class="console">
+$ pip install ansible-builder</pre> <h1 id="_idParaDest-223"><a id="_idTextAnchor595"/>The importance of execution environments</h1>
+<p>The first question you <a id="_idIndexMarker775"/>might have is, why do we need an execution environment in the first place?</p>
+<p>There are three reasons why execution environments can simplify your life:</p>
+<ul>
+<li>They allow better scalability by being distributed to multiple machines</li>
+<li>They allow you to freeze all dependencies to specific versions so that you can run the same playbook in five years, with the certainty that it will run exactly as you expect</li>
+<li>They allow you to use different ones for different playbooks so that you can decide when to upgrade each playbook runtime, independently from the others</li>
+</ul>
+<p>So, how do execution environments achieve all this? They do so by leveraging containers. In fact, execution environments are containers that contain at least the Ansible runner and the <a id="_idIndexMarker776"/>required libraries to run. In addition, execution environments might also include an Ansible collection and many other components that are needed to run your automation.</p>
+<p>Now that we have understood the importance of execution environments, let’s look at how to build your first execution environment.</p>
+<h1 id="_idParaDest-224"><a id="_idTextAnchor596"/>Building an execution environment</h1>
+<p>To create an execution <a id="_idIndexMarker777"/>environment, we will need a definition file. There are three versions of the definition file, and based on the version of <code>ansible-builder</code>, some versions might not be available to you. Let’s be more specific:</p>
+<ul>
+<li><code>ansible-builder</code> versions</li>
+<li><code>ansible-builder</code> versions 1.2 and higher</li>
+<li><code>ansible-builder</code> versions 3.0 and higher</li>
+</ul>
+<p>Since version 3 of the definition is the easiest to learn and use, all examples will use this version.</p>
+<p>We will start with a minimal example and then build on it.</p>
+<h2 id="_idParaDest-225"><a id="_idTextAnchor597"/>Creating a minimal execution environment</h2>
+<p>To create an execution environment, we need to create a YAML file. By default, <code>ansible-builder</code> will <a id="_idIndexMarker778"/>be looking for the file named <code>execution-environment.yml</code>. Although different names can be used and <code>ansible-builder</code> can be informed using the <code>-f FILENAME</code> flag, we will stick with the default name in this book.</p>
+<p>We will, therefore, create the <code>minimal/execution-environment.yml</code> file with the following content:</p>
+<pre class="source-code">
+---
+version: 3
+images:
+  base_image:
+    name: quay.io/centos/centos:stream9
+dependencies:
+  ansible_core:
+    package_pip: ansible-core==2.15.1
+  ansible_runner:
+    package_pip: ansible-runner==2.3.3</pre> <p>Before running it, I want to go through it so that it is clear what every line does.</p>
+<p>The first line is the YAML file starter (<code>---</code>).</p>
+<p>The second line (<code>version: 3</code>) declares that the file is written following the third version of the execution environment definition file. This is important to specify because if it is absent, the default is version 1, which is very different from version 3.</p>
+<p>We then see the <code>images</code> block. In this block, we can define the <code>base_image</code>, using the <code>name</code> key to indicate the full container name and tag. Both the container’s name and tag are required. In our case, we will use CentOS Stream 9 as a base image.</p>
+<p>Lastly, we find the <code>dependencies</code> block. This block allows us to define what <code>ansible-builder</code> should add to the image. Even though we will see that we can use this section for much more than what we used it for in this example, we always need to define <code>ansible_core</code> and <code>ansible_runner</code>.</p>
+<p>We are now ready to enter the <code>minimal</code> folder and run <code>ansible-builder</code> to build the image:</p>
+<pre class="console">
+$ cd minimal
+$ ansible-builder build –-tag minimal-ee</pre> <p>We expect the <a id="_idIndexMarker779"/>following result if everything went as expected:</p>
+<pre class="console">
+Running command:
+  podman build -f context/Containerfile -t minimal-ee context
+Complete! The build context can be found at: /home/fale/minimal/context
+$</pre> <p>Congratulations! You have just built your first Ansible execution environment!</p>
+<p>Before starting to use the execution environment, we will see how to build more complex execution environments.</p>
+<h2 id="_idParaDest-226"><a id="_idTextAnchor598"/>Creating an execution environment with a specific Python interpreter</h2>
+<p>We have seen <a id="_idIndexMarker780"/>how to create <a id="_idIndexMarker781"/>an execution environment based on CentOS Stream 9 with just Ansible and Ansible Runner.</p>
+<p>As you surely know by now, Ansible is written in Python, as are the majority of Ansible modules. In our previous example, the default Python was installed (3.9), which is great for the majority of cases. However, some modules or libraries might require a specific version of Python, so in those cases, we will need to instruct <code>ansible-builder</code> to install the Python version we want forcefully.</p>
+<p>To do so, we can create the <code>python/execution-environment.yml</code> file with the following content:</p>
+<pre class="source-code">
+---
+version: 3
+images:
+  base_image:
+    name: quay.io/centos/centos:stream9
+dependencies:
+  python_interpreter:
+    package_system: python3.11
+    python_path: /usr/bin/python3.11
+  ansible_core:
+    package_pip: ansible-core==2.15.1
+  ansible_runner:
+    package_pip: ansible-runner==2.3.3</pre> <p>As you can see, we added a <code>python_interpreter</code> directive in the <code>dependencies</code> section, and <a id="_idIndexMarker782"/>we specified that we <a id="_idIndexMarker783"/>want the <code>python3.11</code> package installed from the system’s package manager (<code>dnf</code>, in our case). We also specified what the path of the installed binary will be to ensure that Ansible will use this version and not other versions that might be present in the image.</p>
+<p>We are now ready to enter the <code>python</code> folder and run <code>ansible-builder</code> to build the image:</p>
+<pre class="console">
+$ cd python
+$ ansible-builder build --tag python-ee</pre> <p>We expect the following result if everything went as expected:</p>
+<pre class="console">
+Running command:
+  podman build -f context/Containerfile -t python-ee context
+Complete! The build context can be found at: /home/fale/python/context
+$</pre> <p>Congratulations! You <a id="_idIndexMarker784"/>have just created your <a id="_idIndexMarker785"/>first execution environment with Python 3.11! Let’s now explore how we can add additional dependencies.</p>
+<h2 id="_idParaDest-227"><a id="_idTextAnchor599"/>Creating an execution environment with additional dependencies</h2>
+<p>There are many different ways to add a dependency on a regular system. In the same way, we will be <a id="_idIndexMarker786"/>able to add different kinds of dependencies in execution environments.</p>
+<p>The three ways we can install dependencies in the execution environments are as follows:</p>
+<ul>
+<li><code>python</code>: This option <a id="_idIndexMarker787"/>allows you to install Python dependencies from PyPi</li>
+<li><code>system</code>: This option allows you to install dependencies from an operating system</li>
+<li><code>galaxy</code>: This option allows you to install Ansible dependency from Ansible Galaxy</li>
+</ul>
+<p>Although it is possible to pass dependencies files, it is usually preferable to put them directly inline so that the whole description of the execution environment is in a single file and is easier to follow.</p>
+<p>Let’s suppose we want to create an execution environment that has a couple of collections (<code>ansible.utils</code> and <code>community.windows</code>) and the <code>ping</code> command. In this <a id="_idIndexMarker788"/>case, we can create a <code>dependencies/execution-environment.yml</code> file with the following content:</p>
+<pre class="source-code">
+---
+version: 3
+images:
+  base_image:
+    name: quay.io/centos/centos:stream9
+dependencies:
+  ansible_core:
+    package_pip: ansible-core==2.15.1
+  ansible_runner:
+    package_pip: ansible-runner==2.3.3
+  python:
+    - pywinrm
+  system:
+    - iputils [platform:rpm]
+  galaxy:
+    collections:
+      - community.windows
+      - ansible.utils</pre> <p>As you can see, we added the following:</p>
+<ul>
+<li>The Python <code>pywinrm</code> package, which is required by <code>community.windows</code></li>
+<li>The <code>iputils</code> package via RPM, which provides the <code>ping</code> command</li>
+<li>The <code>community.windows</code> collection that we wanted</li>
+<li>The <code>ansible.utils</code> collection that we wanted</li>
+</ul>
+<p>We can now proceed to enter the <code>dependencies</code> folder and build the execution environments as we did previously:</p>
+<pre class="console">
+$ cd dependencies
+$ ansible-builder build --tag dependencies-ee</pre> <p>We expect <a id="_idIndexMarker789"/>the following result if everything went as expected:</p>
+<pre class="console">
+Running command:
+  podman build -f context/Containerfile -t dependencies-ee context
+Complete! The build context can be found at: /home/fale/ dependencies/context
+$</pre> <p>You have now built an execution environment that can be used for more complex playbooks!</p>
+<p>Our exploration of the execution environments descriptor file ends here, but you can refer to the official documentation to discover all available options.</p>
+<h1 id="_idParaDest-228"><a id="_idTextAnchor600"/>Running playbooks in an execution environment</h1>
+<p>Now that we <a id="_idIndexMarker790"/>have explored how to create execution environments, we <a id="_idIndexMarker791"/>can start using them. The first thing we will do is check the Ansible and Python versions.</p>
+<p>To execute commands and Playbooks in execution environments, we can use <code>ansible-navigator</code>. To install it, we can execute <code>$ pip </code><code>install ansible-navigator</code>.</p>
+<p>The equivalent of the <code>ansible --version</code> command in the <code>minimal-ee</code> is the following:</p>
+<pre class="console">
+$ ansible-navigator exec --eei minimal-ee -- ansible --version</pre> <p>As you can see, the <a id="_idIndexMarker792"/>biggest difference is the <a id="_idIndexMarker793"/>addition of <code>--eei minimal-ee</code>, which tells <code>ansible-navigator</code> which execution environment image to use, and running it will return the following:</p>
+<pre class="source-code">
+ansible [core 2.15.1]
+  config file = /etc/ansible/ansible.cfg
+  configured module search path = ['/tmp/.ansible/plugins/modules', '/usr/share/ansible/plugins/modules']
+  ansible python module location = /usr/local/lib/python3.9/site-packages/ansible
+  ansible collection location = /tmp/.ansible/collections:/usr/share/ansible/collections
+  executable location = /usr/local/bin/ansible
+  python version = 3.9.16 (main, Mar  7 2023, 00:00:00) [GCC 11.3.1 20221121 (Red Hat 11.3.1-4)] (/usr/bin/python3)
+  jinja version = 3.1.2
+  libyaml = True</pre> <p>Now, we can run the same command for the Python execution environment:</p>
+<pre class="console">
+$ ansible-navigator exec --eei python-ee -- ansible --version</pre> <p>This will result in the following:</p>
+<pre class="console">
+ansible [core 2.15.1]
+  config file = /etc/ansible/ansible.cfg
+  configured module search path = ['/tmp/.ansible/plugins/modules', '/usr/share/ansible/plugins/modules']
+  ansible python module location = /usr/local/lib/python3.11/site-packages/ansible
+  ansible collection location = /tmp/.ansible/collections:/usr/share/ansible/collections
+  executable location = /usr/local/bin/ansible
+  python version = 3.11.2 (main, Feb 16 2023, 00:00:00) [GCC 11.3.1 20221121 (Red Hat 11.3.1-4)] (/usr/bin/python3.11)
+  jinja version = 3.1.2
+  libyaml = True</pre> <p>As you can see, the Ansible version is the same, since we required the same version while creating <a id="_idIndexMarker794"/>the two images. Conversely, the Python <a id="_idIndexMarker795"/>version differs, since in the Python execution environment, we force version 3.11, while in the minimal one, we used the default one (3.9).</p>
+<p>Similarly, we can execute Ansible playbooks as well. Firstly, we will need a playbook, and for this example, we will create a very simple ping one:</p>
+<pre class="source-code">
+---
+- name: Test connection
+  hosts: all
+  tasks:
+    - name: Test connection
+      ansible.builtin.ping:</pre> <p>We will also need a straightforward <code>inventory</code> file with just <code>localhost</code>:</p>
+<pre class="source-code">
+localhost ansible_connection=local</pre> <p>We can now proceed with the execution command:</p>
+<pre class="console">
+$ ansible-navigator run ping.yml -i inventory --eei minimal-ee -m stdout</pre> <p>As you have probably already predicted, the result is very similar to what we would have if the command was executed outside execution environments:</p>
+<pre class="console">
+PLAY [Test connection] ********************************************************
+TASK [Gathering Facts] *********************************************************
+ok: [localhost]
+TASK [Test connection] *********************************************************
+ok: [localhost]
+PLAY RECAP *********************************************************************
+localhost                  : ok=2    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0</pre> <p>Although it is <a id="_idIndexMarker796"/>possible to use execution <a id="_idIndexMarker797"/>environments in this way, they are usually uploaded to a container registry and used from AWX or Ansible Controller.</p>
+<p>In the next section, we will see how to upload those execution environments to a container registry.</p>
+<h1 id="_idParaDest-229"><a id="_idTextAnchor601"/>Uploading execution environments to a container registry</h1>
+<p>As discussed, execution environments are packaged in the container image format to allow more flexibility. This means that we can upload an execution environment to any container registry. In <a id="_idIndexMarker798"/>enterprise <a id="_idIndexMarker799"/>settings, Ansible Automation Hub is usually used, since it is a tool very similar to Ansible Galaxy that can be installed in the private company network, and it hosts Ansible collections and execution environments. Companies often prefer Ansible Automation Hub, since it integrates a lot of nice features, such as synchronization with Ansible Galaxy. If you have an Ansible Automation Hub available, you can use it to follow the following steps. Otherwise, you can use any other container registry.</p>
+<p>I will use <code>quay.io</code>, but the same steps apply to any other container registry.</p>
+<p>Ensure your Podman is properly logged into your container registry of choice. You can use <code>podman login</code> to perform the login if you are not logged in yet.</p>
+<p>The first thing to do is to find the image ID of the image we want to push. To do so, we can run this:</p>
+<pre class="console">
+$ podman images | grep python-ee</pre> <p>The output will be something like the following:</p>
+<pre class="console">
+localhost/python-ee 1.0 66b2c181df45 21 hours ago 292 MB</pre> <p>The third column is the image ID, so we can instruct Podman to push it to our container registry:</p>
+<pre class="console">
+$ podman push 66b2c181df45 quay.io/$USERNAME/python-ee</pre> <p>Once the execution has finished, you can go to the container registry and check that the image arrived as expected.</p>
+<p>We are now ready to use this execution environment image in our AWX or Ansible Automation Controller.</p>
+<h1 id="_idParaDest-230"><a id="_idTextAnchor602"/>Using execution environments in Ansible Automation Controller</h1>
+<p>Using Ansible <a id="_idIndexMarker800"/>execution <a id="_idIndexMarker801"/>environments in Ansible Automation Controller is very straightforward, since it always uses an execution environment while executing Playbooks. The only difference is whether it is the default execution environment or the one that you built and specified.</p>
+<p>The first thing we will need to do is add a new execution environment to Ansible Automation Controller or AWX. To do so, you need to go to execution environments in the navigation bar in the <strong class="bold">Administration</strong> section, and then click on the <strong class="bold">Add</strong> button. You can now fill in the name and the image URL and select <strong class="bold">Always pull container before running.</strong> as the <strong class="bold">Pull</strong> option, as follows:</p>
+<div><div><img alt="Figure 14.1 – Creating a new execution environment window" height="930" src="img/B20846_14_001.jpg" width="1650"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 14.1 – Creating a new execution environment window</p>
+<p>After saving the execution environment by pressing <strong class="bold">Save</strong>, you can go to <strong class="bold">Templates</strong> in the navigation bar under <strong class="bold">Resources</strong> and create a new job template, or modify the one you already have. Once you are on the <strong class="bold">Job Template</strong> edit or create page, you can set the execution environment as follows:</p>
+<div><div><img alt="Figure 14.2 – The field to choose an execution environment in the job template" height="163" src="img/B20846_14_002.jpg" width="1146"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 14.2 – The field to choose an execution environment in the job template</p>
+<p>You can now save <a id="_idIndexMarker802"/>the job template and execute it. This <a id="_idIndexMarker803"/>time, it was executed in the execution environment we created!</p>
+<h1 id="_idParaDest-231"><a id="_idTextAnchor603"/>Summary</h1>
+<p>We started this chapter by seeing why execution environments can help you to create a more resilient automation solution in your environment. We then moved on to a more practical section in which you created multiple execution environments, firstly a minimal one, then one with a customized version of Python, and finally, one with some collections and other dependencies embedded. We then used those execution environments locally using <code>ansible-navigator</code>. We then uploaded them to a container registry and used them from Ansible Automation Controller or AWX.</p>
+<p>We have now reached the end of this book, since this is the last chapter, and I would like to thank you for reading the entire book. I hope that it has taught you what you initially hoped to learn about Ansible, and more!</p>
+<h1 id="_idParaDest-232"><a id="_idTextAnchor604"/>Questions</h1>
+<ol>
+<li>Ansible uses the standard container image format for execution environments:<ol><li>True</li><li>False</li></ol></li>
+<li>Which of the following is an advantage of Ansible execution environments?<ol><li>They run Ansible playbooks without Ansible</li><li>They guarantee the exact versions of Ansible, the dependencies, and the collections on every run</li><li>They increase performance</li></ol></li>
+<li>What is the latest execution environment definition version?<ol><li>1</li><li>2</li><li>3</li><li>4</li></ol></li>
+</ol>
+<h1 id="_idParaDest-233"><a id="_idTextAnchor605"/>Further reading</h1>
+<ul>
+<li>Ansible Builder documentation: <a href="https://ansible.readthedocs.io/projects/builder/en/stable/usage/%0D">https://ansible.readthedocs.io/projects/builder/en/stable/usage/</a></li>
+<li>Ansible Navigator documentation: <a href="https://ansible.readthedocs.io/projects/navigator/%0D">https://ansible.readthedocs.io/projects/navigator/</a></li>
+<li>Execution environment version 3 specification: <a href="https://ansible.readthedocs.io/projects/builder/en/stable/definition/#version-3-format">https://ansible.readthedocs.io/projects/builder/en/stable/definition/#version-3-format</a></li>
+</ul>
+</div>
+</div>
+
+<div><div><h1 id="_idParaDest-234"><a id="_idTextAnchor606"/>Assessments<a id="_idTextAnchor607"/></h1>
+<h1 id="_idParaDest-235"><a id="_idTextAnchor608"/><a href="B20846_01.xhtml#_idTextAnchor015"><em class="italic">Chapter 1</em></a></h1>
+<ol>
+<li>A, B</li>
+<li>C</li>
+<li>A<a id="_idTextAnchor609"/></li>
+</ol>
+<h1 id="_idParaDest-236"><a id="_idTextAnchor610"/><a href="B20846_02.xhtml#_idTextAnchor099"><em class="italic">Chapter 2</em></a></h1>
+<ol>
+<li value="1">C</li>
+<li>B</li>
+<li>A<a id="_idTextAnchor611"/></li>
+</ol>
+<h1 id="_idParaDest-237"><a id="_idTextAnchor612"/><a href="B20846_03.xhtml#_idTextAnchor158"><em class="italic">Chapter 3</em></a></h1>
+<ol>
+<li value="1">E</li>
+<li>C</li>
+<li>A<a id="_idTextAnchor613"/></li>
+</ol>
+<h1 id="_idParaDest-238"><a id="_idTextAnchor614"/><a href="B20846_04.xhtml#_idTextAnchor207"><em class="italic">Chapter 4</em></a></h1>
+<ol>
+<li value="1">C</li>
+<li>A</li>
+<li>B<a id="_idTextAnchor615"/></li>
+</ol>
+<h1 id="_idParaDest-239"><a id="_idTextAnchor616"/><a href="B20846_05.xhtml#_idTextAnchor279"><em class="italic">Chapter 5</em></a></h1>
+<ol>
+<li value="1">D</li>
+<li>E</li>
+<li>A<a id="_idTextAnchor617"/></li>
+</ol>
+<h1 id="_idParaDest-240"><a id="_idTextAnchor618"/><a href="B20846_06.xhtml#_idTextAnchor318"><em class="italic">Chapter 6</em></a></h1>
+<ol>
+<li value="1"><a id="_idTextAnchor619"/>B</li>
+<li>C</li>
+<li>A</li>
+</ol>
+<h1 id="_idParaDest-241"><a id="_idTextAnchor620"/><a href="B20846_07.xhtml#_idTextAnchor343"><em class="italic">Chapter 7</em></a></h1>
+<ol>
+<li value="1">D</li>
+<li>A</li>
+<li><a id="_idTextAnchor621"/>A</li>
+</ol>
+<h1 id="_idParaDest-242"><a id="_idTextAnchor622"/><a href="B20846_08.xhtml#_idTextAnchor347"><em class="italic">Chapter 8</em></a></h1>
+<ol>
+<li value="1"><a id="_idTextAnchor623"/>D</li>
+<li>A</li>
+<li>B</li>
+</ol>
+<h1 id="_idParaDest-243"><em class="italic"><a id="_idTextAnchor624"/></em><a href="B20846_09.xhtml#_idTextAnchor378"><em class="italic">Chapter 9</em></a></h1>
+<ol>
+<li value="1">C</li>
+<li>A</li>
+<li>A</li>
+</ol>
+<h1 id="_idParaDest-244"><a id="_idTextAnchor625"/><a href="B20846_10.xhtml#_idTextAnchor423"><em class="italic">Chapter 10</em></a></h1>
+<ol>
+<li value="1">D</li>
+<li>A</li>
+<li>A<a id="_idTextAnchor626"/></li>
+</ol>
+<h1 id="_idParaDest-245"><a id="_idTextAnchor627"/><a href="B20846_11.xhtml#_idTextAnchor456"><em class="italic">Chapter 11</em></a></h1>
+<ol>
+<li value="1">D</li>
+<li>B</li>
+<li>A</li>
+<li><a id="_idTextAnchor628"/>B</li>
+</ol>
+<h1 id="_idParaDest-246"><a id="_idTextAnchor629"/><a href="B20846_12.xhtml#_idTextAnchor523"><em class="italic">Chapter 12</em></a></h1>
+<ol>
+<li value="1">A</li>
+<li>A<a id="_idTextAnchor630"/></li>
+</ol>
+<h1 id="_idParaDest-247"><a id="_idTextAnchor631"/><a href="B20846_13.xhtml#_idTextAnchor562"><em class="italic">Chapter 13</em></a></h1>
+<ol>
+<li value="1">A,B,C,E</li>
+<li>A</li>
+</ol>
+<h1 id="_idParaDest-248"><em class="italic"><a id="_idTextAnchor632"/></em><a href="B20846_14.xhtml#_idTextAnchor592"><em class="italic">Chapter 14</em></a></h1>
+<ol>
+<li value="1">A</li>
+<li>B</li>
+<li>C</li>
+</ol>
+</div>
+</div></body></html>

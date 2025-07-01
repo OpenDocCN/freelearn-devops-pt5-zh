@@ -1,0 +1,333 @@
+<html><head></head><body><div><div><div><div><h1 class="title"><a id="ch03"/>Chapter 3. Advanced Playbooks</h1></div></div></div><p>The playbooks that we have looked at so far are simple and just run a number of modules in order. Ansible allows much more control over the execution of your playbook. Using the following techniques, you should be able to perform even the most complex deployments:</p><div><ul class="itemizedlist"><li class="listitem">Running operations in parallel</li><li class="listitem">Looping</li><li class="listitem">Conditional execution</li><li class="listitem">Task delegation</li><li class="listitem">Extra variables</li><li class="listitem">Finding files with variables</li><li class="listitem">Environment variables</li><li class="listitem">External data lookups</li><li class="listitem">Storing data</li><li class="listitem">Processing data</li><li class="listitem">Debugging playbooks</li></ul></div><div><div><div><div><h1 class="title"><a id="ch03lvl1sec22"/>Running operations in parallel</h1></div></div></div><p>By default, Ansible <a id="id126" class="indexterm"/>will only fork up to five times, so it will only run an operation on five different machines at once. If you have a large number of machines, or you have lowered this maximum fork value, then you may want to launch things asynchronously. Ansible's method for performing this is to launch the task and then poll for it to complete. This allows Ansible to start the job across all the required machines while still using the maximum forks.</p><p>To run an operation in parallel, use the <code class="literal">async</code> and <code class="literal">poll</code> keywords. The <code class="literal">async</code> keyword triggers Ansible to run the job in parallel, and its value will be the maximum time that Ansible will wait for the command to complete. The value of <code class="literal">poll</code> indicates to Ansible how often to poll to check if the command has been completed.</p><p>If you wanted to run <code class="literal">updatedb</code> across an entire cluster of machines, it might look like the following code:</p><div><pre class="programlisting">- hosts: all
+  tasks:
+    - name: Install mlocate
+      yum: name=mlocate state=installed
+
+    - name: Run updatedb
+      command: /usr/bin/updatedb
+      async: 300
+      poll: 10</pre></div><p>You will notice that when <a id="id127" class="indexterm"/>you run the previous example on more than five machines, the <code class="literal">yum</code> module acts differently to the <code class="literal">command</code> module. The <code class="literal">yum</code> module will run on the first five machines, then the next five, and so on. The <code class="literal">command</code> module, however, will run across all the machines and indicate the status once complete.</p><p>If your command starts a daemon that eventually listens on a port, you can start it without polling so that Ansible does not check for it to complete. You can then carry on with other actions and check for completion later using the <code class="literal">wait_for</code> module. To configure Ansible to not wait for the job to complete, set the value of <code class="literal">poll</code> to <code class="literal">0</code>.</p><p>Finally, if your task takes an extremely long time to run, you can tell Ansible to wait for the job as long as it takes. To do this, set the value of <code class="literal">async</code> to <code class="literal">0</code>.</p><p>You will want to use Ansible's polling in the following situations:</p><div><ul class="itemizedlist"><li class="listitem">You have a long-running task that may hit the timeout</li><li class="listitem">You need to run an operation across a large number of machines</li><li class="listitem">You have an operation for which you don't need to wait to complete</li></ul></div><p>There are also a few situations where you should not use <code class="literal">async</code> or <code class="literal">poll</code>:</p><div><ul class="itemizedlist"><li class="listitem">If your job acquires locks that prevent other things from running</li><li class="listitem">Your job only takes a short time to run</li></ul></div></div></div>
+<div><div><div><div><h1 class="title"><a id="ch03lvl1sec23"/>Looping</h1></div></div></div><p>Ansible allows you to <a id="id128" class="indexterm"/>repeat a module several times with different inputs, for example, if you had several files that should have similar permissions set. This can save you a lot of repetition and allows you to iterate over facts and variables.</p><p>To do this, you can use the <code class="literal">with_items</code> key on an action and set the value to the list of items that you are going to iterate over. This will create a variable for the module named <code class="literal">item</code>, which will be set to each item in turn as your module is iterated over. Some modules such as <code class="literal">yum</code> will optimize this so that instead of doing a separate transaction for each package, they will operate on all of them at once.</p><p>Using <code class="literal">with_items</code>, the code looks like this:</p><div><pre class="programlisting">tasks:
+- name: Secure config files file:
+    path: "/etc/{{ item }}"
+    mode: 0600
+    owner: root
+    group: root with_items: - my.cnf - shadow - fstab</pre></div><p>In addition to looping over fixed items, or a variable, Ansible also provides us a tool called <strong>lookup plugins</strong>. These <a id="id129" class="indexterm"/>plugins allow you to tell Ansible to fetch the data from somewhere externally. For example, you might want to find all the files that match a particular pattern, and then upload them.</p><p>In this example, we upload all the public keys in a directory and then assemble them into an <code class="literal">authorized_keys</code> file for the root user, as shown in the following example:</p><div><pre class="programlisting">tasks: - name: Make key directory file:
+    path: /root/.sshkeys
+    ensure: directory
+    mode: 0700
+    owner: root
+    group: root - name: Upload public keys copy:
+    src: "{{ item }}"
+    dest: /root/.sshkeys
+    mode: 0600
+    owner: root
+    group: root with_fileglob: - keys/*.pub - name: Assemble keys into authorized_keys file assemble:
+    src: /root/.sshkeys
+    dest: /root/.ssh/authorized_keys
+    mode: 0600
+    owner: root
+    group: root</pre></div><p>Repeating modules can be used in the following situations:</p><div><ul class="itemizedlist"><li class="listitem">Repeating a module many times with similar settings</li><li class="listitem">Iterating over all the values of a list</li><li class="listitem">Creating many files for later use with the <code class="literal">assemble</code> module to combine into one large file</li><li class="listitem">Copying a directory <a id="id130" class="indexterm"/>of files when combined with the <code class="literal">with_fileglob</code> lookup plugin</li></ul></div></div>
+<div><div><div><div><h1 class="title"><a id="ch03lvl1sec24"/>Conditional execution</h1></div></div></div><p>Some modules, such as the <code class="literal">copy</code> module, provide mechanisms to configure it to skip the execution of the module. You can also configure your own skip conditions that will only execute the module if they resolve to <code class="literal">true</code>. This can be handy if your servers use different packaging <a id="id131" class="indexterm"/>systems or have different filesystem layouts. It can also be used with the <code class="literal">set_fact</code> module to allow you to compute many different things.</p><p>To skip a module, you can use the <code class="literal">when</code> key; this lets you provide a condition. If the condition you set resolves to false, then the module will be skipped. The value that you assign to <code class="literal">when</code> is a Python expression. You can use any of the variables or facts available to you at this point.</p><div><h3 class="title"><a id="note05"/>Note</h3><p>If you want to process some of the items in the list depending on a condition, then simply use the <code class="literal">when</code> clause. The <code class="literal">when</code> clause is processed separately for each item in the list; the item being processed is available as a variable using <code class="literal">{{ item }}</code>.</p></div><p>The following code is an example showing how to choose between <code class="literal">apt</code> and <code class="literal">yum</code> for both Debian and Red Hat systems.</p><div><pre class="programlisting">---
+- name: Install VIM
+  hosts: all
+  tasks:
+    - name: Install VIM via yum
+      yum:
+        name: vim-enhanced
+        state: installed
+      when: ansible_os_family == "RedHat"
+
+    - name: Install VIM via apt
+      apt:
+        name: vim
+        state: installed
+      when: ansible_os_family == "Debian"
+
+    - name: Unexpected OS family
+      debug:
+        msg: "OS Family {{ ansible_os_family }} is not supported"
+        fail: yes
+      when: ansible_os_family != "RedHat" and ansible_os_family != "Debian"</pre></div><p>There is also a third clause to print a message and fail if the OS is not recognized.</p><div><h3 class="title"><a id="note06"/>Note</h3><p>This feature can be <a id="id132" class="indexterm"/>used to pause at a particular point and will wait for the user intervention to continue. Normally, when Ansible encounters an error, it will simply stop what it is doing without running any handlers. With this feature, you can add the <code class="literal">pause</code> module with a condition on it that triggers in unexpected situations. This way the <code class="literal">pause</code> module will be ignored in a normal situation; however, in unexpected circumstances, it will allow the user to intervene and continue when it is safe to do so. The task would look like this:</p><div><pre class="programlisting">name: pause for unexpected conditions
+pause: prompt="Unexpected OS"
+when: ansible_os_family != "RedHat"</pre></div></div><p>There are numerous uses of skipping actions; here are a few of them:</p><div><ul class="itemizedlist"><li class="listitem">Working around differences in operating systems</li><li class="listitem">Prompting a user and only then performing actions that they request</li><li class="listitem">Improving performance by avoiding a module that you know won't change anything but may take a while to do so</li><li class="listitem">Refusing to alter systems that have a particular file present</li><li class="listitem">Checking if custom scripts have already been run</li></ul></div></div>
+<div><div><div><div><h1 class="title"><a id="ch03lvl1sec25"/>Task delegation</h1></div></div></div><p>Ansible, by default, runs <a id="id133" class="indexterm"/>its tasks all at once on the configured machine. This is great when you have a whole bunch of separate machines to configure, or if each of your machines is responsible for communicating its status to the other remote machines. However, if you need to perform an action on a different host than the one Ansible is operating on, you can use a delegation.</p><p>Ansible can be configured to run a task on a different host other than the one that is being configured using the <code class="literal">delegate_to</code> key. The module will still run once for every machine, but instead of running on the target machine, it will run on the delegated host. The facts available will be the ones applicable to the current host. Here, we show a playbook that will use the <code class="literal">get_url</code> option to download the configuration from a bunch of web servers.</p><div><pre class="programlisting">---
+- name: Fetch configuration from all webservers
+  hosts: webservers
+  tasks:
+    - name: Get config
+      get_url:
+        dest: "configs/{{ ansible_hostname }}"
+        force: yes
+        url: "http://{{ ansible_hostname }}/diagnostic/config"
+      delegate_to: localhost</pre></div><p>If you are delegating to the <code class="literal">localhost</code>, you can use a shortcut when defining the action that automatically uses the local machine. If you define the key of the action line as <code class="literal">local_action</code>, then the delegation to <code class="literal">localhost</code> is implied. If we were to have used this in the previous example, it would be slightly shorter and will look like this:</p><div><pre class="programlisting">--- #1
+- name: Fetch configuration from all webservers     #2
+  hosts: webservers     #3
+  tasks:     #4
+    - name: Get config     #5
+      local_action: get_url dest=configs/{{ ansible_hostname }}.cfg url=http://{{ ansible_hostname }}/diagnostic/config     #6</pre></div><p>Delegation is not limited to the local machine. You can delegate to any host that is in the inventory. Some other reasons why you might want to delegate are:</p><div><ul class="itemizedlist"><li class="listitem">Removing a host from a load balancer before deployment</li><li class="listitem">Changing DNS to direct traffic away from a server you are about to change</li><li class="listitem">Creating an iSCSI volume on a storage device</li><li class="listitem">Using an external <a id="id134" class="indexterm"/>server to check whether access outside the network works</li></ul></div></div>
+<div><div><div><div><h1 class="title"><a id="ch03lvl1sec26"/>Extra variables</h1></div></div></div><p>You may have seen in our template example in the previous chapter that we used a variable named <code class="literal">group_names</code>. This is one of the magic variables that are provided by Ansible itself. At the <a id="id135" class="indexterm"/>time of writing, there are seven such variables, which are described in the upcoming sections.</p><div><div><div><div><h2 class="title"><a id="ch03lvl2sec20"/>The hostvars variable</h2></div></div></div><p>The <code class="literal">hostvars</code> variable <a id="id136" class="indexterm"/>allows you to retrieve variables of all the hosts that the current play has dealt with. If the <code class="literal">setup</code> module hasn't yet been run on that managed host in the current play, only its variables will be available. You can access it like you would access other complex variables, such as <code class="literal">${hostvars.hostname.fact}</code>, so to get the Linux distribution running on a server named <code class="literal">ns1</code>, it would be <code class="literal">${hostvars.ns1.ansible_distribution}</code>. The following example sets a variable called zone master to the server named <code class="literal">ns1</code>. It then calls the <code class="literal">template</code> module, which would use this to set the masters for each zone.</p><div><pre class="programlisting">---
+- name: Setup DNS Servers
+  hosts: allnameservers
+  tasks:
+    - name: Install BIND
+      yum:
+        name: named
+        state: installed
+
+- name: Setup Slaves
+  hosts: slavenamesservers
+  tasks:
+    - name: Get the masters IP
+      set_fact:
+        dns_master: "{{ hostvars.ns1.ansible_default_ipv4.address }}"
+
+    - name: Configure BIND
+      template:
+        dest: /etc/named.conf src: templates/named.conf.j2</pre></div><div><h3 class="title"><a id="note07"/>Note</h3><p>Using <code class="literal">hostvars</code>, you can further abstract templates from your environment. If you nest your variable calls, then instead of placing an IP address in the variable section of the play, you <a id="id137" class="indexterm"/>can add the hostname. To find the address of a machine named in the <code class="literal">the_machine</code> variable you would use, <code class="literal">{{ hostvars.[the_machine].default_ipv4.address }}</code>.</p></div></div><div><div><div><div><h2 class="title"><a id="ch03lvl2sec21"/>The groups variable</h2></div></div></div><p>The<code class="literal"> groups</code> variable <a id="id138" class="indexterm"/>contains a list of all hosts in the inventory grouped by the inventory group. This lets you get access to all the hosts that you have configured. This is potentially a very powerful tool. It allows you to iterate across a whole group and for every host apply an action to the current machine.</p><div><pre class="programlisting">---
+- name: Configure the database
+  hosts: dbservers
+  user: root
+  tasks:
+    - name: Install mysql
+      yum:
+        name: "{{ item }}"
+        state: installed
+      with_items:
+      - mysql-server
+      - MySQL-python
+
+    - name: Start mysql
+      service:
+        name: mysqld
+        state: started
+        enabled: true
+
+    - name: Create a user for all app servers
+      with_items: groups.appservers
+      mysql_user:
+        name: kate
+        password: test
+        host: "{{ hostvars.[item].ansible_eth0.ipv4.address }}" state: present</pre></div><div><h3 class="title"><a id="note08"/>Note</h3><p>The <code class="literal">groups</code> variable does not contain the actual hosts in the group; it contains strings representing their names in the inventory. This means you have to use nested variable expansion to get to the <code class="literal">hostvars</code> variable, if needed.</p></div><p>You can even use this variable to create the <code class="literal">known_hosts</code> files for all of your machines containing the <code class="literal">host</code> keys of all the other machines. This would allow you to then SSH from one machine to another without confirming the identity of the remote host. It would also handle removing machines when they leave service or updating them when they are replaced. The following is a template for a <code class="literal">known_hosts</code> file that does this:</p><div><pre class="programlisting">{% for host in groups['all'] %}
+{{ hostvars[host]['ansible_hostname'] }}
+{{ hostvars[host]['ansible_ssh_host_key_rsa_public'] }}
+{% endfor %}</pre></div><p>The playbook that uses this <a id="id139" class="indexterm"/>template would look like this:</p><div><pre class="programlisting">---
+hosts: all
+tasks:
+- name: Setup known hosts
+  hosts: all
+  tasks:
+    - name: Create known_hosts
+      template:
+        src: templates/known_hosts.j2 dest: /etc/ssh/ssh_known_hosts
+        owner: root
+        group: root mode: 0644</pre></div></div><div><div><div><div><h2 class="title"><a id="ch03lvl2sec22"/>The group_names variable</h2></div></div></div><p>The <code class="literal">group_names</code> <a id="id140" class="indexterm"/>variable contains a list of strings with the names of all the groups the current host is in. This is not only useful for debugging, but also for conditionals detecting group membership. This was used in the last chapter to set up a nameserver.</p><p>This variable is mostly useful for skipping a task or in a template as a condition. For instance, if you had two configurations for the SSH daemon, one secure and one less secure, but you only wanted the secure configuration on the machines in the secure group, you would do it like this:</p><div><pre class="programlisting">- name: Setup SSH
+  hosts: sshservers
+  tasks:
+    - name: For secure machines
+      set_fact:
+        sshconfig: files/ssh/sshd_config_secure
+      when: "'secure' in group_names"
+
+    - name: For non-secure machines
+      set_fact:
+        sshconfig: files/ssh/sshd_config_default
+      when: "'secure' not in group_names"
+
+    - name: Copy over the config
+      copy:
+        src: "{{ sshconfig }}"
+        dest: /tmp/sshd_config</pre></div><div><h3 class="title"><a id="note09"/>Note</h3><p>In the previous example, we used the <code class="literal">set_fact</code> module to set the fact for each case, and then used the <code class="literal">copy</code> module. We could have used the <code class="literal">copy</code> module in place of the <code class="literal">set_facts</code> modules and used one fewer task. The reason this was done is that the <code class="literal">set_fact</code> module runs locally and the <code class="literal">copy</code> module runs remotely. When you <a id="id141" class="indexterm"/>use the <code class="literal">set_facts</code> module first and only call the <code class="literal">copy</code> module once, the copies are made on all the machines in parallel. If you used two <code class="literal">copy</code> modules with conditions, then each would execute on the relevant machines separately. Since <code class="literal">copy</code> is the longer task of the two, it benefits the most from running in parallel.</p></div></div><div><div><div><div><h2 class="title"><a id="ch03lvl2sec23"/>The inventory_hostname variable</h2></div></div></div><p>The <code class="literal">inventory_hostname</code> variable stores the hostname of the server as recorded in the inventory. You should <a id="id142" class="indexterm"/>use this if you have chosen not to run the <code class="literal">setup</code> module on the current host, or if for various reasons, the value detected by the <code class="literal">setup</code> module is not correct. This is useful when you are doing the initial setup of the machine and changing the hostname.</p></div><div><div><div><div><h2 class="title"><a id="ch03lvl2sec24"/>The inventory_hostname_short variable</h2></div></div></div><p>The <code class="literal">inventory_hostname_short</code> variable is the same as the previous variable; however, it only <a id="id143" class="indexterm"/>includes the characters up to the first dot. So for <code class="literal">host.example.com</code>, it would return <code class="literal">host</code>.</p></div><div><div><div><div><h2 class="title"><a id="ch03lvl2sec25"/>The inventory_dir variable</h2></div></div></div><p>The <code class="literal">inventory_dir</code> <a id="id144" class="indexterm"/>variable is the path name of the directory containing the inventory file.</p></div><div><div><div><div><h2 class="title"><a id="ch03lvl2sec26"/>The inventory_file variable</h2></div></div></div><p>The <code class="literal">inventory_file</code> <a id="id145" class="indexterm"/>variable is the same as the previous one, except that it also includes the filename.</p></div></div>
+<div><div><div><div><h1 class="title"><a id="ch03lvl1sec27"/>Finding files with variables</h1></div></div></div><p>All modules can take variables as part of their arguments by dereferencing them with <code class="literal">{{</code> and <code class="literal">}}</code>. You can use this <a id="id146" class="indexterm"/>to load a particular file based on a variable. For example, you might want to select a different <code class="literal">config</code> file for NRPE (a Nagios check daemon) based on the architecture in use. Here is how that would look:</p><div><pre class="programlisting">---
+- name: Configure NRPE for the right architecture
+  hosts: ansibletest
+  user: root
+  tasks:
+    - name: Copy in the correct NRPE config file
+      copy:
+        src: "files/nrpe.{{ ansible_architecture }}.conf" dest: "/etc/nagios/nrpe.cfg"</pre></div><p>In the <code class="literal">copy</code> and the <code class="literal">template</code> modules, you can also configure Ansible to look for a set of files, and it finds them using the first one. This lets you configure a file to look for; if that file is not found, a second will be used, and so on until the end of the list is reached. If the file is not found, then the module will fail. The feature is triggered using the <code class="literal">first_available_file</code> key, and referencing <code class="literal">{{ item }}</code> in the action. The following code is an example of this feature:</p><div><pre class="programlisting">---
+- name: Install an Apache config file
+  hosts: ansibletest
+  user: root
+  tasks:
+   - name: Get the best match for the machine
+     copy:
+       dest: /etc/apache.conf
+       src: "{{ item }}"
+     first_available_file:
+      - "files/apache/{{ ansible_os_family }}-{{ ansible_architecture }}.cfg"
+      - "files/apache/default-{{ ansible_architecture }}.cfg"
+      - files/apache/default.cfg</pre></div><div><h3 class="title"><a id="note10"/>Note</h3><p>Remember that you can run the setup module from the Ansible command-line tool. This comes in <a id="id147" class="indexterm"/>handy when you are making heavy use of variables in your playbooks or templates. To check what facts will be available for a particular play, simply copy the value of the host pattern and run the following command:</p><div><pre class="programlisting">
+<strong>ansible [host pattern] -m setup</strong>
+</pre></div></div><p>On a CentOS x86_64 machine, this configuration will first look for the <code class="literal">RedHat-x86_64.cfg</code> file upon navigating through <code class="literal">files/apache/</code>. If that file does not exist, it will look for the <code class="literal">default-x86_64.cfg</code> file upon navigating through <code class="literal">file/apache/</code>, and finally if nothing exists, it'll try and use <code class="literal">default.cfg</code>.</p></div>
+<div><div><div><div><h1 class="title"><a id="ch03lvl1sec28"/>Environment variables</h1></div></div></div><p>Often, Unix commands <a id="id148" class="indexterm"/>take advantage of certain environment variables. Prevalent examples of this are C makefiles, installers, and the AWS command-line tools. Fortunately, Ansible makes this really easy. If you want to upload a file on the remote machine to Amazon S3, you can set the Amazon access key as follows. You will also see that we install EPEL so that we can install pip, and pip is used to install the AWS tools.</p><div><pre class="programlisting">---
+- name: Upload a remote file via S3
+  hosts: ansibletest
+  user: root
+  tasks:
+    - name: Setup EPEL
+      command: &gt;
+        rpm -ivh http://download.fedoraproject.org/pub/epel/6/i386/ epel-release-6-8.noarch.rpm
+        creates=/etc/yum.repos.d/epel.repo
+
+    - name: Install pip
+      yum:
+        name: python-pip
+        state: installed
+
+    - name: Install the AWS tools
+      pip:
+        name: awscli
+        state: present
+
+    - name: Upload the file
+      shell: &gt;
+        aws s3 put-object
+        --bucket=my-test-bucket
+        --key={{ ansible_hostname }}/fstab
+        --body=/etc/fstab
+        --region=eu-west-1
+      environment:
+        AWS_ACCESS_KEY_ID: XXXXXXXXXXXXXXXXXXX
+        AWS_SECRET_ACCESS_KEY: XXXXXXXXXXXXXXXXXXXXX</pre></div><div><h3 class="title"><a id="note11"/>Note</h3><p>Internally, Ansible sets the environment variable into the Python code; this means any module that already uses environment variables can take advantage of the ones set here. If you write your own modules, you should consider if certain arguments <a id="id149" class="indexterm"/>would be better used as environment variables instead of arguments.</p></div><p>Some Ansible modules, such as <code class="literal">get_url</code>, <code class="literal">yum</code>, and <code class="literal">apt</code>, will also use environment variables to set their proxy server. Some of the other situations where you might want to set environment variables are as follows:</p><div><ul class="itemizedlist"><li class="listitem">Running application installers</li><li class="listitem">Adding extra items to the path when using the <code class="literal">shell</code> module</li><li class="listitem">Loading libraries from a place not included in the system library search path</li><li class="listitem">Using an <code class="literal">LD_PRELOAD</code> hack while running a module</li></ul></div></div>
+<div><div><div><div><h1 class="title"><a id="ch03lvl1sec29"/>External data lookups</h1></div></div></div><p>Ansible introduced the <a id="id150" class="indexterm"/>lookup plugins in version 0.9. These plugins allow Ansible to fetch data from outside sources. Ansible provides several plugins, but you can also write your own. This really opens the doors and allows you to be flexible in your configuration.</p><p>Lookup plugins are written in Python and run on the controlling machine. They are executed in two different ways: direct calls and <code class="literal">with_*</code> keys. Direct calls are useful when you want to use them like you would use variables. Using the <code class="literal">with_*</code> keys is useful when you want to use them as loops. In an earlier section, we covered <code class="literal">with_fileglob</code>, which is an example of this.</p><p>In the next example, we use a lookup plugin directly to get the <code class="literal">http_proxy</code> value from <code class="literal">environment</code> and send it through to the configured machine. This makes sure that the machines we are configuring will use the same proxy server to download the file.</p><div><pre class="programlisting">---
+- name: Downloads a file using a proxy
+  hosts: all
+  tasks:
+    - name: Download file
+      get_url:
+        dest: /var/tmp/file.tar.gz url: http://server/file.tar.gz
+      environment:
+        http_proxy: "{{ lookup('env', 'http_proxy') }}"</pre></div><div><h3 class="title"><a id="note12"/>Note</h3><p>You can also use lookup plugins in the variable section. This doesn't immediately lookup the result and put it in the variable as you might assume; instead, it stores it as a macro and looks it up every time you use it. This is good to know if you are using something, the value of which might change over time.</p></div><p>Using lookup plugins in the <code class="literal">with_*</code> form will allow you to iterate over things you wouldn't normally be able <a id="id151" class="indexterm"/>to. You can use any plugin like this, but ones that return a list are most useful. In the following code, we show how to dynamically register a <code class="literal">webapp</code> farm.</p><div><pre class="programlisting">---
+- name: Registers the app server farm
+  hosts: localhost
+  connection: local
+  vars:
+    hostcount: 5
+  tasks:
+   - name: Register the webapp farm
+      local_action: add_host name={{ item }} groupname=webapp
+      with_sequence: start=1 end={{ hostcount }} format=webapp%02x</pre></div><p>If you were using this example, you would append a task to create each as a virtual machine and then a new play to configure each of them.</p><p>Situations where lookup plugins are useful are as follows:</p><div><ul class="itemizedlist"><li class="listitem">Copying a whole directory of Apache config to a <code class="literal">conf.d</code> style directory</li><li class="listitem">Using environment variables to adjust what the playbooks does</li><li class="listitem">Getting configuration from DNS TXT records</li><li class="listitem">Fetching the output of a command into a variable</li></ul></div></div>
+<div><div><div><div><h1 class="title"><a id="ch03lvl1sec30"/>Storing results</h1></div></div></div><p>Almost every module outputs something, even the <code class="literal">debug</code> module. Most of the time, the only variable used is the <a id="id152" class="indexterm"/>one named <code class="literal">changed</code>. The <code class="literal">changed</code> variable helps Ansible decide whether to run handlers or not and which color to print the output in. However, if you wish to, you can store the returned values and use them later in the playbook. In this example, we look at the mode in the <code class="literal">/tmp</code> directory and create a new directory named <code class="literal">/tmp/subtmp</code> with the same mode as shown here.</p><div><pre class="programlisting">---
+- name: Using register
+  hosts: ansibletest
+  user: root
+  tasks:
+    - name: Get /tmp info
+      file:
+        dest: /tmp
+        state: directory
+      register: tmp
+
+    - name: Set mode on /var/tmp
+      file:
+        dest: /tmp/subtmp
+        mode: "{{ tmp.mode }}"
+        state: directory</pre></div><p>Some modules, such as the <code class="literal">file</code> module in the previous example, can be configured to simply give information. By combining this with the register feature, you can create playbooks that can examine the environment and calculate how to proceed.</p><div><h3 class="title"><a id="note13"/>Note</h3><p>Combining the register feature and the <code class="literal">set_fact</code> module allows you to perform data processing on data you receive back from the modules. This allows you to compute values and perform data processing on these values. This makes your playbooks even smarter and more flexible than ever.</p></div><p>Register allows you to make your own facts about hosts from modules already available to you. This can be useful in many different circumstances:</p><div><ul class="itemizedlist"><li class="listitem">Getting a list of files in a remote directory and downloading them all with fetch</li><li class="listitem">Running a task when a previous task changes, before the handlers run</li><li class="listitem">Getting the contents of the remote host SSH key and building a <code class="literal">known_hosts</code> file</li></ul></div></div>
+<div><div><div><div><h1 class="title"><a id="ch03lvl1sec31"/>Processing data</h1></div></div></div><p>Ansible uses Jinja2 <a id="id153" class="indexterm"/>filters to allow you to transform data in ways that aren't possible with basic templates. We use filters when the data available to us in our playbooks is not in the format we want, or require further complex processing before it can be used with modules or templates. Filters can be used anywhere we would normally use a variable, such as in templates, as arguments to modules, and in conditionals. Filters are used by providing the variable name, a pipe character, and then the filter name. We can use multiple filter names separated with pipe characters to use multiple pipes, which are then applied left to right. Here is an example where we ensure that all users are created with lowercase usernames:</p><div><pre class="programlisting">---
+- name: Create user accounts
+  hosts: all
+  vars:
+    users:
+  tasks:
+    - name: Create accounts
+      user: name={{ item|lower }} state=present
+      with_items:
+        - Fred
+        - John
+        - DanielH</pre></div><p>Here are a few popular filters that you may find useful:</p><div><table border="1"><colgroup><col/><col/></colgroup><thead><tr><th valign="bottom">
+<p>Filter</p>
+</th><th valign="bottom">
+<p>Description</p>
+</th></tr></thead><tbody><tr><td valign="top">
+<p>
+<code class="literal">min</code>
+</p>
+</td><td valign="top">
+<p>When the argument is a list it returns only the smallest value.</p>
+</td></tr><tr><td valign="top">
+<p>
+<code class="literal">max</code>
+</p>
+</td><td valign="top">
+<p>When the argument is a list it returns only the largest value.</p>
+</td></tr><tr><td valign="top">
+<p>
+<code class="literal">random</code>
+</p>
+</td><td valign="top">
+<p>When the argument is a list it picks a random item from the list.</p>
+</td></tr><tr><td valign="top">
+<p>
+<code class="literal">changed</code>
+</p>
+</td><td valign="top">
+<p>When used on a variable created with the register keyword, it returns <code class="literal">true</code> if the task changed anything; otherwise, it returns <code class="literal">false</code>.</p>
+</td></tr><tr><td valign="top">
+<p>
+<code class="literal">failed</code>
+</p>
+</td><td valign="top">
+<p>When used on a variable created with the register  keyword, it returns <code class="literal">true</code> if the task failed; otherwise, it returns <code class="literal">false</code>.</p>
+</td></tr><tr><td valign="top">
+<p>
+<code class="literal">skipped</code>
+</p>
+</td><td valign="top">
+<p>When used on a variable created with the register keyword, it returns <code class="literal">true</code> if the task changed anything; otherwise, it returns <code class="literal">false</code>.</p>
+</td></tr><tr><td valign="top">
+<p>
+<code class="literal">default(X)</code>
+</p>
+</td><td valign="top">
+<p>If the variable does not exist, then the value of X will be used instead.</p>
+</td></tr><tr><td valign="top">
+<p>
+<code class="literal">unique</code>
+</p>
+</td><td valign="top">
+<p>When the argument is a list, return a list without any duplicate items.</p>
+</td></tr><tr><td valign="top">
+<p>
+<code class="literal">b64decode</code>
+</p>
+</td><td valign="top">
+<p>Convert the base64 encoded string in the variable to its binary representation. This is useful with the slurp modules, as it returns its data as a base64 encoded string.</p>
+</td></tr><tr><td valign="top">
+<p>
+<code class="literal">replace(X, Y)</code>
+</p>
+</td><td valign="top">
+<p>Return a copy of the string with any occurrences of <code class="literal">X</code> replaced by <code class="literal">Y</code>.</p>
+</td></tr><tr><td valign="top">
+<p>
+<code class="literal">join(X)</code>
+</p>
+</td><td valign="top">
+<p>When the <a id="id154" class="indexterm"/>variable is a list, return a string with all the entries separated by <code class="literal">X</code>.</p>
+</td></tr></tbody></table></div></div>
+<div><div><div><div><h1 class="title"><a id="ch03lvl1sec32"/>Debugging playbooks</h1></div></div></div><p>There are a few ways in <a id="id155" class="indexterm"/>which you can debug a playbook. Ansible includes both a verbose mode and a <code class="literal">debug</code> module specifically for debugging. You can also use modules such as <code class="literal">fetch</code> and <code class="literal">get_url</code> for help. These debugging techniques can also be used to examine how modules behave when you wish to learn how to use them.</p><div><div><div><div><h2 class="title"><a id="ch03lvl2sec27"/>The debug module</h2></div></div></div><p>Using the <code class="literal">debug</code> module is really quite simple. It takes two optional arguments, <code class="literal">msg</code> and <code class="literal">fail.msg</code> to set the <a id="id156" class="indexterm"/>message that will be printed by the <a id="id157" class="indexterm"/>module and <code class="literal">fail</code>, if set to <code class="literal">yes</code>, indicates a failure to Ansible, which will cause it to stop processing the playbook for that host. We used this module earlier in the skipping modules section to bail out of a playbook if the operating system was not recognized.</p><p>In the following example, we will show how to use the <code class="literal">debug</code> module to list all the interfaces available on the machine:</p><div><pre class="programlisting">---
+- name: Demonstrate the debug module
+  hosts: ansibletest
+  user: root
+  vars:
+    hostcount: 5
+  tasks:
+    - name: Print interface
+      debug:
+        msg: "{{ item }}"
+      with_items: ansible_interfaces</pre></div><p>The preceding code gives the following output:</p><div><pre class="programlisting">PLAY [Demonstrate the debug module] *********************************
+
+GATHERING FACTS *****************************************************
+ok: [ansibletest]
+
+TASK: [Print interface] *********************************************
+ok: [ansibletest] =&gt; (item=lo) =&gt; {"item": "lo", "msg": "lo"}
+ok: [ansibletest] =&gt; (item=eth0) =&gt; {"item": "eth0", "msg": "eth0"}
+
+PLAY RECAP **********************************************************
+ansibletest                : ok=2    changed=0    unreachable=0    failed=0</pre></div><p>As you <a id="id158" class="indexterm"/>can see, the <code class="literal">debug</code> module is easy to use to see the current value of a variable during the play.</p></div><div><div><div><div><h2 class="title"><a id="ch03lvl2sec28"/>The verbose mode</h2></div></div></div><p>Your other <a id="id159" class="indexterm"/>option for debugging is the verbose <a id="id160" class="indexterm"/>option. When running Ansible with verbose, it prints out all the values that were returned by each module after it runs. This is especially useful if you are using the <code class="literal">register</code> keyword introduced in the previous section. To run <code class="literal">ansible-playbook</code> in verbose mode, simply add <code class="literal">--verbose</code> to your command line as follows:</p><div><pre class="programlisting">
+<strong>ansible-playbook --verbose playbook.yml</strong>
+</pre></div></div><div><div><div><div><h2 class="title"><a id="ch03lvl2sec29"/>The check mode</h2></div></div></div><p>In addition to the <a id="id161" class="indexterm"/>verbose mode, Ansible also includes a check <a id="id162" class="indexterm"/>mode and a diff mode. You can use the check mode by adding <code class="literal">--check</code> to the command line, and <code class="literal">--diff</code> to use the diff mode. The check mode instructs Ansible to walk through the play without actually making any changes to remote systems. This allows you to obtain a listing of the changes that Ansible plans to make to the configured system.</p><div><h3 class="title"><a id="note14"/>Note</h3><p>It is important here to note that the check mode of Ansible is not perfect. Any modules that do not implement the check feature are skipped. Additionally, if a module is skipped that provides more variables, or the variables depend on a module actually changing something (such as file size), then they will not be available. This is an obvious limitation when using the <code class="literal">command</code> or <code class="literal">shell</code> modules</p></div><p>The diff mode shows the changes that are made by the <code class="literal">template</code> module. This limitation is because the <a id="id163" class="indexterm"/>
+<code class="literal">template</code> file only works with text files. If you <a id="id164" class="indexterm"/>were to provide a diff of a binary file from the copy module, the result would almost be unreadable. The diff mode also works with the check mode to show you the planned changes that were not made due to being in check mode.</p></div><div><div><div><div><h2 class="title"><a id="ch03lvl2sec30"/>The pause module</h2></div></div></div><p>Another technique <a id="id165" class="indexterm"/>is to use the <code class="literal">pause</code> module to pause <a id="id166" class="indexterm"/>the playbook while you examine the configured machine as it runs. This way, you can see changes that the modules have made at the current position in the play, and then watch while it continues with the rest of the play.</p></div></div>
+<div><div><div><div><h1 class="title"><a id="ch03lvl1sec33"/>Summary</h1></div></div></div><p>In this chapter, we explored the more advanced details of writing playbooks. You should now be able to use features such as delegation, looping, conditionals, and fact registration to make your plays much easier to maintain and edit. We also looked at how to access information from other hosts, configure the environment for a module, and gather data from external sources. Finally, we covered some techniques for debugging plays that are not behaving as expected.</p><p>In the next chapter, we will be covering how to use Ansible in a larger environment. It will include methods for improving the performance of your playbooks that might be taking a long time to execute. We will also cover a few more features that make plays maintainable, particularly splitting them into many parts by purpose.</p></div></body></html>

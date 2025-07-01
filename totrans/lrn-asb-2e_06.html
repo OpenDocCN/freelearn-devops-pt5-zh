@@ -1,0 +1,300 @@
+<html><head></head><body>
+<div><h1 class="chapter-number" id="_idParaDest-95"><a id="_idTextAnchor291"/>6</h1>
+<h1 id="_idParaDest-96"><a id="_idTextAnchor292"/>Targeting Multiple Distributions</h1>
+<p>So far, throughout the previous chapters, we have been targeting a single operating system, Ubuntu, when running on our playbooks.</p>
+<p>This chapter will examine how to work with multiple Linux distributions within the same roles and playbooks.</p>
+<p>We will take the WordPress playbook and the roles we created in <a href="B21620_05.xhtml#_idTextAnchor253"><em class="italic">Chapter 5</em></a>, <em class="italic">Deploying WordPress</em>, and do the following:</p>
+<ul>
+<li>Discover what the difference is between our two target operating systems</li>
+<li>Look at and implement our WordPress roles, making them work on both target operating systems</li>
+<li>Discuss and apply best practices for targeting multiple distributions</li>
+</ul>
+<p>The chapter covers the following topics:</p>
+<ul>
+<li>Debian and Red Hat</li>
+<li>Multi-distribution considerations</li>
+<li>Adapting the roles</li>
+<li>Running the playbook</li>
+</ul>
+<h1 id="_idParaDest-97"><a id="_idTextAnchor293"/>Technical requirements</h1>
+<p>Given that we will be launching two different operating systems, we will be changing the approach that we have taken in previous chapters and launching a pair of virtual machines in a cloud provider rather than two different virtual machines on our local machines.</p>
+<p>The primary reason for this is that Multipass only really supports Ubuntu machines as it was created by Canonical, the creators and maintainers of Ubuntu, to give people a quick, easy, and consistent way to launch an Ubuntu virtual machine across multiple host platforms.</p>
+<p>As we will be looking at automating cloud deployments in <a href="B21620_09.xhtml#_idTextAnchor411"><em class="italic">Chapter 9</em></a>, <em class="italic">Moving to the Cloud</em>, we won’t use Ansible to deploy the cloud resources for this chapter.</p>
+<p>For this chapter, I would recommend using a cloud provider such as <strong class="bold">DigitalOcean</strong> (<a href="https://www.digitalocean.com/">https://www.digitalocean.com/</a>) or <strong class="bold">Linode</strong> (<a href="http://www.linode.com/">http://www.linode.com/</a>), both of whom support the operating systems we will be covering in this chapter and whose virtual machine costs start at around 5 USD per month.</p>
+<p class="callout-heading">Important note</p>
+<p class="callout">This chapter will not cover how to launch virtual machines; if you are following along, please review your chosen cloud provider’s documentation. Additionally, for the full working code, please see the GitHub repository at <a href="https://github.com/PacktPublishing/Learn-Ansible-Second-Edition">https://github.com/PacktPublishing/Learn-Ansible-Second-Edition</a>.</p>
+<h1 id="_idParaDest-98"><a id="_idTextAnchor294"/>Debian and Red Hat</h1>
+<p>This is where the world of Linux operating systems can get slightly confusing. Although we launch Ubuntu <code>22.04</code> and Rocky Linux <code>9</code> virtual machines to run our playbooks against, we will reference Debian and Red Hat within the playbook code.</p>
+<p>Why is that? The reason behind this lies in the lineage of Linux distributions. Ubuntu is a descendant of the <a id="_idIndexMarker355"/>Debian operating <a id="_idIndexMarker356"/>system, inheriting its package management system and many other features. Similarly, Rocky Linux is a descendant of Red Hat, designed to be a downstream, bug-for-bug compatible release with <strong class="bold">Red Hat Enterprise </strong><strong class="bold">Linux</strong> (<strong class="bold">RHEL</strong>).</p>
+<p>So, when we mention Debian and Red Hat in our playbooks, we’re referring to the fundamental bases <a id="_idIndexMarker357"/>from which our two operating systems, Ubuntu and Rocky Linux, have evolved.</p>
+<p>In practical terms, the playbook code will often check the underlying distribution type to determine how to proceed with specific tasks. For example, the commands to install a software package on a Debian-based system such as Ubuntu might differ from those on a Red Hat-based system such as Rocky Linux.</p>
+<p>Debian-based systems use the Debian package management system, with <code>dpkg</code> as the core utility, and often utilize either <code>apt</code> or <code>apt-get</code>, or in some cases all of them, for user-friendly interactions.</p>
+<p>Red Hat-based systems <a id="_idIndexMarker358"/>employ the RPM package management system, using <code>rpm</code> as the core utility, often complemented by <code>yum</code> or its successor <code>dnf</code> for a more user-friendly interface for managing packages.</p>
+<p>There are other differences, such as Debian and Red Hat-based systems that have different directory structures and configuration file locations, which can affect the system administration that we must consider in our playbook roles.</p>
+<p>The biggest, at the time of writing, and most relevant difference between the two is licensing.</p>
+<p>Debian is<a id="_idIndexMarker359"/> known for its strict adherence to free software principles. In contrast, Red Hat-based systems may incorporate more proprietary or closed-source software, especially in the case of Red Hat Enterprise Linux’s commercial enterprise distribution of Red Hat.</p>
+<p>This came to a head in June 2023 when Red Hat altered its terms, ceasing the public availability of RHEL’s source code and restricting access solely to customers.</p>
+<p>This move impacted downstream projects, relying on RHEL source code to create compatible distributions such as Rocky Linux. The change means that only customers bound by contracts preventing code sharing can access RHEL source code, aligning with the GPL license’s terms, which mandates source code availability only for binary users, who are, essentially, the paying customers in this scenario.</p>
+<p>At the time of writing, the fallout from this change is still being felt, and the dust is still settling, although it does seem like distributions such as Rocky Linux have found ways of being compliant; see the <em class="italic">Further reading</em> section at the end of this chapter for more information.</p>
+<p>So, back to our playbook, by referencing either (or both) Debian and Red Hat in the code, we create more adaptable roles that can handle different Linux distributions and their derivatives consistently.</p>
+<h1 id="_idParaDest-99"><a id="_idTextAnchor295"/>Multi-distribution considerations</h1>
+<p>Looking at each of the Ansible built-in modules used in the three roles, <code>stack_install</code>, <code>stack_config</code>, and <code>wordpress</code>, we are using a few that will not work on our newly introduced Rocky Linux box.</p>
+<p>Let’s quickly work through each module and consider what we need to change or take into account when targeting two different distributions.</p>
+<h2 id="_idParaDest-100"><a id="_idTextAnchor296"/>The Stack Install role</h2>
+<p>This<a id="_idIndexMarker360"/> role<a id="_idIndexMarker361"/> uses the following built-in modules:</p>
+<ul>
+<li><code>ansible.builtin.apt</code></li>
+<li><code>ansible.builtin.apt_key</code></li>
+<li><code>ansible.builtin.apt_repository</code></li>
+</ul>
+<p>We use these modules to update our operating system, add the NGINX mainline repository, and install all the packages we require for our WordPress installation.</p>
+<p>As these modules all deal with package management, we won’t be able to reuse any of these tasks, meaning that we will need to split the role into two parts: one that deals with Debian-based systems and the other for Red Hat systems.</p>
+<p>Additionally, we won’t be able to reuse the variables, as there are subtle differences in the package names between the two distributions.</p>
+<p>This means that our best approach to this role is to use two different sets of tasks depending on the distribution Ansible is targeting. Luckily, there are built-in Ansible modules that make this approach simple. After reviewing the modules in the two remaining roles, we will cover these in the next se<a id="_idTextAnchor297"/>ctio<a id="_idTextAnchor298"/>n.</p>
+<h2 id="_idParaDest-101"><a id="_idTextAnchor299"/>The Stack Config role</h2>
+<p>This role<a id="_idIndexMarker362"/> is slightly different from<a id="_idIndexMarker363"/> the previous one in that we don’t need to split the tasks into two here; most of the tasks will work across both our Linux distributions.</p>
+<p>This means that the tasks which make use of the following modules won’t need any changes:</p>
+<ul>
+<li><code>ansible.buil<a id="_idTextAnchor300"/>tin.group</code>: Creating a group is the same for both distributions</li>
+<li><code>ansible.builtin.user</code>: Creating a user is the same for both distributions</li>
+<li><code>ansible.builtin<a id="_idTextAnchor301"/>.template</code>: This only renders and copies files to the target hosts</li>
+<li><code>ansible.bui<a id="_idTextAnchor302"/>ltin.file</code>: This only copies files to the targ<a id="_idTextAnchor303"/>et hosts</li>
+<li><code>ansible.builtin.copy</code>: This only copies files on the target hosts</li>
+<li><code>ansible.builtin.lineinfile</code>: This only searches for text and, if required, updates it within the files on the target hosts</li>
+<li><code>ansible.builtin.service</code>: This is supported on both distributions</li>
+<li><code>ansible.builtin.stat</code>: Only checks for the presence of a file on the host’s file system</li>
+<li><code>ansible.builtin.m<a id="_idTextAnchor304"/>ysql_user</code>: As this interacts with the database service, it is distribution agnostic</li>
+<li><code>ansible.builtin.mysql_db</code>: As with the previous task, it interacts with the database service</li>
+</ul>
+<p>This list is<a id="_idIndexMarker364"/> mostly <a id="_idIndexMarker365"/>true; however, the file paths will change between the two distributions.</p>
+<p>Still, as we already<a id="_idTextAnchor305"/> mentioned in <a href="B21620_05.xhtml#_idTextAnchor253"><em class="italic">Chapter 5</em></a>, <em class="italic">Deploying WordPress</em>, when we looked at the variables for the Stack Config role, we are referencing files that contain the variables we want to load into the playbook run, so we will need to load in an additional set of variables for the distribution as well as the standard ones.</p>
+<p>We will need to execute some additional tasks as part of adding the second distribution. Some Red Hat distributions come with a firewall enabled out of the box and SELinux enabled, so we will need to perform some Red Hat-only tasks at the end.</p>
+<p><strong class="bold">SELinux</strong>, or to <a id="_idIndexMarker366"/>give it its full name, <strong class="bold">Security-Enhanced Linux</strong>, is a security module of the Linux kernel that provides a mechanism for supporting access control security policies.</p>
+<p>However, we can keep<a id="_idIndexMarker367"/> these tasks within the <code>main.yml</code> file rather than loading a different set of tasks by getting creative with the conditions when calling the tasks.</p>
+<h2 id="_idParaDest-102"><a id="_idTextAnchor306"/>The WordPress role</h2>
+<p>As the <a id="_idIndexMarker368"/>previous two roles have already<a id="_idIndexMarker369"/> installed and configured everything that we need to run our WordPress installation, this role is entirely distribution agnostic, and we don’t need to make any changes to the tasks within the role. If you remember, in <a href="B21620_05.xhtml#_idTextAnchor253"><em class="italic">Chapter 5</em></a>, <em class="italic">Deploying WordPress</em>, when we ran the command to configure WordPress, we set the following fact:</p>
+<pre class="source-code">
+- name: "Set a fact for the wordpress domain"
+  ansible.builtin.set_fact:
+    wordpress_domain: "{{ ansible_ssh_host }}"
+    os_family: "{{ ansible_distribution }} {{ ansible_distribution_version }}"</pre> <p>This used the facts gathered by Ansible when first connecting to the host to figure out which distribution and version we were connecting to; we will expand on this logic as we dive deeper into the changes outlined in this section for the Stack Install and Config roles.</p>
+<h1 id="_idParaDest-103"><a id="_idTextAnchor307"/>Adapting the roles</h1>
+<p>So, how do we build the logic into our roles to execute only certain parts of them on different operating systems? As we know, the package names will be different. How do we define different sets of variables per operating system?</p>
+<h2 id="_idParaDest-104"><a id="_idTextAnchor308"/>Operating system family</h2>
+<p>We have looked at the <code>ansible.builtin.setup</code> module in <a href="B21620_01.xhtml#_idTextAnchor017"><em class="italic">Chapter 1</em></a>, <em class="italic">Installing and Running Ansible</em>; this module gathers facts about our target hosts.</p>
+<p>One of these facts is <code>ansible_os_family</code>; this tells us the type of operating system we are running.</p>
+<p>To <a id="_idIndexMarker370"/>demonstrate this, I have launched two hosts, one running Ubuntu <code>22.04</code>, and the second running Rocky Linux <code>9</code> as its operating system. I have created an inventory file which looks like the following:</p>
+<pre class="source-code">
+RedHat ansible_host=178.79.178.78.nip.io
+Debian ansible_host=176.58.114.60.nip.io
+[ansible_hosts]
+RedHat
+Debian
+[ansible_hosts:vars]
+ansible_connection=ssh
+ansible_user=root
+ansible_private_key_file=~/.ssh/id_rsa
+host_key_checking=False</pre> <p class="callout-heading">Important note</p>
+<p class="callout">The preceding inventory file is only for illustrative purposes; if you are following along, you will need to update it to consider your host IP addresses, user names, and private key file locations.</p>
+<p>With the hosts up and running, we can target each one individually using the foll<a id="_idTextAnchor309"/><a id="_idTextAnchor310"/>ow<a id="_idTextAnchor311"/>ing commands:</p>
+<pre class="console">
+$ ansible -i hosts RedHat -m ansible.builtin.setup | grep ansible_os_family
+$ ansible -i hosts Debian -m ansible.built<a id="_idTextAnchor312"/>in.setup | grep ansible_os_family</pre> <p>Running these two commands should show you something like the following term<a id="_idTextAnchor313"/>inal output:</p>
+<div><div><img alt="Figure 6.1 – Checking the values of ansible_os_family" src="img/B21620_06_1.jpg"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.1 – Checking the values of ansible_os_family</p>
+<p>As you can<a id="_idIndexMarker371"/> see, each of the two hosts correctly returns the operating system family.</p>
+<p>We can take this one step further and update our commands to the following:</p>
+<pre class="console">
+$ ansible -i hosts RedHat -m ansible.built<a id="_idTextAnchor314"/>in.setup | grep ansible_distribution
+$ ansible -i hosts Debian -m ansible.builtin.setup | grep ansible_distribution</pre> <p>This gives the follo<a id="_idTextAnchor315"/>wing output:</p>
+<div><div><img alt="Figure 6.2 – Checking the values of ansible_distribution" src="img/B21620_06_2.jpg"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.2 – Checking the values of ansible_distribution</p>
+<p>As you can see, this gives much more detail on the operating system itself and not just the flavor of Linux; it is based on <code>RedHat</code> or <code>Debian</code>.</p>
+<p>Finally, we run the following command:</p>
+<pre class="console">
+$ ansible -i hosts ansible_hosts -m ansible.builtin.setup | grep ansible_os_family</pre> <p>This will<a id="_idIndexMarker372"/> target both hosts within the same Ansible run and return a terminal output that should look like the following:</p>
+<div><div><img alt="Figure 6.3 – Checking the values of ansible_distribution in a single run" src="img/B21620_06_3.jpg"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.3 – Checking the values of ansible_distribution in a single run</p>
+<p>Now that we can identify which operating system is in use on each host, we can start adapting the roles to consider the changes we discussed in the previous section of this chapter.</p>
+<h2 id="_idParaDest-105"><a id="_idTextAnchor316"/>The Stack Install role</h2>
+<p>The first part of the<a id="_idIndexMarker373"/> role we will look at is<a id="_idTextAnchor317"/><a id="_idTextAnchor318"/> the content of <code>roles/stack_install/tasks/main.yml</code>. The previous version of the role contained all of the tasks to install the repos and packages for our Ubuntu server; all of those tasks should be <a id="_idTextAnchor319"/>moved t<a id="_idTextAnchor320"/>o a file called <code>roles/stack_install/tasks/Debian.yml</code>, and a <a id="_idTextAnchor321"/><a id="_idTextAnchor322"/>new file called <code>roles/stack_install/tasks/RedHat.yml</code> should have been created; finally, we should update <code>roles/stack_install/tasks/main.yml</code> so that it has the following contents.</p>
+<p>Here are the three task loads in the variables file for the operating system we are targeting:</p>
+<pre class="source-code">
+- name: "Include the operating system specific variables"
+  ansible.builtin.include_vars: "{{ ansible_os_family }}.yml"</pre> <p>As you can see, this uses the <code>ansible.builtin.include_vars</code> module to load variables from the variables path within the roles folder, which would be <code>roles/stack_install/vars/</code>.</p>
+<p>Then, it <a id="_idIndexMarker374"/>loads a file called <code>RedHat.yml</code> or <code>Debian.yml</code>; these two file names are populated using the <code>{{ ansible_os_family }}</code> variable in the task, meaning that the variables relevant to the operating system being targeted are loaded.</p>
+<p>If you look in the repository on GitHub, you will notice that, although being subtle, there are differences in the packages listed in the <code>system_packages</code>, <code>extra_packages</code>, and <code>stack_packages</code> package lists.</p>
+<p>The next task uses the <code>when</code> condition when calling the <code>ansible.builtin.import_tasks</code> module, first of all for the Debian-based system:</p>
+<pre class="source-code">
+- name: "Install the stack on Debian based systems"
+  ansible.builtin.import_tasks: "Debian.yml"
+  when: ansible_os_family == 'Debian'</pre> <p>In our case, this means that when the Ansible playbook is targeting a Debian-based host, it will load the tasks from <code>roles/stack_install/tasks/Debian.yml</code>, which are essentially the same as those we discussed at length in <a href="B21620_05.xhtml#_idTextAnchor253"><em class="italic">Chapter 5</em></a>, <em class="italic">Deploying WordPress</em>, and execute them against the host.</p>
+<p>The next task does the same function, but this time for Red Hat-based hosts, using the tasks listed in the <code>roles/stack_install/tasks/RedHat.yml</code> file:</p>
+<pre class="source-code">
+- name: "Install the stack on RedHat based systems"
+  ansible.builtin.import_tasks: "RedHat.yml"
+  when: ansible_os_family == 'RedHat'</pre> <p>The <code>roles/stack_install/tasks/RedHat.yml</code> file contains three tasks, which are pretty much the same as the <code>Debian.yml</code> tasks.</p>
+<p>We start the role by running an update of all the installed packages:</p>
+<pre class="source-code">
+- name: "Update all of the installed packages"
+  ansible.builtin.dnf:
+    name: "*"
+    state: "latest"
+    update_cache: true</pre> <p>As you can see, this uses the <code>ansible.builtin.dnf</code> modules rather than the <code>ansible.builtin.apt</code> one.</p>
+<p>Next up, we<a id="_idIndexMarker375"/> have the task that installs the NGINX mainline repo:</p>
+<pre class="source-code">
+- name: "Add the NGINX mainline repo"
+  ansible.builtin.yum_repository:
+    name: "{{ nginx_repo.name }}"
+    description: "{{ nginx_repo.description }}"
+    baseurl: "{{ nginx_repo.baseurl }}"
+    gpgcheck: "{{ nginx_repo.gpgcheck }}"
+    enabled: "{{ nginx_repo.enabled }}"</pre> <p>Although this uses the <code>ansible.builtin.yum_repository</code> module, DNF will pick up the new repo once it is added. This is also the only task we need to run to add the repo, and adding a Yum repository is very different from adding a repository on a Debian-based system.</p>
+<p>The final task for Red Hat-based systems is to install all the packages, including the NGINX one from the mainline repository we just enabled by, again, calling the <code>ansible.builtin.dnf</code> module:</p>
+<pre class="source-code">
+- name: "Update cache and install the stack packages"
+  ansible.builtin.dnf:
+    state: "present"
+    update_cache: true
+    pkg: "{{ system_packages + extra_packages + stack_packages }}"</pre> <p>As you can see, with a little change to the logic in which the tasks are being called, it was relativity<a id="_idIndexMarker376"/> painless to update the role to target Debian and Red Hat distributions.</p>
+<p>For the next role we need to change, the Stack Config role, we will take a slightly different approach to considering the different operating system distributions.</p>
+<h2 id="_idParaDest-106"><a id="_idTextAnchor323"/>The Stack Config role</h2>
+<p>Apart<a id="_idIndexMarker377"/> from a single task at the start and half a dozen at the end, the bulk of this role remains as-is.</p>
+<p>There are some changes to the def<a id="_idTextAnchor324"/>ault variables file in the <code>roles/stack_config/default/main.yml</code> file; first off, the following variables are added:</p>
+<pre class="source-code">
+selinux:
+  http_permissive: true
+firewall_comands:
+  - "firewall-cmd --zone=public --add-port=80/tcp --permanent"
+  - "firewall-cmd --zone=public --add-port=80/tcp"</pre> <p>As I am sure you can guess from their names, these deal with SELinux and the Firewall.</p>
+<p>The next change is to move the <code>mysql_socket_path</code>, <code>php_fpm_path</code>, <code>php_ini_path</code>, and <code>php_service_name</code> variables to distributio<a id="_idTextAnchor325"/><a id="_idTextAnchor326"/>n-specific files at <code>roles/stack_config/vars/Debian.yml</code> and <code>roles/stack_config/vars/RedHat.yml</code>.</p>
+<p>As we have already discussed, one of the key differences between the two distributions is the paths to both the core files and the configuration files for the services we installed during the <a id="_idTextAnchor327"/>Stack Install role.</p>
+<p>In the <code>roles/stack_config/vars/Debian.yml</code> file, we have the following:</p>
+<pre class="source-code">
+mysql_socket_path: "/var/run/mysqld/mysqld.sock"
+php_fpm_path: "/etc/php/8.1/fpm/pool.d/www.conf"
+php_ini_path: "/etc/php/8.1/fpm/php.ini"
+php_service_name: "php8.1-fpm"</pre> <p>However, for the <code>roles/stack_config/vars/RedHat.yml</code> file, we need to define the following:</p>
+<pre class="source-code">
+mysql_socket_path: "/var/lib/mysql/mysql.sock"
+php_fpm_path: "/etc/php-fpm.d/www.conf"
+php_ini_path: /etc/php.ini
+php_service_name: "php-fpm"</pre> <p>As you can see, at first glance, they look a little similar, but the paths and file names are different.</p>
+<p>These files are <a id="_idIndexMarker378"/>called by a task, which is the same as we used at the start of the Stack Install role:</p>
+<pre class="source-code">
+- name: Include the operating system specific variables
+  ansible.builtin.include_vars: "{{ ansible_os_family }}.yml"</pre> <p>From here, all the original tasks we covered in <a href="B21620_05.xhtml#_idTextAnchor253"><em class="italic">Chapter 5</em></a>, <em class="italic">Deploying WordPress</em>, are called and executed, ending with the task that removes the test MySQL database.</p>
+<p>From here, in the role, we have the tasks that consider the additional steps needed to configure our Red Hat-based host, starting with configuring SELinux; for our role, we need to enable the policy that allows web servers to run, for which, on a lot of Red Hat distributions, is blocked by default.</p>
+<p>The task to do this looks like the following:</p>
+<pre class="source-code">
+- name: "Set the selinux allowing httpd_t to be permissive is required"
+  community.general.selinux_permissive:
+    name: httpd_t
+    permissive: true
+  when: selinux.http_permissive and ansible_os_family == 'RedHat'</pre> <p>As you can see, the <code>when</code> condition here ensures that the task is on<a id="_idTextAnchor328"/>ly executed when the <code>selinux.http_permissive</code> variable is set to <code>true</code>, and the <code>ansible_os_family</code> is equal to <code>RedHat</code>.</p>
+<p>While our<a id="_idIndexMarker379"/> Debian-based system will meet the <code>selinux.http_permissive</code> condition, the task will be skipped on those hosts, as it doesn’t meet the second condition.</p>
+<p>Finally, we have the tasks for configuring the <code>firewalld</code> service, which is the default firewall on most modern Red Hat-based distributions.</p>
+<p class="callout-heading">Important note</p>
+<p class="callout">Although we are using <code>firewall-cmd</code> in this section, there is an Ansible module that supports the firewalld service called <code>ansible.posix.firewalld</code>. As this is the only instance in the title that we will be targeting a Red Hat-based operating system with, we have, instead, used <code>ansible.builtin.command</code> to show how we can meet more complex conditions based on the output commands.</p>
+<p>Like some of the roles we have included in other chapters, configuring the firewall is a task we only have to do once. The first thing we will do is check for the presence of a file at <code>~/firewall-configured</code> and register the results:</p>
+<pre class="source-code">
+- name: "Check to see if the ~/firewall-configured file exists"
+  ansible.builtin.stat:
+    path: "~/firewall-configured"
+  register: firewall_configured</pre> <p>Next, we need to check whether <code>firewalld</code> is running, but only if it’s a RedHat distribution. To do this, we need to run the <code>firewall-cmd --state</code> shell command and the output result is registered in the <code>fireweall_status</code> variable:</p>
+<pre class="source-code">
+- name: "Check if firewalld is running"
+  ansible.builtin.command: firewall-cmd --state
+  register: fireweall_status
+  when: ansible_os_family == 'RedHat'</pre> <p>Now, as the <a id="_idIndexMarker380"/>remaining tasks could also be executed on a Debian-based host, we need to take that into account as we now have a variable containing the <code>stdout</code> of the command we ran called <code>fireweall_status</code>, which won’t be present, resulting in an error that would stop playbook execution on a Debian-based host:</p>
+<pre class="source-code">
+- name: "Set a fact so the playbook can continue if running on a Debian based system"
+  ansible.builtin.set_fact:
+    fireweall_status:
+      stdout: notrunning
+  when: ansible_os_family == 'Debian'</pre> <p>As you can see from the preceding task, if <code>ansible_os_family</code> is <code>Debian</code>, we are setting the <code>fireweall_status.stdout</code> variable to <code>notrunning</code>.</p>
+<p>Now we have all of the information we need to make a decision on whether we should run the commands to configure the firewall, the following conditio<a id="_idTextAnchor329"/>ns need to be met:</p>
+<ul>
+<li>The <code>firewall-cmd --state</code> command returns <code>running</code></li>
+<li>The operating system is <code>RedHat</code></li>
+<li>The <code>~/firewall-configured</code> file does not exist</li>
+</ul>
+<p>If all three of these conditions are met, which are defined in the following task, then the commands to configure the firewall to open and allow traffic on port <code>80</code> are executed:</p>
+<pre class="source-code">
+- name: "Run the firewall-cmd commands if the firewall-cmd --state comm<a id="_idTextAnchor330"/>and returns running"
+  ansible.builtin.command: "{{ item }}"
+  with_items: "{{ firewall_comands }}"
+  when: fireweall_status.stdout == "running" and ansible_os_family == 'RedHat' and not firewall_configured.stat.exists</pre> <p>The final task then creates the <code>~/firewall-configured</code> file so that the commands are not executed again:</p>
+<pre class="source-code">
+- name: "Create the ~/firewall-configured file"
+  ansible.builtin.file:
+    path: ~/firewall-configured
+    state: touch
+    mode: "0644"
+  when: not firewall_configured.stat.exists</pre> <p>It does<a id="_idIndexMarker381"/> this on both distributions, as it doesn’t matter if it is set on Debian-based systems, and we don’t want to run the commands regardless; on Red Hat systems, it will mean that any subsequent executions of the playbook will not be able to meet the three conditions where the commands are executed to configure the firewall service.</p>
+<h2 id="_idParaDest-107"><a id="_idTextAnchor331"/>The WordPress role</h2>
+<p>As already mentioned, we do not have to make any changes to this role.</p>
+<h1 id="_idParaDest-108"><a id="_idTextAnchor332"/>Running the playbook</h1>
+<p>There are<a id="_idIndexMarker382"/> no changes to our <code>site.yml</code> file, meaning that we need to run the following command to run the playbook:</p>
+<pre class="console">
+$ ansible-playbook -i hosts site.yml</pre> <p>There is way too much output to cover here, but I will include some of the highlights from the playbook execution, starting with the gathering of the facts:</p>
+<pre class="console">
+TASK [Gathering Facts] ************************************
+ok: [Debian]
+ok: [RedHat]</pre> <p>Now that Ansible knows about our two hosts, it makes a start on running the tasks; here are the updated ones from the Stack Install role:</p>
+<pre class="console">
+TASK [roles/stack_install : update apt-cache and upgrade packages] *************
+skipping: [RedHat]
+changed: [Debian]</pre> <p>As you can see, this was the <code>apt</code> one, and the <code>dnf</code> one looks like this:</p>
+<pre class="console">
+TASK [roles/stack_install : update all of the installed packages] **************
+skipping: [Debian]
+changed: [RedHat]</pre> <p>Now, moving<a id="_idIndexMarker383"/> onto the Stack Config role, this is where tasks are being run on both distributions:</p>
+<pre class="console">
+TASK [roles/stack_config : add the wordpress group] *******
+changed: [RedHat]
+changed: [Debian]</pre> <p>To update the firewall on just the Red Hat-based distribution, we do the following:</p>
+<pre class="console">
+TASK [roles/stack_config : run the firewall-cmd commands if the firewall-cmd --state command returns running] ***
+skipping: [Debian] =&gt; (item=firewall-cmd --zone=public --add-port=80/tcp --permanent)
+skipping: [Debian] =&gt; (item=firewall-cmd --zone=public --add-port=80/tcp)
+skipping: [Debian]
+changed: [RedHat] =&gt; (item=firewall-cmd --zone=public --add-port=80/tcp --permanent)
+changed: [RedHat] =&gt; (item=firewall-cmd --zone=public –
+-add-port=80/tcp)</pre> <p>Finally, we complete the playbook run:</p>
+<pre class="console">
+PLAY RECAP ************************************************
+Debian                     : ok=44   changed=29   unreachable=0    failed=0    skipped=7    rescued=0    ignored=2
+RedHat                     : ok=45   changed=34   unreachable=0    failed=0    skipped=6    rescued=0    ignored=2</pre> <p>All of which means that I should now have two Wo<a id="_idTextAnchor333"/>rdPress installations:</p>
+<div><div><img alt="Figure 6.4 – WordPress running on Ubuntu 22.04" src="img/B21620_06_4.jpg"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.4 – WordPress running on Ubuntu 22.04</p>
+<div><div><img alt="Figure 6.5 – WordPress running on Rocky Linux 9.2" src="img/B21620_06_5.jpg"/>
+</div>
+</div>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 6.5 – WordPress running on Rocky Linux 9.2</p>
+<p>While the<a id="_idIndexMarker384"/> preceding screens aren’t the most exciting of websites, as you can see, we have WordPress up and running on two different operating systems.</p>
+<p>At this point, if you have been following along, don’t forget to delete any resources you have deployed to run your playbooks against.</p>
+<h1 id="_idParaDest-109"><a id="_idTextAnchor334"/>Summary</h1>
+<p>In this chapter, we have adapted the WordPress installation playbook we wrote in <a href="B21620_05.xhtml#_idTextAnchor253"><em class="italic">Chapter 5</em></a>, <em class="italic">Deploying WordPress</em>, to target multiple operating systems. We did this by using Ansible’s built-in auditing module to determine which operating system the playbook is running against and running only the tasks that will work on the two target distributions.</p>
+<p>While targeting multiple Linux distributions is one use for the approach we have taken with the conditions we have been using, I am sure that you will already have some ideas on how you could use some of the logic we used in your projects, such as bootstrapping different software based on the role on a virtual machine host, etc.</p>
+<p>Additionally, this approach is beneficial when publishing your roles to Ansible Galaxy, as discussed in <a href="B21620_02.xhtml#_idTextAnchor080"><em class="italic">Chapter 2</em></a>, <em class="italic">Exploring Ansible Galaxy</em>, by making the operating system agnostic.</p>
+<p>You may have noticed so far that we have been targeting Linux virtual machines; in the next chapter, we will look at Ansible support for Windows-based operating systems.</p>
+<h1 id="_idParaDest-110"><a id="_idTextAnchor335"/>Further reading</h1>
+<ul>
+<li><strong class="bold">Red Hat Enterprise </strong><strong class="bold">Linux</strong>: <a href="https://www.redhat.com/en/technologies/linux-platforms/enterprise-linux">https://www.redhat.com/en/technologies/linux-platforms/enterprise-linux</a></li>
+<li><strong class="bold">Debian</strong>: <a href="https://www.debian.org/">https://www.debian.org/</a></li>
+<li><strong class="bold">Ubuntu</strong>: <a href="https://ubuntu.com/">https://ubuntu.com/</a></li>
+<li><strong class="bold">Rocky </strong><strong class="bold">Linux</strong>: <a href="https://rockylinux.org/">https://rockylinux.org/</a></li>
+<li><strong class="bold">The Register</strong>, <em class="italic">Red Hat strikes a crushing blow against RHEL </em><em class="italic">downstreams</em>: <a href="https://www.theregister.com/2023/06/23/red_hat_centos_move/">https://www.theregister.com/2023/06/23/red_hat_centos_move/</a></li>
+<li><strong class="bold">The Ansible Posix Firewalld </strong><strong class="bold">Module</strong>: <a href="https://docs.ansible.com/ansible/latest/collections/ansible/posix/firewalld_module.html">https://docs.ansible.com/ansible/latest/collections/ansible/posix/firewalld_module.html</a></li>
+</ul>
+</div>
+</body></html>

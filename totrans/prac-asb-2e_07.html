@@ -1,0 +1,318 @@
+<html><head></head><body>
+<div><div><h1 class="chapter-number" id="_idParaDest-104"><a id="_idTextAnchor343"/>7</h1>
+<h1 id="_idParaDest-105"><a id="_idTextAnchor344"/>Creating and Consuming Plugins</h1>
+<p>Modules have been a very obvious and key part of our journey through Ansible so far. They are used to execute well-defined tasks and can be used either in one-off commands (using ad hoc commands) or as part of a much larger playbook. Plugins are just as important to Ansible, and we have used them in all of our testing so far without even realizing it! While modules are always used to create some kind of task in Ansible, the way that plugins are used depends on their use case. There are many different types of plugins; we will introduce them to you in this chapter and give you an idea of their purpose. But, as a tester, did you realize that when Ansible connects to a remote server using SSH, functionality is provided by a connection plugin? This demonstrates the important role that plugins play.</p>
+<p>In this chapter, we will provide you with an in-depth introduction to plugins, as well as show you how to explore the various plugins that come with Ansible. We’ll then expand on this by demonstrating how you can create your own plugins and use them in an Ansible project, in very much the same way as we did with our custom module in the previous chapter. This will hopefully help you understand the limitless possibilities that open source software such as Ansible provides.</p>
+<p>In this chapter, we will cover the following topics:</p>
+<ul>
+<li>Discovering the plugin types</li>
+<li>Finding the included plugins</li>
+<li>Creating custom plugins<a id="_idTextAnchor345"/></li>
+</ul>
+<h1 id="_idParaDest-106"><a id="_idTextAnchor346"/>Technical requirements</h1>
+<p>This chapter assumes that you have set up your control host with Ansible, as detailed in <a href="B20846_01.xhtml#_idTextAnchor015"><em class="italic">Chapter 1</em></a>, <em class="italic">Getting Started with Ansible</em>, and that you are using the most recent version available. The examples in this chapter have been tested with <code>ansible-core</code> version 2.15. This chapter also assumes that you have at least one additional host to test against; ideally, this should be Linux-based.</p>
+<p>Although we will give specific examples of hostnames in this chapter, you are free to substitute them with your own hostname and/or IP addresses, and details of how to do this are provided at the appropriate places. The plugin development work covered in this chapter assumes the presence of a Python 3 development environment on your computer, and that you are running either Linux, FreeBSD, or macOS. Where additional Python modules are needed, their installation is documented. The task of building module documentation has some very specific requirements in Python 3.10 or later, so it is assumed you can install a suitable Python environment if you wish to attempt this.</p>
+<p>The code bundle for this chapter is available at <a href="https://github.com/PacktPublishing/Practical-Ansible-Second-Edition/tree/main/Chapter%207">https://github.com/PacktPublishing/Practical-Ansible-Second-Edition/tree/main/Chapter%207</a><a href="https://github.com/PacktPublishing/Practical-Ansible-Second-Edition/tree/main/Chapter%207"/>.</p>
+<h1 id="_idParaDest-107">Discovering the plugin types</h1>
+<p>Ansible’s code has always been designed to be modular—indeed, this is one of its core strengths. Whether that is through the use of modules to perform tasks or through plugins (as we will see shortly), Ansible’s modular design allows it to be as versatile and powerful as it has demonstrated itself to be so far in this book. As with modules, Ansible plugins are all written in Python and are expected to ingest and return data in a certain well-defined format (more on this later). Ansible’s plugins are often invisible in their function in that you rarely call them by name in your commands or playbooks, yet they are responsible for some of the most important features Ansible has to offer, including SSH connectivity, the ability to parse inventory files (in INI format, YAML, or otherwise), and the ability to run <code>jinja2</code> filters on your data.</p>
+<p>As ever, let’s validate the presence of a suitably installed version of Ansible on your test machine before proceeding further:</p>
+<pre class="console">
+$ ansible-doc --version
+ansible-doc [core 2.15.0]
+  config file = None
+  configured module search path = ['/Users/danieloh/Library/Python/3.11/bin/plugins/modules', '/usr/share/ansible/plugins/modules']
+  ansible python module location = /Users/danieloh/Library/Python/3.11/lib/python/site-packages/ansible
+  ansible collection location = /Users/danieloh/Library/Python/3.11/bin/collections:/usr/share/ansible/collections
+  executable location = /Users/danieloh/Library/Python/3.11/bin/ansible-doc
+  python version = 3.11.3 (main, Apr  7 2023, 20:13:31) [Clang 14.0.0 (clang-1400.0.29.202)] (/opt/homebrew/opt/python@3.11/bin/python3.11)
+  jinja version = 3.1.2
+  libyaml = True</pre> <p>As much work goes into documenting the plugins as it does into documenting the modules, so you will be pleased to know that there is a plugin index available at <a href="https://docs.ansible.com/ansible/latest/plugins/plugins.xhtml">https://docs.ansible.com/ansible/latest/plugins/plugins.xhtml</a>.</p>
+<p>You can also use the <code>ansible-doc</code> command as we did before, only you need to add the <code>-t</code> with the module’s name, too. Plugins are always placed in an appropriate category as their function is radically different between categories. If you don’t specify the <code>-t</code> switch with <code>ansible-doc</code>, you end up specifying the <code>ansible-doc -t</code> module, which returns a list of the available modules.</p>
+<p>At the time of writing, the following plugin types can be found in Ansible:</p>
+<ul>
+<li><code>become</code>: Responsible for enabling Ansible to obtain super-user access (for example, through <code>sudo</code>)</li>
+<li><code>cache</code>: Responsible for caching facts retrieved from backend systems to improve automation performance</li>
+<li><code>callback</code>: Allows you to add new behaviors when responding to events – for example, changing the format that data is printed in in the output of an Ansible playbook run</li>
+<li><code>cliconf</code>: Provides abstractions to the command-line interfaces of various network devices, giving Ansible a standard interface to operate on</li>
+<li><code>connection</code>: Provides connectivity from Ansible to remote systems (for example, over SSH, WinRM, Docker, and many more)</li>
+<li><code>httpapi</code>: Tells Ansible how to interact with a remote system’s API (for example, for a Fortinet firewall)</li>
+<li><code>inventory</code>: Provides Ansible with the ability to parse various static and dynamic inventory formats</li>
+<li><code>lookup</code>: Allows Ansible to look up data from an external source (for example, by reading a flat text file)</li>
+<li><code>netconf</code>: Provides Ansible with abstractions to enable it to work with NETCONF-enabled networking devices</li>
+<li><code>shell</code>: Provides Ansible with the ability to work with various shells on different systems (for example, <code>powershell</code> on Windows versus <code>sh</code> on Linux)</li>
+<li><code>strategy</code>: Provides plugins to Ansible with different execution strategies (for example, the debug strategy we saw in <a href="B20846_04.xhtml#_idTextAnchor207"><em class="italic">Chapter 4</em></a>, <em class="italic">Playbooks </em><em class="italic">and Roles</em>)</li>
+<li><code>vars</code>: Provides Ansible with the ability to source variables from certain sources, such as the <code>host_vars</code> and <code>group_vars</code> directories we explored in <a href="B20846_03.xhtml#_idTextAnchor158"><em class="italic">Chapter 3</em></a>, <em class="italic">Defining </em><em class="italic">Your Inventory</em></li>
+</ul>
+<p>We will leave exploring the plugin documentation on the Ansible website as an exercise for you to complete. However, if you want to explore the various plugins using the <code>ansible-doc</code> tool, you would need to run the following commands:</p>
+<ol>
+<li>To use the <code>ansible-doc</code> command to list all the plugins available in a given category, you can run the following command:<pre class="source-code">
+<strong class="bold">$ ansible-doc -t connection -l</strong></pre></li> </ol>
+<p>This will return a textual index of the connection plugins, similar to what we saw when we were looking at the module documentation. The first few lines of the index output are shown here:</p>
+<p class="IMG---Figure">￼</p>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.1 – Ansible documentation for connection</p>
+<ol>
+<li value="2">You can then explore the documentation for a given plugin. For example, if we want to learn about the <code>paramiko_ssh</code> plugin, we can issue the following command:<pre class="source-code">
+<strong class="bold">$ ansible-doc -t connection paramiko_ssh</strong></pre></li> </ol>
+<p>You will find that the plugin documentation takes on a very familiar format, similar to what we saw for the modules in <a href="B20846_05.xhtml#_idTextAnchor279"><em class="italic">Chapter 5</em></a>, <em class="italic">Creating and </em><em class="italic">Consuming</em><em class="italic"> Modules</em>:</p>
+<p class="IMG---Figure">￼</p>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.2 – Ansible documentation for the paramiko_ssh connection</p>
+<p>Thanks to all the hard work and effort that goes into documenting every area of Ansible, you can easily find out about the plugins that are included with Ansible and how to work with them. So far, we have seen that the documentation for plugins is no less complete than it is for modules. In the next section of this chapter, we’ll dive a bit deeper into how to find the plugin code that accompanies your Ansible distribution.</p>
+<h1 id="_idParaDest-108">Finding included plugins</h1>
+<p>As we discussed in the preceding section, plugins are not as apparent in Ansible as their module counterparts are, and yet we have been using them behind the scenes in every single Ansible command we’ve issued so far! Let’s build on our work in the previous section, where we looked at the plugin documentation, by looking at where we can find the source code for the plugins. This, in turn, will serve as a precursor to us building a simple plugin of our own.</p>
+<p>If you installed Ansible on a Linux system using a package manager (that is, via an RPM or DEB package), then the location of your plugins will depend on your OS. For example, on my test CentOS 8 system where I installed Ansible from the official RPM package, I can see the plugins installed here:</p>
+<pre class="console">
+$ ls /usr/lib/python3.11/site-packages/ansible/plugins/
+action cliconf httpapi inventory lookup terminal
+become connection __init__.py loader.py netconf test
+cache doc_fragments __init__.pyc loader.pyc shell vars
+callback filter __init__.pyo loader.pyo strategy</pre> <p>Notice how the plugins are separated into subdirectories, all named after their categories. If we want to look up the <code>paramiko_ssh</code> plugin, which we reviewed the documentation of in the preceding section, we can look in the <code>connection/</code> subdirectory:</p>
+<pre class="console">
+$ ls -l /usr/lib/python3.11/site-packages/ansible/plugins/connection/paramiko_ssh.py
+-rw-r—r—1 root root 23544 Mar 5 05:39 /usr/lib/python3.11/site-packages/ansible/plugins/connection/paramiko_ssh.py</pre> <p>However, in general, I do not recommend that you edit or change the files that are installed from a package as you might all too easily overwrite them when upgrading the package. As one of our goals in this chapter is to write a simple custom plugin, let’s look at how to find the plugins in the official Ansible source code:</p>
+<ol>
+<li>Clone the official Ansible repository from GitHub, as we did previously, and change the directory to the location of your clone:<pre class="source-code">
+<strong class="bold">$ git clone https://github.com/ansible/ansible.git</strong>
+<code>lib/ansible/plugins/</code>:<pre class="source-code">
+<code>connection</code> directory:<pre class="source-code">
+<strong class="bold">$ ls -al connection/</strong></pre></li> </ol>
+<p>The exact contents of this directory will depend on the version of the Ansible source code that you have cloned. At the time of writing, it looks as follows, with one Python file for each plugin (similar to how we saw one Python file for each module in <a href="B20846_05.xhtml#_idTextAnchor279"><em class="italic">Chapter 5</em></a>, <em class="italic">Creating and </em><em class="italic">Consuming</em><em class="italic"> Modules</em>):</p>
+<pre class="source-code">
+<strong class="bold">$ ls -al connection/</strong>
+<strong class="bold">total 176</strong>
+<strong class="bold">drwxr-xr-x 2 root root 109 May 15 17:24 .</strong>
+<strong class="bold">drwxr-xr-x 19 root root 297 May 15 17:24 ..</strong>
+<strong class="bold">-rw-r--r-- 1 root root 16411 May 15 17:24 __init__.py</strong>
+<strong class="bold">-rw-r--r-- 1 root root 6855 May 15 17:24 local.py</strong>
+<strong class="bold">-rw-r--r-- 1 root root 23525 May 15 17:24 paramiko_ssh.py</strong>
+<strong class="bold">-rw-r--r-- 1 root root 32839 May 15 17:24 psrp.py</strong>
+<strong class="bold">-rw-r--r-- 1 root root 55367 May 15 17:24 ssh.py</strong>
+<strong class="bold">-rw-r--r-- 1 root root 31277 May 15 17:24 winrm.py</strong></pre> <ol>
+<li value="4">You can review the contents of each plugin to learn more about how they work, which is again part of the beauty of open source software:<pre class="source-code">
+<strong class="bold">$ less connection/paramiko_ssh.py</strong></pre></li> </ol>
+<p>An example of the beginning of this file is shown in the following code block to give you an idea of the kind of output you should be seeing if this command runs correctly:</p>
+<pre class="source-code">
+<strong class="bold"># (c) 2012, Michael DeHaan &lt;michael.dehaan@gmail.com&gt;</strong>
+<strong class="bold"># (c) 2017 Ansible Project</strong>
+<strong class="bold"># GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)</strong>
+<strong class="bold">from __future__ import (absolute_import, division, print_function)</strong>
+<strong class="bold">__metaclass__ = type</strong>
+<strong class="bold">DOCUMENTATION = """</strong>
+<strong class="bold">    author: Ansible Core Team</strong>
+<strong class="bold">    connection: paramiko</strong>
+<strong class="bold">    short_description: Run tasks via python ssh (paramiko)</strong>
+<strong class="bold">    description:</strong>
+<strong class="bold">        - Use the python ssh implementation (Paramiko) to connect to targets</strong>
+<strong class="bold">        - The paramiko transport is provided because many distributions, in particular EL6 and before do not support ControlPersist</strong>
+<strong class="bold">          in their SSH implementations.</strong>
+<code>DOCUMENTATION</code> block, which is very similar to what we saw when we were working with the module source code. If you explore the source code of each plugin, you will find that the structure bears some similarity to the module code structure. However, rather than simply taking this statement at face value, in the next section, we’ll build our very own custom plugin to learn, through a practical example, how they are put together.</p>
+<h1 id="_idParaDest-109">Creating custom plugins</h1>
+<p>In this section, we will take you through a practical guide to creating a plugin. The example will be, by necessity, simple. However, hopefully, it will serve you well in guiding you in the principles and best practices of plugin development and give you a solid foundation to build more complex plugins. We will even show you how to integrate these with your playbooks and, when you’re ready, submit them to the official Ansible project for inclusion.</p>
+<p>As we noted when we built a module, Ansible is written in Python, and its plugins are no exception. As a result, you will need to write your plugin in Python; so, to get started on developing a plugin, you will need to make sure you have Python and a few essential tools installed. If you already have Ansible running on your development machine, you probably have the required packages installed.</p>
+<p>Let’s get started with creating a plugin. Although there are many similarities between coding modules and plugins, there are also fundamental differences. Each of the different types of plugins that Ansible can work with is coded slightly differently and has different recommendations. Sadly, we don’t have space to go through each one in this book, but you can find out more about the requirements for each plugin type by reading the official Ansible documentation at <a href="https://docs.ansible.com/ansible/latest/dev_guide/developing_plugins.xhtml">https://docs.ansible.com/ansible/latest/dev_guide/developing_plugins.xhtml</a>.</p>
+<p>For our simple example, we’ll create a filter plugin that replaces a given string with another. If you refer to the preceding documentation link, filter plugins are perhaps some of the easiest ones to code because there isn’t a stringent requirement on the documentation in the same way that there is for modules. However, if we were to create a <code>lookup</code> plugin, we would be expected to create the same <code>DOCUMENTATION</code>, <code>EXAMPLES</code>, and <code>RETURN</code> documentation sections that we created in <a href="B20846_05.xhtml#_idTextAnchor279"><em class="italic">Chapter 5</em></a>, <em class="italic">Creating and Consuming</em><em class="italic"> Modules</em>. We would also need to test and build our web documentation in the same way.</p>
+<p>We have already covered this, so it doesn’t serve to repeat the entirety of this process in this chapter. Instead, we will focus on creating a filter plugin. In contrast with other Ansible plugins and modules, you can have several filters defined in a single Python plugin file. Filters are, by nature, quite compact to code. They are also numerous, so having one file per filter doesn’t scale well. However, if you want to code other types of plugins (such as <code>lookup</code> plugins), you <em class="italic">will</em> need to create one Python file per plugin.</p>
+<p>Let’s start creating our simple filter plugin. As we are only creating one, it will live in its own single Python file. You could propose a modification to one of the Ansible core filter Python files if you want to submit your code back to the Ansible project; but for now, we’ll leave that as a project for you to complete yourself. Our filter file will be called <code>custom_filter.py</code> and it will live in a directory called <code>filter_plugins</code>, which must be created in the same directory as your playbook.</p>
+<p>For clarity, your final directory structure should look as follows:</p>
+<pre class="console">
+.
+├── hosts
+├── lookup_plugins
+│ └── firstchar.py
+├── myplugin2.yml
+└── testdoc.txt</pre> <p>Perform the following steps to create and test your plugin code:</p>
+<ol>
+<li>Start your plugin file with a header so that people will know who wrote the plugin and what license it is released under. Naturally, you should update both the copyright and license fields with values appropriate to your plugin, but the following text is given as an example for you to get started with:<pre class="source-code">
+# (c) 2020, James Freeman &lt;james.freeman@example.com&gt;
+# GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)</pre></li> <li>Next, we’ll add a very simple Python function – yours can be as complex as you want it to be, but for ours, we will simply use the Python <code>.replace</code> function to replace one string with another inside a <code>string</code> variable. The following example looks for instances of <code>Puppet</code> and replaces them with <code>Ansible</code>:<pre class="source-code">
+def improve_automation(a):
+return a.replace("Puppet", "Ansible")</pre></li> <li>Next, we need to create an object of the <code>FilterModule</code> class, which is how Ansible will know that this Python file contains a filter. Within this object, we can create a <code>filters</code> definition and return the value of our previously defined filter function to Ansible:<pre class="source-code">
+class FilterModule(object):
+'''improve_automation filters'''
+def filters(self):
+return {'improve_automation': improve_automation}</pre></li> <li>As you can see, this code is all incredibly simple and we’re able to use built-in Python functions, such as <code>replace</code>, to manipulate the strings. There isn’t a specific test harness for plugins in Ansible, so we will test out our plugin code by writing a simple playbook that will implement it. The following playbook code defines a simple string that includes the word <code>Puppet</code> in it and prints this to the console using the <code>debug</code> module, applying our newly defined filter to the string:<pre class="source-code">
+---
+- name: Play to demonstrate our custom filter
+  hosts: frontends
+  gather_facts: false
+  vars:
+    statement: "Puppet is an excellent automation tool!"
+tasks:
+  - name: make a statement
+  debug:
+    msg: "{{ statement | improve_automation }}"</pre></li> </ol>
+<p>Now, before we attempt to run this, let’s recap what the directory structure should look like. Just as we were able to utilize the custom module that we created in <a href="B20846_05.xhtml#_idTextAnchor279"><em class="italic">Chapter 5</em></a>, <em class="italic">Creating and Consuming</em><em class="italic"> Modules</em>, by creating a <code>library/</code> subdirectory to house our module, we can also create a <code>filter_plugins/</code> subdirectory for our plugin. Your directory tree structure, when you have finished coding the various file details in the preceding code block, should look something like this:</p>
+<pre class="console">
+.
+├── filter_plugins
+│ ├── custom_filter.py
+├── hosts
+├── myplugin.yml</pre> <p>Now, let’s run our little test playbook and see what output we get. If all goes well, it should look something like the following:</p>
+<pre class="console">
+$ ansible-playbook -i hosts myplugin.yml
+PLAY [Play to demonstrate our custom filter] ***********************************
+TASK [make a statement] ********************************************************
+ok: [frt01.example.com] =&gt; {
+    "msg": "Ansible is an excellent automation tool!"
+}
+PLAY RECAP *********************************************************************
+frt01.example.com : ok=1 changed=0 unreachable=0 failed=0 skipped=0 rescued=0 ignored=0</pre> <p>As you can see, our new filter plugin replaced the <code>Puppet</code> string in our variable’s contents and replaced it with the <code>Ansible</code> string. This, of course, is just a silly test and not one you are likely to contribute back to the Ansible project. However, it shows how, in just six lines of code and with a modicum of Python knowledge, we have created a filter plugin to manipulate a string. You could come up with something far more complex and useful, I’m sure!</p>
+<p>Other plugin types require more effort than this; although we won’t go through the process of creating a filter plugin here, you’ll find coding a filter plugin more akin to coding a module, as you need to do the following:</p>
+<ul>
+<li>Include the <code>DOCUMENTATION</code>, <code>EXAMPLES</code>, and <code>RETURN</code> sections with the appropriate documentation</li>
+<li>Ensure you have incorporated appropriate and sufficient error handling in the plugin</li>
+<li>Test it thoroughly, including both the failure and success cases</li>
+</ul>
+<p>As an example of this, we’ll repeat the preceding process but create a <code>lookup</code> plugin instead. This plugin will be based heavily on a simplified version of the file <code>lookup</code> plugin. However, we want to adapt our version so that it only returns the first character of a file. You could adapt this example to perhaps read the header from a file, or you could add arguments to the plugin so that you can extract a substring using character indexes. We will leave this enhancement activity as an exercise for you to carry out yourself.</p>
+<p>Let’s get started! Our new lookup plugin will be called <code>firstchar</code>, and as <code>lookup</code> plugins have a one-to-one mapping with their Python files, the plugin file will be called <code>firstchar.py</code>. (In fact, Ansible will use this filename as the name of the plugin – you won’t find a reference to it in the code anywhere!). If you intend to test this from a playbook, as executed previously, you should create this in a directory called <code>lookup_plugins/</code>:</p>
+<ol>
+<li>Start by adding a header to the plugin file, as before, so that the maintainer and copyright details are clear. We are borrowing a large chunk of the original <code>lookup</code> plugin code from <code>file.py</code> for our example, so we must include the relevant credit:<pre class="source-code">
+# (c) 2023, Daniel Oh &lt;daniel.oh@example.com&gt;
+# (c) 2020, James Freeman &lt;james.freeman@example.com&gt;
+# (c) 2012, Daniel Hokka Zakrisson &lt;daniel@hozac.com&gt;
+# (c) 2017 Ansible Project
+# GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)</pre></li> <li>Next, add the Python 3 headers – these are an absolute requirement if you intend to submit your plugin via a <strong class="bold">Pull Request</strong> (<strong class="bold">PR</strong>) to the Ansible project:<pre class="source-code">
+from __future__ import (absolute_import, division, print_function)
+__metaclass__ = type</pre></li> <li>Next, add a <code>DOCUMENTATION</code> block to your plugin so that other users can understand how to interact with it:<pre class="source-code">
+DOCUMENTATION = """
+  lookup: firstchar
+  author: James Freeman &lt;james.freeman@example.com&gt;
+  version_added: "2.15"
+  short_description: read the first character of file contents
+  description:
+    - This lookup returns the first character of the contents from a file on the Ansible controller's file system.
+  options:
+    _terms:
+      description: path(s) of files to read
+      required: True
+  notes:
+    - if read in variable context, the file can be interpreted as YAML if the content is valid to the parser.
+    - this lookup does not understand 'globing', use the fileglob lookup instead.
+"""</pre></li> <li>Add the relevant <code>EXAMPLES</code> blocks to show how to use your plugin, just as we did with our modules:<pre class="source-code">
+EXAMPLES = """
+- debug: msg="the first character in foo.txt is {{lookup('firstchar', '/etc/foo.txt') }}"
+"""</pre></li> <li>Also, make sure you document the <code>RETURN</code> values from your plugin:<pre class="source-code">
+RETURN = """
+_raw:
+description:
+- first character of content of file(s)
+"""</pre></li> <li>With the documentation complete, we can now start working on our Python code. We will start by importing all the Python modules we need to make our module work. We’ll also set up the <code>display</code> object, which is used for verbose output and debugging. This should be used in place of the <code>print</code> statements in your plugin code if you need to display the <code>debug</code> output:<pre class="source-code">
+from ansible.errors import AnsibleError, AnsibleParserError
+from ansible.plugins.lookup import LookupBase
+from ansible.utils.display import Display
+display = Display()</pre></li> <li>We will now create an object of the <code>LookupModule</code> class. Define a default function within this called <code>run</code> (this is expected for the Ansible <code>lookup</code> plugin framework) and initialize an empty array for our return data:<pre class="source-code">
+class LookupModule(LookupBase):
+  def run(self, terms, variables=None, **kwargs):
+    ret = []</pre></li> <li>With this in place, we will start a loop to iterate over each of the terms (which, in our simple plugin, will be the filenames passed to the plugin). Although we will only test this on simple use cases, the way that lookup plugins can be used means that they need to support the lists of <code>terms</code> to operate on. Within this loop, we display valuable debugging information and, most importantly, define an object with the details of each of the files we will open, called <code>lookupfile</code>:<pre class="source-code">
+    for term in terms:
+      display.debug("File lookup term: %s" % term)
+      lookupfile = self.find_file_in_search_path(variables, 'files', term)
+      display.vvvv(u"File lookup using %s as file" % lookupfile)</pre></li> <li>Now, we will read in the file contents. This could be as simple as using one line of Python code, but we know from our work on modules in <a href="B20846_05.xhtml#_idTextAnchor279"><em class="italic">Chapter 5</em></a>, <em class="italic">Creating and Consuming</em><em class="italic"> Modules</em>, that we should not take it for granted that we will be passed a file we can read. As a result, we will put the statement to read our file contents into a <code>try</code> block and implement exception handling to ensure that the behavior of the plugin is sensible, even in error cases, and that easy-to-understand error messages are passed back to the user, rather than to Python tracebacks:<pre class="source-code">
+      try:
+        if lookupfile:
+          contents, show_data = self._loader._get_file_contents(lookupfile)
+          ret.append(contents.rstrip()[0])
+        else:
+          raise AnsibleParserError()
+      except AnsibleParserError:
+        raise AnsibleError("could not locate file in lookup: %s" % term)</pre></li> </ol>
+<p>Notice that here, we append the first character of the file contents (denoted by the <code>[0]</code> index) to our empty array. We also remove any training spaces using <code>rstrip</code>.</p>
+<ol>
+<li value="10">Finally, we must return the character we gathered from the file to Ansible with a <code>return</code> statement:<pre class="source-code">
+    return ret</pre></li> <li>Once again, we can create a simple test playbook to test out our newly created plugin:<pre class="source-code">
+---
+- name: Play to demonstrate our custom lookup plugin
+  hosts: frontends
+  gather_facts: false
+  tasks:
+    - name: make a statement
+    debug:
+      msg: "{{ lookup('firstchar', 'testdoc.txt')}}"</pre></li> </ol>
+<p>Again, we are using the debug module to print output to the console and referencing our <code>lookup</code> plugin to obtain the output.</p>
+<ol>
+<li value="12">Create the text file referenced in the previous code block, called <code>testdoc.txt</code>. This can contain anything you like – mine contains the following simple text:<pre class="source-code">
+Hello</pre></li> <li>Now, when we run our new playbook, we should see an output similar to the following:<pre class="source-code">
+<strong class="bold">$ ansible-playbook -i hosts myplugin2.yml</strong>
+<strong class="bold">PLAY [Play to demonstrate our custom lookup plugin] ****************************</strong>
+<strong class="bold">TASK [make a statement] ********************************************************</strong>
+<strong class="bold">ok: [frt01.example.com] =&gt; {</strong>
+<strong class="bold"> "msg": "H"</strong>
+<strong class="bold">}</strong>
+<strong class="bold">PLAY RECAP *********************************************************************</strong>
+<strong class="bold">frt01.example.com : ok=1 changed=0 unreachable=0 failed=0 skipped=0 rescued=0 ignored=0</strong></pre></li> </ol>
+<p>If all goes well, your playbook should return the first character of the text file you created. Naturally, there is a lot we could do to enhance this code, but this serves as a nice, simple example to get you started.</p>
+<p>With this foundation in place, you should now have a reasonable idea of how to get started with writing your plugins for Ansible. The next logical step for us is to look in greater depth at how we can test our newly written plugins. We will do this in the next section.</p>
+<h2 id="_idParaDest-110">Learning to integrate custom plugins with Ansible source code</h2>
+<p>So far, we have only tested our plugin in a standalone manner. This is all well and good, but what if you wanted to add it either to your own fork of the Ansible source code – or, better yet, submit it back to the Ansible project for inclusion with a PR? Fortunately, this process is very similar to the one we covered in <a href="B20846_05.xhtml#_idTextAnchor279"><em class="italic">Chapter 5</em></a>, <em class="italic">Creating and Consuming</em><em class="italic"> Modules</em>, only with slightly different folder structures.</p>
+<p>Next, you will need to copy your plugin code into one of the appropriate plugin directories:</p>
+<ul>
+<li>For example, our example filter would be copied to the following directory in the source code you just cloned:<pre class="source-code">
+<code>lookup</code> plugin would go into the <code>lookup</code> plugin’s directory, using a command such as the following:<pre class="source-code">
+<strong class="bold">$ cp ~/firstchar.py ./lib/ansible/plugins/lookup/</strong></pre></li> </ul>
+<p>With your code copied into place, you need to test the documentation (that is, whether your plugin includes it) as before. You can build the <code>webdocs</code> documentation in the same way as we did in <a href="B20846_05.xhtml#_idTextAnchor279"><em class="italic">Chapter 5</em></a>, <em class="italic">Creating and Consuming</em><em class="italic"> Modules</em>, so we will not recap this here. However, as a refresher, we can quickly check whether the documentation renders correctly using the <code>ansible-doc</code> command, as follows:</p>
+<pre class="console">
+$ . hacking/env-setup
+running egg_info
+creating lib/ansible.egg-info
+writing requirements to lib/ansible.egg-info/requires.txt
+writing lib/ansible.egg-info/PKG-INFO
+writing top-level names to lib/ansible.egg-info/top_level.txt
+writing dependency_links to lib/ansible.egg-info/dependency_links.txt
+writing manifest file 'lib/ansible.egg-info/SOURCES.txt'
+reading manifest file 'lib/ansible.egg-info/SOURCES.txt'
+reading manifest template 'MANIFEST.in'
+warning: no files found matching 'SYMLINK_CACHE.json'
+writing manifest file 'lib/ansible.egg-info/SOURCES.txt'
+Setting up Ansible to run out of checkout...
+PATH=/home/james/ansible/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/root/bin
+PYTHONPATH=/home/james/ansible/lib
+MANPATH=/home/james/ansible/docs/man:/usr/local/share/man:/usr/share/man
+Remember, you may wish to specify your host file with -i
+Done!
+$ ansible-doc -t lookup firstchar
+&gt; FIRSTCHAR (/home/james/ansible/lib/ansible/plugins/lookup/firstchar.py)
+        This lookup returns the first character of the contents from a
+        file on the Ansible controller's file system.
+  * This module is maintained by The Ansible Community
+OPTIONS (= is mandatory):
+= _terms
+        path(s) of files to read</pre> <p>As you have seen so far, there is a great deal of overlap between plugin development and module development in Ansible. It is especially important to pay attention to error handling with exceptions to produce good quality, easy-to-understand error messages and to adhere to and uphold Ansible’s high documentation standards. One additional item that we have not covered here is the plugin’s output. All plugins must return strings in Unicode; this ensures that they can run through the <code>jinja2</code> filters correctly. Further guidance can be found in the official Ansible documentation at <a href="https://docs.ansible.com/ansible/latest/dev_guide/developing_plugins.xhtml">https://docs.ansible.com/ansible/latest/dev_guide/developing_plugins.xhtml</a>.</p>
+<p>Armed with this knowledge, you should now be well placed to begin your plugin development work, and even submit your code back to the community, if you desire. We’ll offer a brief recap of this in the next section.</p>
+<h1 id="_idParaDest-111">Sharing plugins with the community</h1>
+<p>You may wish to submit your new plugin to the Ansible project, just as we considered for our custom modules in <a href="B20846_05.xhtml#_idTextAnchor279"><em class="italic">Chapter 5</em></a>, <em class="italic">Creating and Consuming</em><em class="italic"> Modules</em>. The process for doing this with plugins is almost identical to what you do for modules, which this section will recap.</p>
+<p class="callout-heading">Note</p>
+<p class="callout">Using the following process will submit a real request to the Ansible project on GitHub to merge the code you submit with their code. Do <em class="italic">not</em> follow this process unless you genuinely have a new module that is ready to be submitted to the Ansible code base.</p>
+<p>To submit your plugin as a PR of the Ansible repository, you need to fork the <code>devel</code> branch of the official Ansible repository. To do this, log in to your GitHub account on your web browser (or create an account if you don’t already have one), and then navigate to <a href="https://github.com/ansible/ansible.git">https://github.com/ansible/ansible.git</a>. Click on <strong class="bold">Fork</strong> at the top-right corner of the page:</p>
+<p class="IMG---Figure">￼</p>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.3 – Ansible GitHub repository</p>
+<p>Once you have forked the repository to your account, we will walk you through the commands you need to run to add your module code to it and then create the required PRs to merge your new module with the upstream Ansible project:</p>
+<ol>
+<li>Clone the <code>devel</code> branch that you just forked to your local machine. Use a command similar to the following, but be sure to replace the URL with one that matches your own GitHub account:<pre class="source-code">
+$ git clone https://github.com<code>plugins/</code> directory. The <code>copy</code> command used in the following code block is just an example to give you an idea as to what to do – in reality, you should choose the appropriate category subdirectory for your plugin as it won’t necessarily fit into the <code>lookup</code> category. Once you’ve added your Python file, perform a <code>git add</code> command to make Git aware of the new file, and then commit it with a meaningful <code>commit</code> message. Some example commands are shown here:<pre class="source-code">
+<strong class="bold">$ cd ansible</strong>
+<strong class="bold">$ cp ~/ansible-development/plugindev/firstchar.py ./lib/ansible/plugins/lookup</strong>
+<strong class="bold">$ git add lib/ansible/plugins/lookup/firstchar.py</strong>
+<strong class="bold">$ git commit -m 'Added tested version of firstchar.py for pull request creation'</strong></pre></li> <li>Now, be sure to push the code to your forked repository using the following command:<pre class="source-code">
+<strong class="bold">$ git push</strong></pre></li> <li>Return to GitHub in your web browser and navigate to the <strong class="bold">Pull requests</strong> page, as shown in the following screenshot. Click on the <strong class="bold">New pull </strong><strong class="bold">request</strong> button:</li>
+</ol>
+<p class="IMG---Figure">￼</p>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.4 – Ansible pull request</p>
+<p>Follow the PR creation process, as guided by the GitHub website. Once you have successfully submitted your PR, you should be able to navigate to the list of PRs on the official Ansible source code repository and find yours there. An example of the PR list is shown in the following screenshot for your reference:</p>
+<p class="IMG---Figure">￼</p>
+<p class="IMG---Caption" lang="en-US" xml:lang="en-US">Figure 7.5 – Ansible pull request list</p>
+<p>As discussed previously, don’t be alarmed if it takes a long time for your PR to be reviewed – this is simply due to how many PRs there are to review and process. You can always use your plugin code locally by adding it to a local <code>*_plugins/</code> directory, as we demonstrated earlier, so that the processing speed of your PR doesn’t hinder your work with Ansible. Further details of where to place your plugin code when working locally can be found at <a href="https://docs.ansible.com/ansible/latest/dev_guide/developing_locally.xhtml">https://docs.ansible.com/ansible/latest/dev_guide/developing_locally.xhtml</a>.</p>
+<p>That completes our look at creating plugins, including two working examples. Hopefully, you have found this journey informative and valuable and it has enhanced your ability to work with Ansible and extend its functionality where required.</p>
+<h1 id="_idParaDest-112">Summary</h1>
+<p>Ansible plugins are a core part of Ansible’s functionality and as we discovered in this chapter, we have been working with them throughout this book without even realizing it! Ansible’s modular design makes it easy to extend and add functionality, regardless of whether you are working with modules or the various types of plugins that are currently supported. Whether it’s to add a new filter for string processing or a new way of looking up data (or perhaps even a new connection mechanism to new technology), Ansible plugins provide a complete framework that can extend Ansible far beyond its already extensive capabilities.</p>
+<p>In this chapter, we learned about the various types of plugins that are supported by Ansible, before exploring them in greater detail and looking at we you can obtain documentation and information on the existing ones. We then completed two practical examples to create two different types of plugins for Ansible while looking at the best practices for plugin development and how this overlaps with module development. We finished off by recapping how to submit our new plugin code as a PR back to the Ansible project.</p>
+<p>In the next chapter, we will explore the best practices that you should adhere to when writing your Ansible playbooks to ensure that you produce manageable, high-quality automation code.</p>
+<h1 id="_idParaDest-113">Questions</h1>
+<p>Answer the following questions to test your knowledge of this chapter:</p>
+<ol>
+<li>Which of the following <code>ansible-doc</code> commands can you use to list the names of all the cache plugins?<ol><li><code>ansible-doc -a </code><code>cache -l</code></li><li><code>ansible-doc </code><code>cache -l</code></li><li><code>ansible-doc -</code><code>a cache</code></li><li><code>ansible-doc -t </code><code>cache -l</code></li><li><code>ansible-doc cache</code></li></ol></li>
+<li>Which class do you need to add to your <code>lookup</code> plugin’s code to include the bulk of the plugin code, including <code>run()</code>, the <code>items</code> loop, <code>try</code>, and <code>except</code>?<ol><li><code>LookupModule</code></li><li><code>RunModule</code></li><li><code>StartModule</code></li><li><code>InitModule</code></li><li><code>LoadModule</code></li></ol></li>
+<li>True or false: To create custom plugins with complex operations rather than printing simple hello world text using Python, you need to install Python with the relevant dependencies on your OS.<ol><li>True</li><li>False</li></ol></li>
+</ol>
+<h1 id="_idParaDest-114">Further reading</h1>
+<p>You can find all of the plugins on Ansible by accessing the Ansible repository directly at <a href="https://github.com/ansible/ansible/tree/devel/lib/ansible/plugins">https://github.com/ansible/ansible/tree/devel/lib/ansible/plugins</a>.</p>
+</div>
+</div></body></html>

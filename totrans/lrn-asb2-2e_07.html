@@ -1,0 +1,504 @@
+<html><head></head><body><div><div><div><div><h1 class="title"><a id="ch07"/>Chapter 7.  Creating a Custom Module </h1></div></div></div><p>This chapter will focus on how to write and test custom modules. We've already discussed how modules work and how to use them within your tasks. Well, just for a quick recap, a module in Ansible is a piece of code, which is transferred and executed on your remote host every time you run an Ansible task (it can also run locally if you've used <code class="literal">local_action</code>).</p><p>From my experience, I've seen custom modules being written whenever a certain functionality needs to be exposed as a first-class task. The same functionality could have been achieved without the module, but it would have required a series of tasks with existing modules to accomplish the end goal and often also command and shell modules. For example, let's say you wanted to provision a server via <strong>Preboot Execution Environment</strong> (<strong>PXE</strong>). Without a custom module, you would have probably used a few shell or command tasks to accomplish the same. However, with a custom module, you would just pass the required parameters to it and the business logic will be embedded within the custom module in order to perform the PXE boot. This gives you the ability to write playbooks that are much simpler to read and a bigger reusability of the code, since you create the module once and you can use it everywhere, in your roles and playbooks.</p><p>The arguments that you pass to a module, provided they are in a key-value format, will be forwarded in a separate file along with the module. Ansible expects at least two variables in your module output, (that is, the result of the module run) whether it passed or failed, and a message for the user, and they both have to be in the JSON format. If you adhere to this simple rule, you can customize as much as you want!</p><p>In this chapter, we will cover the following topics:</p><div><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">Python modules</li><li class="listitem" style="list-style-type: disc">Bash modules</li><li class="listitem" style="list-style-type: disc">Ruby modules</li><li class="listitem" style="list-style-type: disc">Testing modules</li></ul></div><p>When you choose a particular technology or tool, you generally start with what it offers. You slowly understand the philosophy behind building the tool and what problems it helps you solve. However, you truly feel comfortable and in control only when you understand in depth how it works. At some stage, to utilize the complete power of a tool, you'll have to customize it in ways and means that suit your particular needs. Over a period of time, tools that provide you with an easy way to plug in new functionalities stay, and those that don't, disappear from the market. It's a similar story with Ansible as well. All tasks in Ansible playbooks are modules of some kind and it comes loaded with hundreds of modules. You will find a module for almost everything you might need. However, there are always exceptions. This is where the power to extend it comes in.</p><p>Chef provides <strong>Lightweight Resources and Providers</strong> (<strong>LWRPs</strong>) to perform this activity and Ansible allows you to extend its functionality using custom modules. The significant difference, however, is that you can write the module in any language of your choice (provided you have an interpreter of that language), whereas in Chef, the module has to be in Ruby. Ansible developers recommend using Python for any complex module, as there is out-of-the-box support to parse arguments; almost all <strong>*nix</strong> systems have Python installed by default and Ansible itself is written in Python. To be complete, in this chapter we will also see how you can write modules in other languages.</p><p>To make your custom modules available to Ansible, you can do one of the following:</p><div><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">Specify the path to your custom module in the environment variable <code class="literal">ANSIBLE_LIBRARY</code></li><li class="listitem" style="list-style-type: disc">Use the <code class="literal">--module-path</code> command-line option</li><li class="listitem" style="list-style-type: disc">Drop the modules in the <code class="literal">library</code> directory in your Ansible top-level directory</li></ul></div><p>With this background information, let's look at some code!</p><div><div><div><div><h1 class="title"><a id="ch07lvl1sec55"/>Using Python modules</h1></div></div></div><p>Ansible intends to allow users to write modules in any language. Writing the module in Python, however, has its own advantages. You can take advantage of Ansible's libraries to shorten your code, an advantage not available for modules in other languages. Parsing user arguments, handling errors, and returning the required values becomes easier with the help of the Ansible libraries. We will see two examples for a custom Python module, one with and one without using the Ansible library, to give you a glimpse of how custom modules work. Make sure you organize your directory structure as mentioned in the previous section before creating the module. The first example creates a module named <code class="literal">check_user</code>. To do so, we will need to create the <code class="literal">check_user</code> file in the <code class="literal">library</code> folder within the Ansible top-level directory, with the following content:</p><pre class="programlisting">    #!/usr/bin/env python 
+ 
+    import pwd 
+    import sys 
+    import shlex 
+    import json 
+ 
+    def main(): 
+        # Parsing argument file 
+        args = {} 
+        args_file = sys.argv[1] 
+        args_data = file(args_file).read() 
+        arguments = shlex.split(args_data) 
+        for arg in arguments: 
+            if '=' in arg: 
+                (key, value) = arg.split('=') 
+                args[key] = value 
+        user = args['user'] 
+     
+        # Check if user exists 
+        try: 
+            pwd.getpwnam(user) 
+            success = True 
+            ret_msg = 'User %s exists' % user 
+        except KeyError: 
+            success = False 
+            ret_msg = 'User %s does not exists' % user 
+     
+        # Error handling and JSON return 
+        if success: 
+            print json.dumps({ 
+                'msg': ret_msg 
+            }) 
+            sys.exit(0) 
+        else: 
+            print json.dumps({ 
+                'failed': True, 
+                'msg': ret_msg 
+            }) 
+            sys.exit(1) 
+    main() 
+</pre><p>The preceding custom module, <code class="literal">check_user</code>, will check whether a user exists on a host. The module expects a user argument from Ansible. Let's break down the preceding module and see what it does. We first declare the <strong>Interpreter</strong> (Python) and import the libraries required to parse the arguments:</p><pre class="programlisting">    #!/usr/bin/env python 
+ 
+    import pwd 
+    import sys 
+    import shlex 
+    import json 
+</pre><p>Using the <code class="literal">sys</code> library, we then parse the arguments, which are passed in a file by Ansible. The arguments are in the format <code class="literal">param1=value1 param2=value2</code> where <code class="literal">param1</code> and <code class="literal">param2</code> are parameters and <code class="literal">value1</code> and <code class="literal">value2</code> are values of the parameters. There are multiple ways to split arguments and create a dictionary and we've chosen an easy way to perform the operation. We first create a list of arguments by splitting the arguments with a whitespace character, and then separate the key and value by splitting the arguments with an <code class="literal">=</code> character and assigning it to a Python dictionary. For example, if you have a string such as <code class="literal">user=foo gid=1000</code>, then you will first create a list, which will look like <code class="literal">["user=foo", "gid=1000"]</code> and then loop over this list to create a dictionary. This dictionary will look like <code class="literal">{"user": "foo", "gid": 1000}</code>. This is performed by the following lines:</p><pre class="programlisting">    def main(): 
+        # Parsing argument file 
+        args = {} 
+        args_file = sys.argv[1] 
+        args_data = file(args_file).read() 
+        arguments = shlex.split(args_data) 
+        for arg in arguments: 
+            if '=' in arg: 
+                (key, value) = arg.split('=') 
+                args[key] = value 
+        user = args['user'] 
+</pre><div><div><h3 class="title"><a id="note36"/>Note</h3><p>We separate the arguments based on a whitespace character because this is the standard followed by core Ansible modules. You can use any separator instead of a whitespace, but we would encourage you to maintain uniformity.</p></div></div><p>Once we have the user argument, we then check whether that user exists on the host as follows:</p><pre class="programlisting">    # Check if user exists 
+    try: 
+        pwd.getpwnam(user) 
+        success = True 
+        ret_msg = 'User %s exists' % user 
+    except KeyError: 
+        success = False 
+        ret_msg = 'User %s does not exists' % user 
+</pre><p>We use the <code class="literal">pwd</code> library to check the <code class="literal">passwd</code> file for the user. For the sake of simplicity, we use two variables: one to store the success or failure message and the other to store the message for the user. Finally, we use the variables created in the <code class="literal">try-catch</code> block to check if the module succeeded or failed, as you can see in this snippet:</p><pre class="programlisting">    # Error handling and JSON return 
+    if success: 
+        print json.dumps({ 
+            'msg': ret_msg 
+        }) 
+        sys.exit(0) 
+    else: 
+        print json.dumps({ 
+            'failed': True, 
+            'msg': ret_msg 
+        }) 
+        sys.exit(1) 
+</pre><p>If the module succeeds, then we will exit the execution with an exit code 0 [<code class="literal">exit(0)</code>]; else, we will exit with a non-zero code. Ansible will look for the failed variable and if it is set to <code class="literal">True</code>, it will exit unless you have explicitly asked Ansible to ignore errors using the <code class="literal">ignore_errors</code> parameter. You can use customized modules like any other core module of Ansible. To test the custom module, we will need a playbook, so let's create the file <code class="literal">playbooks/check_user.yaml</code> with the following content:</p><pre class="programlisting">    - hosts: localhost 
+      vars: 
+        user_ok: root 
+        user_ko: this_user_does_not_exists 
+      tasks: 
+      - name: 'Check if user {{ user_ok }} exists' 
+        check_user: 
+          user: '{{ user_ok }}' 
+      - name: 'Check if user {{ user_ko }} exists' 
+        check_user: 
+          user: '{{ user_ko }}' 
+</pre><p>As you can see, we used the <code class="literal">check_user</code> module like any other core module. Ansible will execute this module on the remote host by copying the module to the remote host with arguments in a separate file. Let's see how this playbook runs with the following:</p><pre class="programlisting">
+<strong>ansible-playbook playbooks/check_user.yaml</strong>
+</pre><p>We should receive the following output:</p><pre class="programlisting">
+<strong>PLAY [localhost] *************************************************</strong>
+<strong>TASK [setup] *****************************************************</strong>
+<strong>ok: [localhost]
+
+</strong>
+<strong>TASK [Check if user root exists] *********************************</strong>
+<strong>ok: [localhost]
+
+</strong>
+<strong>TASK [Check if user this_user_does_not_exists exists] ************</strong>
+<strong>fatal: [localhost]: FAILED! =&gt; {"changed": false, "failed": true, "msg": "User this_user_does_not_exists does not exists"}
+
+</strong>
+<strong>NO MORE HOSTS LEFT ***********************************************</strong>
+<strong>    to retry, use: --limit @playbooks/check_user.retry
+
+</strong>
+<strong>PLAY RECAP *******************************************************</strong>
+<strong>localhost         : ok=2    changed=0    unreachable=0    failed=1</strong>
+</pre><p>As expected, since we have the <code class="literal">root</code> user, but not the <code class="literal">this_user_does_not_exists</code>, it passed the first check, but failed at the second.</p><p>Ansible also provides a Python library to parse user arguments and handle errors and returns. It's time to see how the Ansible Python library is useful to make your code shorter, faster, and less error prone. To do so, let's create a file called <code class="literal">library/check_user_py2.py</code> with the following content:</p><pre class="programlisting">    #!/usr/bin/env python 
+ 
+    import pwd 
+    from ansible.module_utils.basic import AnsibleModule 
+ 
+    def main(): 
+        # Parsing argument file 
+        module = AnsibleModule( 
+            argument_spec = dict( 
+                user = dict(required=True) 
+            ) 
+        ) 
+        user = module.params.get('user') 
+ 
+        # Check if user exists 
+        try: 
+            pwd.getpwnam(user) 
+            success = True 
+            ret_msg = 'User %s exists' % user 
+        except KeyError: 
+            success = False 
+            ret_msg = 'User %s does not exists' % user 
+ 
+        # Error handling and JSON return 
+        if success: 
+            module.exit_json(msg=ret_msg) 
+        else: 
+            module.fail_json(msg=ret_msg) 
+ 
+    if __name__ == "__main__": 
+        main() 
+</pre><p>Let's break down the preceding module and see how it works, as follows:</p><pre class="programlisting">    #!/usr/bin/env python 
+ 
+    import pwd 
+    from ansible.module_utils.basic import AnsibleModule 
+</pre><p>As you can see, we do not import <code class="literal">sys</code>, <code class="literal">shlex</code> and <code class="literal">json</code>; we are not using them anymore, since all the operations that required them are now done by Ansible <code class="literal">module_utils</code>.</p><pre class="programlisting">    # Parsing argument file 
+    module = AnsibleModule( 
+        argument_spec = dict( 
+            user = dict(required=True) 
+        ) 
+    ) 
+    user = module.params.get('user') 
+</pre><p>Previously, we performed a lot of processing on the argument file to get the final user arguments. Ansible makes it easy by providing an <code class="literal">AnsibleModule</code> class, which does all the processing on its own and provides us with the final arguments. The <code class="literal">required=True</code> parameter means that the argument is mandatory and the execution will fail if the argument is not passed. The default value for required is <code class="literal">False</code>, which will allow users to skip the argument. You can then access the value of the arguments through the <code class="literal">module.params</code> dictionary by calling the <code class="literal">get</code> method on <code class="literal">module.params</code>. The logic to check users on the remote host will remain the same, but the error handling and return aspect will change as follows:</p><pre class="programlisting">    # Error handling and JSON return 
+    if success: 
+        module.exit_json(msg=ret_msg) 
+    else: 
+        module.fail_json(msg=ret_msg) 
+</pre><p>One of the advantages of using the <code class="literal">AnsibleModule</code> object, is that you have very nice facility to handle returning values to the playbook. We will go into more depth in the next section.</p><div><div><h3 class="title"><a id="note37"/>Note</h3><p>We could have condensed the logic to check user and the return section, but we kept them divided for readability.</p></div></div><p>To verify that everything works as expected, we can create a new playbook in <code class="literal">playbooks/check_user_py2.yaml</code> with the following content:</p><pre class="programlisting">    - hosts: localhost 
+      vars: 
+        user_ok: root 
+        user_ko: this_user_does_not_exists 
+      tasks: 
+      - name: 'Check if user {{ user_ok }} exists' 
+        check_user_py2: 
+          user: '{{ user_ok }}' 
+      - name: 'Check if user {{ user_ko }} exists' 
+        check_user_py2: 
+          user: '{{ user_ko }}' 
+</pre><p>Run it with the following:</p><pre class="programlisting">
+<strong>ansible-playbook playbooks/check_user.yaml</strong>
+</pre><p>We should receive the following output:</p><pre class="programlisting">
+<strong>PLAY [localhost] *************************************************</strong>
+<strong>TASK [setup] *****************************************************</strong>
+<strong>ok: [localhost]
+
+</strong>
+<strong>TASK [Check if user root exists] *********************************</strong>
+<strong>ok: [localhost]
+
+</strong>
+<strong>TASK [Check if user this_user_does_not_exists exists] ************</strong>
+<strong>fatal: [localhost]: FAILED! =&gt; {"changed": false, "failed": true, "msg": "User this_user_does_not_exists does not exists"}
+
+</strong>
+<strong>NO MORE HOSTS LEFT ***********************************************</strong>
+<strong>    to retry, use: --limit @playbooks/check_user_py2.retry
+
+</strong>
+<strong>PLAY RECAP *******************************************************</strong>
+<strong>localhost         : ok=2    changed=0    unreachable=0    failed=1</strong>
+</pre><p>Which is consistent with our expectations.</p><div><div><div><div><h2 class="title"><a id="ch07lvl2sec67"/>Working with exit_json and fail_json</h2></div></div></div><p>Ansible provides a shorter way to handle success and failure by providing the <code class="literal">exit_json</code> and <code class="literal">fail_json</code> methods, respectively. You can directly pass a message to these methods and Ansible will take care of the rest. You can also pass additional variables to these methods and Ansible will print those variables to <code class="literal">stdout</code>. For example, apart from the message, you might also want to print the <code class="literal">uid</code> and <code class="literal">gid</code> parameters of the user. You can do this by passing these variables to the <code class="literal">exit_json</code> method separated by a comma.</p><p>Let's see how you can return multiple values to <code class="literal">stdout</code>, which is demonstrated in the following code placed in <code class="literal">library/check_user_id.py</code>:</p><pre class="programlisting">    #!/usr/bin/env python 
+ 
+    import pwd 
+    from ansible.module_utils.basic import AnsibleModule 
+     
+    class CheckUser: 
+        def __init__(self, user): 
+            self.user = user 
+     
+        # Check if user exists 
+        def check_user(self): 
+            uid = '' 
+            gid = '' 
+            try: 
+                user = pwd.getpwnam(self.user) 
+                success = True 
+                ret_msg = 'User %s exists' % self.user 
+                uid = user.pw_uid 
+                gid = user.pw_gid 
+            except KeyError: 
+                success = False 
+                ret_msg = 'User %s does not exists' % self.user 
+            return success, ret_msg, uid, gid 
+ 
+    def main(): 
+        # Parsing argument file 
+        module = AnsibleModule( 
+            argument_spec = dict( 
+                user = dict(required=True) 
+            ) 
+        ) 
+        user = module.params.get('user') 
+     
+        chkusr = CheckUser(user) 
+        success, ret_msg, uid, gid = chkusr.check_user() 
+ 
+        # Error handling and JSON return 
+        if success: 
+            module.exit_json(msg=ret_msg, uid=uid, gid=gid) 
+        else: 
+            module.fail_json(msg=ret_msg) 
+ 
+    if __name__ == "__main__": 
+        main() 
+</pre><p>As you can see, we return the <code class="literal">uid</code> and <code class="literal">gid</code> of the user along with the message, <code class="literal">msg</code>. You can have multiple values and Ansible will print all of them in a dictionary format. We can create a playbook in <code class="literal">playbooks/check_user_id.yaml</code> with the following content:</p><pre class="programlisting">    - hosts: localhost 
+      vars: 
+        user: root 
+      tasks: 
+      - name: 'Retrive {{ user }} data if it exists' 
+        check_user_id: 
+          user: '{{ user }}' 
+        register: user_data 
+      - name: 'Print user {{ user }} data' 
+        debug: 
+          msg: '{{ user_data }}' 
+</pre><p>Run it with the following:</p><pre class="programlisting">
+<strong>ansible-playbook playbooks/check_user.yaml</strong>
+</pre><p>We should receive the following output:</p><pre class="programlisting">
+<strong>PLAY [localhost] *************************************************</strong>
+<strong>TASK [setup] *****************************************************</strong>
+<strong>ok: [localhost]
+
+</strong>
+<strong>TASK [Retrieve fale data if it exists] ****************************</strong>
+<strong>ok: [localhost]
+
+</strong>
+<strong>TASK [Print user fale data] **************************************</strong>
+<strong>ok: [localhost] =&gt; {</strong>
+<strong>    "msg": {</strong>
+<strong>        "changed": false,</strong>
+<strong>        "gid": 1000,</strong>
+<strong>        "msg": "User root exists",</strong>
+<strong>        "uid": 1000</strong>
+<strong>    }</strong>
+<strong>}
+
+</strong>
+<strong>PLAY RECAP *******************************************************</strong>
+<strong>localhost         : ok=3    changed=0    unreachable=0    failed=0</strong>
+</pre></div><div><div><div><div><h2 class="title"><a id="ch07lvl2sec68"/>Testing Python modules</h2></div></div></div><p>As we have seen, you can test your modules creating very simple playbooks that run them. You can also test your module by running it more directly. To do so, we'll need to clone the Ansible official repository (if you haven't done it yet):</p><pre class="programlisting">
+<strong>git clone git://github.com/ansible/ansible.git --recursive</strong>
+</pre><p>Source an environmental file:</p><pre class="programlisting">
+<strong>source ansible/hacking/env-setup</strong>
+</pre><p>We can now use the <code class="literal">test-module</code> utility to run the script passing the filename as a command-line argument:</p><pre class="programlisting">
+<strong>ansible/hacking/test-module -m library/check_user_id.py -a "user=root"</strong>
+</pre><p>The result will be something like this:</p><pre class="programlisting">
+<strong>    * including generated source, if any, saving to: /home/fale/.ansible_module_generated 
+    * ansiballz module detected; extracted module source to: /home/fale/debug_dir 
+    *********************************** 
+    RAW OUTPUT 
+ 
+    {"msg": "User root exists", "invocation": {"module_args": {"user": "root"}}, "gid":     0, "uid": 0, "changed": false} 
+ 
+ 
+    *********************************** 
+    PARSED OUTPUT 
+    { 
+        "changed": false, 
+        "gid": 0, 
+        "invocation": { 
+            "module_args": { 
+                "user": "root" 
+            } 
+        }, 
+        "msg": "User root exists", 
+        "uid": 0 
+    }</strong>
+</pre><div><div><h3 class="title"><a id="note38"/>Note</h3><p>It's also simple to execute the script directly, if you have not used the <code class="literal">AnsibleModule</code>, this is due the fact that this module requires lots of Ansible-specific variables, so it's more complex to "simulate" an Ansible run than to actually run Ansible itself.</p></div></div></div></div></div>
+<div><div><div><div><h1 class="title"><a id="ch07lvl1sec56"/>Using bash modules</h1></div></div></div><p>Bash modules in Ansible are no different than any other bash scripts, except the way it prints the data on <code class="literal">stdout</code>. Bash modules could be as simple as checking if a process is running on the remote host to running some complex commands.</p><div><div><h3 class="title"><a id="note39"/>Note</h3><p>As previously stated, the general recommendation is to use Python for modules. In my opinion the second-best choice (only for very easy modules) is <code class="literal">bash</code> module due to its simplicity and user base.</p></div></div><p>Let's create the file <code class="literal">library/kill_java.sh</code> with the following content:</p><pre class="programlisting">    #!/bin/bash 
+    source $1 
+ 
+    SERVICE=$service_name 
+ 
+    JAVA_PIDS=$(/usr/java/default/bin/jps | grep ${SERVICE} | awk '{print $1}') 
+ 
+    if [ ${JAVA_PIDS} ]; then 
+        for JAVA_PID in ${JAVA_PIDS}; do 
+            /usr/bin/kill -9 ${JAVA_PID} 
+        done 
+        echo "failed=False msg="Killed all the orphaned processes for ${SERVICE}"" 
+        exit 0 
+    else 
+        echo "failed=False msg="No orphaned processes to kill for ${SERVICE}"" 
+        exit 0 
+    fi 
+</pre><p>The preceding <code class="literal">bash</code> module will take the <code class="literal">service_name</code> argument and forcefully kill all of the Java processes that belong to that service. As you know, Ansible passes the argument file to the module. We then source the arguments file using source <code class="literal">$1</code>. This will actually set the environment variable with the name, <code class="literal">service_name</code>. We then access this variable using <code class="literal">$service_name</code> as follows:</p><pre class="programlisting">    source $1 
+ 
+    SERVICE=$service_name 
+</pre><p>We then check to see if we obtained any PIDs for the service and run a loop over it to forcefully kill all of the Java processes that match <code class="literal">service_name</code>. Once they're killed, we exit the module with <code class="literal">failed=False</code> and a message with an exit code of <code class="literal">0</code>, as you can see here:</p><pre class="programlisting">    if [ ${JAVA_PIDS} ]; then 
+        for JAVA_PID in ${JAVA_PIDS}; do 
+            /usr/bin/kill -9 ${JAVA_PID} 
+        done 
+        echo "failed=False msg="Killed all the orphaned processes for ${SERVICE}"" 
+        exit 0 
+</pre><p>If we do not find any running process for the service, we will still exit the module with an exit code of <code class="literal">0</code> because terminating the Ansible run might not make sense; this is in the following part:</p><pre class="programlisting">    else 
+        echo "failed=False msg="No orphaned processes to kill for ${SERVICE}"" 
+        exit 0 
+    fi 
+</pre><div><div><h3 class="title"><a id="note40"/>Note</h3><p>You can also terminate the Ansible run by printing <code class="literal">failed=True</code> with an exit code of <code class="literal">1</code>.</p></div></div><p>Ansible allows you to return a key-value output if the language itself doesn't support JSON. This makes Ansible more developer/sysadmin-friendly and allows custom modules to be written in any language of one's choice. Let's test the <code class="literal">bash</code> module by passing the arguments file to the module. We can now create an arguments file in <code class="literal">/tmp/arguments</code> that has the <code class="literal">service_name</code> parameter set to Jenkins, as follows:</p><pre class="programlisting">    service_name=jenkins 
+</pre><p>Now, you can run the module like any other bash script. Let's see what happens when we run it with:</p><pre class="programlisting">
+<strong>bash library/kill_java.sh /tmp/arguments</strong>
+</pre><p>We should receive the following output:</p><pre class="programlisting">
+<strong>failed=False msg="No orphaned processes to kill for jenkins"</strong>
+</pre><p>As expected, the module did not fail even though there was no Jenkins process running on the localhost.</p></div>
+<div><div><div><div><h1 class="title"><a id="ch07lvl1sec57"/>Using Ruby modules</h1></div></div></div><p>Writing modules in Ruby is as easy as writing a module in Python or bash. You just need to take care of the arguments, errors, return statements, and of course, know basic Ruby! Let's create the <code class="literal">library/rsync.rb</code> file with the following code:</p><pre class="programlisting">    #!/usr/bin/env ruby 
+ 
+    require 'rsync' 
+    require 'json' 
+ 
+    src = '' 
+    dest = '' 
+    ret_msg = '' 
+    SUCCESS = '' 
+ 
+    def print_message(state, mdg, key='Failed') 
+        message = { 
+            key =&gt; state, 
+            "msg" =&gt; msg 
+        } 
+        print message.to_json 
+        exit 1 if state == false 
+        exit 0 
+    end 
+ 
+    args_file = ARGV[0] 
+    data = File.read(args_file) 
+    arguments = data.split(" ") 
+    arguments.each do |argument| 
+        print_message(false, "Argument should be name-value pairs. Example name=foo") if not argument.include("=") 
+        field.value = argument.split("=") 
+        if field == "src" 
+            src = value 
+        elseif field == "dest" 
+            dest = value 
+        else print_message(false, "Invalid argument provided. Valid arguments are src and dest.") 
+        end 
+    end 
+ 
+    result - Rsync.run("#{src}", "#{dest}") 
+    if result.success? 
+        success = true 
+        ret_msg = "Copied file successfully" 
+    else 
+        success = false 
+        ret_msg = result.error 
+    end 
+ 
+    if success 
+        print_message(false, "#{ret_msg}") 
+    else 
+        print_message(true, "#{ret_msg}") 
+    end 
+</pre><p>In the preceding module, we first process the user arguments, then copy the file using the <code class="literal">rsync</code> library, and finally, return the output. Let's break down the preceding code and see how it works.</p><p>We first wrote a method, <code class="literal">print_message</code>, which will print the output in a JSON format. By doing this, we can reuse the same code in multiple places. Remember, the output of your module should contain <code class="literal">failed=true</code> if you want the Ansible run to fail; otherwise, Ansible will think that the module succeeded and will continue with the next task. The output obtained is as follows:</p><pre class="programlisting">    #!/usr/bin/env ruby 
+ 
+    require 'rsync' 
+    require 'json' 
+     
+    src = '' 
+    dest = '' 
+    ret_msg = '' 
+    SUCCESS = '' 
+ 
+    def print_message(state, mdg, key='Failed') 
+        message = { 
+            key =&gt; state, 
+            "msg" =&gt; msg 
+        } 
+        print message.to_json 
+        exit 1 if state == false 
+        exit 0 
+    end 
+</pre><p>We then process the arguments file, which contains a key-value pair separated by a whitespace character. This is similar to what we did with the Python module earlier, where we took care of parsing out the arguments. We also perform some checks to make sure that the user has not missed any required argument. In this case, we check if the <code class="literal">src</code> and <code class="literal">dest</code> parameters have been specified and print a message if the arguments are not provided. Further checks could include the format and type of arguments. You can add these checks and any other checks you deem important. For example, if one of your parameters is a <code class="literal">date</code>, then you'd like to verify that the input is actually the right date. Consider the following piece of code, which shows the discussed parameters:</p><pre class="programlisting">    args_file = ARGV[0] 
+    data = File.read(args_file) 
+    arguments = data.split(" ") 
+    arguments.each do |argument| 
+        print_message(false, "Argument should be name-value pairs. Example name=foo") if not argument.include("=") 
+        field.value = argument.split("=") 
+        if field == "src" 
+            src = value 
+        elseif field == "dest" 
+            dest = value 
+        else print_message(false, "Invalid argument provided. Valid arguments are src and dest.") 
+        end 
+    end 
+</pre><p>Once we have the required arguments, we will go ahead and copy the file using the <code class="literal">rsync</code> library as follows:</p><pre class="programlisting">    result - Rsync.run("#{src}", "#{dest}") 
+    if result.success? 
+        success = true 
+        ret_msg = "Copied file successfully" 
+    else 
+        success = false 
+        ret_msg = result.error 
+    end 
+</pre><p>Finally, we check if the <code class="literal">rsync</code> task passed or failed and call the <code class="literal">print_message</code> function to print the output on <code class="literal">stdout</code> as follows:</p><pre class="programlisting">    if success 
+        print_message(false, "#{ret_msg}") 
+    else 
+        print_message(true, "#{ret_msg}") 
+    end 
+</pre><p>You can test your Ruby module by simply passing the arguments file to the module. To do so, we can create the file <code class="literal">/tmp/arguments</code> with the following content:</p><pre class="programlisting">    src=/var/log/ansible.log dest=/tmp/ansible_backup.log 
+</pre><p>Let's now run the module, as shown:</p><pre class="programlisting">
+<strong>ruby library/rsync.rb /tmp/arguments</strong>
+</pre><p>We will receive the following output:</p><pre class="programlisting">    {"failed":false,"msg":"Copied file successfully"} 
+</pre><p>We will leave the <code class="literal">serverspec</code> testing for you to complete.</p></div>
+<div><div><div><div><h1 class="title"><a id="ch07lvl1sec58"/>Testing modules</h1></div></div></div><p>Testing is often undervalued due to lack of understanding of its purpose and the benefits it can bring to the business. Testing modules is as important as testing any other part of the Ansible playbook because a small change in a module can break your entire playbook. We will take an example of the Python module that we wrote in the first section of this chapter and write an integration test using Python's nose test framework. Unit tests are also encouraged, but for our scenario where we check if a user exists remotely, an integration test makes more sense.</p><div><div><h3 class="title"><a id="note41"/>Note</h3><p>
+<code class="literal">nose</code> is a Python test framework. For more information, visit <a class="ulink" href="https://nose.readthedocs.org/en/latest/">https://nose.readthedocs.org/en/latest/</a>.</p></div></div><p>To <code class="literal">test</code> the module, we convert our previous module into a Python class so that we can directly import the class in our test, and run only the main logic of the module. The following code shows the <code class="literal">library/check_user_py3.py</code> restructured module, which will check whether a user exists on a remote host:</p><pre class="programlisting">    #!/usr/bin/env python 
+ 
+    import pwd 
+    from ansible.module_utils.basic import AnsibleModule 
+ 
+    class User: 
+        def __init__(self, user): 
+            self.user = user 
+ 
+        # Check if user exists 
+        def check_if_user_exists(self): 
+            try: 
+                user = pwd.getpwnam(self.user) 
+                success = True 
+                ret_msg = 'User %s exists' % self.user 
+            except KeyError: 
+                success = False 
+                ret_msg = 'User %s does not exists' % self.user 
+            return success, ret_msg 
+ 
+    def main(): 
+        # Parsing argument file 
+        module = AnsibleModule( 
+            argument_spec = dict( 
+                user = dict(required=True) 
+            ) 
+        ) 
+        user = module.params.get('user') 
+ 
+        chkusr = User(user) 
+        success, ret_msg = chkusr.check_if_user_exists() 
+ 
+        # Error handling and JSON return 
+        if success: 
+            module.exit_json(msg=ret_msg, uid=uid, gid=gid) 
+        else: 
+            module.fail_json(msg=ret_msg) 
+ 
+    if __name__ == "__main__": 
+        main() 
+</pre><p>As you can see in the preceding code, we created a class named <code class="literal">User</code>. We instantiated the class, and called the <code class="literal">check_if_user_exists</code> method to check if the user actually exists on the remote machine. It's time to write an integration test now. We assume that you have the <code class="literal">nose</code> package installed on your system. If not, don't worry! You can still install the package by using the following command:</p><pre class="programlisting">
+<strong>pip install nose</strong>
+</pre><p>Let's now write the integration test file in <code class="literal">library/test_check_user_py3.py</code> as follows:</p><pre class="programlisting">    from nose.tools import assert_equals, assert_false, assert_true 
+    import imp 
+    imp.load_source("check_user","check_user_py3.py") 
+    from check_user import User 
+ 
+    def test_check_user_positive(): 
+        chkusr = User("root") 
+        success, ret_msg = chkusr.check_if_user_exists() 
+        assert_true(success) 
+        assert_equals('User root exists', ret_msg) 
+ 
+    def test_check_user_negative(): 
+        chkusr = User("this_user_does_not_exists") 
+        success, ret_msg = chkusr.check_if_user_exists() 
+        assert_false(success) 
+        assert_equals('User this_user_does_not_exists does not exists', ret_msg) 
+</pre><p>In the preceding integration test, we import the <code class="literal">nose</code> package and our module, <code class="literal">check_user</code>. We call the <code class="literal">User</code> class by passing the user we want to check. We then check whether the user exists on the remote host by calling the <code class="literal">check_if_user_exists()</code> method. The <code class="literal">nose</code> methods, <code class="literal">assert_true</code>, <code class="literal">assert_false</code>, and <code class="literal">assert_equals</code> can be used to compare the expected value against the actual. Only if the assert methods pass, will the test pass. You can have multiple tests inside the same file by having multiple methods whose names start with <code class="literal">test_</code>, for example, the <code class="literal">test_check_user_positive()</code> and <code class="literal">test_check_user_negative()</code> methods. Nose tests will take all the methods that start with <code class="literal">test_</code> and execute them.</p><div><div><h3 class="title"><a id="note42"/>Note</h3><p>As you can see, we actually created two tests for just one function. This is a key part of tests. Always try cases where you know it will work, but also do not forget to test cases where you expect it to fail.</p></div></div><p>We can now test if it works running nose in the following way:</p><pre class="programlisting">
+<strong>cd library</strong>
+<strong>nosetests -v test_check_users_py3.py</strong>
+</pre><p>You should receive output similar to this:</p><pre class="programlisting">
+<strong>test_check_user_py3.test_check_user_positive ... ok</strong>
+<strong>test_check_user_py3.test_check_user_negative ... ok</strong>
+<strong>---------------------------------------------------</strong>
+<strong>Ran 2 tests in 0.001s</strong>
+<strong>OK</strong>
+</pre><p>As you can see, the test passed because the <code class="literal">root</code> user existed on the host while the <code class="literal">this_user_does_not_exists</code> user does not exist.</p><div><div><h3 class="title"><a id="note43"/>Note</h3><p>We use the <code class="literal">-v</code> option with  <code class="literal">nose</code> tests for the <strong>verbose</strong> mode.</p></div></div><p>For more complicated modules, we recommend that you write unit tests and integration tests. You might wonder why we didn't use <code class="literal">serverspec</code> to test the module.</p><p>We still recommend running <code class="literal">serverspec</code> tests for functional testing as part of playbooks, but for unit and integration tests, it's recommended to use well-known frameworks. Similarly, if you write Ruby modules, we recommend you write tests for them with a framework such as <code class="literal">rspec</code>. If your custom Ansible module has multiple parameters with multiple combinations, then you will write more tests to test each scenario. Finally, we recommend that your run all these tests as part of your CI system, be it Jenkins, Travis, or any other system.</p><p>Questions</p><p>A couple of questions to think about are given in the this section:</p><div><ul class="itemizedlist"><li class="listitem" style="list-style-type: disc">Can you think of common tasks that you perform daily and how you would write Ansible modules for them? List them down in terms of how you would invoke the module from a playbook.</li><li class="listitem" style="list-style-type: disc">Which language do you think your team would be comfortable using for your modules?</li><li class="listitem" style="list-style-type: disc">Can you revisit the roles that you might have written after <a class="link" href="ch03.html" title="Chapter 3. Scaling to Multiple Hosts">Chapter 3</a>, <em>Scaling to Multiple Hosts</em>, and see which of them can potentially be converted into custom modules?</li></ul></div></div>
+<div><div><div><div><h1 class="title"><a id="ch07lvl1sec59"/>Summary</h1></div></div></div><p>With this, we come to the end of this rather small but important chapter, which focused on how you can extend Ansible by writing your own custom modules. You learned how to use Python, Bash, and Ruby in order to write your modules. We've also seen how to write integration tests for modules so that they can be integrated into your CI system. In future, hopefully, extending your Ansible functionality using modules should be way easier!</p><p>Next, we will step into the world of provisioning, deployment, and orchestration and look at how Ansible solves our infrastructure problems when we provision new instances or want to deploy software updates to various instances in our environments. We promise that the journey is going to be fun!</p></div></body></html>
